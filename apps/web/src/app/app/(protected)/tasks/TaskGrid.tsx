@@ -76,6 +76,20 @@ function StatusBadge({ status }: { status: string }) {
   return null;
 }
 
+function getCategoryClasses(category: string): string {
+  const map: Record<string, string> = {
+    bug: 'bg-cat-bug/15 text-cat-bug',
+    feature: 'bg-cat-feature/15 text-cat-feature',
+    refactor: 'bg-cat-refactor/15 text-cat-refactor',
+    chore: 'bg-cat-chore/15 text-cat-chore',
+    docs: 'bg-cat-docs/15 text-cat-docs',
+    test: 'bg-cat-test/15 text-cat-test',
+    infra: 'bg-cat-infra/15 text-cat-infra',
+    design: 'bg-cat-design/15 text-cat-design',
+  };
+  return map[category] ?? 'bg-surface-3 text-text-secondary';
+}
+
 // Small icon that distinguishes standalone tasks from mission-grouped ones
 function StandaloneIcon() {
   return (
@@ -95,69 +109,108 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
 
-  // Budget/rate-limit pause: a distinct amber indicator (the task is pending +
-  // will auto-retry). Shown on desktop and mobile alike (single responsive row).
   const resetShort = task.budgetResetsAt
     ? ` · ~${new Date(task.budgetResetsAt).toISOString().slice(11, 16)}`
     : '';
 
-  return (
-    <Link
-      href={`/app/tasks/${task.id}`}
-      className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default hover:bg-surface-2/50 transition-colors"
+  const dotEl = (
+    <span
+      className={`w-2 h-2 rounded-full shrink-0 ${
+        task.budgetPaused
+          ? 'bg-status-warning animate-pulse'
+          : `${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`
+      }`}
+    />
+  );
+
+  const badgeEl = task.budgetPaused ? (
+    <span
+      title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
     >
-      {/* Status dot — amber + pulsing when budget/rate-limit paused */}
-      <span className={`w-2 h-2 rounded-full shrink-0 ${task.budgetPaused ? 'bg-status-warning animate-pulse' : `${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`}`} />
+      ⏸ Paused{resetShort}
+    </span>
+  ) : (
+    <StatusBadge status={task.status} />
+  );
 
-      {/* Standalone icon — only shown when not inside a named mission group */}
-      {isStandalone && <StandaloneIcon />}
+  return (
+    <Link href={`/app/tasks/${task.id}`} className="block">
+      {/* Mobile card — stacked layout below sm */}
+      <div className="sm:hidden px-3 py-2 hover:bg-surface-2/50 transition-colors">
+        <div className="border-2 border-border-strong shadow-md px-3 py-2">
+          {/* Line 1: status dot + title + status badge */}
+          <div className="flex items-center gap-2 min-w-0 mb-1">
+            {dotEl}
+            {isStandalone && <StandaloneIcon />}
+            <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
+              {task.title}
+            </span>
+            {badgeEl}
+          </div>
+          {/* Line 2: workspace badge + pr link + time ago */}
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
+              {task.workspaceName}
+            </span>
+            {task.prUrl && (
+              <a
+                href={task.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-[12px] text-accent-text hover:underline shrink-0"
+              >
+                #{task.prNumber}
+              </a>
+            )}
+            <span className="flex-1" />
+            <span className="text-[12px] text-text-desc shrink-0">
+              {timeAgo(task.updatedAt)}
+            </span>
+          </div>
+          {/* Line 3: category chip */}
+          {task.category && (
+            <div className="mt-1.5">
+              <span className={`inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium ${getCategoryClasses(task.category)}`}>
+                {task.category}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
 
-      {/* Title */}
-      <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
-        {task.title}
-      </span>
-
-      {/* Status badge — paused indicator wins over the plain pending state */}
-      {task.budgetPaused ? (
-        <span
-          title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
-        >
-          ⏸ Paused{resetShort}
+      {/* Desktop row — hidden below sm; secondary columns hidden below md */}
+      <div className="hidden sm:flex items-center gap-3 px-4 py-2.5 md:py-3 border-b border-border-default hover:bg-surface-2/50 transition-colors">
+        {dotEl}
+        {isStandalone && <StandaloneIcon />}
+        <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
+          {task.title}
         </span>
-      ) : (
-        <StatusBadge status={task.status} />
-      )}
-
-      {/* PR link */}
-      {task.prUrl && (
-        <a
-          href={task.prUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="text-[12px] text-accent-text hover:underline shrink-0"
-        >
-          #{task.prNumber}
-        </a>
-      )}
-
-      {/* Workspace badge */}
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-surface-3 text-text-secondary shrink-0">
-        {task.workspaceName}
-      </span>
-
-      {/* Mission name (when not grouped by mission) */}
-      {task.missionTitle && (
-        <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden sm:inline">
-          {task.missionTitle}
+        {badgeEl}
+        {task.prUrl && (
+          <a
+            href={task.prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-[12px] text-accent-text hover:underline shrink-0"
+          >
+            #{task.prNumber}
+          </a>
+        )}
+        <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
+          {task.workspaceName}
         </span>
-      )}
-
-      {/* Time ago */}
-      <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right">
-        {timeAgo(task.updatedAt)}
-      </span>
+        {task.missionTitle && (
+          <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden md:inline">
+            {task.missionTitle}
+          </span>
+        )}
+        <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right hidden md:inline">
+          {timeAgo(task.updatedAt)}
+        </span>
+      </div>
     </Link>
   );
 }
@@ -463,21 +516,42 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
                   <Link
                     key={task.id}
                     href={`/app/tasks/${task.id}`}
-                    className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default/60 hover:bg-status-warning/12 transition-colors"
+                    className="block"
                   >
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
-                    <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono rounded-md bg-surface-3 text-text-secondary shrink-0">
-                      {task.workspaceName}
-                    </span>
-                    {task.missionTitle && (
-                      <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden sm:inline">
-                        {task.missionTitle}
+                    {/* Mobile card */}
+                    <div className="sm:hidden px-3 py-2 hover:bg-status-warning/12 transition-colors">
+                      <div className="border-2 border-border-strong shadow-md px-3 py-2">
+                        <div className="flex items-center gap-2 min-w-0 mb-1">
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
+                          <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
+                            {task.workspaceName}
+                          </span>
+                          <span className="flex-1" />
+                          <span className="text-[12px] text-text-desc shrink-0">
+                            {timeAgo(task.updatedAt)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Desktop row */}
+                    <div className="hidden sm:flex items-center gap-3 px-4 py-2.5 md:py-3 border-b border-border-default/60 hover:bg-status-warning/12 transition-colors">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
+                      <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
+                        {task.workspaceName}
                       </span>
-                    )}
-                    <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right">
-                      {timeAgo(task.updatedAt)}
-                    </span>
+                      {task.missionTitle && (
+                        <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden md:inline">
+                          {task.missionTitle}
+                        </span>
+                      )}
+                      <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right hidden md:inline">
+                        {timeAgo(task.updatedAt)}
+                      </span>
+                    </div>
                   </Link>
                 );
               })}
