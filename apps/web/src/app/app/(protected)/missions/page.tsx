@@ -126,7 +126,12 @@ export default async function MissionsPage() {
       nextRunAt,
     });
 
-    const latestTaskId = (obj.tasks as any)[0]?.id || null;
+    const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
+    const latestTaskId = rawLatestId
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawLatestId)
+      && !/^[0-9a-f]{8}-0{4}-0{4}-0{4}-0{12}$/i.test(rawLatestId)
+      ? rawLatestId
+      : null;
 
     return {
       id: obj.id,
