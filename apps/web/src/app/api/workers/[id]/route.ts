@@ -22,7 +22,7 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
-import { getCodexCredential } from '@/lib/codex-credential';
+import { hasCodexCredential } from '@/lib/codex-credential';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -331,7 +331,23 @@ export async function PATCH(
     body.budgetExhausted === true ||
     isBudgetExhaustionError(error)
   );
+  // Codex sequential-enforcement deferral: the runner allows only one active
+  // Codex worker per workspace and reports extras as failed with a "Deferred:"
+  // error. These aren't real failures — re-queue the task so it's retried once
+  // the active Codex worker frees, instead of marking it permanently failed.
+  // (Matters most under budget failover, which funnels tasks onto Codex.)
+  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
+  // Held = task goes back to pending and is NOT treated as a real failure
+  // (no failure notification, no task-status overwrite below).
   let isBudgetReset = false;
+
+  if (isCodexDeferral && worker.taskId) {
+    await db
+      .update(tasks)
+      .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .where(eq(tasks.id, worker.taskId));
+    isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
+  }
 
   if (isBudgetError && worker.taskId) {
     // Parse reset time from error message, default to 5 hours from now
@@ -394,10 +410,14 @@ export async function PATCH(
     // backend==='codex' tasks from the Claude budget gate. Non-fatal: any
     // failure here leaves the task on Claude to retry after the reset.
     let failoverBackend: 'codex' | undefined;
-    if (taskForBudget?.backend !== 'codex' && taskForBudget?.workspaceId) {
+    if (taskForBudget?.backend !== 'codex' && taskForBudget?.workspaceId && teamId) {
       try {
-        const codexCred = await getCodexCredential(taskForBudget.workspaceId);
-        if (codexCred) failoverBackend = 'codex';
+        const codexAvailable = await hasCodexCredential({
+          teamId,
+          accountId: account.id,
+          workspaceId: taskForBudget.workspaceId,
+        });
+        if (codexAvailable) failoverBackend = 'codex';
       } catch (err) {
         console.warn(`[workers PATCH] Codex failover check failed for task ${worker.taskId}:`, err);
       }

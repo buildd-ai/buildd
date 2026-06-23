@@ -422,6 +422,38 @@ export async function POST(req: NextRequest) {
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
   }
 
+  // Budget failover throttling: Codex shares one 5-hour plan window, so at most
+  // one Codex worker may run per workspace (the runner defers extras). Derive the
+  // workspaces that already have an active Codex worker so we never route a second
+  // budget-failover task into a busy workspace. `codexFlippedWorkspaces` tracks
+  // flips made within this claim so a single claim can't over-funnel either.
+  const codexBusyWorkspaces = new Set<string>();
+  const codexFlippedWorkspaces = new Set<string>();
+  const codexAvailability = new Map<string, boolean>();
+  const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
+  if (activeTaskIds.length > 0) {
+    const activeCodexTasks = await db.query.tasks.findMany({
+      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
+      columns: { workspaceId: true },
+    });
+    for (const t of activeCodexTasks) {
+      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    }
+  }
+  // Memoized per-workspace Codex-credential check (scope-aware: team-wide, account, or workspace).
+  const workspaceHasCodex = async (scope: { teamId: string; accountId?: string | null; workspaceId: string }): Promise<boolean> => {
+    const wsId = scope.workspaceId;
+    if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
+    let available = false;
+    try {
+      available = await hasCodexCredential(scope);
+    } catch (err) {
+      console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
+    }
+    codexAvailability.set(wsId, available);
+    return available;
+  };
+
   for (const task of filteredTasks) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
@@ -437,35 +469,52 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Account budget exhausted: skip non-tenant tasks (they'd use the account's own OAuth token).
-    // Codex-backend tasks are exempt — Codex uses a separate credit pool, so the Claude
-    // OAuth session/budget being exhausted doesn't block them (enables budget failover to Codex).
+    // Determine whether this task is currently blocked by Claude budget/session
+    // exhaustion (Codex-backend tasks are never blocked — separate credit pool).
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
     const isCodexTask = (task as any).backend === 'codex';
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !isCodexTask) {
-      continue;
-    }
+    let claudeBudgetBlocked = false;
 
-    // Tenant budget check: skip tasks whose tenant's budget is exhausted.
-    // Codex tasks are exempt for the same separate-credit-pool reason.
-    if (tenantCtx?.tenantId && !isCodexTask) {
-      const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
-      if (workspaceTeamId) {
-        const tenantBudget = await db.query.tenantBudgets.findFirst({
-          where: and(
-            eq(tenantBudgets.tenantId, tenantCtx.tenantId),
-            eq(tenantBudgets.teamId, workspaceTeamId),
-          ),
-        });
-        if (tenantBudget) {
-          if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
-            // Budget has reset — clean up the record
-            await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
-          } else {
-            // Budget still exhausted — skip this task
-            continue;
+    if (!isCodexTask) {
+      if (accountBudgetExhausted && !tenantCtx?.tenantId) {
+        // Account's own OAuth session/budget is exhausted.
+        claudeBudgetBlocked = true;
+      } else if (tenantCtx?.tenantId) {
+        const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
+        if (workspaceTeamId) {
+          const tenantBudget = await db.query.tenantBudgets.findFirst({
+            where: and(
+              eq(tenantBudgets.tenantId, tenantCtx.tenantId),
+              eq(tenantBudgets.teamId, workspaceTeamId),
+            ),
+          });
+          if (tenantBudget) {
+            if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
+              // Budget has reset — clean up the record
+              await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
+            } else {
+              claudeBudgetBlocked = true;
+            }
           }
         }
+      }
+    }
+
+    // Proactive budget failover: rather than skip a Claude task until the session/
+    // budget resets, route it to Codex *now* when (a) the workspace has a Codex
+    // credential and (b) no Codex worker is already active there (≤1 per workspace).
+    // The flip is in-memory only — scoped to this run, not a permanent backend change.
+    // Tasks we can't fail over are left pending and retried on reset / when Codex frees.
+    if (claudeBudgetBlocked) {
+      const wsId = task.workspaceId;
+      const teamId = (task as any).workspace?.teamId as string | undefined;
+      const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
+      if (wsId && teamId && codexFree && await workspaceHasCodex({ teamId, accountId: account.id, workspaceId: wsId })) {
+        (task as any).backend = 'codex';
+        codexFlippedWorkspaces.add(wsId);
+        console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${wsId} Claude budget exhausted)`);
+      } else {
+        continue;
       }
     }
 

@@ -435,6 +435,39 @@ describe('PATCH /api/workers/[id]', () => {
     expect(mockTriggerEvent).toHaveBeenCalled();
   });
 
+  it('re-queues (not fails) a Codex worker deferred by sequential enforcement', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        taskSetCalls.push(updates);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'Deferred: another Codex worker (w-2) is already active in this workspace' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // The task is put back to pending for retry, never overwritten to 'failed'.
+    const pendingUpdate = taskSetCalls.find((u) => u.status === 'pending');
+    expect(pendingUpdate).toBeDefined();
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+  });
+
   it('delivers and clears pending instructions', async () => {
     const updatedWorker = {
       id: 'worker-1',
