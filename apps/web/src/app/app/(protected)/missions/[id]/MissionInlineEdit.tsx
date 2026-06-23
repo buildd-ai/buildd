@@ -21,6 +21,7 @@ export default function MissionInlineEdit({
   const [editingDescription, setEditingDescription] = useState(false);
   const [savingTitle, setSavingTitle] = useState(false);
   const [savingDescription, setSavingDescription] = useState(false);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
@@ -165,19 +166,33 @@ export default function MissionInlineEdit({
           className="text-[13px] text-text-desc leading-relaxed bg-transparent outline-none border-b border-text-muted/30 focus:border-accent-text w-full resize-none mb-4 transition-colors"
         />
       ) : (
-        <p
-          onClick={() => {
-            descriptionBeforeEdit.current = description;
-            setEditingDescription(true);
-          }}
-          className={`text-[13px] leading-relaxed mb-4 cursor-text hover:border-b hover:border-text-muted/20 transition-colors ${
-            description
-              ? 'text-text-desc'
-              : 'text-text-muted italic'
-          } ${savingDescription ? 'opacity-60' : ''}`}
-        >
-          {description || 'Add a description...'}
-        </p>
+        <div className="mb-4">
+          <p
+            onClick={() => {
+              descriptionBeforeEdit.current = description;
+              setEditingDescription(true);
+            }}
+            className={`text-[13px] leading-relaxed cursor-text hover:border-b hover:border-text-muted/20 transition-colors ${
+              description ? 'text-text-desc' : 'text-text-muted italic'
+            } ${savingDescription ? 'opacity-60' : ''} ${
+              description && !descriptionExpanded ? 'line-clamp-3' : ''
+            }`}
+          >
+            {description || 'Add a description...'}
+          </p>
+          {description && description.length > 180 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDescriptionExpanded(!descriptionExpanded);
+              }}
+              className="text-[11px] text-text-muted hover:text-text-secondary mt-0.5 transition-colors"
+            >
+              {descriptionExpanded ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </div>
       )}
     </>
   );
