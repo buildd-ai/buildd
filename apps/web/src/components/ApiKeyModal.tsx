@@ -42,8 +42,8 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-lg mx-4">
-        <div className="p-6 space-y-5">
+      <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-lg mx-4 flex flex-col max-h-[90vh]">
+        <div className="p-6 space-y-5 overflow-y-auto flex-1">
           {/* Header */}
           <div>
             <h3 className="text-lg font-semibold text-text-primary">
@@ -209,7 +209,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex justify-end">
+        <div className="px-6 py-4 bg-surface-3 rounded-b-lg flex justify-end flex-shrink-0">
           <button
             onClick={handleClose}
             disabled={!acknowledged}
