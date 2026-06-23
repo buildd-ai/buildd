@@ -24,7 +24,7 @@
   --card-finding: #252220;
   --card-rightnow: #1f1d1a;
   --card-border: rgba(255, 245, 230, 0.06);
-  --card-shadow: 4px 4px 0 0 rgba(255, 245, 230, 0.5);
+  --card-shadow: 5px 5px 0 0 rgba(255, 245, 230, 0.5);
 
   --text-primary: #ede8e2;
   --text-secondary: #a89f96;
@@ -67,7 +67,7 @@
 
 /* Day — Warm Linen */
 [data-theme="light"] {
-  --surface-1: #f7f4f0;
+  --surface-1: #e7e3db;
   --surface-2: #eee9e3;
   --surface-3: #e5dfd8;
   --surface-4: #dbd4cc;
@@ -77,15 +77,15 @@
   --card-finding: #faf8f5;
   --card-rightnow: #f5f2ee;
   --card-border: rgba(0, 0, 0, 0.06);
-  --card-shadow: 4px 4px 0 0 rgba(42, 37, 32, 0.85);
+  --card-shadow: 5px 5px 0 0 rgba(26, 21, 18, 0.95);
 
   --text-primary: #1f1b17;
   --text-secondary: #423c35;
   --text-muted: #9a9087;
   --text-desc: #8a827a;
 
-  --border: rgba(0, 0, 0, 0.22);
-  --border-strong: #2a2520;
+  --border: rgba(0, 0, 0, 0.42);
+  --border-strong: #1a1512;
 
   --accent: #f4811f;
   --accent-soft: rgba(244, 129, 31, 0.12);
@@ -218,10 +218,10 @@ select {
   .section-label {
     font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 2px;
-    color: var(--text-muted);
+    color: var(--text-primary);
   }
 }
 
@@ -268,7 +268,7 @@ select {
 @layer components {
   /* Mission card accent borders */
   .mission-card {
-    border-left: 4px solid transparent;
+    border-left: 6px solid transparent;
   }
   .mission-card-running { border-left-color: var(--status-success); }
   .mission-card-scheduled { border-left-color: var(--status-info); }
