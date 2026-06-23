@@ -129,7 +129,7 @@ export default function MissionInlineEdit({
   return (
     <>
       {/* Title row */}
-      <div className="flex flex-wrap items-center gap-3 mb-2">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-2">
         {editingTitle ? (
           <input
             ref={titleInputRef}
