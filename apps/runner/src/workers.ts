@@ -1390,6 +1390,11 @@ export class WorkerManager {
         // overlayRoleFiles; Codex reads only config.toml so they'd be silently dropped
         // without this. Bearer tokens are put in env vars (MCP_BEARER_<SLUG>), never
         // written into config.toml, mirroring BUILDD_MCP_BEARER_TOKEN above.
+        // NOTE: mcpJsonPath is resolved here from startSession's own `cwd` — it is NOT
+        // in scope from the caller, so referencing the caller's local would throw
+        // "mcpJsonPath is not defined" (only the Codex path reads it, so the Claude
+        // path never tripped this).
+        const mcpJsonPath = join(cwd, '.mcp.json');
         const codexAdditionalServers: Array<{ name: string; url: string; bearerTokenEnvVar: string }> = [];
         if (existsSync(mcpJsonPath)) {
           try {
