@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
@@ -39,9 +36,7 @@ async function isAdmin(req: NextRequest): Promise<boolean> {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   if (apiKey) {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.apiKey, hashApiKey(apiKey)),
-    });
+    const account = await authenticateApiKey(apiKey);
     return account?.level === 'admin';
   }
   const user = await getCurrentUser();
