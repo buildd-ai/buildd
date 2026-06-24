@@ -36,7 +36,7 @@ mock.module('@buildd/core/release-strategy', () => ({
       if (!config.prodBranch) return { ok: false, reason: 'invalid', message: 'needs prodBranch' };
       return {
         ok: true,
-        strategy: { kind, prodBranch: config.prodBranch, releaseBranch: config.releaseBranch },
+        strategy: { kind, prodBranch: config.prodBranch, releaseBranch: config.releaseBranch, deployTarget: config.deployTarget },
       };
     }
     return { ok: false, reason: 'invalid', message: `unknown strategy ${kind}` };
@@ -207,5 +207,69 @@ describe('executeRelease — releaseBranch', () => {
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).toBe('failed');
     expect(result.message).toContain('could not merge');
+  });
+});
+
+// ── executeRelease — worker-branch (no releaseBranch) ─────────────────────────
+
+describe('executeRelease — worker branch', () => {
+  function setupTask() {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', release: 'true' });
+  }
+  function setupWorker() {
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', branch: 'buildd/task-branch', prNumber: null, prUrl: null });
+  }
+  function setupWorkspace(extra: Record<string, unknown> = {}) {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', ...extra },
+      githubRepoId: 'repo-1',
+    });
+  }
+  function setupRepo() {
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+  }
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    delete process.env.VERCEL_TOKEN;
+  });
+
+  it('treats 404 "Head does not exist" as no-op success (branch already merged/deleted)', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspace();
+    setupRepo();
+    // The /merges call throws a 404 "Head does not exist"
+    mockGithubApi.mockRejectedValueOnce(
+      new Error('GitHub API error: 404 {"message":"Head does not exist","status":"404"}')
+    );
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
+    expect(result.message).toContain('completed');
+  });
+
+  it('completes without Vercel verification when VERCEL_TOKEN is absent', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspace({ deployTarget: { type: 'vercel', projectId: 'proj_abc' } });
+    setupRepo();
+    // Merge succeeds
+    mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha456', commit: {} });
+    // VERCEL_TOKEN is not set (cleared in beforeEach)
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
+    expect(result.deployState).toBe('SKIPPED');
+    expect(result.message).toContain('Vercel unverified');
   });
 });
