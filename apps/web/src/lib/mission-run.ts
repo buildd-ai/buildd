@@ -189,7 +189,10 @@ export async function runMission(
     }
   }
 
-  // Create the planning task
+  // Create the planning task — atomic dedup via DB unique constraint.
+  // The partial unique index (mode=planning, status IN active states) ensures only
+  // one in-flight planning task exists per mission even if two callers race past
+  // the soft dedup check above.
   const [task] = await db
     .insert(tasks)
     .values({
@@ -209,7 +212,21 @@ export async function runMission(
       // mission (including the organizer) stays on one agent backend.
       ...(mission.defaultBackend ? { backend: mission.defaultBackend } : {}),
     })
+    .onConflictDoNothing()
     .returning();
+
+  if (!task) {
+    // Another caller won the race — fetch the task they inserted
+    const inFlight = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.mode, 'planning'),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return { task: inFlight ?? null, deduped: true };
+  }
 
   if (workspace) {
     await dispatchNewTask(task, workspace);
