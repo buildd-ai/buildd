@@ -8,7 +8,7 @@
 >
 > **Derived from:** `packages/core/db/schema.ts`, `apps/web/src/app/api/**`,
 > `apps/runner/**`, and the implemented specs in `docs/` (codex, credentials,
-> knowledge-store), as of **2026-06-21**.
+> knowledge-store), as of **2026-06-24**.
 > **Maintenance:** see `docs/SPEC.md` §10 and the `spec-sync` skill.
 
 ---
@@ -128,12 +128,14 @@ creds are encrypted JSON in `encryptedValue`. Expiring tokens use `tokenExpiresA
 
 ### Knowledge (`knowledge_chunks`)
 Hybrid semantic + lexical retrieval over `memory | code | docs | task | artifact | pr |
-plan | session` corpora. namespace = `{workspaceId}:{corpus}`. pgvector (1024-dim,
-HNSW) + tsvector BM25, fused via RRF, optional cross-encoder rerank. Embeds via
-Voyage (`voyage-4-large` + `rerank-2.5`) when `VOYAGE_API_KEY` is set; **falls back to
-lexical-only otherwise**. Swappable `KnowledgeStore` interface (same pattern as
-`AgentBackend`). Two pipelines: general store (worker-accessible, auto-indexed) and
-spec-sync corpus (admin-only, `spec_compare`). See `docs/knowledge-store.md`.
+plan | session | spec` corpora. namespace = `{workspaceId}:{corpus}`. pgvector (1024-dim,
+HNSW) + tsvector BM25, fused via RRF, optional cross-encoder rerank. **Per-corpus
+embedder selection**: `voyage-code-3` for `code/docs/spec`; `voyage-4-large` for
+`memory/task/pr/plan/artifact/session`. Both output 1024-dim vectors — single HNSW
+index, namespace-scoped queries. Falls back to lexical-only when `VOYAGE_API_KEY` is
+unset. `spec_compare` reads `{workspaceId}:code` + `{workspaceId}:spec` (unified store,
+no separate namespace). Swappable `KnowledgeStore` interface (same pattern as
+`AgentBackend`). See `docs/knowledge-store.md`.
 
 ### Supporting tables
 `worker_heartbeats` (runner liveness, independent of workers), `worker_error_traces`
