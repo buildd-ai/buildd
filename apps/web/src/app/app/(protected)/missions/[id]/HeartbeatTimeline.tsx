@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { timeAgo } from '@/lib/mission-helpers';
 import AiFeedback from '@/components/AiFeedback';
 
@@ -32,70 +33,89 @@ function getSummary(task: HeartbeatTimelineProps['tasks'][0]): string {
 
 export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
   const entries = tasks.slice(0, 20);
+  const [expanded, setExpanded] = useState(false);
 
   if (entries.length === 0) return null;
 
   return (
-    <div>
-      <h2 className="section-label mb-3">Heartbeat History ({entries.length})</h2>
-      <div className="space-y-1">
-        {entries.map(task => {
-          const hbStatus = getTaskHeartbeatStatus(task);
-          const summary = getSummary(task);
+    <div className="card p-4">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 w-full text-left"
+        aria-expanded={expanded}
+      >
+        <span className="flex items-center gap-1.5 flex-1 min-w-0">
+          {/* EKG/pulse wave icon — distinct from task icons */}
+          <svg className="w-3.5 h-3.5 text-[#059669] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12h3l2-7 4 14 3-10 2 3h4" />
+          </svg>
+          <h2 className="section-label">Evaluation Log</h2>
+          <span className="text-[11px] text-text-muted shrink-0">({entries.length})</span>
+        </span>
+        <svg
+          className={`w-4 h-4 text-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <p className="text-[11px] text-text-muted mt-0.5">
+        Periodic re-evaluation cycles — not task executions
+      </p>
 
-          let icon: React.ReactNode;
-          let rowClass = '';
-          let textClass = 'text-text-muted';
+      {expanded && (
+        <div className="space-y-1 mt-3 border-t border-border-default pt-3">
+          {entries.map(task => {
+            const hbStatus = getTaskHeartbeatStatus(task);
+            const summary = getSummary(task);
 
-          if (hbStatus === 'ok') {
-            icon = (
-              <svg className="w-4 h-4 text-status-success shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            );
-          } else if (hbStatus === 'action_taken') {
-            icon = (
-              <svg className="w-4 h-4 text-status-warning shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-              </svg>
-            );
-            rowClass = 'bg-status-warning/5 border-status-warning/20';
-            textClass = 'text-text-primary';
-          } else if (hbStatus === 'error') {
-            icon = (
-              <svg className="w-4 h-4 text-status-error shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            );
-            rowClass = 'bg-status-error/5 border-status-error/20';
-            textClass = 'text-status-error';
-          } else {
-            icon = (
-              <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h.01M12 12h.01M19 12h.01" />
-              </svg>
-            );
-          }
+            let statusLabel = '';
+            let statusClass = 'text-text-muted';
+            let rowClass = '';
 
-          return (
-            <button
-              key={task.id}
-              data-task-id={task.id}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-card-border hover:border-accent/30 transition-colors text-[12px] text-left ${rowClass}`}
-            >
-              {icon}
-              <span className="text-[11px] text-text-muted shrink-0 w-16">{timeAgo(task.createdAt)}</span>
-              <span className={`flex-1 truncate ${textClass}`}>{summary}</span>
-              <span onClick={(e) => e.stopPropagation()}>
-                <AiFeedback entityType="heartbeat" entityId={task.id} showDismiss compact />
-              </span>
-              <svg className="w-3.5 h-3.5 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          );
-        })}
-      </div>
+            if (hbStatus === 'ok') {
+              statusLabel = 'OK';
+              statusClass = 'text-status-success';
+            } else if (hbStatus === 'action_taken') {
+              statusLabel = 'ACTED';
+              statusClass = 'text-status-warning';
+              rowClass = 'bg-status-warning/5';
+            } else if (hbStatus === 'error') {
+              statusLabel = 'ERROR';
+              statusClass = 'text-status-error';
+              rowClass = 'bg-status-error/5';
+            } else {
+              statusLabel = '—';
+            }
+
+            return (
+              <button
+                key={task.id}
+                data-task-id={task.id}
+                className={`w-full flex items-center gap-3 px-2.5 py-1.5 rounded-md hover:bg-card-hover transition-colors text-[12px] text-left ${rowClass}`}
+              >
+                {/* Evaluation marker — square, not circle (distinct from worker dots) */}
+                <span className={`w-2 h-2 rounded-sm shrink-0 ${
+                  hbStatus === 'ok' ? 'bg-status-success/60' :
+                  hbStatus === 'action_taken' ? 'bg-status-warning/60' :
+                  hbStatus === 'error' ? 'bg-status-error/60' :
+                  'bg-border-default'
+                }`} />
+                <span className={`text-[9px] font-bold tracking-wider w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
+                <span className="text-[11px] text-text-muted shrink-0 w-12 tabular-nums">{timeAgo(task.createdAt)}</span>
+                <span className="flex-1 truncate text-text-secondary">{summary}</span>
+                <span onClick={(e) => e.stopPropagation()}>
+                  <AiFeedback entityType="heartbeat" entityId={task.id} showDismiss compact />
+                </span>
+                <svg className="w-3 h-3 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
