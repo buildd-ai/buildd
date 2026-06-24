@@ -7,6 +7,7 @@ import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
+import { notify } from '@/lib/pushover';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -231,11 +232,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   const headSha = check_suite.head_sha;
 
-  // CI failure on a worker's PR → spawn a bounded fix task (Ralph loop) and
-  // dispatch it to a runner immediately. Real-time via this webhook — no waiting
-  // on the hourly mission cron. Honors gitConfig.maxCiRetries (0 disables).
+  // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
     await handleCheckSuiteFailure(check_suite, repository, installation.id);
+    await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
     return;
   }
 
@@ -317,6 +317,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           gitConfig: workspace.gitConfig,
         });
       }
+
+      // Release PR auto-merge: if this PR matches a task that is tracking a release
+      // PR (context.releasePrNumber), merge it now that CI is green.
+      await handleReleasePrCiSuccess(pr.number, installation.id, repository.full_name, headSha);
     } catch (error) {
       console.error(`Error processing check_suite for PR #${pr.number} on ${repository.full_name}:`, error);
     }
@@ -785,4 +789,148 @@ async function evaluateAutoMergeSafety(
   }
 
   return { ok: true };
+}
+
+/**
+ * When CI goes green on a PR that a release task is tracking, merge the release
+ * PR and mark the task completed. This is the event-driven completion path for
+ * the pending_ci release state — the counterpart to executeRelease returning
+ * pending_ci when CI is still running at the time the worker finishes.
+ */
+async function handleReleasePrCiSuccess(
+  prNumber: number,
+  installationId: number,
+  repoFullName: string,
+  headSha: string,
+): Promise<void> {
+  // Find tasks waiting on this exact release PR (context.releasePrPending = true
+  // and context.releasePrNumber = prNumber).
+  const pendingReleaseTasks = await db
+    .select({ id: tasks.id, title: tasks.title, context: tasks.context, workspaceId: tasks.workspaceId })
+    .from(tasks)
+    .where(
+      and(
+        sql`(${tasks.context}->>'releasePrPending')::boolean = true`,
+        sql`(${tasks.context}->>'releasePrNumber')::int = ${prNumber}`,
+      ),
+    )
+    .limit(5);
+
+  if (pendingReleaseTasks.length === 0) return;
+
+  // Verify ALL check suites passed before merging (not just this one).
+  const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
+  if (!allPassed) {
+    console.log(`[release-pr] Not all suites passed for ${repoFullName}#${prNumber} — waiting for remaining checks`);
+    return;
+  }
+
+  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge');
+
+  for (const task of pendingReleaseTasks) {
+    const ctx = (task.context ?? {}) as Record<string, unknown>;
+    const prUrl = ctx.releasePrUrl as string | undefined;
+
+    if (mergeResult.merged) {
+      const releaseResult = {
+        status: 'completed' as const,
+        message: `Release: completed — PR #${prNumber} merged to ${repoFullName}`,
+        mergedAt: new Date().toISOString(),
+        releasePrNumber: prNumber,
+        releasePrUrl: prUrl,
+      };
+      await db
+        .update(tasks)
+        .set({
+          status: 'completed',
+          releaseResult,
+          context: { ...ctx, releasePrPending: false },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      console.log(`[release-pr] Task ${task.id} completed after PR #${prNumber} merged on ${repoFullName}`);
+    } else {
+      const errMsg = mergeResult.message;
+      const releaseResult = {
+        status: 'failed' as const,
+        message: `Release: FAILED — could not merge PR #${prNumber}: ${errMsg}`,
+        error: errMsg,
+        releasePrNumber: prNumber,
+        releasePrUrl: prUrl,
+      };
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          releaseResult,
+          context: { ...ctx, releasePrPending: false },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+
+      notify({
+        app: 'alerts',
+        title: `Release merge failed — ${repoFullName}#${prNumber}`,
+        message: errMsg,
+        priority: 1,
+        url: prUrl || `https://github.com/${repoFullName}/pull/${prNumber}`,
+        urlTitle: 'Open PR',
+      });
+      console.error(`[release-pr] Task ${task.id} FAILED: merge of PR #${prNumber} rejected: ${errMsg}`);
+    }
+  }
+}
+
+/**
+ * When CI fails on a PR that a release task is tracking, mark the task as
+ * FAILED and fire a Pushover alert. The release never happened.
+ */
+async function handleReleasePrCiFailure(
+  prs: Array<{ number: number }>,
+  repoFullName: string,
+): Promise<void> {
+  for (const pr of prs) {
+    const pendingReleaseTasks = await db
+      .select({ id: tasks.id, context: tasks.context })
+      .from(tasks)
+      .where(
+        and(
+          sql`(${tasks.context}->>'releasePrPending')::boolean = true`,
+          sql`(${tasks.context}->>'releasePrNumber')::int = ${pr.number}`,
+        ),
+      )
+      .limit(5);
+
+    for (const task of pendingReleaseTasks) {
+      const ctx = (task.context ?? {}) as Record<string, unknown>;
+      const prUrl = ctx.releasePrUrl as string | undefined;
+
+      const releaseResult = {
+        status: 'failed' as const,
+        message: `Release: FAILED — CI failing on release PR #${pr.number} (${repoFullName})`,
+        error: `CI failed on PR #${pr.number}`,
+        releasePrNumber: pr.number,
+        releasePrUrl: prUrl,
+      };
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          releaseResult,
+          context: { ...ctx, releasePrPending: false },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+
+      notify({
+        app: 'alerts',
+        title: `Release CI failed — ${repoFullName}#${pr.number}`,
+        message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
+        priority: 1,
+        url: prUrl || `https://github.com/${repoFullName}/pull/${pr.number}`,
+        urlTitle: 'Open PR',
+      });
+      console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
+    }
+  }
 }

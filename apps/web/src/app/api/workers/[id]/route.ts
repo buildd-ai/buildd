@@ -650,7 +650,9 @@ export async function PATCH(
         .set(taskUpdate)
         .where(eq(tasks.id, worker.taskId));
 
-      // Run release sequence on successful completion (non-fatal — must not block worker update)
+      // Run release sequence on successful completion.
+      // IMPORTANT: a failed release overrides the task status to 'failed' — the
+      // task is not truly done until the release PR lands and prod is healthy.
       if (status === 'completed' && !shouldAutoRetry) {
         try {
           const releaseResult = await executeRelease({
@@ -662,11 +664,63 @@ export async function PATCH(
             ...((taskUpdate.result ?? {}) as Record<string, unknown>),
             releaseSummary: releaseResult.message,
           };
-          await db
-            .update(tasks)
-            .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
-            .where(eq(tasks.id, worker.taskId));
-          taskUpdate.result = resultWithRelease;
+
+          if (releaseResult.status === 'failed') {
+            // Release explicitly failed (CI red, merge conflict, no PR found…) —
+            // flip the task to FAILED so it never shows as "completed" successfully.
+            await db
+              .update(tasks)
+              .set({
+                status: 'failed',
+                releaseResult,
+                result: resultWithRelease,
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, worker.taskId));
+            taskUpdate.result = resultWithRelease;
+
+            // Alert: release failure needs immediate human attention.
+            const prLink = releaseResult.releasePrUrl ? ` ${releaseResult.releasePrUrl}` : '';
+            notify({
+              app: 'alerts',
+              title: 'Release failed',
+              message: `${releaseResult.error ?? releaseResult.message}${prLink}`,
+              priority: 1,
+              url: releaseResult.releasePrUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
+              urlTitle: releaseResult.releasePrUrl ? 'Open PR' : 'View task',
+            });
+          } else if (releaseResult.status === 'pending_ci') {
+            // Release PR found but CI not yet green — store tracking info and let
+            // the check_suite webhook complete/fail the task when CI resolves.
+            const existingCtx = (
+              await db
+                .select({ context: tasks.context })
+                .from(tasks)
+                .where(eq(tasks.id, worker.taskId))
+                .limit(1)
+            )[0]?.context as Record<string, unknown> | null ?? {};
+            await db
+              .update(tasks)
+              .set({
+                releaseResult,
+                result: resultWithRelease,
+                context: {
+                  ...existingCtx,
+                  releasePrPending: true,
+                  releasePrNumber: releaseResult.releasePrNumber,
+                  releasePrUrl: releaseResult.releasePrUrl,
+                },
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, worker.taskId));
+            taskUpdate.result = resultWithRelease;
+          } else {
+            await db
+              .update(tasks)
+              .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
+              .where(eq(tasks.id, worker.taskId));
+            taskUpdate.result = resultWithRelease;
+          }
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
         }

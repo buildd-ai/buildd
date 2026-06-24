@@ -22,6 +22,7 @@ export type ResolvedReleaseStrategy =
   | {
       kind: 'branch_merge';
       prodBranch: string;
+      releaseBranch?: string;
       deployTarget?: WorkspaceReleaseConfig['deployTarget'];
       postDeployHooks?: WorkspaceReleaseConfig['postDeployHooks'];
       verificationUrl?: string;
@@ -90,6 +91,7 @@ export function resolveReleaseStrategy(
         strategy: {
           kind,
           prodBranch,
+          ...(config.releaseBranch ? { releaseBranch: config.releaseBranch } : {}),
           deployTarget: config.deployTarget,
           postDeployHooks: config.postDeployHooks,
           verificationUrl: config.verificationUrl,
