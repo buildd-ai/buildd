@@ -11,6 +11,8 @@ import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context'
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
+import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
+import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -122,6 +124,8 @@ export async function GET(req: NextRequest) {
   let deferred = 0;
   let errors = 0;
   let triggerChecks = 0;
+  let deterministicHeartbeatSkips = 0;
+  let llmHeartbeatInvocations = 0;
 
   try {
     // Find due schedules: enabled=true AND nextRunAt <= now
@@ -409,6 +413,9 @@ export async function GET(req: NextRequest) {
             teamId: true,
             maxConcurrentTasks: true,
             defaultBackend: true,
+            dependsOnMissionId: true,
+            gateCondition: true,
+            dependencyMetAt: true,
           },
         });
 
@@ -498,6 +505,46 @@ export async function GET(req: NextRequest) {
               .where(eq(taskSchedules.id, schedule.id));
             skipped++;
             continue;
+          }
+        }
+
+        // Heartbeat prepass: deterministic decisions before LLM invocation
+        if (isHeartbeat && linkedMission) {
+          try {
+            const prepass = await evaluateHeartbeatPrepass({
+              missionId: linkedMission.id,
+              dependsOnMissionId: linkedMission.dependsOnMissionId ?? null,
+              gateCondition: (linkedMission.gateCondition as 'merged' | 'completed') ?? 'merged',
+              dependencyMetAt: linkedMission.dependencyMetAt ?? null,
+              lastHeartbeatStateHash: schedule.lastHeartbeatStateHash ?? null,
+            });
+
+            if (prepass.action === 'skip_complete') {
+              await db.update(missions).set({ status: 'completed', updatedAt: now }).where(eq(missions.id, linkedMission.id));
+              await db.update(taskSchedules).set({ enabled: false, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              await checkAndUnblockDependentMissions(linkedMission.id, 'completed').catch(e =>
+                console.error(`[heartbeat-prepass] unblock failed for ${linkedMission.id}:`, e)
+              );
+              await triggerEvent(channels.mission(linkedMission.id), events.MISSION_LOOP_COMPLETED, { missionId: linkedMission.id, reason: 'heartbeat_prepass_complete' });
+              deterministicHeartbeatSkips++;
+              skipped++;
+              continue;
+            }
+
+            if (prepass.action === 'skip_blocked' || prepass.action === 'skip_no_change') {
+              const deferReason = prepass.action === 'skip_blocked' ? 'heartbeat_blocked' : 'heartbeat_no_change';
+              await db.update(taskSchedules).set({ lastDeferralReason: deferReason, lastDeferredAt: now, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              deterministicHeartbeatSkips++;
+              skipped++;
+              continue;
+            }
+
+            // invoke_llm: persist current state hash so next heartbeat can detect no-change
+            await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+            llmHeartbeatInvocations++;
+          } catch (prepassErr) {
+            console.warn(`[heartbeat-prepass] Error for mission ${linkedMission.id}:`, prepassErr instanceof Error ? prepassErr.message : prepassErr);
+            llmHeartbeatInvocations++;
           }
         }
 
@@ -690,6 +737,8 @@ export async function GET(req: NextRequest) {
       errors,
       triggerChecks,
       heartbeatOrphans,
+      deterministicHeartbeatSkips,
+      llmHeartbeatInvocations,
       healthWatcher,
     });
   } catch (error) {

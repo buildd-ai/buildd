@@ -772,8 +772,9 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
+  lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   pendingSuggestion: jsonb('pending_suggestion').$type<{
     cronExpression?: string;
     enabled?: boolean;
