@@ -1,3 +1,9 @@
+# DEPRECATED: This workflow builds a spec-drift corpus on an ephemeral Neon branch and
+# uploads it as a CI artifact. It is superseded by the knowledge-ingest workflow, which
+# ingests code + spec chunks into the unified workspace store ({workspaceId}:code and
+# {workspaceId}:spec) that the `spec_compare` MCP tool now reads directly.
+# Do not delete until the knowledge-ingest workflow is confirmed in production.
+#
 # Spec-sync: weekly refresh of the spec-drift evidence.
 #
 # Builds the spec-sync corpus on a throwaway Neon branch (code + docs from buildd
