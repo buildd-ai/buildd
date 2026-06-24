@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } f
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import {
@@ -1340,19 +1340,41 @@ export class WorkerManager {
 
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
-      // Phase 1C / R5: Codex tasks use a STABLE per-worker CODEX_HOME (keyed by
-      // worker id) instead of a throwaway temp dir, so the `sessions/` rollouts
-      // survive across runs/restarts and `resumeThread()` can find them. We
-      // re-seed auth.json and rewrite config.toml on EVERY start (idempotent;
-      // neither touches `sessions/`). The home is torn down ONLY on true terminal
-      // teardown (purge past the follow-up TTL) — never in the finally block.
+      // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
+      // CODEX_HOME (keyed by worker id) so `sessions/` rollouts survive restarts.
+      //
+      // Auth seeding follows OpenAI's CI/CD guidance:
+      //   "Seed auth.json only if missing; if you rewrite from the original secret
+      //    every run you throw away the refreshed tokens."
+      // - API key credential: inject as OPENAI_API_KEY; stable home holds config.toml only.
+      // - OAuth credential: seed auth.json ONLY when missing (preserves CLI-refreshed tokens).
+      // - No server credential: fall back to operator's local CODEX_HOME/auth.json.
+      //
+      // The home is torn down ONLY on true terminal teardown (purge past follow-up TTL)
+      // — never in the finally block (would destroy resumable sessions).
       //
       // For non-Codex tasks that still carry a codexCredential (legacy/transient),
       // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
       if (isCodexTask) {
-        const { codexHome: _ch } = worker.codexCredential
-          ? materializeStableCodexHome(worker.id, worker.codexCredential)
-          : ensureStableCodexHome(worker.id);
+        let _ch: string;
+        if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+          // A: API key credential — inject as env var. Stable home still needed for
+          // config.toml (MCP servers, reasoning effort) but auth.json is not used.
+          const { codexHome: home } = ensureStableCodexHome(worker.id);
+          _ch = home;
+          // Write api_key into auth.json so resolveAuth picks it up (codex-backend.ts
+          // reads CODEX_HOME/auth.json; api_key there maps to OPENAI_API_KEY internally).
+          writeCodexApiKeyToHome(_ch, worker.codexCredential.apiKey);
+          console.log(`[Worker ${worker.id}] Injecting Codex API key credential`);
+        } else if (worker.codexCredential?.credentialType === 'oauth') {
+          // B (seed-if-missing): only write auth.json the first time. If auth.json
+          // already exists (from a prior run), the CLI may have refreshed the tokens
+          // — don't overwrite with the potentially staler stored snapshot.
+          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential);
+          _ch = home;
+        } else {
+          _ch = ensureStableCodexHome(worker.id).codexHome;
+        }
         // No server-injected credential: fall back to the operator's local Codex
         // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
         // the stable home so resolveAuth/codex can authenticate. This matches the
@@ -1363,7 +1385,7 @@ export class WorkerManager {
           const localHome = process.env.CODEX_HOME;
           if (localHome && localHome !== _ch) {
             const localAuth = join(localHome, 'auth.json');
-            if (existsSync(localAuth)) {
+            if (existsSync(localAuth) && !existsSync(join(_ch, 'auth.json'))) {
               copyFileSync(localAuth, join(_ch, 'auth.json'));
             }
           }
@@ -1436,6 +1458,19 @@ export class WorkerManager {
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
+      }
+
+      // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
+      // is known-expired. The claim route (criterion D) already attempts a refresh
+      // and clears the credential on unrecoverable failure — this is a second guard
+      // for the window between claim and spawn (clock skew, race, long queue wait).
+      if (isCodexTask && worker.codexCredential) {
+        const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
+        if (expiryError) {
+          throw new Error(
+            `Codex credential expired: ${expiryError}. Reconnect your ChatGPT / OpenAI account in Settings → Credentials.`,
+          );
+        }
       }
 
       // Preflight: fail fast with a clear message if no Codex auth is available.
@@ -1995,6 +2030,27 @@ If something is missing or incomplete, describe what and fix it now.`;
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+
+        // B (write-back): After a successful OAuth Codex session, the CLI may have
+        // silently refreshed the tokens. Read the auth.json we left in place
+        // (seed-if-missing means it was never rewritten from the stale snapshot) and
+        // POST the current tokens back so the credential store stays fresh.
+        // Best-effort — never throws, never logs token values.
+        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+          try {
+            const currentAuth = readCodexAuthJson(worker.id);
+            if (currentAuth?.access_token && currentAuth?.refresh_token) {
+              await this.buildd.writeBackCodexAuth(task.workspaceId, {
+                accessToken: currentAuth.access_token,
+                refreshToken: currentAuth.refresh_token,
+                ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
+              });
+              console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
+            }
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
