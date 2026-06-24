@@ -2418,7 +2418,7 @@ export async function handleBuilddAction(
 
       // Dedicated spec-sync corpus namespace (NOT a product workspace). Override
       // via params.namespace or the SPEC_SYNC_NAMESPACE env; otherwise this default.
-      const ns = (params.namespace as string) || process.env.SPEC_SYNC_NAMESPACE || '471effe1-4668-4cc9-9fa3-e20a56769deb';
+      const ns = (params.namespace as string) || process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
 
       const topK = Math.min((params.topK as number) || 5, 20);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
@@ -2460,6 +2460,11 @@ import {
   buildPlanCard,
   renderPlanText,
 } from './knowledge-store/cards';
+
+// Default spec-sync namespace. Used by both spec_compare (admin dev tool) and
+// query_knowledge(corpus:code|docs) which reads from the same index.
+// Override via the SPEC_SYNC_NAMESPACE env var on any deployment.
+const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 
 /**
  * Resolve the KnowledgeStore namespace for a corpus. Memory is team-scoped
@@ -2636,7 +2641,18 @@ export async function handleMemoryAction(
       const corpus = ((params.corpus as string) || 'memory') as Corpus;
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
-      const ns = knowledgeNamespace(ctx, corpus);
+
+      // code/docs are indexed by the spec-sync pipeline into its own namespace —
+      // the workspace-scoped {workspaceId}:code/docs namespaces are empty.
+      // Point these corpora at the same index that spec_compare reads.
+      let ns: string | null;
+      if (corpus === 'code' || corpus === 'docs') {
+        const specSyncId = process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
+        ns = buildNamespace(specSyncId, corpus);
+      } else {
+        ns = knowledgeNamespace(ctx, corpus);
+      }
+
       if (!ns) {
         throw new Error(corpus === 'memory'
           ? 'teamId required for memory query_knowledge'
