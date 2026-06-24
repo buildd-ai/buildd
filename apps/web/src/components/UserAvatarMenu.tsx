@@ -27,13 +27,6 @@ export default function UserAvatarMenu({ userInitial }: UserAvatarMenuProps) {
       {open && (
         <div className="absolute bottom-full left-0 mb-2 w-36 bg-card border border-border-strong rounded-lg shadow-lg overflow-hidden z-50">
           <Link
-            href="/app/you"
-            onClick={() => setOpen(false)}
-            className="block px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
-          >
-            Profile
-          </Link>
-          <Link
             href="/app/settings"
             onClick={() => setOpen(false)}
             className="block px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"

@@ -50,14 +50,12 @@ const missionTabs = [
     ),
   },
   {
-    label: 'More',
-    href: '/app/you',
+    label: 'Settings',
+    href: '/app/settings',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="4" width="6" height="6" rx="1" />
-        <rect x="14" y="4" width="6" height="6" rx="1" />
-        <rect x="4" y="14" width="6" height="6" rx="1" />
-        <rect x="14" y="14" width="6" height="6" rx="1" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
       </svg>
     ),
   },
@@ -77,11 +75,11 @@ export default function MissionsBottomNav() {
             (tab.href === '/app/missions' && pathname.startsWith('/app/missions')) ||
             (tab.href === '/app/team' && pathname.startsWith('/app/team')) ||
             (tab.href === '/app/tasks' && pathname.startsWith('/app/tasks')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/you')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/settings')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/artifacts')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/teams')) ||
-            (tab.href === '/app/you' && pathname.startsWith('/app/accounts'));
+            (tab.href === '/app/settings' && pathname.startsWith('/app/settings')) ||
+            (tab.href === '/app/settings' && pathname.startsWith('/app/you')) ||
+            (tab.href === '/app/settings' && pathname.startsWith('/app/artifacts')) ||
+            (tab.href === '/app/settings' && pathname.startsWith('/app/teams')) ||
+            (tab.href === '/app/settings' && pathname.startsWith('/app/accounts'));
 
           const showBadge = tab.href === '/app/tasks' && needsInputCount > 0;
 
