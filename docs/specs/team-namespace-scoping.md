@@ -223,7 +223,7 @@ beyond mission creation.
 
 ---
 
-## Team switch re-scopes the app ⚠️
+## Team switch re-scopes the app ✅
 
 **Capability statement**: A persistent team switcher MUST let the user change the
 active team in one action; doing so MUST re-scope all namespaced views and MUST
