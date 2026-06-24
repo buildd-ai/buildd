@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
+/**
+ * Regression test: OAuth tokens must be authorized on POST /api/workspaces/[id]/config.
+ * Prior to the fix, POST only checked getCurrentUser() — OAuth JWTs have no session,
+ * so they always got 401. The fix adds authenticateApiKey() dual-auth (same as PATCH
+ * /api/workspaces/[id]) so an OAuth token from the owner authorizes.
+ */
+
 const mockGetCurrentUser = mock(() => null as any);
+const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesUpdate = mock(() => ({
   set: mock(() => ({
@@ -12,6 +20,10 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/api-auth', () => ({
+  authenticateApiKey: mockAuthenticateApiKey,
 }));
 
 mock.module('@/lib/team-access', () => ({
@@ -45,6 +57,8 @@ const mockParams = Promise.resolve({ id: 'ws-1' });
 describe('GET /api/workspaces/[id]/config', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockReset();
     process.env.NODE_ENV = 'production';
   });
@@ -113,6 +127,8 @@ describe('GET /api/workspaces/[id]/config', () => {
 describe('POST /api/workspaces/[id]/config', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesUpdate.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
@@ -221,6 +237,59 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(data.gitConfig.autoMergeMaxLines).toBe(500);
     // Non-string deny-path entries are filtered out
     expect(data.gitConfig.autoMergeDenyPaths).toEqual(['drizzle/', 'src/lib/auth/']);
+  });
+
+  it('allows an OAuth JWT token (owner) to update config', async () => {
+    // authenticateApiKey() resolves OAuth JWTs to an account with level='admin'
+    mockAuthenticateApiKey.mockImplementation((key: string) => {
+      if (key.startsWith('eyJ')) return { id: 'acc-owner', level: 'admin', teamId: 'team-1', authType: 'oauth' };
+      return null;
+    });
+    // workspace team check passes
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({
+        'content-type': 'application/json',
+        authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fakeJwt',
+      }),
+      body: JSON.stringify({ releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' } }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+  });
+
+  it('rejects an OAuth JWT when workspace belongs to a different team', async () => {
+    mockAuthenticateApiKey.mockImplementation((key: string) => {
+      if (key.startsWith('eyJ')) return { id: 'acc-owner', level: 'admin', teamId: 'team-A', authType: 'oauth' };
+      return null;
+    });
+    // workspace owned by team-B
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-B', accessMode: 'restricted' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({
+        'content-type': 'application/json',
+        authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fakeJwt',
+      }),
+      body: JSON.stringify({ releaseConfig: { enabled: true } }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 when no auth (no session, no token)', async () => {
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ defaultBranch: 'main' }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(401);
   });
 
 });
