@@ -29,7 +29,7 @@ const DEFAULT_DOCS: ChunkOptions = { maxChars: 1200, overlap: 150 };
 const MARKDOWN_EXT = /\.(md|mdx|markdown)$/i;
 
 function optionsFor(corpus: Corpus, overrides: Partial<ChunkOptions>): ChunkOptions {
-  const base = corpus === 'docs' ? DEFAULT_DOCS : DEFAULT_CODE;
+  const base = corpus === 'docs' || corpus === 'spec' ? DEFAULT_DOCS : DEFAULT_CODE;
   return { maxChars: overrides.maxChars ?? base.maxChars, overlap: overrides.overlap ?? base.overlap };
 }
 
@@ -40,7 +40,7 @@ export function fileToChunks(
   overrides: Partial<ChunkOptions> = {},
 ): UpsertChunk[] {
   const opts = optionsFor(corpus, overrides);
-  const useMarkdown = corpus === 'docs' && MARKDOWN_EXT.test(file.path);
+  const useMarkdown = (corpus === 'docs' || corpus === 'spec') && MARKDOWN_EXT.test(file.path);
   const pieces: ChunkPiece[] = useMarkdown ? chunkMarkdown(file.content, opts) : chunkCode(file.content, opts);
 
   return pieces.map(piece => {

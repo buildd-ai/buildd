@@ -996,7 +996,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   // "{workspaceId}:{corpus}"
   namespace: text('namespace').notNull(),
   // Column is plain `text`, so widening this union needs NO DB migration.
-  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
+  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'spec' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
   sourceType: text('source_type').notNull(),
   sourcePath: text('source_path'),
   sourceUrl: text('source_url'),

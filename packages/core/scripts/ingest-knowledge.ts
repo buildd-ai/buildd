@@ -92,7 +92,10 @@ async function main() {
   const embedder = getVoyageEmbedder();
   if (!embedder) {
     console.warn('[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)');
+  } else {
+    console.log('[ingest] Using voyage-4-large for general corpora; voyage-code-3 auto-selected for code/docs/spec');
   }
+  // PgVectorStore selects voyage-code-3 internally for code/docs/spec corpora via getCodeEmbedder()
   const store = new PgVectorStore(embedder);
 
   const all: string[] = [];
