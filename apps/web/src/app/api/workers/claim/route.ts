@@ -11,7 +11,7 @@ import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
+import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
@@ -1128,12 +1128,50 @@ export async function POST(req: NextRequest) {
 
       try {
         // Resolve the most-specific credential: workspace > account > team-wide.
-        const cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
+        let cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
+        if (cred) {
+          // D: Claim-gate refresh. If an OAuth credential is expired, attempt a
+          // server-side refresh before sending it to the runner. A fresh token means
+          // the runner starts immediately; an unrecoverable failure causes the
+          // credential to be omitted, so the runner fast-fails with a clear error
+          // instead of burning ~5 min on codex-binary retries.
+          if (
+            cred.credentialType === 'oauth' &&
+            cred.tokenExpiresAt &&
+            new Date(cred.tokenExpiresAt) < new Date()
+          ) {
+            const secretId = await getCodexSecretId({ teamId, accountId: account.id, workspaceId: wsId });
+            if (secretId) {
+              const refreshResult = await refreshCodexCredential(secretId);
+              if (refreshResult === 'refreshed') {
+                // Re-fetch the now-fresh credential
+                const refreshed = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
+                if (refreshed) cred = refreshed;
+                console.log(`[claim] Codex credential refreshed at claim time for workspace ${wsId}`);
+              } else if (refreshResult === 'error') {
+                // Refresh failed (e.g. refresh_token itself expired) — omit the
+                // credential so the worker errors immediately with a clear message.
+                console.warn(`[claim] Codex credential refresh failed for workspace ${wsId} — omitting credential`);
+                cred = null;
+              }
+              // 'locked' means another refresh is in progress — proceed with the
+              // existing (potentially just-refreshed) credential.
+            }
+          }
+        }
         if (cred) {
           (cw as any).codexCredential = {
-            accessToken: cred.accessToken,
-            refreshToken: cred.refreshToken,
-            accountId: cred.accountId,
+            credentialType: cred.credentialType,
+            // OAuth fields (only set for OAuth credentials)
+            ...(cred.credentialType === 'oauth'
+              ? {
+                  accessToken: cred.accessToken,
+                  refreshToken: cred.refreshToken,
+                  accountId: cred.accountId,
+                }
+              : {}),
+            // API key (only set for api_key credentials)
+            ...(cred.credentialType === 'api_key' ? { apiKey: cred.apiKey } : {}),
             expiresAt: cred.tokenExpiresAt,
           };
         }

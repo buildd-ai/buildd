@@ -3,9 +3,13 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 export interface CodexCredential {
-  accessToken: string;
-  refreshToken: string;
-  accountId: string;
+  credentialType: 'oauth' | 'api_key';
+  // OAuth fields (present when credentialType === 'oauth')
+  accessToken?: string;
+  refreshToken?: string;
+  accountId?: string;
+  // API key (present when credentialType === 'api_key')
+  apiKey?: string;
   expiresAt: Date | null;
 }
 
@@ -65,14 +69,92 @@ export function ensureStableCodexHome(workerId: string): { codexHome: string } {
 
 /** (Re)write auth.json into an existing CODEX_HOME. Idempotent. */
 export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
-  const authJson = {
-    access_token: credential.accessToken,
-    refresh_token: credential.refreshToken,
-    account_id: credential.accountId,
-  };
+  const authJson = credential.credentialType === 'api_key'
+    ? { api_key: credential.apiKey }
+    : {
+        access_token: credential.accessToken,
+        refresh_token: credential.refreshToken,
+        account_id: credential.accountId,
+      };
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify(authJson));
   fs.chmodSync(authPath, 0o600);
+}
+
+/**
+ * Write an API key into a CODEX_HOME/auth.json as `{api_key: "..."}`.
+ * resolveAuth in codex-backend.ts reads this field and authenticates via OPENAI_API_KEY.
+ */
+export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void {
+  fs.mkdirSync(codexHome, { recursive: true });
+  const authPath = join(codexHome, 'auth.json');
+  fs.writeFileSync(authPath, JSON.stringify({ api_key: apiKey }));
+  fs.chmodSync(authPath, 0o600);
+}
+
+/**
+ * Seed auth.json into a stable CODEX_HOME ONLY IF it is absent. Unlike
+ * materializeStableCodexHome (which always rewrites), this preserves any
+ * tokens that the Codex CLI refreshed during a previous run — mirroring
+ * OpenAI's "seed only if missing" CI/CD guidance. Idempotent and non-throwing.
+ */
+export function seedCodexAuthIfMissing(workerId: string, credential: CodexCredential): { codexHome: string } {
+  const codexHome = stableCodexHomePath(workerId);
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(codexHome, 0o700); } catch {}
+  const authPath = join(codexHome, 'auth.json');
+  if (!fs.existsSync(authPath)) {
+    writeCodexAuthJson(codexHome, credential);
+    console.log(`[Worker ${workerId}] Seeded Codex auth.json (was missing)`);
+  } else {
+    console.log(`[Worker ${workerId}] Codex auth.json already present — not overwriting (preserving CLI-refreshed tokens)`);
+  }
+  return { codexHome };
+}
+
+/**
+ * Read the current auth.json from the stable per-worker CODEX_HOME.
+ * Returns null when auth.json is absent or cannot be parsed.
+ * Used for write-back after a session: the Codex CLI may have refreshed
+ * the tokens during the run and written them back to auth.json.
+ */
+export function readCodexAuthJson(workerId: string): { access_token?: string; refresh_token?: string; account_id?: string; expires_in?: number } | null {
+  const authPath = join(stableCodexHomePath(workerId), 'auth.json');
+  if (!fs.existsSync(authPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as Record<string, unknown>;
+    // Normalize: Codex CLI may nest under `tokens`
+    const src = (raw.tokens && typeof raw.tokens === 'object' ? raw.tokens : raw) as Record<string, unknown>;
+    return {
+      ...(typeof src.access_token === 'string' ? { access_token: src.access_token } : {}),
+      ...(typeof src.refresh_token === 'string' ? { refresh_token: src.refresh_token } : {}),
+      ...(typeof src.account_id === 'string' ? { account_id: src.account_id } : {}),
+      ...(typeof src.expires_in === 'number' ? { expires_in: src.expires_in } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Preflight check for an expired Codex credential. Returns a human-readable
+ * error string if the credential is definitely expired, or null if it looks usable.
+ *
+ * "Definitely expired" means: expiresAt is set AND in the past AND the credential
+ * is not an API key (API keys don't carry short-lived JWTs in the same way).
+ * When expiresAt is null (no expiry metadata) we allow it through — the token may
+ * still work, and the CLI will surface a real error if it doesn't.
+ */
+export function checkCodexCredentialExpiry(credential: Pick<CodexCredential, 'credentialType' | 'accountId' | 'expiresAt'>): string | null {
+  if (credential.credentialType === 'api_key') return null;
+  if (!credential.expiresAt) return null;
+  if (new Date(credential.expiresAt) > new Date()) return null;
+  const ts = new Date(credential.expiresAt).toISOString();
+  const accountHint = credential.accountId ? ` for accountId=${credential.accountId}` : '';
+  return (
+    `Codex credential${accountHint} expired at ${ts}. ` +
+    `Re-connect your ChatGPT account in Settings → Credentials, or configure a Codex API key instead.`
+  );
 }
 
 /**

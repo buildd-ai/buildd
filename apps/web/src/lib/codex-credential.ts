@@ -7,9 +7,12 @@ const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const PURPOSE = 'codex_credential' as const;
 
 export interface CodexAuthJson {
-  access_token: string;
-  refresh_token: string;
-  account_id: string;
+  /** OAuth fields (required for OAuth credentials) */
+  access_token?: string;
+  refresh_token?: string;
+  account_id?: string;
+  /** API key (alternative to OAuth — simpler rotation, recommended for CI/automation) */
+  api_key?: string;
   /** seconds until expiry (Codex device-code flow) */
   expires_in?: number;
   /** ISO timestamp expiry (alternative to expires_in) */
@@ -45,7 +48,8 @@ function jwtExpSeconds(token: unknown): number | null {
 /**
  * Normalize whatever the user pasted into a CodexAuthJson. Accepts:
  *   - the raw `~/.codex/auth.json` (fields nested under a `tokens` object), or
- *   - an already-flat object with top-level fields.
+ *   - an already-flat object with top-level fields (OAuth), or
+ *   - `{"api_key": "sk-..."}` for API-key auth (recommended for CI/automation).
  *
  * Expiry is resolved in priority order: explicit `expires_in` / `expiry`, then the
  * access-token JWT `exp` claim. If none can be derived, the credential is still
@@ -58,6 +62,13 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
     return { ok: false, error: 'Must be a JSON object' };
   }
   const root = parsed as Record<string, unknown>;
+
+  // API key path: `{"api_key": "sk-..."}` — no OAuth fields required.
+  // API keys are the recommended path for CI/automation (stable, explicit rotation).
+  if (typeof root.api_key === 'string' && root.api_key.length > 0) {
+    return { ok: true, value: { api_key: root.api_key } };
+  }
+
   // Codex CLI nests credentials under `tokens`; fall back to top-level (flat) shape.
   const src = (root.tokens && typeof root.tokens === 'object' ? root.tokens : root) as Record<string, unknown>;
 
@@ -65,7 +76,7 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
   const refresh_token = src.refresh_token;
   const account_id = src.account_id;
   if (typeof access_token !== 'string' || typeof refresh_token !== 'string' || typeof account_id !== 'string') {
-    return { ok: false, error: 'auth.json must contain access_token, refresh_token, and account_id (top-level or under "tokens")' };
+    return { ok: false, error: 'Must be either {"api_key": "sk-..."} or an OAuth blob with access_token, refresh_token, and account_id (top-level or under "tokens")' };
   }
 
   const value: CodexAuthJson = { access_token, refresh_token, account_id };
@@ -86,9 +97,13 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
 }
 
 export interface CodexCredential {
-  accessToken: string;
-  refreshToken: string;
-  accountId: string;
+  credentialType: 'oauth' | 'api_key';
+  // OAuth fields — present when credentialType === 'oauth'
+  accessToken?: string;
+  refreshToken?: string;
+  accountId?: string;
+  // API key — present when credentialType === 'api_key'
+  apiKey?: string;
   tokenExpiresAt: Date | null;
   lastRefreshedAt: Date | null;
 }
@@ -106,9 +121,12 @@ export interface CodexScope {
 
 /** The encrypted-at-rest payload stored in secrets.encryptedValue. */
 interface CodexBlob {
-  access_token: string;
-  refresh_token: string;
-  account_id: string;
+  // OAuth fields
+  access_token?: string;
+  refresh_token?: string;
+  account_id?: string;
+  // API key (alternative to OAuth)
+  api_key?: string;
 }
 
 function encodeBlob(blob: CodexBlob): string {
@@ -151,14 +169,19 @@ function scopeMatch(scope: CodexScope) {
 /**
  * Store (replace) the Codex credential at an exact scope. There is one Codex
  * login per scope, so any existing row at the same scope is removed first.
+ * Accepts either OAuth blobs (access_token+refresh_token+account_id) or
+ * API key blobs ({api_key: "sk-..."}) from normalizeCodexAuthJson.
  */
 export async function storeCodexCredential(scope: CodexScope, authJson: CodexAuthJson): Promise<void> {
-  const encryptedValue = encodeBlob({
-    access_token: authJson.access_token,
-    refresh_token: authJson.refresh_token,
-    account_id: authJson.account_id,
-  });
-  const tokenExpiresAt = expiryFromAuthJson(authJson);
+  const encryptedValue = authJson.api_key
+    ? encodeBlob({ api_key: authJson.api_key })
+    : encodeBlob({
+        access_token: authJson.access_token,
+        refresh_token: authJson.refresh_token,
+        account_id: authJson.account_id,
+      });
+  // API keys don't carry short-lived JWTs — no expiry metadata.
+  const tokenExpiresAt = authJson.api_key ? null : expiryFromAuthJson(authJson);
   const now = new Date();
 
   // One credential per scope: replace any existing one. Not transactional, but
@@ -201,14 +224,20 @@ export async function resolveCodexCredential(opts: {
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  // Expired credentials are still injected — the Codex CLI refreshes via refresh_token.
+  // Expired credentials are still returned — the claim gate attempts refresh before use.
   const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   const blob = decodeBlob(best.encryptedValue);
+  const isApiKey = typeof blob.api_key === 'string' && blob.api_key.length > 0;
   return {
-    accessToken: blob.access_token,
-    refreshToken: blob.refresh_token,
-    accountId: blob.account_id,
+    credentialType: isApiKey ? 'api_key' : 'oauth',
+    ...(isApiKey
+      ? { apiKey: blob.api_key }
+      : {
+          accessToken: blob.access_token,
+          refreshToken: blob.refresh_token,
+          accountId: blob.account_id,
+        }),
     tokenExpiresAt: best.tokenExpiresAt ?? null,
     lastRefreshedAt: best.lastRefreshedAt ?? null,
   };
@@ -374,6 +403,79 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
     return 'error';
   }
+}
+
+/**
+ * Write back refreshed OAuth tokens after a Codex run. The Codex CLI may have
+ * refreshed the access/refresh tokens during the run; the runner reads the updated
+ * auth.json from the stable CODEX_HOME and POSTs it here so future workers start
+ * with the latest tokens instead of the original stale snapshot.
+ *
+ * Uses an optimistic lock on `lastRefreshedAt` to serialize concurrent write-backs
+ * from multiple workers (rare, but possible when the account runs parallel Codex workers).
+ * Only OAuth credentials need write-back (API keys don't rotate this way).
+ *
+ * Returns true when the write succeeded, false if another caller locked it recently.
+ */
+export async function writeBackCodexTokens(
+  opts: { teamId: string; accountId?: string | null; workspaceId?: string | null },
+  tokens: { accessToken: string; refreshToken: string; accountId?: string; expiresIn?: number },
+): Promise<boolean> {
+  // Find the credential row to update (most specific scope wins).
+  const rows = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.teamId, opts.teamId),
+      eq(secrets.purpose, PURPOSE),
+      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
+      or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
+    ),
+    columns: { id: true, encryptedValue: true, accountId: true, workspaceId: true },
+  });
+  if (rows.length === 0) return false;
+
+  const score = (r: { accountId: string | null; workspaceId: string | null }) =>
+    (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
+    (r.accountId && r.accountId === opts.accountId ? 1 : 0);
+  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
+
+  // Skip API key credentials — they don't refresh via this path.
+  const blob = decodeBlob(best.encryptedValue);
+  if (blob.api_key) return false;
+
+  const newBlob = encodeBlob({
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    account_id: tokens.accountId ?? blob.account_id,
+  });
+  const tokenExpiresAt = tokens.expiresIn != null ? new Date(Date.now() + tokens.expiresIn * 1000) : null;
+
+  // Optimistic lock: write-back only if not updated within the last 30s.
+  // Multiple workers completing simultaneously could race here; last write wins is fine
+  // since they all have fresh tokens from the same session window.
+  const [updated] = await db
+    .update(secrets)
+    .set({
+      encryptedValue: newBlob,
+      ...(tokenExpiresAt ? { tokenExpiresAt } : {}),
+      lastRefreshedAt: sql`NOW()`,
+      updatedAt: sql`NOW()`,
+    })
+    .where(
+      and(
+        eq(secrets.id, best.id),
+        eq(secrets.purpose, PURPOSE),
+        or(
+          isNull(secrets.lastRefreshedAt),
+          lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '30 seconds'`),
+        ),
+      ),
+    )
+    .returning({ id: secrets.id });
+
+  if (updated) {
+    console.log(`[Codex] Tokens written back for secret ${best.id}`);
+  }
+  return !!updated;
 }
 
 export interface VerifyResult {
