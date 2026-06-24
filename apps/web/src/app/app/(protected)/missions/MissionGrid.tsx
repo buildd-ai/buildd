@@ -166,17 +166,58 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
         const hasContent = GROUP_ORDER.some(g => subGroups[g].length > 0);
         if (!hasContent) return null;
 
+        // Compact bucket: workspace has no active/scheduled missions and no recent completions
+        // — de-emphasise it so active workspaces aren't buried
+        const isAllOldCompleted = multiWorkspace
+          && subGroups.running.length === 0
+          && subGroups.attention.length === 0
+          && subGroups.scheduled.length === 0
+          && recentCompleted.length === 0
+          && oldCompleted.length > 0;
+
+        if (isAllOldCompleted && !isExpanded) {
+          return (
+            <div key={wsKey} className="flex items-center gap-2 py-1.5 opacity-40 hover:opacity-60 transition-opacity">
+              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">
+                {bucket.workspaceName ?? 'Unassigned'}
+              </span>
+              <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length} completed</span>
+              <button
+                onClick={() => toggleOldCompletions(wsKey)}
+                className="text-[11px] text-text-muted hover:text-text-secondary font-mono ml-auto"
+              >
+                Show {oldCompleted.length} older ↓
+              </button>
+            </div>
+          );
+        }
+
         return (
           <div key={wsKey} className="space-y-3">
             {multiWorkspace && (
-              <div className="flex items-center gap-2 pt-2">
-                <span className="section-label">
-                  {bucket.workspaceName ?? 'Unassigned'}
-                </span>
-                <span className="text-[10px] text-text-muted font-mono">
-                  {bucket.missions.length}
-                </span>
-              </div>
+              isAllOldCompleted ? (
+                <div className="flex items-center gap-2 pt-2">
+                  <span className="section-label text-text-muted/70">
+                    {bucket.workspaceName ?? 'Unassigned'}
+                  </span>
+                  <span className="text-[10px] text-text-muted font-mono">{bucket.missions.length}</span>
+                  <button
+                    onClick={() => toggleOldCompletions(wsKey)}
+                    className="text-[11px] text-text-muted hover:text-text-secondary font-mono ml-auto"
+                  >
+                    Hide ↑
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 pt-2">
+                  <span className="section-label">
+                    {bucket.workspaceName ?? 'Unassigned'}
+                  </span>
+                  <span className="text-[10px] text-text-muted font-mono">
+                    {bucket.missions.length}
+                  </span>
+                </div>
+              )
             )}
 
             {GROUP_ORDER.map((groupKey) => {
@@ -187,8 +228,11 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
               const isCompact = groupKey === 'completed';
 
               if (isCompact) {
-                const visibleItems = isExpanded ? subGroups.completed : recentCompleted;
-                const hiddenCount = oldCompleted.length;
+                // When the whole bucket is expanded from compact mode, show all completed
+                const visibleItems = isAllOldCompleted
+                  ? subGroups.completed
+                  : (isExpanded ? subGroups.completed : recentCompleted);
+                const hiddenCount = isAllOldCompleted ? 0 : oldCompleted.length;
 
                 return (
                   <div key={groupKey} className="space-y-2">
