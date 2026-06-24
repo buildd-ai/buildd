@@ -325,7 +325,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       eq(tasks.missionId, missionId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
-    limit: 5,
+    limit: 20,
     columns: { id: true, title: true, status: true, description: true, dependsOn: true },
   });
 

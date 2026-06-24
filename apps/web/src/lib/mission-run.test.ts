@@ -46,7 +46,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId' },
   workspaces: { id: 'id' },
 }));
 
@@ -313,6 +313,40 @@ describe('runMission', () => {
     // Must not create a new task
     expect(mockInsert).not.toHaveBeenCalled();
     // Must not dispatch
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('dedupes against a cron-created schedule task when mission has a scheduleId', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Heartbeat Mission',
+      priority: 0,
+      scheduleId: 'sched-1', // mission has a linked schedule
+      schedule: { taskTemplate: { context: { heartbeat: true } } },
+    });
+
+    const cronTask = {
+      id: 'cron-task-1',
+      title: 'Heartbeat Mission',
+      workspaceId: 'ws-1',
+      status: 'in_progress',
+      mode: 'execution', // cron creates execution tasks, not planning
+      missionId: 'obj-1',
+      scheduleId: 'sched-1',
+    };
+
+    // First findFirst call: no in-flight planning task
+    // Second findFirst call: cron task is active for this schedule
+    mockTasksFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(cronTask);
+
+    const result = await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task.id).toBe('cron-task-1');
+    expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 
