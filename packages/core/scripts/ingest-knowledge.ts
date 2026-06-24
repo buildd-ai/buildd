@@ -136,6 +136,11 @@ async function main() {
     process.exit(1);
   }
 
+  if (!process.env.DATABASE_URL) {
+    console.warn('[ingest] DATABASE_URL not set — skipping (knowledge base not configured)');
+    process.exit(0);
+  }
+
   const root = path.resolve(dirArg);
 
   const all: string[] = [];
