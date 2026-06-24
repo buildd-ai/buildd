@@ -21,7 +21,7 @@ export interface IngestResult {
   chunks: number;
 }
 
-// Defaults sized for voyage-code-3 (generous context) while keeping chunks
+// Defaults sized for voyage-4-large (generous context) while keeping chunks
 // focused enough to rerank well.
 const DEFAULT_CODE: ChunkOptions = { maxChars: 1600, overlap: 200 };
 const DEFAULT_DOCS: ChunkOptions = { maxChars: 1200, overlap: 150 };
