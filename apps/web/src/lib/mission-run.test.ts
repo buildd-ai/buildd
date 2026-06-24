@@ -10,7 +10,8 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
-const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
+const mockInsertOnConflictDoNothing = mock(() => ({ returning: mockInsertReturning }));
+const mockInsertValues = mock(() => ({ onConflictDoNothing: mockInsertOnConflictDoNothing }));
 const mockInsert = mock(() => ({ values: mockInsertValues }));
 const mockSelectResult = mock(() => Promise.resolve([] as any[]));
 const mockSelectLimit = mock(() => mockSelectResult());
@@ -65,6 +66,7 @@ describe('runMission', () => {
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
     mockInsertValues.mockReset();
+    mockInsertOnConflictDoNothing.mockReset();
     mockInsertReturning.mockReset();
     mockBuildMissionContext.mockReset();
     mockDispatchNewTask.mockReset();
@@ -72,7 +74,8 @@ describe('runMission', () => {
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
-    mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
     // Default: no in-flight planning task (dedupe miss)
     mockTasksFindFirst.mockResolvedValue(null);
   });
@@ -375,5 +378,51 @@ describe('runMission', () => {
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(insertCall.workspaceId).toBe('orchestrator-ws');
+  });
+
+  it('deduplicates atomically when two concurrent callers race past the dedup check', async () => {
+    // Scenario: both callers read "no in-flight task" simultaneously (race window),
+    // then both attempt to insert. The second insert hits the unique constraint and
+    // returns nothing — runMission should fetch the winner's task and return deduped:true.
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Race Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    const winnerTask = {
+      id: 'task-winner',
+      title: 'Mission: Race Mission',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      mode: 'planning',
+      missionId: 'obj-1',
+    };
+
+    // Initial dedup check: both callers see no in-flight task (race window)
+    mockTasksFindFirst.mockResolvedValueOnce(null);
+    // Fallback fetch after conflict: returns the winner's task
+    mockTasksFindFirst.mockResolvedValueOnce(winnerTask);
+
+    // Insert returns empty: unique constraint fired (loser path)
+    mockInsertReturning.mockResolvedValue([]);
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task?.id).toBe('task-winner');
+    // Dispatch must NOT be called for the loser path
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 });

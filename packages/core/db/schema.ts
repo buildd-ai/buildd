@@ -16,7 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -585,6 +585,11 @@ export const tasks = pgTable('tasks', {
   missionIdx: index('tasks_mission_idx').on(t.missionId),
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
+  // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
+  // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
+  activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
+    sql`${t.mode} = 'planning' AND ${t.status} IN ('pending', 'assigned', 'in_progress')`
+  ),
 }));
 
 export const workers = pgTable('workers', {
