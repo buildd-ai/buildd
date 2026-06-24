@@ -153,6 +153,15 @@ shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
 - **Runner** (`apps/runner`, Bun) — external worker process. Claims tasks via
   `POST /api/workers/claim`, runs the agent, reports progress via `PATCH
   /api/workers/[id]`. Turn-based loop with multi-turn resume, review gates, abort.
+- **Runner liveness** — runners send a heartbeat to `POST /api/workers/heartbeat`
+  every `BUILDD_RUNNER_POLL_MIN` minutes (default 60; env-configurable). Liveness
+  thresholds in `packages/shared/src/runner-liveness.ts` derive from the same env
+  var: **online** = last beat within 1.5× the interval; **stale** = 1.5×–2.5×;
+  **excluded** (dropped from DB queries) beyond 2.5×. Heartbeats are independent
+  of task claims — the claim path must not be used as a liveness proxy (cf. the
+  Jun 2026 outage where that coupling hid a broken claim route). To change the
+  interval: update `BUILDD_RUNNER_POLL_MIN` on both the runner host and the server
+  env (Vercel) so the cutoffs scale together.
 - **Backends** (`apps/runner/src/backends/`) — pluggable. `claude-backend.ts`
   (Agent SDK) and `codex-backend.ts` (Codex SDK), behind a common event-adapter
   interface. Backend resolution: `task.backend → role.defaultBackend → workspace
