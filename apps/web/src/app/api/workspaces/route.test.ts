@@ -47,6 +47,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
+  and: (...args: any[]) => ({ args, type: 'and' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -148,6 +149,45 @@ describe('GET /api/workspaces', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workspaces).toHaveLength(1);
+  });
+
+  it('scopes to teamId when the user is a member of that team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Team2 WS', accountWorkspaces: [] },
+    ]);
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces?teamId=team-2', {
+      method: 'GET',
+      headers: new Headers(),
+    });
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workspaces).toHaveLength(1);
+  });
+
+  it('returns empty (no leak) when teamId is a team the user is NOT in', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockWorkspacesFindMany.mockReset();
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces?teamId=team-other', {
+      method: 'GET',
+      headers: new Headers(),
+    });
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workspaces).toEqual([]);
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
   });
 });
 

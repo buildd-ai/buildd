@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/schema';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -63,9 +63,22 @@ export async function GET(req: NextRequest) {
     } else {
       // For session auth, get workspaces via team membership
       const wsIds = await getUserWorkspaceIds(user!.id);
+
+      // Optional team scoping. A teamId the user is not a member of yields an
+      // empty list — never another team's workspaces.
+      const teamIdFilter = new URL(req.url).searchParams.get('teamId');
+      let whereClause = inArray(workspaces.id, wsIds);
+      if (teamIdFilter) {
+        const memberTeamIds = await getUserTeamIds(user!.id);
+        if (!memberTeamIds.includes(teamIdFilter)) {
+          return NextResponse.json({ workspaces: [] });
+        }
+        whereClause = and(whereClause, eq(workspaces.teamId, teamIdFilter))!;
+      }
+
       allWorkspaces = wsIds.length > 0
         ? await db.query.workspaces.findMany({
-            where: inArray(workspaces.id, wsIds),
+            where: whereClause,
             orderBy: desc(workspaces.createdAt),
             with: {
               accountWorkspaces: {

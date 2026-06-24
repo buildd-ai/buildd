@@ -546,6 +546,35 @@ describe('GET /api/missions', () => {
     expect(body.missions[0].lastDeferredAt).toBeTruthy();
   });
 
+  it('scopes to a single team when teamId is a team the user belongs to', async () => {
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'm-1', title: 'A', status: 'active', tasks: [], schedule: null },
+    ]);
+
+    const req = new NextRequest('http://localhost/api/missions?teamId=team-2');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.missions).toHaveLength(1);
+    // The query ran scoped to the requested team
+    expect(mockMissionsFindMany).toHaveBeenCalled();
+    const whereArg = mockMissionsFindMany.mock.calls[0][0].where;
+    expect(whereArg.values).toEqual(['team-2']);
+  });
+
+  it('returns empty (no leak) when teamId is a team the user is NOT in', async () => {
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+
+    const req = new NextRequest('http://localhost/api/missions?teamId=team-other');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.missions).toEqual([]);
+    // Must not have queried with the foreign team
+    expect(mockMissionsFindMany).not.toHaveBeenCalled();
+  });
+
   it('returns null deferral fields when schedule has no deferral', async () => {
     mockMissionsFindMany.mockResolvedValue([
       {

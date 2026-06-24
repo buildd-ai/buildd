@@ -276,7 +276,11 @@ export default function NewMissionForm({
       const payload: Record<string, unknown> = {
         title: name.trim(),
         workspaceId: workspaceId || undefined,
-        teamId: typeof window !== 'undefined' ? localStorage.getItem('buildd:lastTeamId') || undefined : undefined,
+        // Default to the active team passed from the server; fall back to the
+        // last-used team only when no active team is available.
+        teamId:
+          teamId ||
+          (typeof window !== 'undefined' ? localStorage.getItem('buildd:lastTeamId') || undefined : undefined),
       };
 
       if (description.trim()) {
