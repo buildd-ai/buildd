@@ -1,48 +1,45 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-// Resolves to the single task row (or null) that the explicit select returns.
-const mockTaskRow = mock(() => Promise.resolve(null as any));
+// Resolves to the single task row (or empty rows) that db.execute returns.
+const mockExecuteResult = mock(() => Promise.resolve({ rows: [] as any[] }));
 const mockOutcomesInsert = mock(() => ({
   values: mock(() => Promise.resolve()),
 }));
 
-// Chainable builder mirroring db.select(...).from(...).where(...).limit(...).
-const selectBuilder: any = {
-  from: () => selectBuilder,
-  where: () => selectBuilder,
-  limit: async () => {
-    const row = await mockTaskRow();
-    return row ? [row] : [];
-  },
-};
-
 mock.module('../db', () => ({
   db: {
-    select: () => selectBuilder,
+    execute: mockExecuteResult,
     insert: () => mockOutcomesInsert(),
-    // Guard: the relational query builder must NOT be used here — it can emit
-    // references to related tables (workers) and caused intermittent
-    // "missing FROM-clause entry for table workers" failures in prod.
+    // Guard: neither the RQB nor the explicit select builder may be used here.
+    // Both can emit references to related tables (workers) via the tasks
+    // schema relations, producing "missing FROM-clause entry for table workers"
+    // in prod. Only db.execute() with a raw sql template is safe.
     get query(): never {
       throw new Error('recordTaskOutcome must not use db.query (relational query builder)');
+    },
+    get select(): never {
+      throw new Error('recordTaskOutcome must not use db.select (may reference workers via tasks relations)');
     },
   },
 }));
 
 mock.module('../db/schema', () => ({
-  tasks: { id: 'id', kind: 'kind', complexity: 'complexity', classifiedBy: 'classified_by', predictedModel: 'predicted_model' },
   taskOutcomes: {},
 }));
 
 mock.module('drizzle-orm', () => ({
-  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
+    { raw: (s: string) => s },
+  ),
 }));
 
 import { recordTaskOutcome } from '../routing-analytics';
 
 describe('recordTaskOutcome', () => {
   beforeEach(() => {
-    mockTaskRow.mockReset();
+    mockExecuteResult.mockReset();
+    mockExecuteResult.mockResolvedValue({ rows: [] });
     mockOutcomesInsert.mockReset();
     mockOutcomesInsert.mockReturnValue({
       values: mock(() => Promise.resolve()),
@@ -50,24 +47,24 @@ describe('recordTaskOutcome', () => {
   });
 
   it('returns false when the task is missing', async () => {
-    mockTaskRow.mockResolvedValue(null);
+    mockExecuteResult.mockResolvedValue({ rows: [] });
     const ok = await recordTaskOutcome({ taskId: 't1', outcome: 'completed' });
     expect(ok).toBe(false);
   });
 
-  it('returns false when the task never went through the router (no predictedModel)', async () => {
-    mockTaskRow.mockResolvedValue({
-      id: 't1', kind: 'engineering', complexity: 'normal', classifiedBy: 'user', predictedModel: null,
-    });
+  it('returns false when the task never went through the router (no predicted_model)', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't1', kind: 'engineering', complexity: 'normal', classified_by: 'user', predicted_model: null },
+    ] });
     const ok = await recordTaskOutcome({ taskId: 't1', outcome: 'completed' });
     expect(ok).toBe(false);
     expect(mockOutcomesInsert).not.toHaveBeenCalled();
   });
 
   it('writes an outcome row copying taxonomy from the task', async () => {
-    mockTaskRow.mockResolvedValue({
-      id: 't1', kind: 'engineering', complexity: 'complex', classifiedBy: 'organizer', predictedModel: 'sonnet',
-    });
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't1', kind: 'engineering', complexity: 'complex', classified_by: 'organizer', predicted_model: 'sonnet' },
+    ] });
     const values = mock(() => Promise.resolve());
     mockOutcomesInsert.mockReturnValue({ values });
 
@@ -87,6 +84,7 @@ describe('recordTaskOutcome', () => {
     expect(payload.kind).toBe('engineering');
     expect(payload.complexity).toBe('complex');
     expect(payload.predictedModel).toBe('sonnet');
+    expect(payload.classifiedBy).toBe('organizer');
     // engineering/complex baseline is opus, predicted is sonnet → downshifted.
     expect(payload.downshifted).toBe(true);
     expect(payload.totalCostUsd).toBe('0.0123');
@@ -94,9 +92,9 @@ describe('recordTaskOutcome', () => {
   });
 
   it('does not flag a baseline-tier prediction as downshifted', async () => {
-    mockTaskRow.mockResolvedValue({
-      id: 't2', kind: 'engineering', complexity: 'normal', classifiedBy: 'user', predictedModel: 'sonnet',
-    });
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't2', kind: 'engineering', complexity: 'normal', classified_by: 'user', predicted_model: 'sonnet' },
+    ] });
     const values = mock(() => Promise.resolve());
     mockOutcomesInsert.mockReturnValue({ values });
 
@@ -106,10 +104,9 @@ describe('recordTaskOutcome', () => {
   });
 
   it('never flags a full-model-ID prediction as downshifted', async () => {
-    mockTaskRow.mockResolvedValue({
-      id: 't3', kind: 'engineering', complexity: 'complex', classifiedBy: 'user',
-      predictedModel: 'claude-opus-4-8',
-    });
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't3', kind: 'engineering', complexity: 'complex', classified_by: 'user', predicted_model: 'claude-opus-4-8' },
+    ] });
     const values = mock(() => Promise.resolve());
     mockOutcomesInsert.mockReturnValue({ values });
 
@@ -119,7 +116,7 @@ describe('recordTaskOutcome', () => {
   });
 
   it('swallows DB errors (non-fatal telemetry)', async () => {
-    mockTaskRow.mockRejectedValue(new Error('db down'));
+    mockExecuteResult.mockRejectedValue(new Error('db down'));
     const ok = await recordTaskOutcome({ taskId: 't1', outcome: 'completed' });
     expect(ok).toBe(false);
   });
