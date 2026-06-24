@@ -1,13 +1,27 @@
 /**
  * Ingest a repo's code + docs into knowledge_chunks (Phase 2).
  *
- * Walks a directory, classifies files into the `code` and `docs` corpora,
- * chunks them, and upserts into the workspace's namespaces. Re-runnable:
- * each file's prior chunks are cleared before re-chunking.
+ * Walks a directory (or reads a single file), classifies files into the `code`,
+ * `docs`, or `spec` corpora, chunks them, and upserts into the workspace's
+ * namespaces. Re-runnable: each file's prior chunks are cleared before re-chunking.
  *
  * Usage:
- *   DATABASE_URL=... VOYAGE_API_KEY=... \
+ *   DATABASE_URL=... VOYAGE_API_KEY=... WORKSPACE_ID=<uuid> \
+ *   bun packages/core/scripts/ingest-knowledge.ts [--corpus code|docs|spec] <dir>
+ *
+ * Or with positional workspaceId:
  *   bun packages/core/scripts/ingest-knowledge.ts <workspaceId> <dir> [--code-only|--docs-only]
+ *
+ * Flags:
+ *   --corpus <name>      Force all matching files into this corpus (skips auto-classify).
+ *                        code → code files only; docs/spec → markdown files only.
+ *   --source-dir <dir>   Alternative to positional <dir> argument.
+ *   --code-only          Only ingest code files (legacy; use --corpus code instead).
+ *   --docs-only          Only ingest doc files (legacy; use --corpus docs instead).
+ *
+ * Embedder selection (per-corpus):
+ *   code / docs / spec → voyage-code-3
+ *   all others          → voyage-4-large
  *
  * VOYAGE_API_KEY is optional — without it, chunks are stored text-only and
  * lexical (BM25) search still works.
@@ -15,8 +29,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { PgVectorStore } from '../knowledge-store/pg-vector-store';
-import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
+import { getVoyageEmbedderForCorpus } from '../knowledge-store/voyage-embedder';
 import { ingestFiles, type SourceFile } from '../knowledge-store/ingest';
+import type { Corpus } from '../knowledge-store/types';
 
 const DOC_EXT = new Set(['.md', '.mdx', '.markdown']);
 const CODE_EXT = new Set([
@@ -35,10 +50,20 @@ const TEST_FILE_RE = /\.(test|spec)\.[tj]sx?$/;
 const MAX_FILE_BYTES = 512 * 1024; // skip very large files (minified bundles, lockfiles)
 const BATCH = 50;
 
-async function walk(dir: string, root: string, out: string[]): Promise<void> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
+function getFlag(flag: string): string | undefined {
+  const idx = process.argv.indexOf(flag);
+  return idx !== -1 ? process.argv[idx + 1] : undefined;
+}
+
+async function walk(dirOrFile: string, root: string, out: string[]): Promise<void> {
+  const stat = await fs.stat(dirOrFile);
+  if (stat.isFile()) {
+    out.push(dirOrFile);
+    return;
+  }
+  const entries = await fs.readdir(dirOrFile, { withFileTypes: true });
   for (const e of entries) {
-    const full = path.join(dir, e.name);
+    const full = path.join(dirOrFile, e.name);
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
       await walk(full, root, out);
@@ -51,7 +76,7 @@ async function walk(dir: string, root: string, out: string[]): Promise<void> {
 async function ingestCorpus(
   store: PgVectorStore,
   workspaceId: string,
-  corpus: 'code' | 'docs',
+  corpus: Corpus,
   files: string[],
   root: string,
 ): Promise<void> {
@@ -79,24 +104,39 @@ async function ingestCorpus(
 }
 
 async function main() {
-  const [workspaceId, dir] = process.argv.slice(2);
+  // Parse flags before positional args so they don't interfere.
+  const corpusFlag = getFlag('--corpus') as Corpus | undefined;
+  const sourceDirFlag = getFlag('--source-dir');
   const codeOnly = process.argv.includes('--code-only');
   const docsOnly = process.argv.includes('--docs-only');
 
-  if (!workspaceId || !dir) {
-    console.error('Usage: bun ingest-knowledge.ts <workspaceId> <dir> [--code-only|--docs-only]');
+  // Collect positional args (skip flags and their values).
+  const skipNext = new Set(['--corpus', '--source-dir']);
+  const positional: string[] = [];
+  const rawArgs = process.argv.slice(2);
+  for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i].startsWith('--')) {
+      if (skipNext.has(rawArgs[i])) i++; // consume value
+      continue;
+    }
+    positional.push(rawArgs[i]);
+  }
+
+  // workspaceId: env var takes precedence over first positional arg.
+  const workspaceId = process.env.WORKSPACE_ID ?? positional[0];
+
+  // dir: --source-dir flag → (WORKSPACE_ID set: first positional, else second positional).
+  const dirArg = sourceDirFlag ?? (process.env.WORKSPACE_ID ? positional[0] : positional[1]);
+
+  if (!workspaceId || !dirArg) {
+    console.error(
+      'Usage: WORKSPACE_ID=<uuid> bun ingest-knowledge.ts [--corpus code|docs|spec] <dir>\n' +
+      '  or:  bun ingest-knowledge.ts <workspaceId> <dir> [--code-only|--docs-only]',
+    );
     process.exit(1);
   }
 
-  const root = path.resolve(dir);
-  const embedder = getVoyageEmbedder();
-  if (!embedder) {
-    console.warn('[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)');
-  } else {
-    console.log('[ingest] Using voyage-4-large for general corpora; voyage-code-3 auto-selected for code/docs/spec');
-  }
-  // PgVectorStore selects voyage-code-3 internally for code/docs/spec corpora via getCodeEmbedder()
-  const store = new PgVectorStore(embedder);
+  const root = path.resolve(dirArg);
 
   const all: string[] = [];
   await walk(root, root, all);
@@ -107,8 +147,31 @@ async function main() {
 
   console.log(`[ingest] ${root}: ${codeFiles.length} code, ${docFiles.length} doc files`);
 
-  if (!docsOnly) await ingestCorpus(store, workspaceId, 'code', codeFiles, root);
-  if (!codeOnly) await ingestCorpus(store, workspaceId, 'docs', docFiles, root);
+  if (corpusFlag) {
+    // Forced-corpus mode: all matching files go into the specified corpus.
+    const embedder = getVoyageEmbedderForCorpus(corpusFlag);
+    if (!embedder) {
+      console.warn(`[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)`);
+    }
+    const store = new PgVectorStore(embedder);
+    const files = corpusFlag === 'code' ? codeFiles : docFiles;
+    await ingestCorpus(store, workspaceId, corpusFlag, files, root);
+  } else {
+    // Auto-classify mode (legacy): separate embedders per corpus.
+    if (!docsOnly) {
+      const embedder = getVoyageEmbedderForCorpus('code');
+      if (!embedder) {
+        console.warn('[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)');
+      }
+      const store = new PgVectorStore(embedder);
+      await ingestCorpus(store, workspaceId, 'code', codeFiles, root);
+    }
+    if (!codeOnly) {
+      const embedder = getVoyageEmbedderForCorpus('docs');
+      const store = new PgVectorStore(embedder);
+      await ingestCorpus(store, workspaceId, 'docs', docFiles, root);
+    }
+  }
 
   console.log('[ingest] Complete.');
   process.exit(0);

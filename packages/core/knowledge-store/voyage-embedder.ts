@@ -87,3 +87,23 @@ export function getCodeEmbedder(): VoyageEmbedder | null {
 export function isCodeCorpus(corpus: Corpus): boolean {
   return CODE_CORPORA.has(corpus);
 }
+
+// Corpora that benefit from a code-aware embedding model.
+// voyage-code-3 outperforms voyage-4-large on code retrieval while matching
+// it on prose — so code/docs/spec all use it. The same 1024-dim HNSW index
+// serves both models; namespace filtering provides semantic isolation.
+const CODE_MODEL_CORPORA = new Set<Corpus>(['code', 'docs', 'spec']);
+
+/**
+ * Return the right VoyageEmbedder for a given corpus:
+ * - code / docs / spec → voyage-code-3
+ * - everything else → voyage-4-large
+ *
+ * Returns null when VOYAGE_API_KEY is not set (lexical-only fallback).
+ */
+export function getVoyageEmbedderForCorpus(corpus: Corpus): VoyageEmbedder | null {
+  const key = process.env.VOYAGE_API_KEY;
+  if (!key) return null;
+  const model = CODE_MODEL_CORPORA.has(corpus) ? 'voyage-code-3' : DEFAULT_MODEL;
+  return new VoyageEmbedder(key, model);
+}
