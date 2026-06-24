@@ -54,37 +54,36 @@ ingest (clean code corpus)  →  retrieve (surface candidates)  →  JUDGE (agen
 5. **Reconcile** docs/site *against SPEC.md* — never the reverse. Optionally file confirmed
    drift as buildd tasks.
 
-## The embedding corpus (separate dev-loop pipeline)
+## The embedding corpus (unified workspace store)
 
-This is **not** the product knowledge store. Two deliberately separate pipelines:
+`spec_compare` reads the **unified workspace store** — the same store that `query_knowledge`
+uses. Two corpora within the workspace:
 
-| Pipeline | Embedder | Corpus | Why |
-|----------|----------|--------|-----|
-| **Product** (`buildd_memory`) | non-code model | prose memories; **repo not embedded** (product decision) | user-facing recall |
-| **Spec-sync** (this skill) | code-aware (`voyage-code-3`) | full code + all 4 doc repos | dev-loop drift diffing |
+| Corpus | Namespace | What it holds |
+|--------|-----------|--------------|
+| `code` | `{workspaceId}:code` | Source files ingested by the knowledge-ingest GH Actions workflow |
+| `spec` | `{workspaceId}:spec` | Spec/docs chunks (SPEC.md, buildd-docs, buildd-site, knowledge-base) |
 
-Keep them isolated by namespace. The product uses `{workspaceId}:memory`; spec-sync
-uses a **dedicated** `SPEC_WORKSPACE_ID` so its `code`/`docs` chunks never collide with
-any product namespace. Build it with:
+Ingestion is handled by the **GH Actions knowledge-ingest workflow** — not the ephemeral
+Neon branch this skill previously maintained. Re-run that workflow to refresh the corpus.
+
+For local or ad-hoc ingestion, use:
 
 ```bash
-SPEC_WORKSPACE_ID=<dedicated-uuid> \
+SPEC_WORKSPACE_ID=<workspace-uuid> \
 DATABASE_URL=<target-db> \
-VOYAGE_API_KEY=<key>            # omit → lexical-only (BM25), still usable \
+VOYAGE_API_KEY=<key>            # omit -> lexical-only (BM25), still usable \
   bash .claude/skills/spec-sync/scripts/ingest-spec-corpus.sh
 ```
 
-The corpus is **ephemeral and rebuildable** — re-run the script anytime; each file's
-prior chunks are cleared before re-chunk (idempotent on `(namespace, source_id)`).
+The corpus is **rebuildable** — each file's prior chunks are cleared before re-chunk
+(idempotent on `(namespace, source_id)`).
 
 ### Prerequisites / gotchas
 - `VOYAGE_API_KEY` is **not** in `.env`/shell by default — without it you get lexical-only
   (no semantic search). Confirm before claiming "embedded."
-- The underlying `scripts/ingest-knowledge.ts` writes to `DATABASE_URL` (production Neon
-  unless overridden). **Use a dedicated `SPEC_WORKSPACE_ID` and confirm the target DB** —
-  don't pollute product namespaces.
-- Query the corpus via the `KnowledgeStore` (`packages/core/knowledge-store`) scoped to
-  `SPEC_WORKSPACE_ID`.
+- `spec_compare` resolves the workspace from the MCP connection context. Connect with
+  `?workspace=<id>` when calling the remote MCP endpoint.
 
 ## Non-negotiables
 

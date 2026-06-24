@@ -151,7 +151,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20), namespace? (override the SPEC_SYNC_NAMESPACE env) } — Reach for this before planning or modifying a feature: retrieves CODE+DOCS evidence so you can see how something is actually implemented and what is documented, rather than guessing. Answers "how does X work?", "where is Y implemented?", "does the code match the docs?" Scores surface candidates; they do not decide — read the snippets. Secondary benefit: flags spec drift (documented-not-built / shipped-not-documented / contradicted). WHEN NOT TO USE: live task/worker status, trivial lookups you already know, routine data queries. NOTE: requires admin token — workers/agents cannot call this; use query_knowledge(corpus: code) instead. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
   };
 
   const lines = actions
@@ -168,7 +168,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search. corpus: code = semantic search over the actual codebase — use to understand how a feature works, find where something is implemented, or audit usage before modifying (the agent-accessible path for codebase Q&A). corpus: docs = semantic search over product documentation. corpus: memory/task/pr/plan/artifact = team history (what was tried, what shipped, what failed). Use before planning or modifying an existing feature to ground your understanding. WHEN NOT TO USE: live task/worker status, data that changes per-request. Returns ranked results with sourceUrl.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Use it before planning or starting work to find what was tried before, what shipped, and what failed. Returns ranked results with sourceUrl.',
   };
 
   const lines = actions
@@ -2402,13 +2402,13 @@ export async function handleBuilddAction(
       return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
-    // Spec-drift compare (admin/dev only). Retrieves evidence from the spec-sync
-    // corpus (a dedicated, ingest-built namespace holding `:code` + `:docs` chunks)
-    // for a feature/term, and returns BOTH sides for the CALLER to judge. There is
-    // no LLM in core — the judging (implemented / removed / contradicted) is done by
-    // the calling agent or interactive session reading the snippets. Scores SURFACE
-    // candidates; they do NOT decide drift (a reranker always returns a best match,
-    // so a removed feature still scores moderately against its semantic neighbour).
+    // Spec-drift compare (admin/dev only). Retrieves evidence from the unified
+    // workspace store ({workspaceId}:code + {workspaceId}:spec) for a feature/term,
+    // and returns BOTH sides for the CALLER to judge. There is no LLM in core —
+    // the judging (implemented / removed / contradicted) is done by the calling agent
+    // or interactive session reading the snippets. Scores SURFACE candidates; they do
+    // NOT decide drift (a reranker always returns a best match, so a removed feature
+    // still scores moderately against its semantic neighbour).
     case 'spec_compare': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('spec_compare requires an admin-level token (dev tooling)');
@@ -2416,15 +2416,14 @@ export async function handleBuilddAction(
       const feature = (params.feature || params.query) as string | undefined;
       if (!feature) throw new Error('feature (or query) is required');
 
-      // Dedicated spec-sync corpus namespace (NOT a product workspace). Override
-      // via params.namespace or the SPEC_SYNC_NAMESPACE env; otherwise this default.
-      const ns = (params.namespace as string) || process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
+      const wsId = await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('workspaceId is required for spec_compare — connect with ?workspace=<id>');
 
       const topK = Math.min((params.topK as number) || 5, 20);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
-      const [codeHits, docsHits] = await Promise.all([
-        ks.query(buildNamespace(ns, 'code'), { text: feature, mode: 'hybrid', topK }),
-        ks.query(buildNamespace(ns, 'docs'), { text: feature, mode: 'hybrid', topK }),
+      const [codeHits, specHits] = await Promise.all([
+        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(wsId, 'spec'), { text: feature, mode: 'hybrid', topK }),
       ]);
 
       const fmt = (hits: typeof codeHits) => hits.length
@@ -2434,7 +2433,7 @@ export async function handleBuilddAction(
       return text(
         `# spec_compare: "${feature}"\n\n` +
         `## CODE evidence (what is actually implemented)\n${fmt(codeHits)}\n\n` +
-        `## DOCS evidence (what the docs/site/kb claim)\n${fmt(docsHits)}\n\n` +
+        `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}\n\n` +
         `## How to judge\n` +
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
         `actually implement "${feature}" (a real table/route/impl), or are they only ` +
