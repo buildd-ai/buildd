@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // GET /api/workspaces/[id]/config - Get workspace git config
@@ -50,22 +51,67 @@ export async function GET(
     }
 }
 
-// POST /api/workspaces/[id]/config - Save workspace git config
+// POST /api/workspaces/[id]/config - Save workspace git config and/or releaseConfig
+//
+// releaseConfig schema (WorkspaceReleaseConfig):
+//   enabled: boolean                    — whether this workspace releases at all
+//   strategy?: 'workflow_dispatch'      — dispatch the repo's own GitHub Actions workflow
+//            | 'branch_merge'           — merge source branch into prodBranch on task completion
+//            | 'script'                 — run command in a spawned worker (not yet implemented)
+//
+//   workflow_dispatch fields:
+//     workflowFile?: string             — e.g. "release.yml"
+//     ref?: string                      — source branch the workflow runs on, e.g. "dev"
+//     inputs?: Record<string, string>   — extra workflow_dispatch inputs
+//
+//   branch_merge fields:
+//     prodBranch?: string               — production branch to merge into, e.g. "main"
+//     deployTarget?: { type: 'vercel', projectId?: string, teamId?: string }
+//     verificationUrl?: string          — URL polled after deploy to confirm health (expects 2xx)
+//     postDeployHooks?: Array<{         — run after successful deploy confirmation
+//       type: 'buildd_mcp' | 'http'
+//       description: string
+//       action?: string                 — buildd_mcp: tool action name
+//       params?: Record<string,unknown> — buildd_mcp: params
+//       url?: string                    — http: POST target
+//       headers?: Record<string,string> — http: extra headers
+//     }>
+//
+//   script fields:
+//     command?: string                  — e.g. "bun run release"
 export async function POST(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
     const { id } = await params;
 
+    // Support both session auth and API key/OAuth auth
+    const authHeader = req.headers.get('authorization');
+    const apiKey = authHeader?.replace('Bearer ', '') || null;
+    const apiAccount = await authenticateApiKey(apiKey);
     const user = await getCurrentUser();
-    if (!user) {
+
+    if (!apiAccount && !user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     try {
-        const access = await verifyWorkspaceAccess(user.id, id);
-        if (!access) {
-            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        // For session auth, verify workspace access via team membership
+        if (user && !apiAccount) {
+            const access = await verifyWorkspaceAccess(user.id, id);
+            if (!access) {
+                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+            }
+        }
+        // For API key/OAuth auth, verify workspace belongs to the key's team
+        if (apiAccount) {
+            const ws = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { teamId: true, accessMode: true },
+            });
+            if (!ws || (ws.teamId !== apiAccount.teamId && ws.accessMode !== 'open')) {
+                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+            }
         }
 
         const body = await req.json();

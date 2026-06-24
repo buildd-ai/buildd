@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { watchedProjects, accounts } from '@buildd/core/db/schema';
+import { watchedProjects } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { runWatcherForProject } from '@/lib/health-watcher';
 
@@ -18,9 +18,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   let authorized = false;
   if (apiKey) {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.apiKey, hashApiKey(apiKey)),
-    });
+    const account = await authenticateApiKey(apiKey);
     if (account) authorized = await verifyAccountWorkspaceAccess(account.id, row.workspaceId, 'canCreate');
   } else {
     const user = await getCurrentUser();
