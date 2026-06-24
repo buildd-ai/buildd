@@ -130,9 +130,10 @@ creds are encrypted JSON in `encryptedValue`. Expiring tokens use `tokenExpiresA
 Hybrid semantic + lexical retrieval over `memory | code | docs | task | artifact | pr |
 plan | session` corpora. namespace = `{workspaceId}:{corpus}`. pgvector (1024-dim,
 HNSW) + tsvector BM25, fused via RRF, optional cross-encoder rerank. Embeds via
-Voyage (`voyage-code-3` + `rerank-2.5`) when `VOYAGE_API_KEY` is set; **falls back to
+Voyage (`voyage-4-large` + `rerank-2.5`) when `VOYAGE_API_KEY` is set; **falls back to
 lexical-only otherwise**. Swappable `KnowledgeStore` interface (same pattern as
-`AgentBackend`). See `docs/knowledge-store.md`.
+`AgentBackend`). Two pipelines: general store (worker-accessible, auto-indexed) and
+spec-sync corpus (admin-only, `spec_compare`). See `docs/knowledge-store.md`.
 
 ### Supporting tables
 `worker_heartbeats` (runner liveness, independent of workers), `worker_error_traces`

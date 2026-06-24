@@ -1003,7 +1003,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   content: text('content').notNull(),
   // Separate field for BM25/tsvector search (may be title + content for memories)
   lexicalText: text('lexical_text'),
-  // pgvector embedding (voyage-code-3: 1024 dims; stored as string "[0.1,...]")
+  // pgvector embedding (voyage-4-large: 1024 dims; stored as string "[0.1,...]")
   embedding: vectorType('embedding', { dimensions: 1024 }),
   // Model name + dim stored so re-embeds are detectable
   embeddingModel: text('embedding_model'),
