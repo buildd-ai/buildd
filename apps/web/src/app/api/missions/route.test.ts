@@ -448,6 +448,45 @@ describe('POST /api/missions', () => {
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
+  it('does NOT auto-start when created with status=paused (paused-on-create regression)', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Paused Mission', status: 'paused' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    // status must be stored in the INSERT
+    expect(insertedMissionValues.status).toBe('paused');
+    // runMission must NOT be called — no planning task can be enqueued
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-start when isHeartbeat=false', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Inert Mission', isHeartbeat: false }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('auto-starts when status=active explicitly set', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Active Mission', status: 'active' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(mockRunMission).toHaveBeenCalledWith('obj-1', { manualRun: true });
+  });
+
   it('still succeeds when auto-start organizer fails', async () => {
     mockRunMission.mockRejectedValue(new Error('dispatch failed'));
 

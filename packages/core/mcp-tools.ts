@@ -1953,6 +1953,7 @@ export async function handleBuilddAction(
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
           if (params.model) body.model = params.model;
+          if (params.status !== undefined) body.status = params.status;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist) body.heartbeatChecklist = params.heartbeatChecklist;
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;

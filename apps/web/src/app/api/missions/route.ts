@@ -107,7 +107,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
+      status: requestedStatus } = body;
+
+    const validStatuses = ['active', 'paused', 'completed', 'archived'];
+    if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
+      return NextResponse.json({ error: `Invalid status: must be one of ${validStatuses.join(', ')}` }, { status: 400 });
+    }
+    const effectiveStatus: 'active' | 'paused' | 'completed' | 'archived' = requestedStatus || 'active';
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -172,6 +179,7 @@ export async function POST(req: NextRequest) {
         title,
         description: description || null,
         workspaceId: workspaceId || null,
+        status: effectiveStatus,
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
         contextArtifactIds: contextArtifactIds || [],
@@ -228,14 +236,16 @@ export async function POST(req: NextRequest) {
       mission.scheduleId = schedule.id;
     }
 
-    // Auto-start the organizer: create and dispatch a planning task immediately.
-    // Fire-and-forget — mission creation succeeds even if the organizer fails to start.
+    // Auto-start the organizer only when the mission is born active and heartbeat is not disabled.
+    // Paused-on-create and isHeartbeat=false missions must be inert — no planning task enqueued.
     let organizerTask: { id: string } | null = null;
-    try {
-      const result = await runMission(mission.id, { manualRun: true });
-      if (result.task) organizerTask = { id: result.task.id };
-    } catch (err) {
-      console.error('Auto-start organizer failed (mission still created):', err);
+    if (effectiveStatus === 'active' && isHeartbeat !== false) {
+      try {
+        const result = await runMission(mission.id, { manualRun: true });
+        if (result.task) organizerTask = { id: result.task.id };
+      } catch (err) {
+        console.error('Auto-start organizer failed (mission still created):', err);
+      }
     }
 
     return NextResponse.json(
