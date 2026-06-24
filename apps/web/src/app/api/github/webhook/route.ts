@@ -8,6 +8,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
+import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -375,6 +376,13 @@ async function handlePullRequestEvent(event: {
       .where(eq(tasks.id, worker.task.id));
     console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
 
+    // PR merged: unblock any missions waiting on this mission's PRs to merge
+    if (worker.task.missionId) {
+      checkAndUnblockDependentMissions(worker.task.missionId, 'merged').catch(e =>
+        console.error(`[webhook] unblock failed for merged PR mission ${worker.task!.missionId}:`, e)
+      );
+    }
+
     // Post-merge release trigger — fire release.yml if task.release indicates it.
     const mergedTask = worker.task;
     if (mergedTask.release !== 'false' && event.installation) {
@@ -422,6 +430,12 @@ async function handlePullRequestEvent(event: {
         .set({ status: 'completed', updatedAt: new Date() })
         .where(eq(tasks.id, matchingTask.id));
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
+
+      if (matchingTask.missionId) {
+        checkAndUnblockDependentMissions(matchingTask.missionId, 'merged').catch(e =>
+          console.error(`[webhook] unblock failed for branch-match merged PR mission ${matchingTask.missionId}:`, e)
+        );
+      }
     }
   }
 }

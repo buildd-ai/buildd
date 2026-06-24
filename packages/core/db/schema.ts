@@ -492,6 +492,12 @@ export const missions = pgTable('missions', {
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
+  // Mission-level dependency sequencing: this mission won't run until the gate condition
+  // is met on dependsOnMissionId. 'merged' = upstream PRs landed; 'completed' = mission.status='completed'.
+  dependsOnMissionId: uuid('depends_on_mission_id'),
+  gateCondition: text('gate_condition').notNull().default('merged').$type<'merged' | 'completed'>(),
+  // Set by checkAndUnblockDependentMissions when the gate condition is satisfied.
+  dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
   // Shared feature branch for this mission. All mission tasks push commits here;
@@ -511,6 +517,7 @@ export const missions = pgTable('missions', {
   workspaceIdx: index('missions_workspace_idx').on(t.workspaceId),
   statusIdx: index('missions_status_idx').on(t.status),
   parentIdx: index('missions_parent_idx').on(t.parentMissionId),
+  dependsOnIdx: index('missions_depends_on_idx').on(t.dependsOnMissionId),
 }));
 
 
@@ -1079,6 +1086,8 @@ export const missionsRelations = relations(missions, ({ one, many }) => ({
   createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
   parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
   subMissions: many(missions, { relationName: 'subMissions' }),
+  dependsOnMission: one(missions, { fields: [missions.dependsOnMissionId], references: [missions.id], relationName: 'dependentMissions' }),
+  dependentMissions: many(missions, { relationName: 'dependentMissions' }),
   tasks: many(tasks),
   schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
   artifacts: many(artifacts),

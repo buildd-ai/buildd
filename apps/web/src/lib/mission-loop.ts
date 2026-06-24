@@ -5,6 +5,7 @@ import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
+import { isMissionBlocked, checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
@@ -38,10 +39,21 @@ export async function maybeRetriggerMission(
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, status: true, scheduleId: true, updatedAt: true },
+    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true },
   });
 
   if (!mission || mission.status !== 'active') {
+    return { action: 'skipped' };
+  }
+
+  // 1b. Dependency gate — don't retrigger if upstream hasn't cleared
+  const blockStatus = await isMissionBlocked({
+    id: mission.id,
+    dependsOnMissionId: mission.dependsOnMissionId ?? null,
+    gateCondition: mission.gateCondition,
+    dependencyMetAt: mission.dependencyMetAt ?? null,
+  });
+  if (blockStatus.blocked) {
     return { action: 'skipped' };
   }
 
@@ -106,6 +118,10 @@ export async function maybeRetriggerMission(
           .where(eq(taskSchedules.id, mission.scheduleId));
       }
 
+      await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
+        console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
+      );
+
       await triggerEvent(
         channels.mission(missionId),
         events.MISSION_LOOP_COMPLETED,
@@ -145,6 +161,10 @@ export async function maybeRetriggerMission(
           .set({ enabled: false, updatedAt: new Date() })
           .where(eq(taskSchedules.id, m.scheduleId));
       }
+
+      await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
+        console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
+      );
 
       await triggerEvent(
         channels.mission(missionId),
@@ -205,6 +225,10 @@ export async function maybeRetriggerMission(
       body: 'All deliverable tasks complete. Mission auto-completed.',
       status: 'open',
     });
+
+    await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
+      console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
+    );
 
     await triggerEvent(
       channels.mission(missionId),

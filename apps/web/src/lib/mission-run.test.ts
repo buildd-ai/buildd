@@ -425,4 +425,34 @@ describe('runMission', () => {
     // Dispatch must NOT be called for the loser path
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
+
+  it('returns skippedBlocked when upstream dependency is not yet met', async () => {
+    // First findFirst call returns the mission itself; second call (inside isMissionBlocked)
+    // returns the upstream mission that is still active.
+    mockMissionsFindFirst
+      .mockResolvedValueOnce({
+        id: 'obj-1',
+        teamId: 'team-1',
+        workspaceId: 'ws-1',
+        status: 'active',
+        title: 'Downstream Mission',
+        priority: 0,
+        schedule: null,
+        dependsOnMissionId: 'upstream-id',
+        gateCondition: 'merged',
+        dependencyMetAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'upstream-id',
+        title: 'Specs Mission',
+        status: 'active',
+      });
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.task).toBeNull();
+    expect(result.skippedBlocked).toBe(true);
+    expect(result.blockedReason).toContain('Specs Mission');
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
 });

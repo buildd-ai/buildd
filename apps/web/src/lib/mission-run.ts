@@ -6,6 +6,7 @@ import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
+import { isMissionBlocked } from '@/lib/mission-dependency';
 
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect | null;
@@ -13,6 +14,10 @@ export interface RunMissionResult {
   deduped?: boolean;
   /** True when planning was skipped because the mission's primary PR is awaiting review/CI */
   skippedPrOpen?: boolean;
+  /** True when planning was skipped because an upstream mission's gate condition is not yet met */
+  skippedBlocked?: boolean;
+  /** Human-readable reason for skippedBlocked (e.g. "Waiting for mission X to merge") */
+  blockedReason?: string;
 }
 
 export interface CycleContext {
@@ -62,6 +67,18 @@ export async function runMission(
 
   if (mission.status !== 'active') {
     throw new Error(`Cannot run mission with status: ${mission.status}. Only active missions can be run.`);
+  }
+
+  // Dependency gate: don't plan if the upstream mission's gate condition isn't met
+  const blockStatus = await isMissionBlocked({
+    id: mission.id,
+    dependsOnMissionId: mission.dependsOnMissionId ?? null,
+    gateCondition: mission.gateCondition,
+    dependencyMetAt: mission.dependencyMetAt ?? null,
+  });
+  if (blockStatus.blocked) {
+    console.log(`[runMission] Mission ${missionId} blocked: ${blockStatus.reason}`);
+    return { task: null, skippedBlocked: true, blockedReason: blockStatus.reason };
   }
 
   // Dedupe: if a planning task for this mission is already in-flight, return it
