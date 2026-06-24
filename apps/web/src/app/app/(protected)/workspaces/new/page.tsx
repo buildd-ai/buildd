@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
@@ -165,6 +165,9 @@ export default function NewWorkspacePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Mode: connect an existing repo vs. create a brand-new repo
+  const [mode, setMode] = useState<'connect' | 'create'>('connect');
+
   // GitHub state
   const [githubConfigured, setGithubConfigured] = useState(false);
   const [installations, setInstallations] = useState<Installation[]>([]);
@@ -173,6 +176,13 @@ export default function NewWorkspacePage() {
   const [selectedRepos, setSelectedRepos] = useState<Repo[]>([]);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [useManual, setUseManual] = useState(false);
+
+  // New-repo creation state (mode === 'create')
+  const [newRepoName, setNewRepoName] = useState('');
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [newRepoDescription, setNewRepoDescription] = useState('');
+  // Track a workspace already created this submit so a retry doesn't duplicate it
+  const createdWorkspaceIdRef = useRef<string | null>(null);
 
   // Workspace name (used for single-select and manual entry)
   const [workspaceName, setWorkspaceName] = useState('');
@@ -307,6 +317,70 @@ export default function NewWorkspacePage() {
     setError('');
     setBatchErrors([]);
 
+    // Create-new-repo mode: create a workspace shell, then create + link a fresh repo
+    if (mode === 'create') {
+      const repoName = newRepoName.trim();
+      if (!repoName) {
+        setError('Repository name is required');
+        setLoading(false);
+        return;
+      }
+      if (!selectedInstallation) {
+        setError('Select a GitHub account to create the repository under');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        // 1. Reuse the workspace from a prior failed attempt, else create one (no repo yet)
+        let workspaceId = createdWorkspaceIdRef.current;
+        if (!workspaceId) {
+          const wsData: Record<string, unknown> = {
+            name: repoName,
+            accessMode,
+            githubInstallationId: selectedInstallation,
+          };
+          if (selectedTeamId) wsData.teamId = selectedTeamId;
+
+          const wsRes = await fetch('/api/workspaces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(wsData),
+          });
+          if (!wsRes.ok) {
+            const err = await wsRes.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to create workspace');
+          }
+          const ws = await wsRes.json();
+          workspaceId = ws.id as string;
+          createdWorkspaceIdRef.current = workspaceId;
+        }
+
+        // 2. Create the GitHub repo via the installation and link it to the workspace
+        const repoRes = await fetch(`/api/workspaces/${workspaceId}/create-repo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: repoName,
+            private: newRepoPrivate,
+            description: newRepoDescription.trim() || undefined,
+          }),
+        });
+        if (!repoRes.ok) {
+          const err = await repoRes.json().catch(() => ({}));
+          throw new Error(err.hint ? `${err.error}. ${err.hint}` : err.error || 'Failed to create repository');
+        }
+
+        router.push('/app/workspaces');
+        router.refresh();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     const formData = new FormData(e.currentTarget);
     const manualUrl = formData.get('repoUrl') as string;
 
@@ -429,6 +503,38 @@ export default function NewWorkspacePage() {
             </div>
           )}
 
+          {/* Mode toggle: connect existing repo vs. create a new one */}
+          <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Workspace source">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'connect'}
+              onClick={() => { setMode('connect'); setError(''); }}
+              className={`px-4 py-3 rounded-lg border text-sm text-left transition-all ${
+                mode === 'connect'
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border-default hover:border-primary/50'
+              }`}
+            >
+              <div className="font-medium">Connect existing</div>
+              <div className="text-xs text-text-muted mt-0.5">Use a repo you already have</div>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'create'}
+              onClick={() => { setMode('create'); setError(''); createdWorkspaceIdRef.current = null; }}
+              className={`px-4 py-3 rounded-lg border text-sm text-left transition-all ${
+                mode === 'create'
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border-default hover:border-primary/50'
+              }`}
+            >
+              <div className="font-medium">Create new repo</div>
+              <div className="text-xs text-text-muted mt-0.5">Make a fresh GitHub repo</div>
+            </button>
+          </div>
+
           {/* Team Selection */}
           {userTeams.length > 1 && (
             <div>
@@ -450,7 +556,7 @@ export default function NewWorkspacePage() {
           )}
 
           {/* GitHub Repo Selection */}
-          {hasGitHub && !useManual && (
+          {mode === 'connect' && hasGitHub && !useManual && (
             <>
               {installations.length > 1 && (
                 <div>
@@ -502,7 +608,7 @@ export default function NewWorkspacePage() {
           )}
 
           {/* Manual Entry */}
-          {(!hasGitHub || useManual) && (
+          {mode === 'connect' && (!hasGitHub || useManual) && (
             <>
               {hasGitHub && useManual && (
                 <button
@@ -550,7 +656,7 @@ export default function NewWorkspacePage() {
           )}
 
           {/* Workspace Name - shown for single repo or manual entry (not for batch) */}
-          {selectedRepos.length <= 1 && (selectedRepos[0] || manualRepoUrl || workspaceName) && (
+          {mode === 'connect' && selectedRepos.length <= 1 && (selectedRepos[0] || manualRepoUrl || workspaceName) && (
             <div>
               <label className="block text-sm font-medium mb-2">
                 Workspace Name
@@ -572,11 +678,125 @@ export default function NewWorkspacePage() {
           )}
 
           {/* Batch summary for multi-select */}
-          {selectedRepos.length > 1 && !useManual && (
+          {mode === 'connect' && selectedRepos.length > 1 && !useManual && (
             <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg">
               <p className="text-sm font-medium">{selectedRepos.length} repositories selected</p>
               <p className="text-xs text-text-muted mt-1">Each workspace will be named after its repository</p>
             </div>
+          )}
+
+          {/* Create New Repo */}
+          {mode === 'create' && (
+            <>
+              {!githubConfigured ? (
+                <div className="p-3 bg-primary/10 border border-primary/30 rounded-lg">
+                  <p className="text-sm text-primary">
+                    <a href="/api/github/install" className="font-medium hover:underline">
+                      Connect GitHub
+                    </a>
+                    {' '}to create new repositories from buildd.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {installations.length > 1 && (
+                    <div>
+                      <label className="block text-sm font-medium mb-2">GitHub Account</label>
+                      <div className="flex flex-wrap gap-2">
+                        {installations.map((inst) => (
+                          <button
+                            key={inst.id}
+                            type="button"
+                            onClick={() => setSelectedInstallation(inst.id)}
+                            className={`px-3 py-2 rounded-lg border text-sm transition-all ${
+                              selectedInstallation === inst.id
+                                ? 'border-primary bg-primary/10 text-primary'
+                                : 'border-border-default hover:border-primary/50'
+                            }`}
+                          >
+                            {inst.accountLogin}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-xs text-text-muted mt-1">The org or user the new repo is created under</p>
+                    </div>
+                  )}
+
+                  <div>
+                    <label htmlFor="newRepoName" className="block text-sm font-medium mb-2">
+                      Repository Name
+                    </label>
+                    <input
+                      type="text"
+                      id="newRepoName"
+                      value={newRepoName}
+                      onChange={(e) => setNewRepoName(e.target.value)}
+                      placeholder="my-new-project"
+                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 font-mono focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                    />
+                    <p className="text-xs text-text-muted mt-1">
+                      {selectedInstallation
+                        ? `Creates ${installations.find((i) => i.id === selectedInstallation)?.accountLogin}/${newRepoName || 'name'}`
+                        : 'The workspace will be named after the repo'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="newRepoDescription" className="block text-sm font-medium mb-2">
+                      Description <span className="text-text-muted font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      id="newRepoDescription"
+                      value={newRepoDescription}
+                      onChange={(e) => setNewRepoDescription(e.target.value)}
+                      placeholder="What is this repo for?"
+                      className="w-full px-4 py-2 border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Visibility</label>
+                    <div className="space-y-2">
+                      <label
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                          newRepoPrivate ? 'border-primary bg-primary/5' : 'border-border-default hover:border-primary/50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="visibility"
+                          checked={newRepoPrivate}
+                          onChange={() => setNewRepoPrivate(true)}
+                          className="w-4 h-4 mt-0.5"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Private</span>
+                          <p className="text-xs text-text-muted mt-0.5">Only people with access can see this repo</p>
+                        </div>
+                      </label>
+                      <label
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                          !newRepoPrivate ? 'border-primary bg-primary/5' : 'border-border-default hover:border-primary/50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="visibility"
+                          checked={!newRepoPrivate}
+                          onChange={() => setNewRepoPrivate(false)}
+                          className="w-4 h-4 mt-0.5"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Public</span>
+                          <p className="text-xs text-text-muted mt-0.5">Anyone on the internet can see this repo</p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
           )}
 
           <div>
@@ -630,11 +850,17 @@ export default function NewWorkspacePage() {
           <div className="flex gap-4">
             <button
               type="submit"
-              disabled={loading || (hasGitHub && !useManual && selectedRepos.length === 0)}
+              disabled={
+                loading ||
+                (mode === 'connect' && hasGitHub && !useManual && selectedRepos.length === 0) ||
+                (mode === 'create' && (!githubConfigured || !newRepoName.trim() || !selectedInstallation))
+              }
               className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg disabled:opacity-50"
             >
               {loading
                 ? 'Creating...'
+                : mode === 'create'
+                ? 'Create Repo & Workspace'
                 : selectedRepos.length > 1
                 ? `Create ${selectedRepos.length} Workspaces`
                 : 'Create Workspace'}
