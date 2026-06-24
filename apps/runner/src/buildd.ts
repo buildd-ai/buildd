@@ -492,4 +492,25 @@ export class BuilddClient {
       body: JSON.stringify({ repos }),
     });
   }
+
+  /**
+   * Write back refreshed Codex OAuth tokens after a session completes. The Codex
+   * CLI may refresh tokens mid-run; this persists them to the server credential store
+   * so future workers start with current tokens (B — write-back path). Best-effort:
+   * never throws, failures are logged and silently ignored.
+   */
+  async writeBackCodexAuth(
+    workspaceId: string,
+    tokens: { accessToken: string; refreshToken: string; accountId?: string; expiresIn?: number },
+  ): Promise<void> {
+    try {
+      await this.fetch(`/api/workspaces/${workspaceId}/codex-credential/write-back`, {
+        method: 'POST',
+        body: JSON.stringify(tokens),
+      });
+    } catch (err) {
+      // Non-fatal: next run may get fresh tokens via claim-time refresh (D) instead.
+      console.warn(`[BuilddClient] Codex auth write-back failed for workspace ${workspaceId}:`, err instanceof Error ? err.message : 'unknown');
+    }
+  }
 }

@@ -10,8 +10,8 @@
  */
 
 import { db } from './db';
-import { taskOutcomes, tasks } from './db/schema';
-import { eq } from 'drizzle-orm';
+import { taskOutcomes } from './db/schema';
+import { sql } from 'drizzle-orm';
 import { reportOps } from './report-ops';
 
 export interface TaskOutcomeInput {
@@ -35,36 +35,35 @@ export interface TaskOutcomeInput {
  */
 export async function recordTaskOutcome(input: TaskOutcomeInput): Promise<boolean> {
   try {
-    // Explicit select (not the relational query builder): `tasks` has a
-    // `workers: many(workers)` relation, and the RQB can emit references to
-    // related tables under some runtime paths, producing intermittent
-    // "missing FROM-clause entry for table workers" errors. A plain select
-    // structurally cannot reference workers.
-    const [task] = await db
-      .select({
-        id: tasks.id,
-        kind: tasks.kind,
-        complexity: tasks.complexity,
-        classifiedBy: tasks.classifiedBy,
-        predictedModel: tasks.predictedModel,
-      })
-      .from(tasks)
-      .where(eq(tasks.id, input.taskId))
-      .limit(1);
+    // Use db.execute() with a raw SQL template to bypass Drizzle's query
+    // builder entirely. The tasks table has workers relations (workers: many,
+    // creatorWorker: one) and Drizzle 0.30.x has an intermittent bug where
+    // even a plain db.select().from(tasks) can emit a reference to the
+    // workers table without including it in the FROM clause, producing
+    // "missing FROM-clause entry for table workers" errors. A raw sql template
+    // literal contains no Drizzle table/column objects, so the bug cannot fire.
+    const { rows } = await db.execute<{
+      id: string;
+      kind: string | null;
+      complexity: string | null;
+      classified_by: string | null;
+      predicted_model: string | null;
+    }>(sql`SELECT id, kind, complexity, classified_by, predicted_model FROM tasks WHERE id = ${input.taskId} LIMIT 1`);
+    const task = rows[0];
     if (!task) return false;
 
     // Skip tasks that never went through the router (legacy/untagged).
-    if (!task.predictedModel) return false;
+    if (!task.predicted_model) return false;
 
-    const downshifted = detectDownshift(task.kind, task.complexity, task.predictedModel);
+    const downshifted = detectDownshift(task.kind, task.complexity, task.predicted_model);
 
     await db.insert(taskOutcomes).values({
       taskId: input.taskId,
       accountId: input.accountId ?? null,
       kind: task.kind ?? null,
       complexity: task.complexity ?? null,
-      classifiedBy: task.classifiedBy ?? null,
-      predictedModel: task.predictedModel ?? null,
+      classifiedBy: task.classified_by ?? null,
+      predictedModel: task.predicted_model ?? null,
       actualModel: input.actualModel ?? null,
       downshifted,
       outcome: input.outcome,

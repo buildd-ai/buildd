@@ -83,7 +83,8 @@ export async function POST(
       }
 
       // Use found installation
-      const repoData = await createGitHubRepo(installation.installationId, name, org, isPrivate, description);
+      const useOrgEndpoint = installation.accountType === 'Organization';
+      const repoData = await createGitHubRepo(installation.installationId, name, installation.accountLogin, isPrivate, description, useOrgEndpoint);
       await linkRepoToWorkspace(id, repoData, installation.id);
       return NextResponse.json({ repoUrl: repoData.html_url, fullName: repoData.full_name });
     }
@@ -94,8 +95,13 @@ export async function POST(
       return NextResponse.json({ error: 'GitHub installation record not found' }, { status: 500 });
     }
 
+    // A repo must be created under the installation's own account: an org repo
+    // (POST /orgs/{org}/repos) for Organization installs, or the user's repos
+    // (POST /user/repos) for personal (User) installs. The org param only
+    // selects which org login to target when the install is an org.
+    const useOrgEndpoint = installation.accountType === 'Organization';
     const targetOrg = org || installation.accountLogin;
-    const repoData = await createGitHubRepo(installation.installationId, name, targetOrg, isPrivate, description);
+    const repoData = await createGitHubRepo(installation.installationId, name, targetOrg, isPrivate, description, useOrgEndpoint);
     await linkRepoToWorkspace(id, repoData, installation.id);
 
     return NextResponse.json({ repoUrl: repoData.html_url, fullName: repoData.full_name });
@@ -111,7 +117,8 @@ async function createGitHubRepo(
   name: string,
   org: string,
   isPrivate: boolean,
-  description?: string,
+  description: string | undefined,
+  useOrgEndpoint: boolean,
 ) {
   // GitHub API: create repo under org or user
   const repoBody: Record<string, unknown> = {
@@ -121,8 +128,9 @@ async function createGitHubRepo(
   };
   if (description) repoBody.description = description;
 
-  // Use org endpoint if available, otherwise user endpoint
-  const endpoint = org
+  // Org installs create under /orgs/{org}/repos; personal (User) installs must
+  // use /user/repos — the org endpoint 404s for a user account.
+  const endpoint = useOrgEndpoint
     ? `/orgs/${org}/repos`
     : '/user/repos';
 

@@ -3,8 +3,9 @@ import { accounts, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamsWithDetails } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import WorkspaceList from './WorkspaceList';
 
@@ -53,8 +54,12 @@ export default async function WorkspacesPage() {
 
     try {
       const wsIds = await getUserWorkspaceIds(user.id);
-      const rawWorkspaces = wsIds.length > 0 ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+      // Namespace to the active team (buildd-team cookie). null active team
+      // (user in no team) leaves the list empty rather than leaking all teams.
+      const cookieStore = await cookies();
+      const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
+      const rawWorkspaces = (wsIds.length > 0 && activeTeamId) ? await db.query.workspaces.findMany({
+        where: and(inArray(workspaces.id, wsIds), eq(workspaces.teamId, activeTeamId)),
         orderBy: desc(workspaces.createdAt),
         with: {
           team: { columns: { id: true, name: true } },
@@ -125,7 +130,7 @@ export default async function WorkspacesPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen pt-14 px-4 pb-8 md:p-8">
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>

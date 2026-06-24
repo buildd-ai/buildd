@@ -567,9 +567,15 @@ export default async function MissionDetailPage({
                                   )}
 
                                   {latestWorker?.prUrl && (
-                                    <span className="text-[12px] md:text-[11px] text-accent-text">
+                                    <a
+                                      href={latestWorker.prUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[12px] md:text-[11px] text-accent-text hover:underline"
+                                    >
                                       PR #{latestWorker.prNumber}
-                                    </span>
+                                    </a>
                                   )}
 
                                   {isRunning && (
@@ -586,7 +592,12 @@ export default async function MissionDetailPage({
                                   )}
 
                                   {isFailed && (
-                                    <span className="text-[12px] md:text-[11px] text-status-error">Failed</span>
+                                    <span
+                                      className="text-[12px] md:text-[11px] text-status-error"
+                                      title={latestWorker?.prUrl ? 'PR was closed or superseded' : undefined}
+                                    >
+                                      {latestWorker?.prUrl ? 'PR closed' : 'Failed'}
+                                    </span>
                                   )}
 
                                   {!isRunning && !isDone && !isFailed && (

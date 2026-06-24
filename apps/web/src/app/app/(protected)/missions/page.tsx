@@ -2,9 +2,10 @@ import { db } from '@buildd/core/db';
 import { missions, teams, workspaceSkills, accounts, workers } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth } from '@/lib/mission-helpers';
 import { MissionGrid } from './MissionGrid';
 
@@ -17,7 +18,7 @@ export default async function MissionsPage() {
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) {
     return (
-      <div className="px-4 sm:px-7 md:px-10 pt-5 md:pt-8">
+      <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <div className="flex items-baseline justify-between mb-6">
           <h1 className="text-xl font-semibold text-text-primary">Missions</h1>
           <span className="text-xs text-text-secondary font-light">0 active</span>
@@ -30,9 +31,16 @@ export default async function MissionsPage() {
     );
   }
 
-  // Query seat utilization across team accounts
+  // Namespace this view to the active team (buildd-team cookie). Home stays
+  // cross-team; the missions list shows only the active team's missions.
+  const cookieStore = await cookies();
+  const activeTeamId =
+    (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
+  const scopedTeamIds = [activeTeamId];
+
+  // Query seat utilization across the active team's accounts
   const teamAccounts = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, teamIds),
+    where: inArray(accounts.teamId, scopedTeamIds),
     columns: { id: true, maxConcurrentWorkers: true },
   });
   const maxSeats = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
@@ -74,7 +82,7 @@ export default async function MissionsPage() {
   }
 
   const allMissions = await db.query.missions.findMany({
-    where: inArray(missions.teamId, teamIds),
+    where: inArray(missions.teamId, scopedTeamIds),
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
     with: {
@@ -169,7 +177,7 @@ export default async function MissionsPage() {
   ).length;
 
   return (
-    <div className="px-4 sm:px-7 md:px-10 pt-5 md:pt-8 max-w-5xl">
+    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>

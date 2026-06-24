@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { Greeting } from './greeting';
+
+export const dynamic = 'force-dynamic';
 import {
   deriveMissionHealth,
   healthToGroup,
@@ -365,7 +367,7 @@ export default async function HomePage() {
     : 'Your agents are standing by';
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
+    <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
         {/* Desktop two-column layout */}
         <div className="md:flex md:gap-0">
@@ -532,7 +534,9 @@ export default async function HomePage() {
                     <div className="section-label">Missions</div>
                     {missions.length > 0 && (
                       <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
-                        {activeMissions.length} active
+                        {activeMissions.length > 0
+                          ? `${activeMissions.length} active`
+                          : `${missions.length} total →`}
                       </Link>
                     )}
                   </div>
@@ -733,7 +737,7 @@ export default async function HomePage() {
                         </div>
                       </div>
                       <span className="font-mono text-[11px] text-text-muted whitespace-nowrap flex-shrink-0 pt-0.5">
-                        {formatTime(event.timestamp)}
+                        {timeAgo(event.timestamp)}
                       </span>
                     </div>
                   );
