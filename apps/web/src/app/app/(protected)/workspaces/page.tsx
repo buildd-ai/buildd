@@ -130,7 +130,7 @@ export default async function WorkspacesPage() {
   }
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen pt-14 px-4 pb-8 md:p-8">
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
