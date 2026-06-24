@@ -4,6 +4,7 @@ import type { WorkspaceReleaseConfig, ReleaseResult } from '@buildd/core/db/sche
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 
 // Vercel deployment readback — polls until terminal state
 async function pollVercelDeployment(
@@ -94,6 +95,47 @@ async function runHook(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { description: hook.description, success: false, error: msg };
+  }
+}
+
+// Find an open PR from releaseBranch → prodBranch (the "release PR" pattern).
+// Returns null when no such PR is open (already merged or not yet created).
+export async function findReleasePr(
+  installationId: number,
+  repoFullName: string,
+  releaseBranch: string,
+  prodBranch: string,
+): Promise<{ number: number; headSha: string; url: string; title: string } | null> {
+  const [owner] = repoFullName.split('/');
+  if (!owner) return null;
+  try {
+    const path = `/repos/${repoFullName}/pulls?base=${encodeURIComponent(prodBranch)}&head=${encodeURIComponent(owner + ':' + releaseBranch)}&state=open&per_page=1`;
+    const data = await githubApi(installationId, path);
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const pr = data[0];
+    return {
+      number: pr.number as number,
+      headSha: (pr.head as Record<string, unknown>)?.sha as string ?? '',
+      url: pr.html_url as string ?? '',
+      title: pr.title as string ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Check the CI state of a commit's check-runs and return a classified result.
+async function getReleasePrCiState(
+  installationId: number,
+  repoFullName: string,
+  headSha: string,
+): Promise<{ ciState: 'passing' | 'failing' | 'pending' | 'unknown'; failingChecks: string[] }> {
+  try {
+    const data = await githubApi(installationId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`);
+    const runs = (data?.check_runs ?? []) as CheckRun[];
+    return classifyCheckRuns(runs);
+  } catch {
+    return { ciState: 'unknown', failingChecks: [] };
   }
 }
 
@@ -225,23 +267,97 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   let mergedAt: string | undefined;
   let mergeSha: string | undefined;
 
-  if (worker?.branch) {
-    // Get GitHub repo for this workspace
-    const repo = workspace?.githubRepoId
-      ? await db.query.githubRepos.findFirst({
-          where: eq(githubRepos.id, workspace.githubRepoId),
-          with: { installation: true },
-        })
-      : null;
+  // Get GitHub repo for this workspace (needed for both releaseBranch and worker-branch paths)
+  const repo = workspace?.githubRepoId
+    ? await db.query.githubRepos.findFirst({
+        where: eq(githubRepos.id, workspace.githubRepoId),
+        with: { installation: true },
+      })
+    : null;
 
-    if (!repo?.installation) {
+  if (!repo?.installation) {
+    return {
+      status: 'failed',
+      message: 'Release: FAILED — workspace has no linked GitHub repo/installation',
+      error: 'No GitHub installation',
+    };
+  }
+
+  if (branchMerge.releaseBranch) {
+    // "Release PR" path: the release task creates a PR from releaseBranch → prodBranch
+    // (e.g. dev → main via `bun run release`). We find that PR, check its CI, and
+    // if CI is already green we merge it immediately. If CI is still pending we
+    // return pending_ci so the webhook can complete the task once CI resolves.
+    const releasePr = await findReleasePr(
+      repo.installation.installationId,
+      repo.fullName,
+      branchMerge.releaseBranch,
+      prodBranch,
+    );
+
+    if (!releasePr) {
       return {
         status: 'failed',
-        message: 'Release: FAILED — workspace has no linked GitHub repo/installation',
-        error: 'No GitHub installation',
+        message: `Release: FAILED — no open release PR found from ${branchMerge.releaseBranch} to ${prodBranch}. Run \`bun run release\` first or check if the PR was already merged.`,
+        error: 'No open release PR found',
       };
     }
 
+    const { ciState, failingChecks } = await getReleasePrCiState(
+      repo.installation.installationId,
+      repo.fullName,
+      releasePr.headSha,
+    );
+
+    if (ciState === 'failing') {
+      return {
+        status: 'failed',
+        message: `Release: FAILED — CI failing on release PR #${releasePr.number} (${releasePr.url}). Fix: ${failingChecks.join(', ')}`,
+        error: `CI failing: ${failingChecks.join(', ')}`,
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
+    }
+
+    if (ciState === 'pending' || ciState === 'unknown') {
+      // CI hasn't finished — return pending_ci so the workers route can track
+      // the PR number and the webhook handler can complete the task when CI resolves.
+      return {
+        status: 'pending_ci',
+        message: `Release: CI pending on release PR #${releasePr.number} (${releasePr.url}) — task will complete/fail when CI finishes.`,
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
+    }
+
+    // CI is passing — merge the release PR now
+    const mergeResp = await githubApi(
+      repo.installation.installationId,
+      `/repos/${repo.fullName}/pulls/${releasePr.number}/merge`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merge_method: 'merge' }),
+      },
+    ).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { merged: false, message: msg } as Record<string, unknown>;
+    });
+
+    if (!mergeResp?.sha && mergeResp?.merged === false) {
+      return {
+        status: 'failed',
+        message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp.message ?? 'merge failed'}`,
+        error: String(mergeResp.message ?? 'merge failed'),
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
+    }
+
+    mergedAt = new Date().toISOString();
+    mergeSha = mergeResp.sha as string | undefined;
+  } else if (worker?.branch) {
+    // Worker-branch path: merge the worker's feature branch into prodBranch
     const mergeResult = await mergeIntoProd(
       repo.installation.installationId,
       repo.fullName,

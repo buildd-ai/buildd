@@ -4,7 +4,7 @@ import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle, resolveOutputFormat } from '@buildd/shared';
+import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -49,12 +49,8 @@ export { isEphemeralTestBranch };
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
-// Master polling cadence (minutes). Heartbeat, reconcile, and claim-fallback
-// all fire on a single aligned interval so the DB sees ONE short burst per
-// tick and a long quiet stretch in between — long enough for serverless
-// Postgres (Neon, default 5-min suspend) to actually scale to zero.
-// Pusher handles real-time delivery; these timers are pure safety nets.
-const POLL_MIN = Number(process.env.BUILDD_RUNNER_POLL_MIN ?? 60);
+// RUNNER_POLL_MIN and RUNNER_HEARTBEAT_INTERVAL_MS come from @buildd/shared so
+// the server-side liveness thresholds always use the same value as the runner.
 
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
@@ -374,7 +370,7 @@ export class WorkerManager {
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
         }
-      }, POLL_MIN * 60_000);
+      }, RUNNER_HEARTBEAT_INTERVAL_MS);
     }
 
     // Initialize Pusher if configured

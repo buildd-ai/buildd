@@ -6,6 +6,7 @@ import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
+import { isMissionBlocked } from '@/lib/mission-dependency';
 
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect | null;
@@ -13,6 +14,10 @@ export interface RunMissionResult {
   deduped?: boolean;
   /** True when planning was skipped because the mission's primary PR is awaiting review/CI */
   skippedPrOpen?: boolean;
+  /** True when planning was skipped because an upstream mission's gate condition is not yet met */
+  skippedBlocked?: boolean;
+  /** Human-readable reason for skippedBlocked (e.g. "Waiting for mission X to merge") */
+  blockedReason?: string;
 }
 
 export interface CycleContext {
@@ -64,6 +69,18 @@ export async function runMission(
     throw new Error(`Cannot run mission with status: ${mission.status}. Only active missions can be run.`);
   }
 
+  // Dependency gate: don't plan if the upstream mission's gate condition isn't met
+  const blockStatus = await isMissionBlocked({
+    id: mission.id,
+    dependsOnMissionId: mission.dependsOnMissionId ?? null,
+    gateCondition: mission.gateCondition,
+    dependencyMetAt: mission.dependencyMetAt ?? null,
+  });
+  if (blockStatus.blocked) {
+    console.log(`[runMission] Mission ${missionId} blocked: ${blockStatus.reason}`);
+    return { task: null, skippedBlocked: true, blockedReason: blockStatus.reason };
+  }
+
   // Dedupe: if a planning task for this mission is already in-flight, return it
   // instead of creating another. Prevents double-runs from stale client state (e.g.
   // iOS Pusher missing a cron-fired run, user taps Run, two parallel planners start).
@@ -80,6 +97,24 @@ export async function runMission(
   });
   if (inFlight) {
     return { task: inFlight, deduped: true };
+  }
+
+  // Also dedupe against cron-created tasks for the same schedule. For heartbeat
+  // missions, the cron creates tasks with mode='execution' (not 'planning'), so
+  // the check above misses them. A manual run arriving while a cron task is active
+  // would otherwise start a concurrent planning cycle that duplicates execution tasks.
+  if (mission.scheduleId) {
+    const cronInFlight = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.scheduleId, mission.scheduleId),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    if (cronInFlight) {
+      return { task: cronInFlight, deduped: true };
+    }
   }
 
   // Resolve workspace: use mission's workspace or auto-create an orchestrator workspace
@@ -189,7 +224,10 @@ export async function runMission(
     }
   }
 
-  // Create the planning task
+  // Create the planning task — atomic dedup via DB unique constraint.
+  // The partial unique index (mode=planning, status IN active states) ensures only
+  // one in-flight planning task exists per mission even if two callers race past
+  // the soft dedup check above.
   const [task] = await db
     .insert(tasks)
     .values({
@@ -209,7 +247,21 @@ export async function runMission(
       // mission (including the organizer) stays on one agent backend.
       ...(mission.defaultBackend ? { backend: mission.defaultBackend } : {}),
     })
+    .onConflictDoNothing()
     .returning();
+
+  if (!task) {
+    // Another caller won the race — fetch the task they inserted
+    const inFlight = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.mode, 'planning'),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return { task: inFlight ?? null, deduped: true };
+  }
 
   if (workspace) {
     await dispatchNewTask(task, workspace);

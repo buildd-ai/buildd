@@ -13,6 +13,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
+  const [collapsed, setCollapsed] = useState(!!checklist);
   const [value, setValue] = useState(checklist || '');
   const [saving, setSaving] = useState(false);
 
@@ -43,14 +44,24 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
     <div>
       <div className="flex items-center justify-between mb-2">
         <h2 className="section-label">Heartbeat Checklist</h2>
-        {!editing && (
-          <button
-            onClick={() => setEditing(true)}
-            className="text-[11px] text-text-secondary hover:text-accent-text transition-colors"
-          >
-            Edit
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {!editing && checklist && (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              className="text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+            >
+              {collapsed ? 'Show' : 'Hide'}
+            </button>
+          )}
+          {!editing && (
+            <button
+              onClick={() => { setCollapsed(false); setEditing(true); }}
+              className="text-[11px] text-text-secondary hover:text-accent-text transition-colors"
+            >
+              Edit
+            </button>
+          )}
+        </div>
       </div>
 
       {editing ? (
@@ -82,9 +93,18 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
           </div>
         </div>
       ) : checklist ? (
-        <div className="p-3 bg-card border border-card-border rounded-lg">
-          <MarkdownContent content={checklist} />
-        </div>
+        collapsed ? (
+          <button
+            onClick={() => setCollapsed(false)}
+            className="w-full p-3 bg-card border border-card-border rounded-lg text-left hover:border-accent/30 transition-colors"
+          >
+            <p className="text-[12px] text-text-muted truncate">{checklist.split('\n')[0]}</p>
+          </button>
+        ) : (
+          <div className="p-3 bg-card border border-card-border rounded-lg">
+            <MarkdownContent content={checklist} />
+          </div>
+        )
       ) : (
         <button
           onClick={() => setEditing(true)}

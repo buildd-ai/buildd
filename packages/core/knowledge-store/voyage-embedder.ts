@@ -1,8 +1,12 @@
-import type { Embedder, EmbedInputType } from './types';
+import type { Embedder, EmbedInputType, Corpus } from './types';
 
 const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings';
 const DEFAULT_MODEL = 'voyage-4-large';
 const DEFAULT_DIMENSIONS = 1024;
+
+export type VoyageModel = 'voyage-4-large' | 'voyage-code-3';
+
+const CODE_CORPORA = new Set<Corpus>(['code', 'docs', 'spec']);
 
 interface VoyageResponse {
   data: Array<{ embedding: number[]; index: number }>;
@@ -11,8 +15,8 @@ interface VoyageResponse {
 }
 
 /**
- * Embedder backed by Voyage AI. Uses voyage-4-large (1024 dims) which handles
- * both natural language and code well.
+ * Embedder backed by Voyage AI. Both voyage-4-large and voyage-code-3 output
+ * 1024 dimensions, so the shared HNSW index requires no structural change.
  *
  * Supports asymmetric retrieval via `input_type`: pass `'query'` when embedding
  * search text and `'document'` (the default) when embedding stored chunks.
@@ -26,7 +30,7 @@ export class VoyageEmbedder implements Embedder {
 
   constructor(
     private readonly apiKey: string,
-    model = DEFAULT_MODEL,
+    model: VoyageModel = DEFAULT_MODEL,
     dimensions = DEFAULT_DIMENSIONS,
   ) {
     this.model = model;
@@ -60,13 +64,46 @@ export class VoyageEmbedder implements Embedder {
   }
 }
 
-let _embedder: VoyageEmbedder | null = null;
+// Per-model singletons — keyed by model name
+const _embedders = new Map<string, VoyageEmbedder>();
 
-/** Return singleton VoyageEmbedder, or null if VOYAGE_API_KEY is not set. */
-export function getVoyageEmbedder(): VoyageEmbedder | null {
-  if (_embedder) return _embedder;
+/** Return singleton VoyageEmbedder for the given model, or null if VOYAGE_API_KEY is not set. */
+export function getVoyageEmbedder(model: VoyageModel = 'voyage-4-large'): VoyageEmbedder | null {
+  const cached = _embedders.get(model);
+  if (cached) return cached;
   const key = process.env.VOYAGE_API_KEY;
   if (!key) return null;
-  _embedder = new VoyageEmbedder(key);
-  return _embedder;
+  const embedder = new VoyageEmbedder(key, model);
+  _embedders.set(model, embedder);
+  return embedder;
+}
+
+/** Convenience: returns a voyage-code-3 embedder optimised for code and structured text. */
+export function getCodeEmbedder(): VoyageEmbedder | null {
+  return getVoyageEmbedder('voyage-code-3');
+}
+
+/** Returns true for corpora whose chunks should be embedded with a code-optimised model. */
+export function isCodeCorpus(corpus: Corpus): boolean {
+  return CODE_CORPORA.has(corpus);
+}
+
+// Corpora that benefit from a code-aware embedding model.
+// voyage-code-3 outperforms voyage-4-large on code retrieval while matching
+// it on prose — so code/docs/spec all use it. The same 1024-dim HNSW index
+// serves both models; namespace filtering provides semantic isolation.
+const CODE_MODEL_CORPORA = new Set<Corpus>(['code', 'docs', 'spec']);
+
+/**
+ * Return the right VoyageEmbedder for a given corpus:
+ * - code / docs / spec → voyage-code-3
+ * - everything else → voyage-4-large
+ *
+ * Returns null when VOYAGE_API_KEY is not set (lexical-only fallback).
+ */
+export function getVoyageEmbedderForCorpus(corpus: Corpus): VoyageEmbedder | null {
+  const key = process.env.VOYAGE_API_KEY;
+  if (!key) return null;
+  const model = CODE_MODEL_CORPORA.has(corpus) ? 'voyage-code-3' : DEFAULT_MODEL;
+  return new VoyageEmbedder(key, model);
 }

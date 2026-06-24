@@ -12,6 +12,7 @@ import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
 } from '@/lib/heartbeat-helpers';
+import { wouldCreateCycle } from '@/lib/mission-dependency';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -107,7 +108,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
+      status: requestedStatus, dependsOnMission, gateCondition } = body;
+
+    const validStatuses = ['active', 'paused', 'completed', 'archived'];
+    if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
+      return NextResponse.json({ error: `Invalid status: must be one of ${validStatuses.join(', ')}` }, { status: 400 });
+    }
+    const effectiveStatus: 'active' | 'paused' | 'completed' | 'archived' = requestedStatus || 'active';
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -118,6 +126,10 @@ export async function POST(req: NextRequest) {
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
+
+    if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
+      return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
     }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -165,6 +177,19 @@ export async function POST(req: NextRequest) {
       teamId = ws.teamId;
     }
 
+    // Cycle guard for dependency chain
+    if (dependsOnMission) {
+      // We don't have the new mission's ID yet — no cycle possible on create since it's new.
+      // But we still validate that the upstream mission exists in the same team.
+      const upstream = await db.query.missions.findFirst({
+        where: eq(missions.id, dependsOnMission),
+        columns: { id: true, teamId: true },
+      });
+      if (!upstream || upstream.teamId !== teamId) {
+        return NextResponse.json({ error: 'dependsOnMission not found' }, { status: 404 });
+      }
+    }
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -172,6 +197,7 @@ export async function POST(req: NextRequest) {
         title,
         description: description || null,
         workspaceId: workspaceId || null,
+        status: effectiveStatus,
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
         contextArtifactIds: contextArtifactIds || [],
@@ -179,6 +205,7 @@ export async function POST(req: NextRequest) {
         createdByUserId: user?.id || null,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
+        ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
       })
       .returning();
 
@@ -228,14 +255,16 @@ export async function POST(req: NextRequest) {
       mission.scheduleId = schedule.id;
     }
 
-    // Auto-start the organizer: create and dispatch a planning task immediately.
-    // Fire-and-forget — mission creation succeeds even if the organizer fails to start.
+    // Auto-start the organizer only when the mission is born active and heartbeat is not disabled.
+    // Paused-on-create and isHeartbeat=false missions must be inert — no planning task enqueued.
     let organizerTask: { id: string } | null = null;
-    try {
-      const result = await runMission(mission.id, { manualRun: true });
-      if (result.task) organizerTask = { id: result.task.id };
-    } catch (err) {
-      console.error('Auto-start organizer failed (mission still created):', err);
+    if (effectiveStatus === 'active' && isHeartbeat !== false) {
+      try {
+        const result = await runMission(mission.id, { manualRun: true });
+        if (result.task) organizerTask = { id: result.task.id };
+      } catch (err) {
+        console.error('Auto-start organizer failed (mission still created):', err);
+      }
     }
 
     return NextResponse.json(

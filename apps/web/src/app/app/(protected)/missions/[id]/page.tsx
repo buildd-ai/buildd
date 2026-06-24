@@ -24,6 +24,7 @@ import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
+import MissionSecondaryPanel from './MissionSecondaryPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -396,48 +397,7 @@ export default async function MissionDetailPage({
         />
       </div>
 
-      {/* ── Heartbeat Section (heartbeat missions only) ── */}
-      {isHeartbeat && (
-        <div className="mb-6 space-y-4">
-          <HeartbeatChecklistEditor
-            missionId={id}
-            checklist={heartbeatChecklist}
-          />
-          <QuietHoursConfig
-            missionId={id}
-            activeHoursStart={activeHoursStart}
-            activeHoursEnd={activeHoursEnd}
-            activeHoursTimezone={activeHoursTimezone}
-          />
-        </div>
-      )}
-
-      {/* ── Schedule Wizard (missions without a schedule) ── */}
-      {!scheduleCron && !['completed', 'archived'].includes(mission.status) && (
-        <div className="mb-6">
-          <ScheduleWizard
-            missionId={id}
-            hasWorkspace={!!mission.workspaceId}
-            workspaces={teamWorkspaces}
-          />
-        </div>
-      )}
-
-      {/* ── Configuration ── */}
-      {!['completed', 'archived'].includes(mission.status) && (
-        <div className="mb-6">
-          <MissionConfig
-            missionId={id}
-            workspaceId={mission.workspaceId}
-            model={configModel}
-            workspaces={teamWorkspaces}
-            maxConcurrentTasks={mission.maxConcurrentTasks}
-            activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
-          />
-        </div>
-      )}
-
-      {/* ── Timeline / Feed Tabs ── */}
+      {/* ── Timeline / Feed Tabs — PRIMARY CONTENT ── */}
       <MissionTabs
         timelineContent={displayCycles.length > 0 ? (<>
         <div className="mb-6">
@@ -468,7 +428,13 @@ export default async function MissionDetailPage({
                   {/* Spine */}
                   <div className="flex flex-col items-center w-8 shrink-0">
                     {cycle.evaluation ? (
-                      <span className={`w-3 h-3 rounded-full shrink-0 mt-0.5 ${evalIsRunning ? 'bg-status-info animate-status-pulse' : 'bg-[#D97706]'}`} />
+                      <span className={`shrink-0 mt-0.5 ${
+                        evalIsRunning
+                          ? 'w-3 h-3 rounded-full bg-status-info animate-status-pulse'
+                          : isHeartbeat
+                            ? 'w-2.5 h-2.5 rounded-sm bg-[#059669]'
+                            : 'w-3 h-3 rounded-full bg-[#D97706]'
+                      }`} />
                     ) : (
                       <span className="w-3 h-3 rounded-full bg-text-muted shrink-0 mt-0.5" />
                     )}
@@ -484,8 +450,10 @@ export default async function MissionDetailPage({
                       <div className="mb-2">
                         <div className="flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
-                            <span className={`text-[12px] font-semibold ${evalIsRunning ? 'text-status-info' : 'text-[#92400E]'}`}>
-                              {evalIsRunning ? 'Orchestrating...' : 'Orchestrated'}
+                            <span className={`text-[12px] font-semibold ${evalIsRunning ? 'text-status-info' : isHeartbeat ? 'text-[#059669]' : 'text-[#92400E]'}`}>
+                              {evalIsRunning
+                                ? (isHeartbeat ? 'Evaluating...' : 'Orchestrating...')
+                                : (isHeartbeat ? 'Evaluated' : 'Orchestrated')}
                             </span>
                             {evalIsRunning && (
                               <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
@@ -677,20 +645,6 @@ export default async function MissionDetailPage({
           </div>
         </div>
 
-      {/* ── Heartbeat Timeline (heartbeat missions only) ── */}
-      {isHeartbeat && heartbeatTasks.length > 0 && (
-        <div className="mb-6">
-          <HeartbeatTimeline
-            tasks={heartbeatTasks.map(t => ({
-              id: t.id,
-              createdAt: t.createdAt,
-              status: t.status,
-              result: t.result,
-            }))}
-          />
-        </div>
-      )}
-
       {/* View all tasks link — hidden for completed missions (shown in timeline header instead) */}
       {totalTasks > 0 && mission.status !== 'completed' && (
         <div className="mb-6">
@@ -711,6 +665,60 @@ export default async function MissionDetailPage({
         </>) : <p className="text-[13px] text-text-muted italic mb-6">No tasks yet</p>}
         feedContent={<MissionFeed missionId={id} />}
       />
+
+      {/* ── Secondary: Settings (collapsed by default) ── */}
+      {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
+        <MissionSecondaryPanel>
+          {/* Evaluation Log — heartbeat missions only, secondary content */}
+          {isHeartbeat && heartbeatTasks.length > 0 && (
+            <HeartbeatTimeline
+              tasks={heartbeatTasks.map(t => ({
+                id: t.id,
+                createdAt: t.createdAt,
+                status: t.status,
+                result: t.result,
+              }))}
+            />
+          )}
+
+          {/* Heartbeat Checklist & Quiet Hours */}
+          {isHeartbeat && (
+            <>
+              <HeartbeatChecklistEditor
+                missionId={id}
+                checklist={heartbeatChecklist}
+              />
+              <QuietHoursConfig
+                missionId={id}
+                activeHoursStart={activeHoursStart}
+                activeHoursEnd={activeHoursEnd}
+                activeHoursTimezone={activeHoursTimezone}
+              />
+            </>
+          )}
+
+          {/* Schedule Wizard */}
+          {!scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+            <ScheduleWizard
+              missionId={id}
+              hasWorkspace={!!mission.workspaceId}
+              workspaces={teamWorkspaces}
+            />
+          )}
+
+          {/* Configuration */}
+          {!['completed', 'archived'].includes(mission.status) && (
+            <MissionConfig
+              missionId={id}
+              workspaceId={mission.workspaceId}
+              model={configModel}
+              workspaces={teamWorkspaces}
+              maxConcurrentTasks={mission.maxConcurrentTasks}
+              activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
+            />
+          )}
+        </MissionSecondaryPanel>
+      )}
 
       {/* ── Artifacts ── */}
       {allArtifacts.length > 0 && (

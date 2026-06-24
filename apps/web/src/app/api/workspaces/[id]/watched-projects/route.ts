@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { watchedProjects, accounts } from '@buildd/core/db/schema';
+import { watchedProjects } from '@buildd/core/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { parseCreateInput } from '@/lib/watched-project-input';
 
@@ -16,9 +16,7 @@ async function authenticate(
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.apiKey, hashApiKey(apiKey)),
-    });
+    const account = await authenticateApiKey(apiKey);
     if (account) {
       const ok = await verifyAccountWorkspaceAccess(account.id, workspaceId, permission);
       return { ok };

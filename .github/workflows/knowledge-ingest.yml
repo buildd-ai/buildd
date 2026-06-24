@@ -1,0 +1,66 @@
+# Knowledge Ingest — populate and refresh the buildd workspace knowledge store.
+#
+# Embedder selection:
+#   code / docs / spec → voyage-code-3  (code-aware, better retrieval on TS/prose)
+#   memory / task / pr / plan → voyage-4-large (general purpose)
+# A single 1024-dim HNSW index serves both; namespace filtering provides isolation.
+#
+# Ingestion is idempotent: SHA-256 content hashing skips unchanged files;
+# deleteBySource removes stale chunks for files that were modified or removed.
+name: Knowledge Ingest
+
+on:
+  push:
+    branches: [dev]
+  schedule:
+    - cron: '17 6 * * 1'   # Weekly Monday 06:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: knowledge-ingest
+  cancel-in-progress: true
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WORKSPACE_ID: 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # code corpus: all TypeScript/JS/etc. source files under packages/ and apps/.
+      # Skips tests, migrations, and generated output directories.
+      - name: Ingest code corpus (packages/)
+        env:
+          INGEST_SKIP_TESTS: "1"
+          INGEST_SKIP_DIRS: "drizzle,__tests__"
+        run: bun packages/core/scripts/ingest-knowledge.ts --corpus code packages
+
+      - name: Ingest code corpus (apps/)
+        env:
+          INGEST_SKIP_TESTS: "1"
+          INGEST_SKIP_DIRS: "drizzle,__tests__"
+        run: bun packages/core/scripts/ingest-knowledge.ts --corpus code apps
+
+      # docs corpus: all Markdown files under docs/.
+      - name: Ingest docs corpus
+        run: bun packages/core/scripts/ingest-knowledge.ts --corpus docs docs
+
+      # spec corpus: SPEC.md and plan documents — authoritative product spec.
+      # Uses the same docs/ directory; namespace isolation (workspaceId:spec) keeps
+      # it separate from the general docs corpus so spec_compare reads the right pool.
+      - name: Ingest spec corpus
+        run: bun packages/core/scripts/ingest-knowledge.ts --corpus spec docs

@@ -137,7 +137,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission) } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission), dependsOnMission?: string (mission ID — this mission is BLOCKED until the upstream mission satisfies gateCondition; set to null to remove), gateCondition?: "merged" | "completed" (default "merged" — "merged" requires upstream PRs actually merged to target branch via webhook; "completed" requires upstream.status==="completed") } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -151,7 +151,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20), namespace? (override the SPEC_SYNC_NAMESPACE env) } — dev/spec-drift tool. Retrieves CODE vs DOCS evidence from the spec-sync corpus for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
   };
 
   const lines = actions
@@ -168,7 +168,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use it before planning or starting work to find what was tried before, what shipped, and what failed. Returns ranked results with sourceUrl.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Use it before planning or starting work to find what was tried before, what shipped, and what failed. Returns ranked results with sourceUrl.',
   };
 
   const lines = actions
@@ -440,27 +440,38 @@ export async function handleBuilddAction(
       const data = await api('/api/tasks');
       const allTasks = data.tasks || [];
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      let pending = allTasks.filter((t: any) => t.status === 'pending');
+      // Include pending + assigned + in_progress so planners see all ongoing work,
+      // not just tasks waiting to be claimed. This prevents duplicate task creation
+      // when a planner checks existing work before creating new tasks.
+      let active = allTasks.filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status));
       if (wsId) {
-        pending = pending.filter((t: any) => t.workspaceId === wsId);
+        active = active.filter((t: any) => t.workspaceId === wsId);
       }
-      pending.sort((a: any, b: any) => (b.priority || 0) - (a.priority || 0));
+      // Pending tasks first (claimable), then assigned/in_progress (already running)
+      active.sort((a: any, b: any) => {
+        const statusOrder: Record<string, number> = { pending: 0, assigned: 1, in_progress: 2 };
+        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+        if (statusDiff !== 0) return statusDiff;
+        return (b.priority || 0) - (a.priority || 0);
+      });
 
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
-      const paginated = pending.slice(offset, offset + limit);
-      const hasMore = offset + limit < pending.length;
+      const paginated = active.slice(offset, offset + limit);
+      const hasMore = offset + limit < active.length;
 
-      if (paginated.length === 0) return text('No pending tasks to claim.');
+      if (paginated.length === 0) return text('No active tasks found.');
 
       const summary = paginated.map((t: any) => {
         const catPrefix = t.category ? `[${t.category}] ` : '';
-        return `- ${catPrefix}${t.title} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
+        const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
+        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
       }).join('\n\n');
 
-      const header = `${pending.length} pending task${pending.length === 1 ? '' : 's'}:`;
+      const pendingCount = active.filter((t: any) => t.status === 'pending').length;
+      const header = `${active.length} active task${active.length === 1 ? '' : 's'} (${pendingCount} pending, ${active.length - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
-      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority task — you don't pick by ID).`;
+      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
@@ -1953,12 +1964,15 @@ export async function handleBuilddAction(
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
           if (params.model) body.model = params.model;
+          if (params.status !== undefined) body.status = params.status;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
           if (params.heartbeatChecklist) body.heartbeatChecklist = params.heartbeatChecklist;
           if (params.activeHoursStart !== undefined) body.activeHoursStart = params.activeHoursStart;
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone) body.activeHoursTimezone = params.activeHoursTimezone;
           if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
+          if (params.dependsOnMission !== undefined) body.dependsOnMission = params.dependsOnMission;
+          if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -1974,7 +1988,8 @@ export async function handleBuilddAction(
           const schedCtx = data.schedule?.taskTemplate?.context;
           const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
           const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
-          return text(`**${data.title}** [${data.status}]\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${concurrentInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          const depInfo = data.dependsOnMissionId ? `\nDependency: ${data.dependsOnMissionId} (gate: ${data.gateCondition})${data.blocked ? ` — BLOCKED: ${data.blockedReason}` : ' — unblocked'}` : '';
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${concurrentInfo}${depInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -1997,6 +2012,8 @@ export async function handleBuilddAction(
           if (params.activeHoursEnd !== undefined) body.activeHoursEnd = params.activeHoursEnd;
           if (params.activeHoursTimezone !== undefined) body.activeHoursTimezone = params.activeHoursTimezone;
           if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
+          if (params.dependsOnMission !== undefined) body.dependsOnMission = params.dependsOnMission;
+          if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
@@ -2391,13 +2408,13 @@ export async function handleBuilddAction(
       return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
-    // Spec-drift compare (admin/dev only). Retrieves evidence from the spec-sync
-    // corpus (a dedicated, ingest-built namespace holding `:code` + `:docs` chunks)
-    // for a feature/term, and returns BOTH sides for the CALLER to judge. There is
-    // no LLM in core — the judging (implemented / removed / contradicted) is done by
-    // the calling agent or interactive session reading the snippets. Scores SURFACE
-    // candidates; they do NOT decide drift (a reranker always returns a best match,
-    // so a removed feature still scores moderately against its semantic neighbour).
+    // Spec-drift compare (admin/dev only). Retrieves evidence from the unified
+    // workspace store ({workspaceId}:code + {workspaceId}:spec) for a feature/term,
+    // and returns BOTH sides for the CALLER to judge. There is no LLM in core —
+    // the judging (implemented / removed / contradicted) is done by the calling agent
+    // or interactive session reading the snippets. Scores SURFACE candidates; they do
+    // NOT decide drift (a reranker always returns a best match, so a removed feature
+    // still scores moderately against its semantic neighbour).
     case 'spec_compare': {
       const level = await ctx.getLevel();
       if (level !== 'admin') throw new Error('spec_compare requires an admin-level token (dev tooling)');
@@ -2405,15 +2422,14 @@ export async function handleBuilddAction(
       const feature = (params.feature || params.query) as string | undefined;
       if (!feature) throw new Error('feature (or query) is required');
 
-      // Dedicated spec-sync corpus namespace (NOT a product workspace). Override
-      // via params.namespace or the SPEC_SYNC_NAMESPACE env; otherwise this default.
-      const ns = (params.namespace as string) || process.env.SPEC_SYNC_NAMESPACE || '471effe1-4668-4cc9-9fa3-e20a56769deb';
+      const wsId = await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('workspaceId is required for spec_compare — connect with ?workspace=<id>');
 
       const topK = Math.min((params.topK as number) || 5, 20);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
-      const [codeHits, docsHits] = await Promise.all([
-        ks.query(buildNamespace(ns, 'code'), { text: feature, mode: 'hybrid', topK }),
-        ks.query(buildNamespace(ns, 'docs'), { text: feature, mode: 'hybrid', topK }),
+      const [codeHits, specHits] = await Promise.all([
+        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(wsId, 'spec'), { text: feature, mode: 'hybrid', topK }),
       ]);
 
       const fmt = (hits: typeof codeHits) => hits.length
@@ -2423,7 +2439,7 @@ export async function handleBuilddAction(
       return text(
         `# spec_compare: "${feature}"\n\n` +
         `## CODE evidence (what is actually implemented)\n${fmt(codeHits)}\n\n` +
-        `## DOCS evidence (what the docs/site/kb claim)\n${fmt(docsHits)}\n\n` +
+        `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}\n\n` +
         `## How to judge\n` +
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
         `actually implement "${feature}" (a real table/route/impl), or are they only ` +
@@ -2449,6 +2465,11 @@ import {
   buildPlanCard,
   renderPlanText,
 } from './knowledge-store/cards';
+
+// Default spec-sync namespace. Used by both spec_compare (admin dev tool) and
+// query_knowledge(corpus:code|docs) which reads from the same index.
+// Override via the SPEC_SYNC_NAMESPACE env var on any deployment.
+const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 
 /**
  * Resolve the KnowledgeStore namespace for a corpus. Memory is team-scoped
@@ -2625,7 +2646,18 @@ export async function handleMemoryAction(
       const corpus = ((params.corpus as string) || 'memory') as Corpus;
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
-      const ns = knowledgeNamespace(ctx, corpus);
+
+      // code/docs are indexed by the spec-sync pipeline into its own namespace —
+      // the workspace-scoped {workspaceId}:code/docs namespaces are empty.
+      // Point these corpora at the same index that spec_compare reads.
+      let ns: string | null;
+      if (corpus === 'code' || corpus === 'docs') {
+        const specSyncId = process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
+        ns = buildNamespace(specSyncId, corpus);
+      } else {
+        ns = knowledgeNamespace(ctx, corpus);
+      }
+
       if (!ns) {
         throw new Error(corpus === 'memory'
           ? 'teamId required for memory query_knowledge'

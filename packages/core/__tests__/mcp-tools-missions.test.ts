@@ -80,6 +80,31 @@ describe('manage_missions — workspace resolution', () => {
     expect(body.workspaceId).toBe(MOCK_WORKSPACE_ID);
   });
 
+  it('passes status to body on create when provided', async () => {
+    mockApi.mockResolvedValueOnce({
+      id: 'mission-1',
+      title: 'Paused Mission',
+      status: 'paused',
+      priority: 0,
+    });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      {
+        action: 'create',
+        title: 'Paused Mission',
+        status: 'paused',
+      },
+      createMockContext(),
+    );
+
+    const [endpoint, opts] = mockApi.mock.calls[0];
+    expect(endpoint).toBe('/api/missions');
+    const body = JSON.parse(opts.body);
+    expect(body.status).toBe('paused');
+  });
+
   it('throws when workspace name cannot be resolved on create', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
 

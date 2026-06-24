@@ -16,7 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -282,6 +282,13 @@ export interface WorkspaceReleaseConfig {
   // The production branch to merge changes into (e.g., 'main')
   prodBranch?: string;
 
+  // When set, executeRelease looks for an open PR from releaseBranch → prodBranch
+  // rather than merging the worker's feature branch. Use when the release task
+  // creates an intermediary PR (e.g. dev→main via `bun run release`) instead of
+  // the worker's own branch being the ship unit. The PR CI must be green before
+  // buildd merges it; CI failure or no open PR marks the release task FAILED.
+  releaseBranch?: string;
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -315,7 +322,8 @@ export interface WorkspaceReleaseConfig {
 
 // Result of a release sequence — stored in tasks.release_result
 export interface ReleaseResult {
-  status: 'completed' | 'failed' | 'skipped' | 'not_configured';
+  // 'pending_ci': release PR found, CI not yet green — webhook will complete/fail the task.
+  status: 'completed' | 'failed' | 'skipped' | 'not_configured' | 'pending_ci';
   message: string;
   // When the merge to prod branch completed
   mergedAt?: string;
@@ -327,6 +335,10 @@ export interface ReleaseResult {
   hooksRan?: Array<{ description: string; success: boolean; error?: string }>;
   // Error details if status='failed'
   error?: string;
+  // Release PR number being tracked (set when status='pending_ci' or during merge)
+  releasePrNumber?: number;
+  // Release PR URL for quick links in alerts
+  releasePrUrl?: string;
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
@@ -480,6 +492,12 @@ export const missions = pgTable('missions', {
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
+  // Mission-level dependency sequencing: this mission won't run until the gate condition
+  // is met on dependsOnMissionId. 'merged' = upstream PRs landed; 'completed' = mission.status='completed'.
+  dependsOnMissionId: uuid('depends_on_mission_id'),
+  gateCondition: text('gate_condition').notNull().default('merged').$type<'merged' | 'completed'>(),
+  // Set by checkAndUnblockDependentMissions when the gate condition is satisfied.
+  dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
   // Shared feature branch for this mission. All mission tasks push commits here;
@@ -499,6 +517,7 @@ export const missions = pgTable('missions', {
   workspaceIdx: index('missions_workspace_idx').on(t.workspaceId),
   statusIdx: index('missions_status_idx').on(t.status),
   parentIdx: index('missions_parent_idx').on(t.parentMissionId),
+  dependsOnIdx: index('missions_depends_on_idx').on(t.dependsOnMissionId),
 }));
 
 
@@ -573,6 +592,11 @@ export const tasks = pgTable('tasks', {
   missionIdx: index('tasks_mission_idx').on(t.missionId),
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
+  // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
+  // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
+  activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
+    sql`${t.mode} = 'planning' AND ${t.status} IN ('pending', 'assigned', 'in_progress')`
+  ),
 }));
 
 export const workers = pgTable('workers', {
@@ -996,14 +1020,14 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   // "{workspaceId}:{corpus}"
   namespace: text('namespace').notNull(),
   // Column is plain `text`, so widening this union needs NO DB migration.
-  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
+  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'spec' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
   sourceType: text('source_type').notNull(),
   sourcePath: text('source_path'),
   sourceUrl: text('source_url'),
   content: text('content').notNull(),
   // Separate field for BM25/tsvector search (may be title + content for memories)
   lexicalText: text('lexical_text'),
-  // pgvector embedding (voyage-code-3: 1024 dims; stored as string "[0.1,...]")
+  // pgvector embedding (voyage-4-large: 1024 dims; stored as string "[0.1,...]")
   embedding: vectorType('embedding', { dimensions: 1024 }),
   // Model name + dim stored so re-embeds are detectable
   embeddingModel: text('embedding_model'),
@@ -1062,6 +1086,8 @@ export const missionsRelations = relations(missions, ({ one, many }) => ({
   createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
   parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
   subMissions: many(missions, { relationName: 'subMissions' }),
+  dependsOnMission: one(missions, { fields: [missions.dependsOnMissionId], references: [missions.id], relationName: 'dependentMissions' }),
+  dependentMissions: many(missions, { relationName: 'dependentMissions' }),
   tasks: many(tasks),
   schedule: one(taskSchedules, { fields: [missions.scheduleId], references: [taskSchedules.id] }),
   artifacts: many(artifacts),

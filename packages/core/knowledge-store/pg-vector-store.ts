@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
 import { applyRerank } from './reranker';
+import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
 import { createHash } from 'crypto';
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
@@ -69,16 +70,26 @@ export class PgVectorStore implements KnowledgeStore {
     private readonly reranker: Reranker | null = null,
   ) {}
 
+  /** Select the embedder appropriate for the given corpus.
+   *  code/docs/spec → voyage-code-3 via singleton; others → the constructor embedder. */
+  private _selectEmbedder(corpus: Corpus): Embedder | null {
+    if (isCodeCorpus(corpus)) {
+      return getCodeEmbedder() ?? this.embedder;
+    }
+    return this.embedder;
+  }
+
   async upsert(namespace: string, chunks: UpsertChunk[]): Promise<void> {
     if (chunks.length === 0) return;
 
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
+    const activeEmbedder = this._selectEmbedder(corpus);
 
     // Compute embeddings for all chunks in one batch call
     const texts = chunks.map(c => c.lexicalText ?? c.content);
-    const embeddings = this.embedder
-      ? await this.embedder.embed(texts)
+    const embeddings = activeEmbedder
+      ? await activeEmbedder.embed(texts)
       : chunks.map(() => null);
 
     for (let i = 0; i < chunks.length; i++) {
@@ -97,7 +108,7 @@ export class PgVectorStore implements KnowledgeStore {
              ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
              ${chunk.content}, ${lexicalText},
              ${vectorToString(embedding)}::vector,
-             ${this.embedder!.model},
+             ${activeEmbedder!.model},
              ${JSON.stringify(chunk.metadata ?? {})}::jsonb,
              ${contentHash}, NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
@@ -139,6 +150,9 @@ export class PgVectorStore implements KnowledgeStore {
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
     const { text, mode = 'hybrid', topK = 10, filters } = params;
     const db = await getDb();
+    const corpus = namespace.split(':')[1] as Corpus;
+    // Use corpus-appropriate embedder so query vectors match the stored chunk vectors
+    const activeEmbedder = this._selectEmbedder(corpus);
     const limit = Math.min(topK, 50);
     // When a reranker is configured, retrieve a wider candidate pool so the
     // cross-encoder has more to work with, then trim back to `limit`.
@@ -154,10 +168,10 @@ export class PgVectorStore implements KnowledgeStore {
     let chunkRows: ChunkRow[];
     let rrfScores: Map<string, number> | null = null;
 
-    if (mode === 'vector' || (mode === 'hybrid' && this.embedder)) {
+    if (mode === 'vector' || (mode === 'hybrid' && activeEmbedder)) {
       // Asymmetric retrieval: embed the query with input_type='query' while
       // stored chunks were embedded as 'document' (the upsert default).
-      const [queryEmbedding] = await this.embedder!.embed([text], 'query');
+      const [queryEmbedding] = await activeEmbedder!.embed([text], 'query');
       const embeddingStr = vectorToString(queryEmbedding);
 
       const vectorRes = await db.execute(sql`

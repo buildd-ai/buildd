@@ -10,7 +10,8 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
-const mockInsertValues = mock(() => ({ returning: mockInsertReturning }));
+const mockInsertOnConflictDoNothing = mock(() => ({ returning: mockInsertReturning }));
+const mockInsertValues = mock(() => ({ onConflictDoNothing: mockInsertOnConflictDoNothing }));
 const mockInsert = mock(() => ({ values: mockInsertValues }));
 const mockSelectResult = mock(() => Promise.resolve([] as any[]));
 const mockSelectLimit = mock(() => mockSelectResult());
@@ -46,7 +47,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId' },
   workspaces: { id: 'id' },
 }));
 
@@ -65,6 +66,7 @@ describe('runMission', () => {
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
     mockInsertValues.mockReset();
+    mockInsertOnConflictDoNothing.mockReset();
     mockInsertReturning.mockReset();
     mockBuildMissionContext.mockReset();
     mockDispatchNewTask.mockReset();
@@ -72,7 +74,8 @@ describe('runMission', () => {
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
-    mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
     // Default: no in-flight planning task (dedupe miss)
     mockTasksFindFirst.mockResolvedValue(null);
   });
@@ -316,6 +319,40 @@ describe('runMission', () => {
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 
+  it('dedupes against a cron-created schedule task when mission has a scheduleId', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Heartbeat Mission',
+      priority: 0,
+      scheduleId: 'sched-1', // mission has a linked schedule
+      schedule: { taskTemplate: { context: { heartbeat: true } } },
+    });
+
+    const cronTask = {
+      id: 'cron-task-1',
+      title: 'Heartbeat Mission',
+      workspaceId: 'ws-1',
+      status: 'in_progress',
+      mode: 'execution', // cron creates execution tasks, not planning
+      missionId: 'obj-1',
+      scheduleId: 'sched-1',
+    };
+
+    // First findFirst call: no in-flight planning task
+    // Second findFirst call: cron task is active for this schedule
+    mockTasksFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(cronTask);
+
+    const result = await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task.id).toBe('cron-task-1');
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
   it('auto-creates coordination workspace when mission has no workspaceId', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-1',
@@ -341,5 +378,81 @@ describe('runMission', () => {
 
     const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(insertCall.workspaceId).toBe('orchestrator-ws');
+  });
+
+  it('deduplicates atomically when two concurrent callers race past the dedup check', async () => {
+    // Scenario: both callers read "no in-flight task" simultaneously (race window),
+    // then both attempt to insert. The second insert hits the unique constraint and
+    // returns nothing — runMission should fetch the winner's task and return deduped:true.
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Race Mission',
+      priority: 0,
+      schedule: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission',
+      context: { missionId: 'obj-1' },
+    });
+
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    const winnerTask = {
+      id: 'task-winner',
+      title: 'Mission: Race Mission',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      mode: 'planning',
+      missionId: 'obj-1',
+    };
+
+    // Initial dedup check: both callers see no in-flight task (race window)
+    mockTasksFindFirst.mockResolvedValueOnce(null);
+    // Fallback fetch after conflict: returns the winner's task
+    mockTasksFindFirst.mockResolvedValueOnce(winnerTask);
+
+    // Insert returns empty: unique constraint fired (loser path)
+    mockInsertReturning.mockResolvedValue([]);
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task?.id).toBe('task-winner');
+    // Dispatch must NOT be called for the loser path
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('returns skippedBlocked when upstream dependency is not yet met', async () => {
+    // First findFirst call returns the mission itself; second call (inside isMissionBlocked)
+    // returns the upstream mission that is still active.
+    mockMissionsFindFirst
+      .mockResolvedValueOnce({
+        id: 'obj-1',
+        teamId: 'team-1',
+        workspaceId: 'ws-1',
+        status: 'active',
+        title: 'Downstream Mission',
+        priority: 0,
+        schedule: null,
+        dependsOnMissionId: 'upstream-id',
+        gateCondition: 'merged',
+        dependencyMetAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'upstream-id',
+        title: 'Specs Mission',
+        status: 'active',
+      });
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.task).toBeNull();
+    expect(result.skippedBlocked).toBe(true);
+    expect(result.blockedReason).toContain('Specs Mission');
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

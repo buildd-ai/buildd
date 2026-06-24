@@ -8,7 +8,7 @@
 >
 > **Derived from:** `packages/core/db/schema.ts`, `apps/web/src/app/api/**`,
 > `apps/runner/**`, and the implemented specs in `docs/` (codex, credentials,
-> knowledge-store), as of **2026-06-21**.
+> knowledge-store), as of **2026-06-24**.
 > **Maintenance:** see `docs/SPEC.md` §10 and the `spec-sync` skill.
 
 ---
@@ -128,10 +128,13 @@ creds are encrypted JSON in `encryptedValue`. Expiring tokens use `tokenExpiresA
 
 ### Knowledge (`knowledge_chunks`)
 Hybrid semantic + lexical retrieval over `memory | code | docs | task | artifact | pr |
-plan | session` corpora. namespace = `{workspaceId}:{corpus}`. pgvector (1024-dim,
-HNSW) + tsvector BM25, fused via RRF, optional cross-encoder rerank. Embeds via
-Voyage (`voyage-code-3` + `rerank-2.5`) when `VOYAGE_API_KEY` is set; **falls back to
-lexical-only otherwise**. Swappable `KnowledgeStore` interface (same pattern as
+plan | session | spec` corpora. namespace = `{workspaceId}:{corpus}`. pgvector (1024-dim,
+HNSW) + tsvector BM25, fused via RRF, optional cross-encoder rerank. **Per-corpus
+embedder selection**: `voyage-code-3` for `code/docs/spec`; `voyage-4-large` for
+`memory/task/pr/plan/artifact/session`. Both output 1024-dim vectors — single HNSW
+index, namespace-scoped queries. Falls back to lexical-only when `VOYAGE_API_KEY` is
+unset. `spec_compare` reads `{workspaceId}:code` + `{workspaceId}:spec` (unified store,
+no separate namespace). Swappable `KnowledgeStore` interface (same pattern as
 `AgentBackend`). See `docs/knowledge-store.md`.
 
 ### Supporting tables
@@ -152,6 +155,15 @@ shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
 - **Runner** (`apps/runner`, Bun) — external worker process. Claims tasks via
   `POST /api/workers/claim`, runs the agent, reports progress via `PATCH
   /api/workers/[id]`. Turn-based loop with multi-turn resume, review gates, abort.
+- **Runner liveness** — runners send a heartbeat to `POST /api/workers/heartbeat`
+  every `BUILDD_RUNNER_POLL_MIN` minutes (default 60; env-configurable). Liveness
+  thresholds in `packages/shared/src/runner-liveness.ts` derive from the same env
+  var: **online** = last beat within 1.5× the interval; **stale** = 1.5×–2.5×;
+  **excluded** (dropped from DB queries) beyond 2.5×. Heartbeats are independent
+  of task claims — the claim path must not be used as a liveness proxy (cf. the
+  Jun 2026 outage where that coupling hid a broken claim route). To change the
+  interval: update `BUILDD_RUNNER_POLL_MIN` on both the runner host and the server
+  env (Vercel) so the cutoffs scale together.
 - **Backends** (`apps/runner/src/backends/`) — pluggable. `claude-backend.ts`
   (Agent SDK) and `codex-backend.ts` (Codex SDK), behind a common event-adapter
   interface. Backend resolution: `task.backend → role.defaultBackend → workspace

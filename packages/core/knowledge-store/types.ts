@@ -35,6 +35,7 @@ export type Corpus =
   | 'memory'
   | 'code'
   | 'docs'
+  | 'spec'
   | 'task'
   | 'artifact'
   | 'pr'
