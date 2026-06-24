@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -103,6 +104,13 @@ export async function GET(
       }
     }
 
+    const blockStatus = await isMissionBlocked({
+      id: mission.id,
+      dependsOnMissionId: mission.dependsOnMissionId ?? null,
+      gateCondition: mission.gateCondition,
+      dependencyMetAt: mission.dependencyMetAt ?? null,
+    });
+
     return NextResponse.json({
       ...mission,
       totalTasks,
@@ -116,6 +124,10 @@ export async function GET(
       evaluationStatus,
       lastEvaluationAt,
       evaluationRationale,
+      blocked: blockStatus.blocked,
+      blockedReason: blockStatus.reason ?? null,
+      blockedByMissionId: blockStatus.dependsOnMissionId ?? null,
+      blockedByMissionTitle: blockStatus.dependsOnTitle ?? null,
     });
   } catch (error) {
     console.error('Get mission error:', error);
@@ -156,10 +168,26 @@ export async function PATCH(
 
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
-      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend } = body;
+      isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
+      dependsOnMission, gateCondition } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
+
+    if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
+      return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
+    }
+
+    if (dependsOnMission !== undefined) {
+      if (dependsOnMission !== null) {
+        if (dependsOnMission === id) {
+          return NextResponse.json({ error: 'A mission cannot depend on itself' }, { status: 400 });
+        }
+        if (await wouldCreateCycle(id, dependsOnMission)) {
+          return NextResponse.json({ error: 'Setting this dependency would create a cycle' }, { status: 400 });
+        }
+      }
     }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -200,6 +228,16 @@ export async function PATCH(
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
     if (backend !== undefined) {
       updateData.defaultBackend = backend === 'claude' || backend === 'codex' ? backend : null;
+    }
+    if (dependsOnMission !== undefined) {
+      updateData.dependsOnMissionId = dependsOnMission || null;
+      // When removing or changing the dependency, clear dependencyMetAt so the new dep re-evaluates
+      if (dependsOnMission !== existing.dependsOnMissionId) {
+        updateData.dependencyMetAt = null;
+      }
+    }
+    if (gateCondition !== undefined) {
+      updateData.gateCondition = gateCondition;
     }
 
     // Handle schedule updates

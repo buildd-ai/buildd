@@ -12,6 +12,7 @@ import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
 } from '@/lib/heartbeat-helpers';
+import { wouldCreateCycle } from '@/lib/mission-dependency';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
-      status: requestedStatus } = body;
+      status: requestedStatus, dependsOnMission, gateCondition } = body;
 
     const validStatuses = ['active', 'paused', 'completed', 'archived'];
     if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
@@ -125,6 +126,10 @@ export async function POST(req: NextRequest) {
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
+
+    if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
+      return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
     }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -172,6 +177,19 @@ export async function POST(req: NextRequest) {
       teamId = ws.teamId;
     }
 
+    // Cycle guard for dependency chain
+    if (dependsOnMission) {
+      // We don't have the new mission's ID yet — no cycle possible on create since it's new.
+      // But we still validate that the upstream mission exists in the same team.
+      const upstream = await db.query.missions.findFirst({
+        where: eq(missions.id, dependsOnMission),
+        columns: { id: true, teamId: true },
+      });
+      if (!upstream || upstream.teamId !== teamId) {
+        return NextResponse.json({ error: 'dependsOnMission not found' }, { status: 404 });
+      }
+    }
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -187,6 +205,7 @@ export async function POST(req: NextRequest) {
         createdByUserId: user?.id || null,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
+        ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
       })
       .returning();
 
