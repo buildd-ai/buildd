@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { switchTeam } from '@/lib/switch-team';
 
 interface Team {
   id: string;
@@ -16,12 +17,6 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
   const currentTeam = teams.find(t => t.id === currentTeamId) || teams[0];
 
   useClickOutside(ref, useCallback(() => setOpen(false), []));
-
-  function switchTeam(teamId: string) {
-    document.cookie = `buildd-team=${teamId};path=/;max-age=${60 * 60 * 24 * 365}`;
-    setOpen(false);
-    window.location.reload();
-  }
 
   if (!currentTeam) return null;
 

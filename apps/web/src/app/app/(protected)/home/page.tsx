@@ -367,7 +367,7 @@ export default async function HomePage() {
     : 'Your agents are standing by';
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
+    <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
         {/* Desktop two-column layout */}
         <div className="md:flex md:gap-0">
