@@ -7,7 +7,6 @@ const PAGE_TITLES: Record<string, string> = {
   '/app/tasks': 'Activity',
   '/app/artifacts': 'Artifacts',
   '/app/settings': 'Settings',
-  '/app/you': 'You',
 };
 
 export default function MobilePageHeader() {

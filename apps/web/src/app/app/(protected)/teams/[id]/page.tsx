@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
+import BackButton from './BackButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import TeamDetailClient from './TeamDetailClient';
 
@@ -63,9 +63,7 @@ export default async function TeamDetailPage({
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
-        <Link href="/app/settings" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-          &larr; Settings
-        </Link>
+        <BackButton fallbackHref="/app/settings" label="Settings" />
 
         <TeamDetailClient
           team={{
