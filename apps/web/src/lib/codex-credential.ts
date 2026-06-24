@@ -292,7 +292,7 @@ export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
   return {
     connected: true,
     expired,
-    accountId: decodeBlob(row.encryptedValue).account_id,
+    accountId: decodeBlob(row.encryptedValue).account_id ?? null,
     lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
     lastVerificationError: row.lastVerificationError ?? null,
@@ -354,6 +354,8 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
   // We hold the lock. Decrypt the stored blob.
   const blob = decodeBlob(claimed.encryptedValue);
   const currentRefreshToken = blob.refresh_token;
+  // API key credentials have no refresh_token — nothing to refresh via OAuth.
+  if (!currentRefreshToken) return 'no_credential';
 
   try {
     const res = await fetch(OPENAI_TOKEN_URL, {
