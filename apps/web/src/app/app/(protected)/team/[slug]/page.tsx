@@ -288,7 +288,15 @@ export default async function RoleProfilePage({
                     {(currentWorker as any).prUrl && (
                       <>
                         <span>&middot;</span>
-                        <span className="text-accent-text">PR #{(currentWorker as any).prNumber}</span>
+                        <a
+                          href={(currentWorker as any).prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-accent-text hover:underline"
+                        >
+                          PR #{(currentWorker as any).prNumber}
+                        </a>
                       </>
                     )}
                     {(currentWorker.task as any).mission?.title && (
@@ -360,7 +368,9 @@ export default async function RoleProfilePage({
                         </span>
                         <span className="text-[11px] text-text-muted shrink-0">{task.status}</span>
                         {latestWorker?.prNumber && (
-                          <span className="text-[11px] text-accent-text shrink-0">PR #{latestWorker.prNumber}</span>
+                          latestWorker.prUrl
+                            ? <a href={latestWorker.prUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-accent-text shrink-0 hover:underline">PR #{latestWorker.prNumber}</a>
+                            : <span className="text-[11px] text-accent-text shrink-0">PR #{latestWorker.prNumber}</span>
                         )}
                         <span className="text-[11px] text-text-muted shrink-0">{timeAgo(task.createdAt)}</span>
                       </Link>
