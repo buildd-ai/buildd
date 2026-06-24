@@ -3,8 +3,9 @@ import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { inArray, desc, eq, and } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import NewMissionForm from './NewMissionForm';
 
@@ -26,6 +27,12 @@ export default async function NewMissionPage() {
       </div>
     );
   }
+
+  // Default new missions to the active team (buildd-team cookie), not just the
+  // first team — keeps creation coherent with the namespaced views.
+  const cookieStore = await cookies();
+  const activeTeamId =
+    (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
   if (wsIds.length > 0) {
@@ -54,7 +61,7 @@ export default async function NewMissionPage() {
       <NewMissionForm
         workspaces={teamWorkspaces.filter(ws => !isSystemWorkspace(ws.name))}
         roles={roles}
-        teamId={teamIds[0]}
+        teamId={activeTeamId}
       />
     </Suspense>
   );

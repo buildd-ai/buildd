@@ -35,8 +35,19 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const statusFilter = searchParams.get('status');
     const workspaceIdFilter = searchParams.get('workspaceId');
+    const teamIdFilter = searchParams.get('teamId');
 
-    let where = inArray(missions.teamId, teamIds);
+    // Scope to a single team when requested. A teamId the caller is not a member
+    // of yields an empty list — never another team's missions.
+    let scopedTeamIds = teamIds;
+    if (teamIdFilter) {
+      if (!teamIds.includes(teamIdFilter)) {
+        return NextResponse.json({ missions: [] });
+      }
+      scopedTeamIds = [teamIdFilter];
+    }
+
+    let where = inArray(missions.teamId, scopedTeamIds);
     if (statusFilter) {
       where = and(where, eq(missions.status, statusFilter as any))!;
     }

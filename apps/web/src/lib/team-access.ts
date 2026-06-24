@@ -182,6 +182,29 @@ export async function getUserDefaultTeamId(userId: string): Promise<string | nul
   return team?.id || null;
 }
 
+/**
+ * Resolve the single "active team" for a session from the `buildd-team` cookie.
+ *
+ * The cookie is honored only when it names a team the user is a member of;
+ * otherwise resolution falls back to the user's personal team, then their first
+ * team. Returns null only when the user belongs to no team. This is the single
+ * source of truth for team-scoped (namespaced) views — see
+ * docs/specs/team-namespace-scoping.md.
+ */
+export async function resolveActiveTeamId(
+  userId: string,
+  cookieValue: string | null | undefined,
+): Promise<string | null> {
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return null;
+  if (cookieValue && teamIds.includes(cookieValue)) return cookieValue;
+
+  const personalId = await getUserDefaultTeamId(userId);
+  if (personalId && teamIds.includes(personalId)) return personalId;
+
+  return teamIds[0];
+}
+
 export type UserTeam = {
   id: string;
   name: string;
