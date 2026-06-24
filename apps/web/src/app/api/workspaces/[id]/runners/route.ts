@@ -4,8 +4,7 @@ import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db
 import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-
-const HEARTBEAT_STALE_MS = 150 * 60 * 1000; // heartbeat ~60 min (aligned) + 2.5× buffer
+import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 
 /**
  * GET /api/workspaces/[id]/runners
@@ -36,7 +35,7 @@ export async function GET(
       columns: { accessMode: true },
     });
 
-    const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
+    const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
     const heartbeats = await db.query.workerHeartbeats.findMany({
       where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
       with: {
@@ -63,8 +62,7 @@ export async function GET(
 
         const now = Date.now();
         const lastBeat = new Date(hb.lastHeartbeatAt).getTime();
-        const staleThreshold = 2 * 60 * 1000; // 2 minutes for "online" status
-        const isOnline = now - lastBeat < staleThreshold;
+        const isOnline = now - lastBeat < RUNNER_ONLINE_THRESHOLD_MS;
 
         return {
           id: hb.id,
