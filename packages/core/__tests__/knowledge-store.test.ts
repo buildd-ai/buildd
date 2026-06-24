@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { reciprocalRankFusion, buildNamespace } from '../knowledge-store/pg-vector-store';
-import type { KnowledgeStore, UpsertChunk, QueryResult, Embedder } from '../knowledge-store/types';
+import { VoyageEmbedder, isCodeCorpus } from '../knowledge-store/voyage-embedder';
+import type { KnowledgeStore, UpsertChunk, QueryResult, Embedder, Corpus } from '../knowledge-store/types';
 
 // ── Mock embedder ────────────────────────────────────────────────────────────
 
@@ -208,6 +209,53 @@ describe('KnowledgeStore contract', () => {
     }
     const results = await store.query('ws-1:memory', { text: 'codex', topK: 3 });
     expect(results.length).toBeLessThanOrEqual(3);
+  });
+});
+
+// ── Per-corpus embedder selection ────────────────────────────────────────────
+
+describe('isCodeCorpus', () => {
+  it('returns true for code, docs, and spec corpora', () => {
+    expect(isCodeCorpus('code')).toBe(true);
+    expect(isCodeCorpus('docs')).toBe(true);
+    expect(isCodeCorpus('spec')).toBe(true);
+  });
+
+  it('returns false for memory, task, pr, plan, artifact, session', () => {
+    const nonCode: Corpus[] = ['memory', 'task', 'pr', 'plan', 'artifact', 'session'];
+    for (const corpus of nonCode) {
+      expect(isCodeCorpus(corpus)).toBe(false);
+    }
+  });
+});
+
+describe('VoyageEmbedder per-model', () => {
+  it('stores the model name passed to constructor', () => {
+    const e = new VoyageEmbedder('fake-key', 'voyage-code-3');
+    expect(e.model).toBe('voyage-code-3');
+  });
+
+  it('defaults to voyage-4-large when no model specified', () => {
+    const e = new VoyageEmbedder('fake-key');
+    expect(e.model).toBe('voyage-4-large');
+  });
+});
+
+// ── spec corpus ───────────────────────────────────────────────────────────────
+
+describe('spec corpus support', () => {
+  it('buildNamespace accepts spec corpus', () => {
+    expect(buildNamespace('ws-123', 'spec')).toBe('ws-123:spec');
+  });
+
+  it('spec corpus can be upserted and queried in mock store', async () => {
+    const store = makeMockStore();
+    await store.upsert('ws-1:spec', [
+      { id: 'spec-1', content: 'API endpoint GET /tasks returns task list', sourceType: 'spec' },
+    ]);
+    const results = await store.query('ws-1:spec', { text: 'tasks', topK: 5 });
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('spec-1');
   });
 });
 
