@@ -4,6 +4,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ThemeToggle from './ThemeToggle';
 import UserAvatarMenu from './UserAvatarMenu';
+import TeamSwitcherRail from './TeamSwitcherRail';
+
+interface SidebarTeam {
+  id: string;
+  name: string;
+  slug: string;
+}
 
 const sidebarItems = [
   {
@@ -77,9 +84,11 @@ const bottomItems = [
 
 interface MissionsSidebarProps {
   userInitial?: string;
+  teams?: SidebarTeam[];
+  currentTeamId?: string | null;
 }
 
-export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarProps) {
+export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null }: MissionsSidebarProps) {
   const pathname = usePathname();
 
   const isActive = (href: string) => {
@@ -100,6 +109,13 @@ export default function MissionsSidebar({ userInitial = 'M' }: MissionsSidebarPr
 
   return (
     <div className="hidden md:flex w-14 flex-col items-center py-4 bg-[var(--chrome-sidebar)] border-r border-border-default flex-shrink-0">
+      {teams.length > 0 && (
+        <>
+          <TeamSwitcherRail teams={teams} currentTeamId={currentTeamId} />
+          <div className="w-6 h-px bg-border-default mb-2" />
+        </>
+      )}
+
       {sidebarItems.map((item) => {
         const active = isActive(item.href);
         return (

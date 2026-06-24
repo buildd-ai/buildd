@@ -1,6 +1,5 @@
 import { cookies } from 'next/headers';
 import { AuthGuard } from '@/components/AuthGuard';
-import { TeamSwitcher } from '@/components/TeamSwitcher';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
@@ -50,14 +49,14 @@ export default async function ProtectedLayout({
       <NeedsInputProvider workspaceIds={workspaceIds}>
         <div className="flex h-screen overflow-hidden">
           {/* Desktop: collapsed icon sidebar */}
-          <MissionsSidebar userInitial={userInitial} />
+          <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} />
 
           {/* Main content area */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {/* Global notification banner for tasks needing input */}
             <NeedsInputBanner />
             {/* Mobile page header for non-tasks pages */}
-            <MobilePageHeader />
+            <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} />
             <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
               {children}
             </main>
