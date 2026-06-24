@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { isValidTaskId } from '@/lib/task-id';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -184,7 +185,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 {schedule.taskTemplate.trigger && schedule.totalChecks > 0 && (
                   <span>{schedule.totalChecks} checks</span>
                 )}
-                {schedule.lastTaskId && (
+                {isValidTaskId(schedule.lastTaskId) && (
                   <a
                     href={`/app/tasks/${schedule.lastTaskId}`}
                     className="text-primary hover:underline"
@@ -229,7 +230,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                         >
                           Dismiss
                         </button>
-                        {schedule.pendingSuggestion.suggestedByTaskId && (
+                        {isValidTaskId(schedule.pendingSuggestion.suggestedByTaskId) && (
                           <a
                             href={`/app/tasks/${schedule.pendingSuggestion.suggestedByTaskId}`}
                             className="text-[10px] text-primary hover:underline ml-auto"

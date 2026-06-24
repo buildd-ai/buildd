@@ -1,17 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import { isValidTaskId } from '@/lib/task-id';
 
-// Mirror the same regexes used in TaskPanelWrapper so the test catches drift
-const FULL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ZERO_PADDED_RE = /^[0-9a-f]{8}-0{4}-0{4}-0{4}-0{12}$/i;
-
-function isValidTaskId(id: string | null | undefined): id is string {
-  if (!id) return false;
-  if (!FULL_UUID_RE.test(id)) return false;
-  if (ZERO_PADDED_RE.test(id)) return false;
-  return true;
-}
-
-describe('isValidTaskId — mission task-link guard', () => {
+describe('isValidTaskId — shared task-link guard', () => {
   it('accepts a proper v4 UUID', () => {
     expect(isValidTaskId('bf442fcb-6179-43b3-aa92-2564b1ad24b8')).toBe(true);
   });
@@ -21,7 +11,7 @@ describe('isValidTaskId — mission task-link guard', () => {
   });
 
   it('rejects zero-padded UUID (the production regression pattern)', () => {
-    // The exact pattern from the Vercel error log
+    // Real ID bf442fcb-6179-43b3-aa92-2564b1ad24b8 mangled to this
     expect(isValidTaskId('bf442fcb-0000-0000-0000-000000000000')).toBe(false);
   });
 
@@ -47,5 +37,15 @@ describe('isValidTaskId — mission task-link guard', () => {
 
   it('rejects a string that is too short', () => {
     expect(isValidTaskId('bf442fcb-6179-43b3')).toBe(false);
+  });
+
+  it('rejects a zero-padded ID with only first segment real', () => {
+    expect(isValidTaskId('08e2db98-0000-0000-0000-000000000000')).toBe(false);
+  });
+
+  it('accepts multiple distinct real UUIDs', () => {
+    expect(isValidTaskId('08e2db98-6f42-423f-9ac7-fb1caff6f06c')).toBe(true);
+    expect(isValidTaskId('46e91502-0000-0000-0000-000000000000')).toBe(false);
+    expect(isValidTaskId('46e91502-dead-beef-cafe-123456789abc')).toBe(true);
   });
 });
