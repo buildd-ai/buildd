@@ -82,6 +82,24 @@ export async function runMission(
     return { task: inFlight, deduped: true };
   }
 
+  // Also dedupe against cron-created tasks for the same schedule. For heartbeat
+  // missions, the cron creates tasks with mode='execution' (not 'planning'), so
+  // the check above misses them. A manual run arriving while a cron task is active
+  // would otherwise start a concurrent planning cycle that duplicates execution tasks.
+  if (mission.scheduleId) {
+    const cronInFlight = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.missionId, missionId),
+        eq(tasks.scheduleId, mission.scheduleId),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    if (cronInFlight) {
+      return { task: cronInFlight, deduped: true };
+    }
+  }
+
   // Resolve workspace: use mission's workspace or auto-create an orchestrator workspace
   const workspaceId = mission.workspaceId
     || (await getOrCreateCoordinationWorkspace(mission.teamId)).id;

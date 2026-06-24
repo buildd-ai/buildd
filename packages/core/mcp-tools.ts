@@ -440,27 +440,38 @@ export async function handleBuilddAction(
       const data = await api('/api/tasks');
       const allTasks = data.tasks || [];
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      let pending = allTasks.filter((t: any) => t.status === 'pending');
+      // Include pending + assigned + in_progress so planners see all ongoing work,
+      // not just tasks waiting to be claimed. This prevents duplicate task creation
+      // when a planner checks existing work before creating new tasks.
+      let active = allTasks.filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status));
       if (wsId) {
-        pending = pending.filter((t: any) => t.workspaceId === wsId);
+        active = active.filter((t: any) => t.workspaceId === wsId);
       }
-      pending.sort((a: any, b: any) => (b.priority || 0) - (a.priority || 0));
+      // Pending tasks first (claimable), then assigned/in_progress (already running)
+      active.sort((a: any, b: any) => {
+        const statusOrder: Record<string, number> = { pending: 0, assigned: 1, in_progress: 2 };
+        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+        if (statusDiff !== 0) return statusDiff;
+        return (b.priority || 0) - (a.priority || 0);
+      });
 
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
-      const paginated = pending.slice(offset, offset + limit);
-      const hasMore = offset + limit < pending.length;
+      const paginated = active.slice(offset, offset + limit);
+      const hasMore = offset + limit < active.length;
 
-      if (paginated.length === 0) return text('No pending tasks to claim.');
+      if (paginated.length === 0) return text('No active tasks found.');
 
       const summary = paginated.map((t: any) => {
         const catPrefix = t.category ? `[${t.category}] ` : '';
-        return `- ${catPrefix}${t.title} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
+        const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
+        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
       }).join('\n\n');
 
-      const header = `${pending.length} pending task${pending.length === 1 ? '' : 's'}:`;
+      const pendingCount = active.filter((t: any) => t.status === 'pending').length;
+      const header = `${active.length} active task${active.length === 1 ? '' : 's'} (${pendingCount} pending, ${active.length - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
-      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority task — you don't pick by ID).`;
+      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
