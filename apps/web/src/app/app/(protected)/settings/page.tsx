@@ -315,9 +315,17 @@ export default async function SettingsPage() {
         )}
 
         {/* Workspaces */}
-        {filteredWorkspaces.length > 0 && (
-          <section>
-            <h2 className="section-label mb-4">Workspaces</h2>
+        <section>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="section-label">Workspaces</h2>
+            <Link
+              href="/app/workspaces/new"
+              className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+            >
+              + New Workspace
+            </Link>
+          </div>
+          {filteredWorkspaces.length > 0 ? (
             <div className="card divide-y divide-border-default">
               {filteredWorkspaces.map((ws) => (
                 <Link
@@ -333,8 +341,17 @@ export default async function SettingsPage() {
                 </Link>
               ))}
             </div>
-          </section>
-        )}
+          ) : (
+            <div className="card p-6 text-center">
+              <p className="text-text-muted text-sm mb-3">
+                No workspaces yet. A workspace connects a repo so agents can work on it.
+              </p>
+              <Link href="/app/workspaces/new" className="text-sm text-primary hover:underline">
+                Connect or create a repo &rarr;
+              </Link>
+            </div>
+          )}
+        </section>
 
         {/* Teams */}
         <section>
