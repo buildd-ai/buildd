@@ -334,4 +334,19 @@ describe('executeRelease — trigger policy', () => {
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).not.toBe('skipped');
   });
+
+  it('bypasses trigger=on_mission_complete when isMissionRelease=true', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'on_mission_complete' },
+      githubRepoId: 'repo-1',
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true });
+    // Should not be skipped due to trigger — will proceed to branch_merge logic
+    expect(result.status).not.toBe('skipped');
+  });
 });
