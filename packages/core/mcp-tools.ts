@@ -168,7 +168,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Use it before planning or starting work to find what was tried before, what shipped, and what failed. Returns ranked results with sourceUrl.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId} as the namespace base; corpus=task uses {workspaceId}; corpus=code/docs uses the SPEC_SYNC_NAMESPACE — these are intentionally different IDs.',
   };
 
   const lines = actions
@@ -2472,9 +2472,25 @@ import {
 const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 
 /**
- * Resolve the KnowledgeStore namespace for a corpus. Memory is team-scoped
- * (the memory service is team-level), so it uses `{teamId}:memory`; every other
- * corpus is workspace-scoped. Returns null when the required id is missing.
+ * Resolve the KnowledgeStore namespace for a corpus.
+ *
+ * Canonical namespace scheme:
+ *
+ *   corpus=memory   → {teamId}:memory
+ *     Memory is a team-level resource (shared across all workspaces in a team).
+ *     teamId and workspaceId are DIFFERENT UUIDs — this is by design. If you see
+ *     `d2cb1c29:memory` for memory but `57ffc0e4:task` for tasks, that's correct:
+ *     d2cb1c29 is the teamId; 57ffc0e4 is the workspaceId. Reads and writes both
+ *     use teamId, so they are consistent.
+ *
+ *   corpus=code|docs → {SPEC_SYNC_NAMESPACE}:code|docs
+ *     Indexed by the spec-sync ingestion pipeline into a single shared namespace.
+ *     Override via SPEC_SYNC_NAMESPACE env var; defaults to SPEC_SYNC_NS_DEFAULT.
+ *
+ *   corpus=task|artifact|pr|plan|session → {workspaceId}:{corpus}
+ *     Work-product corpora are workspace-scoped (auto-indexed by mirrorWorkProduct).
+ *
+ * Returns null when the required id is missing.
  */
 function knowledgeNamespace(ctx: { workspaceId?: string; teamId?: string }, corpus: Corpus): string | null {
   if (corpus === 'memory') return ctx.teamId ? buildNamespace(ctx.teamId, 'memory') : null;
