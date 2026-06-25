@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
 import { TeamTransferSection } from './TeamTransferSection';
+import ConnectClaudeSection from './ConnectClaudeSection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
@@ -79,6 +80,11 @@ export default async function WorkspaceConfigPage({
                         teams={userTeams}
                     />
                 )}
+
+                <ConnectClaudeSection
+                    workspaceId={workspace.id}
+                    workspaceName={workspace.name}
+                />
             </div>
         </main>
     );
