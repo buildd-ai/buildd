@@ -421,6 +421,13 @@
       "when": 1782400000000,
       "tag": "0059_mission_released_at",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1782966000000,
+      "tag": "0060_roles_team_level",
+      "breakpoints": true
     }
   ]
 }

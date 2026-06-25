@@ -91,8 +91,10 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
-  eq: (a: unknown, b: unknown) => ({ field: a, value: b }),
-  and: (...args: unknown[]) => args,
+  eq: (a: unknown, b: unknown) => ({ type: 'eq', field: a, value: b }),
+  and: (...args: unknown[]) => ({ type: 'and', args }),
+  or: (...args: unknown[]) => ({ type: 'or', args }),
+  isNull: (col: unknown) => ({ type: 'isNull', col }),
   inArray: (field: unknown, values: unknown[]) => ({ field, values }),
   desc: (field: unknown) => field,
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => strings.join(''),
@@ -102,7 +104,7 @@ mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workspaceId: 'workspaceId', scheduleId: 'scheduleId' },
   tasks: { id: 'id', missionId: 'missionId', status: 'status', roleSlug: 'roleSlug' },
   taskSchedules: { id: 'id' },
-  workspaceSkills: { workspaceId: 'workspaceId', isRole: 'isRole', enabled: 'enabled' },
+  workspaceSkills: { workspaceId: 'workspaceId', teamId: 'teamId', isRole: 'isRole', enabled: 'enabled', slug: 'slug' },
   workers: { id: 'id', taskId: 'taskId', workspaceId: 'workspaceId', status: 'status' },
   artifacts: { id: 'id', missionId: 'missionId', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', teamId: 'teamId', name: 'name', repo: 'repo', githubInstallationId: 'githubInstallationId' },
@@ -898,6 +900,8 @@ describe('buildMissionContext', () => {
 describe('getWorkspaceRoles', () => {
   beforeEach(() => {
     mockSkillsFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(null);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -949,5 +953,76 @@ describe('getWorkspaceRoles', () => {
     expect(roles).toHaveLength(2);
     expect(roles[0].slug).toBe('builder');
     expect(roles[1].slug).toBe('researcher');
+  });
+
+  // ── Team-level role resolution (§C.2) ──
+
+  it('returns team-default roles (workspaceId: null) when no workspace override exists', async () => {
+    mockWorkspacesFindFirst.mockResolvedValueOnce({ teamId: 'team-1' });
+    mockSkillsFindMany.mockResolvedValueOnce([
+      { slug: 'builder', name: 'Builder', model: 'sonnet', color: '#blue', description: null, workspaceId: null },
+      { slug: 'researcher', name: 'Researcher', model: 'haiku', color: '#green', description: null, workspaceId: null },
+    ]);
+
+    const roles = await getWorkspaceRoles('ws-1');
+
+    expect(roles).toHaveLength(2);
+    expect(roles.map(r => r.slug).sort()).toEqual(['builder', 'researcher']);
+  });
+
+  it('workspace override beats team default when both rows have the same slug', async () => {
+    mockWorkspacesFindFirst.mockResolvedValueOnce({ teamId: 'team-1' });
+    mockSkillsFindMany.mockResolvedValueOnce([
+      // team default — no workspaceId
+      { slug: 'builder', name: 'Builder (team)', model: 'haiku', color: '#gray', description: null, workspaceId: null },
+      // workspace override — same slug
+      { slug: 'builder', name: 'Builder (override)', model: 'opus', color: '#blue', description: 'custom', workspaceId: 'ws-override' },
+    ]);
+
+    const roles = await getWorkspaceRoles('ws-override');
+
+    expect(roles).toHaveLength(1);
+    expect(roles[0].name).toBe('Builder (override)');
+    expect(roles[0].model).toBe('opus');
+  });
+
+  it('includes both slug when team has one role and workspace adds another', async () => {
+    mockWorkspacesFindFirst.mockResolvedValueOnce({ teamId: 'team-1' });
+    mockSkillsFindMany.mockResolvedValueOnce([
+      { slug: 'organizer', name: 'Organizer', model: 'sonnet', color: '#purple', description: null, workspaceId: null },
+      { slug: 'custom-role', name: 'Custom', model: 'opus', color: '#red', description: null, workspaceId: 'ws-1' },
+    ]);
+
+    const roles = await getWorkspaceRoles('ws-1');
+
+    expect(roles).toHaveLength(2);
+    expect(roles.map(r => r.slug).sort()).toEqual(['custom-role', 'organizer']);
+  });
+
+  it('falls back to workspace-only query when workspace lookup returns null', async () => {
+    mockWorkspacesFindFirst.mockResolvedValueOnce(null);
+    mockSkillsFindMany.mockResolvedValueOnce([
+      { slug: 'builder', name: 'Builder', model: 'sonnet', color: '#blue', description: null, workspaceId: 'ws-x' },
+    ]);
+
+    const roles = await getWorkspaceRoles('ws-x');
+
+    expect(roles).toHaveLength(1);
+    expect(roles[0].slug).toBe('builder');
+  });
+
+  it('workspace override does not replace team default when the override has a different slug', async () => {
+    mockWorkspacesFindFirst.mockResolvedValueOnce({ teamId: 'team-1' });
+    mockSkillsFindMany.mockResolvedValueOnce([
+      { slug: 'organizer', name: 'Organizer', model: 'sonnet', color: '#purple', description: null, workspaceId: null },
+      { slug: 'builder', name: 'Builder', model: 'opus', color: '#blue', description: null, workspaceId: 'ws-1' },
+    ]);
+
+    const roles = await getWorkspaceRoles('ws-1');
+
+    // Both roles survive — different slugs
+    expect(roles).toHaveLength(2);
+    const slugs = roles.map(r => r.slug).sort();
+    expect(slugs).toEqual(['builder', 'organizer']);
   });
 });

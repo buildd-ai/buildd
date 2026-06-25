@@ -14,7 +14,7 @@ interface RoleOption {
   slug: string;
   name: string;
   color: string;
-  workspaceId: string;
+  workspaceId: string | null;
 }
 
 interface SchedulePreview {

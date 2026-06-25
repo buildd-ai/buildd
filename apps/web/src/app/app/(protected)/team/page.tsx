@@ -1,10 +1,10 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workers, tasks, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, or, inArray, desc, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { TeamGrid } from './TeamGrid';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +24,7 @@ function timeAgo(date: Date | string): string {
 
 export interface RoleWithActivity {
   id: string;
-  workspaceId: string;
+  workspaceId: string | null;
   slug: string;
   name: string;
   description: string | null;
@@ -52,7 +52,10 @@ export default async function TeamPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
-  const wsIds = await getUserWorkspaceIds(user.id);
+  const [wsIds, teamIds] = await Promise.all([
+    getUserWorkspaceIds(user.id),
+    getUserTeamIds(user.id),
+  ]);
   if (wsIds.length === 0) {
     return (
       <main className="min-h-screen p-8">
@@ -71,20 +74,25 @@ export default async function TeamPage() {
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
 
-  // Get all enabled roles: workspace-scoped OR account-level, dedupe by slug
+  // Get all enabled roles: workspace-override OR team-default OR account-level (legacy)
   const allSkillsRaw = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.isRole, true),
       or(
         inArray(workspaceSkills.workspaceId, wsIds),
+        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
   });
+  // Workspace-scoped rows take priority over team-level defaults
+  const sortedSkillsRaw = [...allSkillsRaw].sort((a, b) =>
+    (a.workspaceId !== null ? 0 : 1) - (b.workspaceId !== null ? 0 : 1)
+  );
   const seenSlugs = new Set<string>();
-  const allSkills = allSkillsRaw.filter(s => {
+  const allSkills = sortedSkillsRaw.filter(s => {
     if (seenSlugs.has(s.slug)) return false;
     seenSlugs.add(s.slug);
     return true;

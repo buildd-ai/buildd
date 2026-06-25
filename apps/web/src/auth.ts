@@ -7,6 +7,7 @@ import { users, accounts, workspaces, teams, teamMembers, teamInvitations } from
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { seedDefaultRolesForTeam } from '@/lib/default-roles';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -156,6 +157,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           userId: newUser.id,
           role: 'owner',
         });
+
+        // Seed default roles for the new team (fire-and-forget)
+        seedDefaultRolesForTeam(team.id).catch(err =>
+          console.error('Failed to seed default roles for new team:', err)
+        );
 
         const plaintextKey = generateApiKey();
         await db.insert(accounts).values({

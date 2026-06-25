@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext } from './knowledge-context';
 
@@ -104,14 +104,25 @@ export function isWithinActiveHours(currentHour: number, start: number, end: num
 
 /**
  * Fetch available roles for a workspace with current load.
+ * Returns workspace-override rows first, then team defaults for slugs not overridden.
  * Reusable by both the context builder and the /api/roles endpoint.
  */
 export async function getWorkspaceRoles(workspaceId: string) {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+
   const allRoles = await db.query.workspaceSkills.findMany({
     where: and(
-      eq(workspaceSkills.workspaceId, workspaceId),
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
+      ws
+        ? or(
+            eq(workspaceSkills.workspaceId, workspaceId),
+            and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId)),
+          )
+        : eq(workspaceSkills.workspaceId, workspaceId),
     ),
     columns: {
       slug: true,
@@ -119,16 +130,19 @@ export async function getWorkspaceRoles(workspaceId: string) {
       model: true,
       color: true,
       description: true,
+      workspaceId: true,
     },
   });
 
-  // Deduplicate by slug
-  const seenSlugs = new Set<string>();
-  const uniqueRoles = allRoles.filter(r => {
-    if (seenSlugs.has(r.slug)) return false;
-    seenSlugs.add(r.slug);
-    return true;
-  });
+  // Deduplicate by slug — workspace override beats team default
+  const seenSlugs = new Map<string, typeof allRoles[0]>();
+  for (const r of allRoles) {
+    const existing = seenSlugs.get(r.slug);
+    if (!existing || (r.workspaceId !== null && existing.workspaceId === null)) {
+      seenSlugs.set(r.slug, r);
+    }
+  }
+  const uniqueRoles = [...seenSlugs.values()];
 
   // Count active workers per role slug
   const activeWorkerCounts = await db

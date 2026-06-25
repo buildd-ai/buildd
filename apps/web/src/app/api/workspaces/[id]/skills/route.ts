@@ -162,7 +162,7 @@ export async function POST(
         // Verify workspace exists
         const workspace = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, id),
-            columns: { id: true },
+            columns: { id: true, teamId: true },
         });
         if (!workspace) {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -223,6 +223,7 @@ export async function POST(
         const [skill] = await db
             .insert(workspaceSkills)
             .values({
+                teamId: workspace.teamId,
                 workspaceId: id,
                 slug,
                 name,

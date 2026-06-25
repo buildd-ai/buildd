@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { getUserFromRequest } from '@/lib/auth-helpers';
+import { seedDefaultRolesForTeam } from '@/lib/default-roles';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -90,6 +91,11 @@ export async function POST(req: NextRequest) {
         userId: user.id,
         role: 'owner',
       });
+
+    // Seed default roles for the new team (fire-and-forget)
+    seedDefaultRolesForTeam(team.id).catch(err =>
+      console.error('Failed to seed default roles for new team:', err)
+    );
 
     return NextResponse.json(team);
   } catch (error) {
