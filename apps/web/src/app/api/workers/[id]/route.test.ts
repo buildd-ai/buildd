@@ -1093,6 +1093,86 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
     });
+
+    it('artifact_required + artifact present + 0 diff + no PR → completed even with branch_merge release config', async () => {
+      // Regression test: tasks with outputRequirement='artifact_required' that produce
+      // only an artifact (no code changes, no pushed branch) were incorrectly flipped
+      // to 'failed' by executeRelease, which tried to merge a non-existent remote branch.
+      const capturedTaskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSets.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      // Worker with 0 commits, no PR (pure investigation/artifact task)
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/e3834347-recon-investigation',
+        commitCount: 0,
+        filesChanged: 0,
+        linesAdded: 0,
+        linesRemoved: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      // Task has artifact_required
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', missionId: null });
+      // 1 artifact exists
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1', workerId: 'worker-1', type: 'report', title: 'Recon Report' }]);
+      // Workspace has branch_merge release config (this is what triggered the bug)
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        githubRepoId: 'repo-1',
+        releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
+      });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      // GitHub: no open PRs on the worker's branch (PR auto-detect), and merge would fail
+      mockGithubApi.mockImplementation((installId: number, path: string) => {
+        if (path.includes('/pulls')) return Promise.resolve([]); // no open PRs
+        // Merge endpoint: fail with 422 (branch never pushed)
+        return Promise.reject(new Error('GitHub API error: 422 {"message":"Merge failed"}'));
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Investigation complete. Artifact created.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // The last task update must have status 'completed', never 'failed'
+      const lastTaskSet = capturedTaskSets[capturedTaskSets.length - 1];
+      expect(lastTaskSet?.status).toBe('completed');
+      // Sanity: task update was actually called (task was set to completed)
+      expect(capturedTaskSets.length).toBeGreaterThan(0);
+      // No task update should have set status to 'failed'
+      const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
+      expect(anyFailed).toBe(false);
+    });
   });
 
   it('omits phases from task.result when there are no phase milestones', async () => {

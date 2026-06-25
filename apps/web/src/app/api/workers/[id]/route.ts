@@ -245,6 +245,11 @@ export async function PATCH(
   // auto mode logs a warning but allows completion — agents may create PRs via
   // gh pr create without using the buildd create_pr action.
   let outputWarning: string | undefined;
+  // When artifact_required is satisfied by an artifact alone (no PR), the task
+  // produced no code changes and there is nothing to merge/release. Skip the
+  // release gate so a branch-merge workspace config does not flip the task to
+  // failed because the worker branch was never pushed to the remote.
+  let skipRelease = false;
   if (status === 'completed') {
     // Fetch task to check outputRequirement. Explicit select (not the
     // relational query builder): `tasks` has a `workers` relation and the RQB
@@ -312,6 +317,9 @@ export async function PATCH(
             hint: 'create_pr or create_artifact',
           }, { status: 400 });
         }
+        // Artifact is the satisfier (no PR). Nothing was committed/pushed to the
+        // remote, so a branch-merge release would fail on a missing branch.
+        skipRelease = true;
       }
 
       // auto (default): warn but allow completion — agent may have created PR via git CLI
@@ -653,7 +661,8 @@ export async function PATCH(
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
-      if (status === 'completed' && !shouldAutoRetry) {
+      // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
+      if (status === 'completed' && !shouldAutoRetry && !skipRelease) {
         try {
           const releaseResult = await executeRelease({
             taskId: worker.taskId,
