@@ -1,10 +1,12 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull } from 'drizzle-orm';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
+import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 
 export const dynamic = 'force-dynamic';
@@ -50,7 +52,12 @@ function formatTime(date: Date | string): string {
   });
 }
 
-export default async function HomePage() {
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ workspace?: string }>;
+}) {
+  const { workspace: wsFilter } = (await searchParams) ?? {};
   const user = await getCurrentUser();
 
   const isDev = process.env.NODE_ENV === 'development';
@@ -113,6 +120,8 @@ export default async function HomePage() {
     workspaceId: string | null;
   }[] = [];
 
+  let teamWorkspaces: { id: string; name: string }[] = [];
+
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
 
@@ -122,7 +131,25 @@ export default async function HomePage() {
     }
 
     try {
-      const wsIds = await getUserWorkspaceIds(user.id);
+      const cookieStore = await cookies();
+      const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
+
+      if (!activeTeamId) {
+        // No team — nothing to show; fall through to empty state
+      } else {
+
+      const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
+
+      // Load team workspaces for filter dropdown
+      if (teamWsIds.length > 0) {
+        teamWorkspaces = await db
+          .select({ id: workspacesTable.id, name: workspacesTable.name })
+          .from(workspacesTable)
+          .where(inArray(workspacesTable.id, teamWsIds));
+      }
+
+      // Narrow to selected workspace if filter is set (must belong to team)
+      const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
 
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
@@ -206,11 +233,17 @@ export default async function HomePage() {
           missionTitle: (w.task as any)?.mission?.title || null,
         }));
 
-        // Missions with task progress + health
-        const teamIds = await getUserTeamIds(user.id);
-        if (teamIds.length > 0) {
+        // Missions with task progress + health (scoped to active team, filtered by workspace if set)
+        {
+          const missionsWhere = wsFilter
+            ? and(
+                eq(missionsTable.teamId, activeTeamId),
+                or(eq(missionsTable.workspaceId, wsFilter), isNull(missionsTable.workspaceId)),
+              )
+            : eq(missionsTable.teamId, activeTeamId);
+
           const allMissions = await db.query.missions.findMany({
-            where: inArray(missionsTable.teamId, teamIds),
+            where: missionsWhere,
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
             columns: { id: true, title: true, description: true, status: true },
             with: {
@@ -353,6 +386,7 @@ export default async function HomePage() {
           workspaceId: r.workspaceId,
         }));
       }
+      } // end else (activeTeamId exists)
     } catch (error) {
       console.error('Home page query error:', error);
     }
@@ -369,6 +403,12 @@ export default async function HomePage() {
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
+        {/* Workspace filter — narrows all sections to a single workspace */}
+        {teamWorkspaces.length > 0 && (
+          <div className="flex justify-end mb-4">
+            <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
+          </div>
+        )}
         {/* Desktop two-column layout */}
         <div className="md:flex md:gap-0">
           {/* Left column: Greeting + Right Now */}

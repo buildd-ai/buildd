@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
+import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
 interface GridTask {
   id: string;
@@ -230,9 +231,11 @@ interface TaskGridProps {
   tasks: GridTask[];
   missionFilter?: string | null;
   missionTitle?: string | null;
+  workspaces?: { id: string; name: string }[];
+  selectedWorkspaceId?: string | null;
 }
 
-export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGridProps) {
+export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId }: TaskGridProps) {
   const visibleTasks = useMemo(() => {
     if (!missionFilter) return tasks;
     return tasks.filter(t => t.missionId === missionFilter);
@@ -426,6 +429,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle }: TaskGri
           <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>
             {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
           </h1>
+          {!missionFilter && workspaces && (
+            <WorkspaceFilter workspaces={workspaces} selectedId={selectedWorkspaceId ?? null} />
+          )}
         </div>
 
         {/* Content type segmented filter: All / Missions / Tasks */}
