@@ -88,11 +88,6 @@ export async function POST(req: NextRequest) {
       teamId,
     };
 
-    // Store OAuth token if provided for oauth auth type
-    if (authType === 'oauth' && oauthToken) {
-      insertValues.oauthToken = oauthToken;
-    }
-
     const [account] = await db
       .insert(accounts)
       .values(insertValues as typeof accounts.$inferInsert)
