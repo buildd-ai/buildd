@@ -509,10 +509,16 @@ Stay surgical. Do not refactor adjacent code. Do not bypass hooks.
  */
 export async function ensureOpsRole(workspaceId: string, slug: string): Promise<void> {
   const content = OPS_ROLE_CONTENT;
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return;
   await db
     .insert(workspaceSkills)
     .values({
       id: randomUUID(),
+      teamId: ws.teamId,
       workspaceId,
       slug,
       name: slug === 'ops' ? 'Ops' : slug,

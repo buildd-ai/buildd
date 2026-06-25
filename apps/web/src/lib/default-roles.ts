@@ -11,7 +11,8 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workspaceSkills } from '@buildd/core/db/schema';
+import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 
 const BUILDD_MCP = {
@@ -368,16 +369,17 @@ You are the Spec Validator — your job is to compare the SHIPPED implementation
 ];
 
 /**
- * Seed Tier 1 default roles into a newly created workspace.
- * Safe to call multiple times — uses onConflictDoNothing on (workspaceId, slug).
+ * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).
+ * Safe to call multiple times — uses onConflictDoNothing on (teamId, slug) WHERE workspaceId IS NULL.
  */
-export async function seedDefaultRoles(workspaceId: string): Promise<void> {
+export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
   const now = new Date();
 
   await db.insert(workspaceSkills)
     .values(DEFAULT_ROLES.map(role => ({
       id: crypto.randomUUID(),
-      workspaceId,
+      teamId,
+      workspaceId: null,
       slug: role.slug,
       name: role.name,
       description: role.description,
@@ -400,4 +402,17 @@ export async function seedDefaultRoles(workspaceId: string): Promise<void> {
       updatedAt: now,
     })))
     .onConflictDoNothing();
+}
+
+/**
+ * Seed Tier 1 default roles into a workspace's team (for backward compat — looks up teamId from workspace).
+ * Prefer seedDefaultRolesForTeam when the teamId is already known.
+ */
+export async function seedDefaultRoles(workspaceId: string): Promise<void> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return;
+  return seedDefaultRolesForTeam(ws.teamId);
 }

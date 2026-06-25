@@ -894,9 +894,14 @@ export const watcherEvents = pgTable('watcher_events', {
 }));
 
 // Workspace-scoped skills (roles) — per-project bindings, discovered locally or manually registered
+// teamId (NOT NULL): owning team — mirrors the secrets/missions scoping model.
+// workspaceId (NULLABLE): NULL = team-level role; non-null = workspace-specific override row.
 export const workspaceSkills = pgTable('workspace_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id')
+    .references(() => teams.id, { onDelete: 'cascade' })
+    .notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   slug: text('slug').notNull(),
   name: text('name').notNull(),
@@ -928,8 +933,12 @@ export const workspaceSkills = pgTable('workspace_skills', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  workspaceSlugIdx: uniqueIndex('workspace_skills_workspace_slug_idx').on(t.workspaceId, t.slug),
+  // Team-level default: one (team, slug) when workspaceId IS NULL
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL`),
+  // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL
+  workspaceOverrideSlugIdx: uniqueIndex('ws_skills_workspace_slug_idx').on(t.workspaceId, t.slug).where(sql`${t.workspaceId} IS NOT NULL`),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
+  teamIdx: index('workspace_skills_team_idx').on(t.teamId),
   accountIdx: index('workspace_skills_account_idx').on(t.accountId),
 }));
 
@@ -1065,6 +1074,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   workspaces: many(workspaces),
   missions: many(missions),
   invitations: many(teamInvitations),
+  workspaceSkills: many(workspaceSkills),
 }));
 
 export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
@@ -1179,6 +1189,7 @@ export const githubReposRelations = relations(githubRepos, ({ one, many }) => ({
 }));
 
 export const workspaceSkillsRelations = relations(workspaceSkills, ({ one }) => ({
+  team: one(teams, { fields: [workspaceSkills.teamId], references: [teams.id] }),
   workspace: one(workspaces, { fields: [workspaceSkills.workspaceId], references: [workspaces.id] }),
   account: one(accounts, { fields: [workspaceSkills.accountId], references: [accounts.id] }),
 }));

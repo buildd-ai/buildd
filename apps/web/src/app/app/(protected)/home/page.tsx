@@ -110,7 +110,7 @@ export default async function HomePage() {
     color: string;
     slug: string;
     isActive: boolean;
-    workspaceId: string;
+    workspaceId: string | null;
   }[] = [];
 
   // Build a roles map for display
