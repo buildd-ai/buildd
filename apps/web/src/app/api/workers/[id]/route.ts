@@ -21,6 +21,7 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { hasCodexCredential } from '@/lib/codex-credential';
 
@@ -252,18 +253,22 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // missionId for the completing task — fetched in the status==='completed' block below,
+  // used later in the mission-complete release hook.
+  let taskMissionId: string | null = null;
   if (status === 'completed') {
     // Fetch task to check outputRequirement. Explicit select (not the
     // relational query builder): `tasks` has a `workers` relation and the RQB
     // can intermittently emit "missing FROM-clause entry for table workers".
     const taskRow = worker.taskId
       ? await db
-          .select({ outputRequirement: tasks.outputRequirement })
+          .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId })
           .from(tasks)
           .where(eq(tasks.id, worker.taskId))
           .limit(1)
       : [];
     const outputReq = taskRow[0]?.outputRequirement ?? 'auto';
+    taskMissionId = taskRow[0]?.missionId ?? null;
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
@@ -734,6 +739,15 @@ export async function PATCH(
           }
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
+        }
+
+        // on_mission_complete: fire the mission-level release once when all tasks
+        // in the mission reach terminal state. Fire-and-forget — same pattern as
+        // other post-completion hooks. The helper checks the workspace trigger
+        // policy and deduplicates via missions.releasedAt.
+        if (taskMissionId) {
+          fireMissionReleaseIfComplete(worker.workspaceId, taskMissionId, worker.taskId, id)
+            .catch((err) => console.error(`[Worker ${id}] Mission release check failed:`, err));
         }
       }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray } from 'drizzle-orm';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
+import { and, eq, sql, inArray, isNull } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -9,6 +9,8 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { countPendingTasksForMission } from '@/lib/mission-release';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -383,7 +385,14 @@ async function handlePullRequestEvent(event: {
       );
     }
 
-    // Post-merge release trigger — fire release.yml if task.release indicates it.
+    // Post-merge release trigger — Path B (webhook side).
+    //
+    // Invariant enforced here:
+    //   branch_merge workspaces → Path A (worker PATCH + executeRelease) is authoritative.
+    //                              Path B must NOT fire to prevent double-fire.
+    //   workflow_dispatch workspaces → Path A skips; Path B fires the workflow.
+    //   trigger=manual → neither path auto-fires.
+    //   trigger=on_mission_complete → only fire when mission is all-terminal + atomic dedup.
     const mergedTask = worker.task;
     if (mergedTask.release !== 'false' && event.installation) {
       const mergedWorkspace = await db.query.workspaces.findFirst({
@@ -394,20 +403,73 @@ async function handlePullRequestEvent(event: {
         (mergedTask.release === 'inherit' && mergedWorkspace?.releaseConfig?.enabled === true);
 
       if (shouldRelease && mergedWorkspace) {
-        const releaseRef = mergedWorkspace.gitConfig?.defaultBranch ?? 'dev';
-        try {
-          await githubApi(
-            event.installation.id,
-            `/repos/${repository.full_name}/actions/workflows/release.yml/dispatches`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ref: releaseRef, inputs: { force: 'false' } }),
-            },
-          );
-          console.log(`Triggered release workflow for ${repository.full_name} on ${releaseRef} (task ${mergedTask.id})`);
-        } catch (err) {
-          console.error(`Failed to trigger release for ${repository.full_name}:`, err);
+        const releaseConfig = mergedWorkspace.releaseConfig;
+        const resolution = resolveReleaseStrategy(releaseConfig);
+
+        if (resolution.ok) {
+          // branch_merge: Path A already handled the merge on task completion — skip.
+          if (resolution.strategy.kind === 'branch_merge') {
+            // no-op: Path A is authoritative for branch_merge workspaces
+          } else if (resolution.strategy.kind === 'workflow_dispatch') {
+            const trigger = releaseConfig?.trigger ?? 'every_merge';
+
+            if (trigger === 'manual') {
+              // no-op: owner fires trigger_release manually
+            } else if (trigger === 'on_mission_complete') {
+              // Only dispatch if this task's mission is now all-terminal
+              if (mergedTask.missionId) {
+                const pending = await countPendingTasksForMission(mergedTask.missionId);
+                if (pending === 0) {
+                  // Atomic dedup: only the first caller that sets releasedAt fires
+                  const claimed = await db
+                    .update(missions)
+                    .set({ releasedAt: new Date() })
+                    .where(
+                      and(
+                        eq(missions.id, mergedTask.missionId),
+                        isNull(missions.releasedAt),
+                      )
+                    )
+                    .returning({ id: missions.id });
+
+                  if (claimed.length > 0) {
+                    const { workflowFile, ref, inputs } = resolution.strategy;
+                    try {
+                      await githubApi(
+                        event.installation.id,
+                        `/repos/${repository.full_name}/actions/workflows/${workflowFile}/dispatches`,
+                        {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
+                        },
+                      );
+                      console.log(`[webhook] Mission ${mergedTask.missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name}`);
+                    } catch (err) {
+                      console.error(`[webhook] Mission release dispatch failed for ${repository.full_name}:`, err);
+                    }
+                  }
+                }
+              }
+            } else {
+              // every_merge (or future values): dispatch on each merged PR
+              const { workflowFile, ref, inputs } = resolution.strategy;
+              try {
+                await githubApi(
+                  event.installation.id,
+                  `/repos/${repository.full_name}/actions/workflows/${workflowFile}/dispatches`,
+                  {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
+                  },
+                );
+                console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id})`);
+              } catch (err) {
+                console.error(`[webhook] Release dispatch failed for ${repository.full_name}:`, err);
+              }
+            }
+          }
         }
       }
     }
