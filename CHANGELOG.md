@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.179 (#861)
 - Bump @anthropic-ai/claude-agent-sdk to ^0.3.177 (#820)
 
 ### Added
@@ -43,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Skip release when artifact_required is satisfied by artifact alone (#989)
+- Fix Codex runner backend (#859)
 - Send heartbeat on task claim to close stale-on-claim worker-kill edge (#830)
 - Full-bleed app icon across all surfaces, removing white side bars (#833)
 - Prevent multi-workspace OAuth misrouting (#779)
@@ -73,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
+- Pass release App private key to reusable release workflow (#923)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)
 - Dump runner/server logs on E2E failure for diagnosis
 
