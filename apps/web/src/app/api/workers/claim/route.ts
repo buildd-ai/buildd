@@ -287,12 +287,16 @@ export async function POST(req: NextRequest) {
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
   // Scoped by runner so a healthy runner can still pick up the task.
   const cooldownCutoff = new Date(Date.now() - CLAIM_COOLDOWN_MS);
+  // Per-runner cooldown covers both 'error' AND 'failed' — budget/session workers
+  // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
+  // only check missed them entirely and left the burn-loop gap that caused the
+  // 2026-06-25 session-limit storm.
   claimableConditions.push(
     sql`NOT EXISTS (
       SELECT 1 FROM ${workers} w_cd
       WHERE w_cd.task_id = ${tasks.id}
       AND w_cd.runner = ${runner}
-      AND w_cd.status = 'error'
+      AND w_cd.status IN ('error', 'failed')
       AND w_cd.updated_at > ${cooldownCutoff}
     )`
   );

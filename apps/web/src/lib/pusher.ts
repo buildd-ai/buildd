@@ -80,6 +80,8 @@ export const events = {
   MISSION_CYCLE_STARTED: 'mission:cycle_started',
   MISSION_LOOP_COMPLETED: 'mission:loop_completed',
   MISSION_LOOP_STALLED: 'mission:loop_stalled',
+  // Generic task status update (non-claiming — dashboard only, does NOT trigger runner re-claim)
+  TASK_UPDATED: 'task:updated',
   // Failure loop prevention
   TASK_RETRY_CAP: 'task:retry_cap',
   // Mission feed events
