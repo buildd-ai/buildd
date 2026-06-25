@@ -1,9 +1,11 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, secrets } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc } from 'drizzle-orm';
+import { watchedProjects, watcherEvents, workspaces, secrets, tasks, workspaceSkills } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
+import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
 import { HealthClient } from './HealthClient';
 
 export const dynamic = 'force-dynamic';
@@ -39,12 +41,45 @@ export interface VercelTokenOption {
   label: string | null;
 }
 
-export default async function HealthPage() {
+export interface UsageStats {
+  total: number;
+  completed: number;
+  failed: number;
+  unassigned: number;
+  byRole: { slug: string; name: string; color: string; completed: number; failed: number; total: number }[];
+}
+
+export default async function HealthPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ workspace?: string }>;
+}) {
+  const { workspace: wsFilter } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
-  const workspaceIds = await getUserWorkspaceIds(user.id);
-  if (workspaceIds.length === 0) {
+  const teamIds = await getUserTeamIds(user.id);
+  if (teamIds.length === 0) {
+    return (
+      <div className="max-w-2xl mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-2">Project Health</h1>
+        <p className="text-sm text-text-tertiary">No team found.</p>
+      </div>
+    );
+  }
+
+  const cookieStore = await cookies();
+  const activeTeamId =
+    (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
+
+  // Workspaces for the active team
+  const teamWorkspaceRows = await db
+    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
+    .from(workspaces)
+    .where(eq(workspaces.teamId, activeTeamId));
+
+  const teamWorkspaceIds = (teamWorkspaceRows as any[]).map((w: any) => w.id as string);
+  if (teamWorkspaceIds.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-6">
         <h1 className="text-2xl font-bold mb-2">Project Health</h1>
@@ -53,29 +88,98 @@ export default async function HealthPage() {
     );
   }
 
-  const ws = await db
-    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
-    .from(workspaces)
-    .where(inArray(workspaces.id, workspaceIds));
-  const wsById = new Map(ws.map((w) => [w.id, w.name] as const));
+  // Scope watched projects and usage to workspace filter when set
+  const scopedWsIds = wsFilter && teamWorkspaceIds.includes(wsFilter)
+    ? [wsFilter]
+    : teamWorkspaceIds;
 
-  const teamIds = await getUserTeamIds(user.id);
-  const vercelTokens: VercelTokenOption[] = teamIds.length
-    ? (await db
-        .select({ id: secrets.id, teamId: secrets.teamId, label: secrets.label })
-        .from(secrets)
-        .where(and(inArray(secrets.teamId, teamIds), eq(secrets.purpose, 'vercel_token')))).map((s) => ({ id: s.id, teamId: s.teamId, label: s.label }))
-    : [];
+  // Parallel fetches: watched projects, vercel tokens, runners, usage
+  const [rows, vercelTokens, runners, usageStats] = await Promise.all([
+    // Watched projects
+    db
+      .select()
+      .from(watchedProjects)
+      .where(inArray(watchedProjects.workspaceId, scopedWsIds))
+      .orderBy(desc(watchedProjects.createdAt)),
 
-  const hasGlobalVercelToken = Boolean(process.env.VERCEL_API_TOKEN);
+    // Vercel tokens for the active team
+    db
+      .select({ id: secrets.id, teamId: secrets.teamId, label: secrets.label })
+      .from(secrets)
+      .where(and(eq(secrets.teamId, activeTeamId), eq(secrets.purpose, 'vercel_token')))
+      .then((rows: any[]) => rows.map((s: any): VercelTokenOption => ({ id: s.id, teamId: s.teamId, label: s.label })))
+      .catch(() => [] as VercelTokenOption[]),
 
-  const rows = await db
-    .select()
-    .from(watchedProjects)
-    .where(inArray(watchedProjects.workspaceId, workspaceIds))
-    .orderBy(desc(watchedProjects.createdAt));
+    // Runner heartbeats scoped to team (or workspace)
+    getRunnerHeartbeats(activeTeamId, wsFilter && teamWorkspaceIds.includes(wsFilter) ? wsFilter : null)
+      .catch(() => [] as RunnerHeartbeat[]),
 
-  const projectIds = rows.map((r) => r.id);
+    // Usage stats (last 30 days)
+    (async (): Promise<UsageStats | null> => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const recentTasks = await db.query.tasks.findMany({
+        where: and(
+          inArray(tasks.workspaceId, scopedWsIds),
+          sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+        ),
+        columns: { roleSlug: true, status: true },
+      });
+
+      if (recentTasks.length === 0) return null;
+
+      const byRole: Record<string, { completed: number; failed: number; total: number }> = {};
+      let totalCompleted = 0;
+      let totalFailed = 0;
+      let unassigned = 0;
+
+      for (const t of recentTasks) {
+        if (t.status === 'completed') totalCompleted++;
+        if (t.status === 'failed') totalFailed++;
+        if (t.roleSlug) {
+          if (!byRole[t.roleSlug]) byRole[t.roleSlug] = { completed: 0, failed: 0, total: 0 };
+          byRole[t.roleSlug].total++;
+          if (t.status === 'completed') byRole[t.roleSlug].completed++;
+          if (t.status === 'failed') byRole[t.roleSlug].failed++;
+        } else {
+          unassigned++;
+        }
+      }
+
+      const roleSlugs = Object.keys(byRole);
+      let roleInfo: Record<string, { name: string; color: string }> = {};
+      if (roleSlugs.length > 0) {
+        const skills = await db.query.workspaceSkills.findMany({
+          where: and(
+            inArray(workspaceSkills.workspaceId, scopedWsIds),
+            eq(workspaceSkills.isRole, true),
+            inArray(workspaceSkills.slug, roleSlugs),
+          ),
+          columns: { slug: true, name: true, color: true },
+        });
+        for (const s of skills) {
+          roleInfo[s.slug] = { name: s.name, color: s.color ?? '#888' };
+        }
+      }
+
+      return {
+        total: recentTasks.length,
+        completed: totalCompleted,
+        failed: totalFailed,
+        unassigned,
+        byRole: Object.entries(byRole)
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([slug, stats]) => ({
+            slug,
+            name: roleInfo[slug]?.name || slug,
+            color: roleInfo[slug]?.color || '#888',
+            ...stats,
+          })),
+      };
+    })().catch(() => null),
+  ]);
+
+  // Attach recent events to watched project rows
+  const projectIds = (rows as any[]).map((r: any) => r.id as string);
   const events = projectIds.length
     ? await db
         .select()
@@ -93,7 +197,9 @@ export default async function HealthPage() {
     }
   }
 
-  const serialized: WatchedProjectRow[] = rows.map((r) => ({
+  const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
+
+  const serialized: WatchedProjectRow[] = (rows as any[]).map((r: any) => ({
     id: r.id,
     workspaceId: r.workspaceId,
     workspaceName: wsById.get(r.workspaceId) ?? '(unknown)',
@@ -112,7 +218,13 @@ export default async function HealthPage() {
     recentEvents: eventsByProject.get(r.id) ?? [],
   }));
 
-  const workspaceOptions: WorkspaceOption[] = ws.map((w) => ({ id: w.id, name: w.name, teamId: w.teamId }));
+  const workspaceOptions: WorkspaceOption[] = (teamWorkspaceRows as any[]).map((w: any) => ({
+    id: w.id as string,
+    name: w.name as string,
+    teamId: w.teamId as string,
+  }));
+
+  const hasGlobalVercelToken = Boolean(process.env.VERCEL_API_TOKEN);
 
   return (
     <HealthClient
@@ -120,6 +232,10 @@ export default async function HealthPage() {
       workspaces={workspaceOptions}
       vercelTokens={vercelTokens}
       hasGlobalVercelToken={hasGlobalVercelToken}
+      runners={runners}
+      usageStats={usageStats}
+      teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
+      wsFilter={wsFilter ?? null}
     />
   );
 }
