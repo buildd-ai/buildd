@@ -6,17 +6,35 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // getUserDefaultTeamId → db.query.teams.findFirst (slug = personal-{userId}).
 const mockTeamMembersFindMany = mock(() => [] as any[]);
 const mockTeamsFindFirst = mock(() => null as any);
+const mockWorkspacesFindMany = mock(() => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: mockTeamMembersFindMany },
       teams: { findFirst: mockTeamsFindFirst },
+      workspaces: { findMany: mockWorkspacesFindMany },
     },
   },
 }));
 
-const { resolveActiveTeamId } = await import('./team-access');
+const { resolveActiveTeamId, getTeamWorkspaceIds } = await import('./team-access');
+
+describe('getTeamWorkspaceIds', () => {
+  beforeEach(() => {
+    mockWorkspacesFindMany.mockReset();
+  });
+
+  it('returns workspace ids for a team', async () => {
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }, { id: 'ws-2' }]);
+    expect(await getTeamWorkspaceIds('team-1')).toEqual(['ws-1', 'ws-2']);
+  });
+
+  it('returns empty array when team has no workspaces', async () => {
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    expect(await getTeamWorkspaceIds('team-1')).toEqual([]);
+  });
+});
 
 describe('resolveActiveTeamId', () => {
   beforeEach(() => {

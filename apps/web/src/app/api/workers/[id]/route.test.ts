@@ -166,6 +166,11 @@ mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
 }));
 
+const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
+mock.module('@buildd/core/routing-analytics', () => ({
+  recordTaskOutcome: mockRecordTaskOutcome,
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {
@@ -795,6 +800,110 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
   });
 
+  it('preserves non-zero PR diff stats when runner reports zeros on completion', async () => {
+    // Regression: create_pr stores real diff stats from GitHub (e.g. 807 additions).
+    // If the runner then sends filesChanged:0/linesAdded:0 at completion (wrong local git
+    // base), those zeros must NOT overwrite the real stats already in the DB.
+    let capturedWorkerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedWorkerSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // Worker already has real diff stats from create_pr (GitHub API)
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'buildd/abc-feature',
+      commitCount: 3,
+      filesChanged: 14,
+      linesAdded: 807,
+      linesRemoved: 23,
+      prUrl: 'https://github.com/org/repo/pull/990',
+      prNumber: 990,
+      pendingInstructions: null,
+      milestones: null,
+      waitingFor: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required', missionId: null });
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    // Runner sends zeros (wrong local git base — the bug scenario)
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // The worker DB update must NOT have overwritten the real stats with zeros
+    expect(capturedWorkerSet.filesChanged).toBeUndefined();
+    expect(capturedWorkerSet.linesAdded).toBeUndefined();
+    expect(capturedWorkerSet.linesRemoved).toBeUndefined();
+  });
+
+  it('accepts zero diff stats on completion when worker has no prior stats', async () => {
+    // Reverts with zero changes are legitimate — don't suppress them when the worker starts at 0.
+    let capturedWorkerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedWorkerSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'buildd/xyz-revert',
+      commitCount: 0,
+      filesChanged: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      prUrl: null,
+      prNumber: null,
+      pendingInstructions: null,
+      milestones: null,
+      waitingFor: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Explicit zeros ARE stored when worker starts with no prior stats (legitimate 0-change task)
+    expect(capturedWorkerSet.filesChanged).toBe(0);
+    expect(capturedWorkerSet.linesAdded).toBe(0);
+    expect(capturedWorkerSet.linesRemoved).toBe(0);
+  });
+
   describe('output requirement validation ordering', () => {
     it('allows completion with warning when commits exist but no PR (auto mode)', async () => {
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
@@ -1169,6 +1278,97 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastTaskSet?.status).toBe('completed');
       // Sanity: task update was actually called (task was set to completed)
       expect(capturedTaskSets.length).toBeGreaterThan(0);
+      // No task update should have set status to 'failed'
+      const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
+      expect(anyFailed).toBe(false);
+    });
+
+    it('pr_required + PR present + releaseBranch configured + no open release PR → completed (feature task skip)', async () => {
+      // Regression test: feature tasks (release: inherit) in workspaces with
+      // releaseBranch configured were flipped to 'failed' because executeRelease
+      // entered the Release PR path and found no open dev→main PR (which is the
+      // norm between releases). The fix gates the Release PR path on release==='true'.
+      const capturedTaskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSets.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      // Feature task worker: has a PR (docs/spec committed to branch)
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/c21dfeb7-spec-feature-branch',
+        commitCount: 1,
+        filesChanged: 1,
+        linesAdded: 807,
+        linesRemoved: 0,
+        prUrl: 'https://github.com/org/repo/pull/990',
+        prNumber: 990,
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      // Feature task: pr_required, no explicit release flag (inherits)
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        missionId: null,
+        release: null, // 'inherit' — feature task, not a release task
+      });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      // Workspace has releaseBranch: 'dev' — this is what triggered the systemic bug
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        githubRepoId: 'repo-1',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          prodBranch: 'main',
+          releaseBranch: 'dev',
+        },
+      });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        defaultBranch: 'dev',
+        installation: { installationId: 123 },
+      });
+      // No open dev→main release PR (normal state between releases)
+      mockGithubApi.mockImplementation((_installId: number, path: string) => {
+        if (path.includes('/pulls')) return Promise.resolve([]); // no release PR
+        return Promise.reject(new Error('should not be called'));
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Spec written and PR opened.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Task must stay 'completed' — executeRelease should skip for feature tasks.
+      // The initial task update sets status: 'completed'; the release 'else' branch
+      // may write a second update (releaseResult) without a status field, so we check
+      // the first status-bearing update rather than the last entry.
+      const statusUpdate = capturedTaskSets.find((s: any) => s?.status !== undefined);
+      expect(statusUpdate?.status).toBe('completed');
       // No task update should have set status to 'failed'
       const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
       expect(anyFailed).toBe(false);
@@ -2149,6 +2349,60 @@ describe('PATCH /api/workers/[id]', () => {
       // lost first attempt must NOT have notified either.
       expect(captured.budgetAlertsSent).toEqual([50]);
       expect(budgetNotifies()).toHaveLength(0);
+    });
+  });
+
+  describe('recordTaskOutcome totalTurns safety', () => {
+    // Regression: when no explicit `turns` or `resultMeta.numTurns` is provided,
+    // updates.turns is set to sql`${workers.turns} + 1` (a Drizzle SQL expression).
+    // Passing that expression as totalTurns to recordTaskOutcome caused Drizzle to
+    // embed `workers.turns` in the INSERT VALUES clause without a FROM clause,
+    // producing "missing FROM-clause entry for table workers" on every completion.
+    // The fix: guard with typeof === 'number' and fall back to worker.turns.
+    it('passes a numeric totalTurns (not a SQL expression) to recordTaskOutcome when turns are auto-incremented', async () => {
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        turns: 7,
+        pendingInstructions: null,
+      });
+      // outputRequirement: 'none' bypasses all output validation so we reach
+      // the recordTaskOutcome call without needing PR/artifact setup.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        // No `turns` or `resultMeta.numTurns` → updates.turns = sql`${workers.turns} + 1`
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome).toHaveBeenCalled();
+      const callArgs = mockRecordTaskOutcome.mock.calls[0][0];
+      // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
+      expect(typeof callArgs.totalTurns).toBe('number');
+      expect(callArgs.totalTurns).toBe(7);
     });
   });
 });

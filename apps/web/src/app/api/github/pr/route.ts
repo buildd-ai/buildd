@@ -106,12 +106,23 @@ export async function POST(req: NextRequest) {
       );
       if (Array.isArray(existingPrs) && existingPrs.length > 0) {
         const existing = existingPrs[0];
-        // Update worker with the existing PR info
+        // Fetch individual PR to get diff stats (list endpoint omits additions/deletions/changed_files)
+        let prDetail = existing;
+        try {
+          prDetail = await githubApi(
+            repo.installation.installationId,
+            `/repos/${repo.fullName}/pulls/${existing.number}`,
+          );
+        } catch {}
+        // Update worker with the existing PR info and diff stats
         await db
           .update(workers)
           .set({
             prUrl: existing.html_url,
             prNumber: existing.number,
+            ...(typeof prDetail.additions === 'number' ? { linesAdded: prDetail.additions } : {}),
+            ...(typeof prDetail.deletions === 'number' ? { linesRemoved: prDetail.deletions } : {}),
+            ...(typeof prDetail.changed_files === 'number' ? { filesChanged: prDetail.changed_files } : {}),
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
@@ -157,12 +168,15 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    // Update worker with PR info
+    // Update worker with PR info and diff stats from GitHub's response
     await db
       .update(workers)
       .set({
         prUrl: prData.html_url,
         prNumber: prData.number,
+        ...(typeof prData.additions === 'number' ? { linesAdded: prData.additions } : {}),
+        ...(typeof prData.deletions === 'number' ? { linesRemoved: prData.deletions } : {}),
+        ...(typeof prData.changed_files === 'number' ? { filesChanged: prData.changed_files } : {}),
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));

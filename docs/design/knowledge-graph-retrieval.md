@@ -1,6 +1,6 @@
-# Recency-Aware Entity Graph Retrieval — Design Spec
+# Recency-Aware + Entity/Graph Retrieval for KnowledgeStore
 
-**Status:** Draft — awaiting approval before implementation  
+**Status:** Draft spec — awaiting approval before any implementation task is created
 **Author:** Agent (task c21dfeb7)  
 **Date:** 2026-06-25  
 **Scope:** `packages/core/knowledge-store/` and surrounding MCP tooling  

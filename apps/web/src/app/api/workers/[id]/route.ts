@@ -183,9 +183,11 @@ export async function PATCH(
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
-  if (typeof filesChanged === 'number') updates.filesChanged = filesChanged;
-  if (typeof linesAdded === 'number') updates.linesAdded = linesAdded;
-  if (typeof linesRemoved === 'number') updates.linesRemoved = linesRemoved;
+  // Prefer non-zero existing stats over zeros from the runner: if the PR creation route
+  // already recorded real diff stats and the runner reports 0 (e.g. wrong git base), keep the real values.
+  if (typeof filesChanged === 'number' && (filesChanged > 0 || !(worker.filesChanged ?? 0))) updates.filesChanged = filesChanged;
+  if (typeof linesAdded === 'number' && (linesAdded > 0 || !(worker.linesAdded ?? 0))) updates.linesAdded = linesAdded;
+  if (typeof linesRemoved === 'number' && (linesRemoved > 0 || !(worker.linesRemoved ?? 0))) updates.linesRemoved = linesRemoved;
   // Waiting state
   if (waitingFor !== undefined) updates.waitingFor = waitingFor;
   // Pushover notification when agent needs input
@@ -748,7 +750,7 @@ export async function PATCH(
           accountId: worker.accountId,
           outcome: status,
           totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
-          totalTurns: updates.turns ?? worker.turns ?? null,
+          totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
           durationMs,
           wasRetried: retryCount > 0,
         }).catch(() => {});

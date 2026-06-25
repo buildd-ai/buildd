@@ -244,6 +244,18 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
   }
 
+  // Honour the workspace trigger policy before doing anything expensive.
+  // 'manual'             → owner fires trigger_release explicitly; never auto-fires.
+  // 'on_mission_complete' → the mission-complete hook fires once; per-task path skips.
+  // 'every_merge' / absent → proceed as normal (current behaviour).
+  const trigger = releaseConfig?.trigger;
+  if (trigger === 'manual') {
+    return { status: 'skipped', message: 'Release: trigger=manual — use trigger_release to release manually.' };
+  }
+  if (trigger === 'on_mission_complete') {
+    return { status: 'skipped', message: 'Release: trigger=on_mission_complete — fires after all mission tasks complete.' };
+  }
+
   // Resolve the workspace's declared strategy. executeRelease is the
   // on-task-completion merge path, so it only handles 'branch_merge'; other
   // strategies (workflow_dispatch/script) run via the standalone trigger.
@@ -291,10 +303,20 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   }
 
   if (branchMerge.releaseBranch) {
-    // "Release PR" path: the release task creates a PR from releaseBranch → prodBranch
-    // (e.g. dev → main via `bun run release`). We find that PR, check its CI, and
-    // if CI is already green we merge it immediately. If CI is still pending we
-    // return pending_ci so the webhook can complete the task once CI resolves.
+    // "Release PR" path: a dedicated release task creates a PR from releaseBranch →
+    // prodBranch (e.g. dev → main via `bun run release`). Only run this path for
+    // tasks that explicitly requested release (`release: 'true'`). Feature tasks with
+    // `release: 'inherit'` land their work on releaseBranch via auto-merge; the
+    // dev→main promotion happens separately when the release task runs. Entering this
+    // path for feature tasks causes every feature task to fail with "no open release
+    // PR found" whenever there is no dev→main PR open — which is most of the time.
+    if (releaseFlag !== 'true') {
+      return {
+        status: 'skipped',
+        message: `Release: feature task — code lands on ${branchMerge.releaseBranch} and is promoted to ${prodBranch} by the release task.`,
+      };
+    }
+
     const releasePr = await findReleasePr(
       repo.installation.installationId,
       repo.fullName,

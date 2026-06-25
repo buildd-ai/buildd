@@ -259,6 +259,14 @@ export interface WorkspaceGitConfig {
 //   - script: spawn a worker task that runs the repo's own release command.
 export type ReleaseStrategy = 'workflow_dispatch' | 'branch_merge' | 'script';
 
+// When a release fires relative to work completing.
+// Back-compat default: absent ⇒ 'every_merge' (preserves current behaviour).
+export type ReleaseTrigger =
+  | 'every_merge'          // release per completed non-skipped task (current default)
+  | 'on_mission_complete'  // release once after all tasks in a mission reach terminal state
+  | 'manual'               // no auto-fire; owner calls trigger_release explicitly
+  | 'scheduled';           // PHASE 2 — nightly/periodic cron (shape TBD, not implemented)
+
 // Release configuration for a workspace — controls whether/how releases happen.
 // Stored as jsonb, so this is a free-form shape (no migration on change). All
 // step-specific fields are optional; `resolveReleaseStrategy` validates them
@@ -269,6 +277,9 @@ export interface WorkspaceReleaseConfig {
 
   // Which strategy this workspace uses. Absent ⇒ 'branch_merge' (legacy default).
   strategy?: ReleaseStrategy;
+
+  // When a release fires. Absent ⇒ 'every_merge' (preserves pre-trigger behaviour).
+  trigger?: ReleaseTrigger;
 
   // ── strategy: 'workflow_dispatch' ──────────────────────────────────────────
   // Workflow file to dispatch on the target repo, e.g. 'release.yml'.
@@ -509,6 +520,10 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
+  // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
+  // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
+  releasedAt: timestamp('released_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
