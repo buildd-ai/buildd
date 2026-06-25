@@ -123,6 +123,17 @@ export async function getUserWorkspaceIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * Get all workspace IDs that belong to a team.
+ */
+export async function getTeamWorkspaceIds(teamId: string): Promise<string[]> {
+  const ws = await db.query.workspaces.findMany({
+    where: eq(workspaces.teamId, teamId),
+    columns: { id: true },
+  });
+  return ws.map((w) => w.id);
+}
+
+/**
  * Get all team IDs a user belongs to.
  */
 export async function getUserTeamIds(userId: string): Promise<string[]> {

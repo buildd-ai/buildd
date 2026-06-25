@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers } from '@buildd/core/db/schema';
-import { inArray, desc, and, eq, sql } from 'drizzle-orm';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -8,10 +8,16 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth } from '@/lib/mission-helpers';
 import { MissionGrid } from './MissionGrid';
+import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
 export const dynamic = 'force-dynamic';
 
-export default async function MissionsPage() {
+export default async function MissionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ workspace?: string }>;
+}) {
+  const { workspace: wsFilter } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -67,6 +73,12 @@ export default async function MissionsPage() {
     teamRows.forEach(t => teamNameMap.set(t.id, t.slug.startsWith('personal-') ? 'personal' : t.name));
   }
 
+  // Load active team's workspaces for the filter dropdown
+  const teamWorkspaces = await db
+    .select({ id: workspaces.id, name: workspaces.name })
+    .from(workspaces)
+    .where(eq(workspaces.teamId, activeTeamId));
+
   // Query roles for display
   const wsIds = await getUserWorkspaceIds(user.id);
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -81,8 +93,18 @@ export default async function MissionsPage() {
     roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
   }
 
+  // Missions filter: when workspace is selected, show missions anchored to that
+  // workspace OR team-level missions (workspaceId IS NULL). Team-level missions
+  // are never excluded — they belong to the team, not any one workspace.
+  const missionsWhere = wsFilter
+    ? and(
+        eq(missions.teamId, activeTeamId),
+        or(eq(missions.workspaceId, wsFilter), isNull(missions.workspaceId)),
+      )
+    : eq(missions.teamId, activeTeamId);
+
   const allMissions = await db.query.missions.findMany({
-    where: inArray(missions.teamId, scopedTeamIds),
+    where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
     with: {
@@ -197,12 +219,18 @@ export default async function MissionsPage() {
             </span>
           )}
         </div>
-        <Link
-          href="/app/missions/new"
-          className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
-        >
-          + New Mission
-        </Link>
+        <div className="flex items-center gap-2">
+          <WorkspaceFilter
+            workspaces={teamWorkspaces}
+            selectedId={wsFilter ?? null}
+          />
+          <Link
+            href="/app/missions/new"
+            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+          >
+            + New Mission
+          </Link>
+        </div>
       </div>
 
       {missionsList.length === 0 ? (
