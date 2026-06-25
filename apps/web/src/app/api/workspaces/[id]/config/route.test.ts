@@ -50,7 +50,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 const originalNodeEnv = process.env.NODE_ENV;
 
-import { GET, POST } from './route';
+import { GET, POST, PATCH } from './route';
 
 const mockParams = Promise.resolve({ id: 'ws-1' });
 
@@ -292,4 +292,226 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(401);
   });
 
+  it('accepts trigger field in releaseConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          prodBranch: 'main',
+          trigger: 'on_mission_complete',
+        },
+      }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.releaseConfig.trigger).toBe('on_mission_complete');
+  });
+
+});
+
+describe('PATCH /api/workspaces/[id]/config', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesUpdate.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    process.env.NODE_ENV = 'production';
+
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('returns 401 when not authenticated', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ releaseConfig: { enabled: true } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 when workspace not found', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ releaseConfig: { enabled: true } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when body missing releaseConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ foo: 'bar' }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
+  it('saves branch_merge releaseConfig with trigger', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          prodBranch: 'main',
+          trigger: 'on_mission_complete',
+        },
+      }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.releaseConfig.strategy).toBe('branch_merge');
+    expect(data.releaseConfig.trigger).toBe('on_mission_complete');
+    expect(data.releaseConfig.prodBranch).toBe('main');
+  });
+
+  it('saves workflow_dispatch releaseConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'every_merge',
+        },
+      }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.releaseConfig.workflowFile).toBe('release.yml');
+    expect(data.releaseConfig.ref).toBe('dev');
+  });
+
+  it('rejects invalid strategy', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: { enabled: true, strategy: 'foobar' },
+      }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects invalid trigger', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: { enabled: true, trigger: 'invalid_trigger' },
+      }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(422);
+  });
+
+  it('strategy=none disables releases', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        releaseConfig: { strategy: 'none' },
+      }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.releaseConfig.enabled).toBe(false);
+  });
+
+  it('null releaseConfig disables releases', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ releaseConfig: null }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.releaseConfig).toBeNull();
+  });
+
+  it('accepts all valid trigger values', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    for (const trigger of ['every_merge', 'on_mission_complete', 'manual', 'scheduled']) {
+      const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+        method: 'PATCH',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ releaseConfig: { enabled: true, trigger } }),
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.releaseConfig.trigger).toBe(trigger);
+    }
+  });
+
+  it('OAuth token with matching team can update', async () => {
+    mockAuthenticateApiKey.mockImplementation((key: string) => {
+      if (key.startsWith('eyJ')) return { id: 'acc-1', level: 'admin', teamId: 'team-1', authType: 'oauth' };
+      return null;
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'restricted' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({
+        'content-type': 'application/json',
+        authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fakeJwt',
+      }),
+      body: JSON.stringify({ releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+  });
 });
