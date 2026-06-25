@@ -1173,6 +1173,94 @@ describe('PATCH /api/workers/[id]', () => {
       const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
       expect(anyFailed).toBe(false);
     });
+
+    it('pr_required + PR present + releaseBranch configured + no open release PR → completed (feature task skip)', async () => {
+      // Regression test: feature tasks (release: inherit) in workspaces with
+      // releaseBranch configured were flipped to 'failed' because executeRelease
+      // entered the Release PR path and found no open dev→main PR (which is the
+      // norm between releases). The fix gates the Release PR path on release==='true'.
+      const capturedTaskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSets.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      // Feature task worker: has a PR (docs/spec committed to branch)
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/c21dfeb7-spec-feature-branch',
+        commitCount: 1,
+        filesChanged: 1,
+        linesAdded: 807,
+        linesRemoved: 0,
+        prUrl: 'https://github.com/org/repo/pull/990',
+        prNumber: 990,
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      // Feature task: pr_required, no explicit release flag (inherits)
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        missionId: null,
+        release: null, // 'inherit' — feature task, not a release task
+      });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      // Workspace has releaseBranch: 'dev' — this is what triggered the systemic bug
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        githubRepoId: 'repo-1',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          prodBranch: 'main',
+          releaseBranch: 'dev',
+        },
+      });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        defaultBranch: 'dev',
+        installation: { installationId: 123 },
+      });
+      // No open dev→main release PR (normal state between releases)
+      mockGithubApi.mockImplementation((_installId: number, path: string) => {
+        if (path.includes('/pulls')) return Promise.resolve([]); // no release PR
+        return Promise.reject(new Error('should not be called'));
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Spec written and PR opened.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Task must stay 'completed' — executeRelease should skip for feature tasks
+      const lastTaskSet = capturedTaskSets[capturedTaskSets.length - 1];
+      expect(lastTaskSet?.status).toBe('completed');
+      // No task update should have set status to 'failed'
+      const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
+      expect(anyFailed).toBe(false);
+    });
   });
 
   it('omits phases from task.result when there are no phase milestones', async () => {
