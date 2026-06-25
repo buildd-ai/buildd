@@ -146,7 +146,18 @@ export async function collectGitStats(
     if (fallbackCommitCount !== undefined) stats.commitCount = fallbackCommitCount;
   }
   try {
-    const numstat = execSync('git diff --numstat HEAD~1 2>/dev/null || true', opts).trim();
+    // Compute full PR diff: find the merge-base with the base branch so we capture all
+    // commits on this branch, not just the last commit (HEAD~1 only shows the final commit).
+    // Try branch candidates in order; the first one that yields a merge-base wins.
+    let mergeBase = '';
+    for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
+      try {
+        const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
+        if (result) { mergeBase = result; break; }
+      } catch {}
+    }
+    const diffTarget = mergeBase || 'HEAD~1';
+    const numstat = execSync(`git diff --numstat ${diffTarget} 2>/dev/null || true`, opts).trim();
     if (numstat) {
       let added = 0, removed = 0, files = 0;
       for (const line of numstat.split('\n')) {
