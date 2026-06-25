@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth } from '@/lib/mission-helpers';
+import { isValidTaskId } from '@/lib/task-id';
 import { MissionGrid } from './MissionGrid';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
@@ -157,11 +158,7 @@ export default async function MissionsPage({
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
-    const latestTaskId = rawLatestId
-      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawLatestId)
-      && !/^[0-9a-f]{8}-0{4}-0{4}-0{4}-0{12}$/i.test(rawLatestId)
-      ? rawLatestId
-      : null;
+    const latestTaskId = isValidTaskId(rawLatestId) ? rawLatestId : null;
 
     return {
       id: obj.id,
