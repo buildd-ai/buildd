@@ -284,10 +284,20 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   }
 
   if (branchMerge.releaseBranch) {
-    // "Release PR" path: the release task creates a PR from releaseBranch → prodBranch
-    // (e.g. dev → main via `bun run release`). We find that PR, check its CI, and
-    // if CI is already green we merge it immediately. If CI is still pending we
-    // return pending_ci so the webhook can complete the task once CI resolves.
+    // "Release PR" path: a dedicated release task creates a PR from releaseBranch →
+    // prodBranch (e.g. dev → main via `bun run release`). Only run this path for
+    // tasks that explicitly requested release (`release: 'true'`). Feature tasks with
+    // `release: 'inherit'` land their work on releaseBranch via auto-merge; the
+    // dev→main promotion happens separately when the release task runs. Entering this
+    // path for feature tasks causes every feature task to fail with "no open release
+    // PR found" whenever there is no dev→main PR open — which is most of the time.
+    if (releaseFlag !== 'true') {
+      return {
+        status: 'skipped',
+        message: `Release: feature task — code lands on ${branchMerge.releaseBranch} and is promoted to ${prodBranch} by the release task.`,
+      };
+    }
+
     const releasePr = await findReleasePr(
       repo.installation.installationId,
       repo.fullName,
