@@ -1,10 +1,102 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+
+const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
+const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
+
+// Parse + validate the releaseConfig body fragment. Returns the sanitized config or
+// a string error message the caller can surface to the UI.
+function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseConfig } | { ok: false; error: string; status: number } {
+    if (!rc || typeof rc !== 'object') {
+        return { ok: false, error: 'releaseConfig must be an object', status: 400 };
+    }
+    const r = rc as Record<string, unknown>;
+
+    // Treat strategy='none' as disabled (convenience alias used by the UI selector)
+    const strategyRaw = typeof r.strategy === 'string' ? r.strategy : undefined;
+    if (strategyRaw === 'none') {
+        return { ok: true, config: { enabled: false } };
+    }
+    if (strategyRaw !== undefined && !VALID_STRATEGIES.includes(strategyRaw as ReleaseStrategy)) {
+        return { ok: false, error: `Invalid strategy '${strategyRaw}'. Valid: ${VALID_STRATEGIES.join(', ')}, none`, status: 422 };
+    }
+    const strategy = strategyRaw as ReleaseStrategy | undefined;
+
+    const triggerRaw = typeof r.trigger === 'string' ? r.trigger : undefined;
+    if (triggerRaw !== undefined && !VALID_TRIGGERS.includes(triggerRaw as ReleaseTrigger)) {
+        return { ok: false, error: `Invalid trigger '${triggerRaw}'. Valid: ${VALID_TRIGGERS.join(', ')}`, status: 422 };
+    }
+    const trigger = triggerRaw as ReleaseTrigger | undefined;
+
+    // strategy-specific field validation (only when strategy is being set)
+    if (strategy === 'branch_merge') {
+        if (r.prodBranch !== undefined && typeof r.prodBranch !== 'string') {
+            return { ok: false, error: 'branch_merge: prodBranch must be a string', status: 422 };
+        }
+    }
+    if (strategy === 'workflow_dispatch') {
+        if (r.workflowFile !== undefined && typeof r.workflowFile !== 'string') {
+            return { ok: false, error: 'workflow_dispatch: workflowFile must be a string', status: 422 };
+        }
+        if (r.ref !== undefined && typeof r.ref !== 'string') {
+            return { ok: false, error: 'workflow_dispatch: ref must be a string', status: 422 };
+        }
+    }
+
+    const config: WorkspaceReleaseConfig = {
+        enabled: Boolean(r.enabled ?? true),
+        ...(strategy ? { strategy } : {}),
+        ...(trigger ? { trigger } : {}),
+        // workflow_dispatch
+        ...(typeof r.workflowFile === 'string' ? { workflowFile: r.workflowFile } : {}),
+        ...(typeof r.ref === 'string' ? { ref: r.ref } : {}),
+        ...(r.inputs && typeof r.inputs === 'object' ? { inputs: r.inputs as Record<string, string> } : {}),
+        // branch_merge
+        ...(typeof r.prodBranch === 'string' ? { prodBranch: r.prodBranch } : {}),
+        ...(r.deployTarget && (r.deployTarget as any).type === 'vercel'
+            ? { deployTarget: { type: 'vercel', projectId: (r.deployTarget as any).projectId, teamId: (r.deployTarget as any).teamId } }
+            : {}),
+        ...(Array.isArray(r.postDeployHooks) ? { postDeployHooks: r.postDeployHooks as WorkspaceReleaseConfig['postDeployHooks'] } : {}),
+        ...(typeof r.verificationUrl === 'string' ? { verificationUrl: r.verificationUrl } : {}),
+        // script
+        ...(typeof r.command === 'string' ? { command: r.command } : {}),
+    };
+
+    return { ok: true, config };
+}
+
+// Resolve the requesting account for write operations.
+// Returns { userId?, apiAccount? } — at least one will be set, or null if unauthorized.
+async function resolveWriteAuth(req: NextRequest) {
+    const authHeader = req.headers.get('authorization');
+    const apiKey = authHeader?.replace('Bearer ', '') || null;
+    const apiAccount = await authenticateApiKey(apiKey);
+    const user = await getCurrentUser();
+    if (!apiAccount && !user) return null;
+    return { user, apiAccount };
+}
+
+// Verify that the requesting auth has write access to workspaceId.
+async function verifyWriteAccess(auth: { user: any; apiAccount: any }, workspaceId: string): Promise<boolean> {
+    const { user, apiAccount } = auth;
+    if (user && !apiAccount) {
+        const access = await verifyWorkspaceAccess(user.id, workspaceId);
+        return Boolean(access);
+    }
+    if (apiAccount) {
+        const ws = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, workspaceId),
+            columns: { teamId: true, accessMode: true },
+        });
+        return Boolean(ws && (ws.teamId === apiAccount.teamId || ws.accessMode === 'open'));
+    }
+    return false;
+}
 
 // GET /api/workspaces/[id]/config - Get workspace git config
 export async function GET(
@@ -118,26 +210,13 @@ export async function POST(
 
         // Handle releaseConfig update if provided (separate from gitConfig)
         if (body.releaseConfig !== undefined) {
-            const rc = body.releaseConfig;
             let releaseConfig: WorkspaceReleaseConfig | null = null;
-            if (rc && typeof rc === 'object') {
-                releaseConfig = {
-                    enabled: Boolean(rc.enabled ?? true),
-                    ...(typeof rc.strategy === 'string' ? { strategy: rc.strategy } : {}),
-                    // workflow_dispatch
-                    ...(typeof rc.workflowFile === 'string' ? { workflowFile: rc.workflowFile } : {}),
-                    ...(typeof rc.ref === 'string' ? { ref: rc.ref } : {}),
-                    ...(rc.inputs && typeof rc.inputs === 'object' ? { inputs: rc.inputs } : {}),
-                    // branch_merge
-                    ...(typeof rc.prodBranch === 'string' ? { prodBranch: rc.prodBranch } : {}),
-                    ...(rc.deployTarget && rc.deployTarget.type === 'vercel'
-                        ? { deployTarget: { type: 'vercel', projectId: rc.deployTarget.projectId, teamId: rc.deployTarget.teamId } }
-                        : {}),
-                    ...(Array.isArray(rc.postDeployHooks) ? { postDeployHooks: rc.postDeployHooks } : {}),
-                    ...(typeof rc.verificationUrl === 'string' ? { verificationUrl: rc.verificationUrl } : {}),
-                    // script
-                    ...(typeof rc.command === 'string' ? { command: rc.command } : {}),
-                };
+            if (body.releaseConfig && typeof body.releaseConfig === 'object') {
+                const parsed = parseReleaseConfig(body.releaseConfig);
+                if (!parsed.ok) {
+                    return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+                }
+                releaseConfig = parsed.config;
             }
             await db
                 .update(workspaces)
@@ -263,6 +342,68 @@ export async function POST(
         return NextResponse.json({ success: true, gitConfig });
     } catch (error) {
         console.error('Save workspace config error:', error);
+        return NextResponse.json({ error: 'Failed to save config' }, { status: 500 });
+    }
+}
+
+// PATCH /api/workspaces/[id]/config — partial releaseConfig update
+//
+// Accepts only { releaseConfig: Partial<WorkspaceReleaseConfig> }. Use POST for
+// gitConfig changes. PATCH is the preferred endpoint for the Release UI section.
+//
+// strategy='none' disables releases (sets enabled:false, clears strategy fields).
+// trigger validation enforces the ReleaseTrigger enum.
+// branch_merge: prodBranch must be a string if provided.
+// workflow_dispatch: workflowFile + ref must be strings if provided.
+export async function PATCH(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    const { id } = await params;
+
+    const auth = await resolveWriteAuth(req);
+    if (!auth) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    try {
+        const hasAccess = await verifyWriteAccess(auth, id);
+        if (!hasAccess) {
+            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        }
+
+        let body: unknown;
+        try {
+            body = await req.json();
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+        }
+
+        if (!body || typeof body !== 'object' || !('releaseConfig' in body)) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig' }, { status: 400 });
+        }
+
+        const rc = (body as Record<string, unknown>).releaseConfig;
+
+        // null / explicit null disables releases
+        if (rc === null) {
+            await db.update(workspaces).set({ releaseConfig: null, updatedAt: new Date() }).where(eq(workspaces.id, id));
+            return NextResponse.json({ success: true, releaseConfig: null });
+        }
+
+        const parsed = parseReleaseConfig(rc);
+        if (!parsed.ok) {
+            return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+        }
+
+        await db
+            .update(workspaces)
+            .set({ releaseConfig: parsed.config, updatedAt: new Date() })
+            .where(eq(workspaces.id, id));
+
+        return NextResponse.json({ success: true, releaseConfig: parsed.config });
+    } catch (error) {
+        console.error('PATCH workspace config error:', error);
         return NextResponse.json({ error: 'Failed to save config' }, { status: 500 });
     }
 }

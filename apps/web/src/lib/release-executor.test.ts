@@ -273,3 +273,65 @@ describe('executeRelease — worker branch', () => {
     expect(result.message).toContain('Vercel unverified');
   });
 });
+
+// ── Trigger policy ─────────────────────────────────────────────────────────────
+
+describe('executeRelease — trigger policy', () => {
+  beforeEach(() => {
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubApi.mockReset();
+
+    // default: task with release='inherit', worker with branch
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/abc-feat', prNumber: null, prUrl: null });
+  });
+
+  it('skips release when trigger=manual', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'manual' },
+      githubRepoId: 'repo-1',
+    });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('trigger=manual');
+  });
+
+  it('skips release when trigger=on_mission_complete', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'on_mission_complete' },
+      githubRepoId: 'repo-1',
+    });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('on_mission_complete');
+  });
+
+  it('proceeds when trigger=every_merge (default behavior)', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    // No repo returned → fails at repo lookup, but that's past the trigger check
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    // Should not return 'skipped' due to trigger policy
+    expect(result.status).not.toBe('skipped');
+  });
+
+  it('proceeds when trigger is absent (back-compat default)', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
+      githubRepoId: 'repo-1',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).not.toBe('skipped');
+  });
+});
