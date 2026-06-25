@@ -748,7 +748,7 @@ export async function PATCH(
           accountId: worker.accountId,
           outcome: status,
           totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
-          totalTurns: updates.turns ?? worker.turns ?? null,
+          totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
           durationMs,
           wasRetried: retryCount > 0,
         }).catch(() => {});
