@@ -215,10 +215,13 @@ export interface ReleaseInput {
   taskId: string;
   workerId: string;
   workspaceId: string;
+  // When true: called from the mission-complete hook, not per-task. Bypasses
+  // per-task trigger policy so the mission release actually fires.
+  isMissionRelease?: boolean;
 }
 
 export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult> {
-  const { taskId, workerId, workspaceId } = input;
+  const { taskId, workerId, workspaceId, isMissionRelease = false } = input;
 
   // Fetch task release flag and worker PR info
   const [task, worker, workspace] = await Promise.all([
@@ -242,6 +245,19 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   // Determine if release should run
   if (releaseFlag === 'false') {
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
+  }
+
+  // Trigger policy: governs cadence. Per-task releases check this; mission-
+  // driven releases (isMissionRelease=true) bypass so the hook actually fires.
+  if (!isMissionRelease) {
+    const trigger = releaseConfig?.trigger ?? 'every_merge';
+    if (trigger === 'manual') {
+      return { status: 'skipped', message: 'Release: trigger=manual — use trigger_release to deploy' };
+    }
+    if (trigger === 'on_mission_complete') {
+      return { status: 'skipped', message: 'Release: trigger=on_mission_complete — releases once per mission terminal' };
+    }
+    // trigger === 'every_merge' or absent: proceed as normal
   }
 
   // Resolve the workspace's declared strategy. executeRelease is the

@@ -273,3 +273,83 @@ describe('executeRelease — worker branch', () => {
     expect(result.message).toContain('Vercel unverified');
   });
 });
+
+// ── Trigger policy ────────────────────────────────────────────────────────────
+
+describe('executeRelease — trigger policy', () => {
+  function setupBase(triggerValue?: string) {
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/task', prNumber: null });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      releaseConfig: {
+        enabled: true,
+        strategy: 'branch_merge',
+        prodBranch: 'main',
+        ...(triggerValue !== undefined ? { trigger: triggerValue } : {}),
+      },
+      githubRepoId: 'repo-1',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+  }
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+  });
+
+  it('skips when trigger=manual', async () => {
+    setupBase('manual');
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('manual');
+  });
+
+  it('skips when trigger=on_mission_complete', async () => {
+    setupBase('on_mission_complete');
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('on_mission_complete');
+  });
+
+  it('proceeds when trigger=every_merge (default behavior unchanged)', async () => {
+    setupBase('every_merge');
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+    // No releaseBranch and no worker branch push means it falls through to
+    // the "no repo installation" check. We just need to confirm it did NOT
+    // return skipped due to trigger policy.
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).not.toBe('skipped');
+  });
+
+  it('proceeds when trigger is absent (back-compat: every_merge default)', async () => {
+    setupBase(undefined);
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).not.toBe('skipped');
+  });
+
+  it('bypasses trigger=on_mission_complete when isMissionRelease=true', async () => {
+    // When called from the mission-complete hook, trigger policy is bypassed
+    setupBase('on_mission_complete');
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true });
+    // Should not be skipped due to trigger — will proceed to branch_merge logic
+    expect(result.status).not.toBe('skipped');
+  });
+});

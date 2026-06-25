@@ -259,6 +259,13 @@ export interface WorkspaceGitConfig {
 //   - script: spawn a worker task that runs the repo's own release command.
 export type ReleaseStrategy = 'workflow_dispatch' | 'branch_merge' | 'script';
 
+// Cadence policy controlling when a release fires.
+//   every_merge        — release on each completed non-skipped task (back-compat default)
+//   on_mission_complete — release once when a mission's tasks all reach terminal state
+//   manual             — no auto-release; owner fires trigger_release explicitly
+//   scheduled          — PHASE 2 placeholder; not yet implemented
+export type ReleaseTrigger = 'every_merge' | 'on_mission_complete' | 'manual' | 'scheduled';
+
 // Release configuration for a workspace — controls whether/how releases happen.
 // Stored as jsonb, so this is a free-form shape (no migration on change). All
 // step-specific fields are optional; `resolveReleaseStrategy` validates them
@@ -266,6 +273,9 @@ export type ReleaseStrategy = 'workflow_dispatch' | 'branch_merge' | 'script';
 export interface WorkspaceReleaseConfig {
   // Whether this workspace is configured for releases. Projects without this never release.
   enabled: boolean;
+
+  // Cadence policy. Absent ⇒ 'every_merge' for back-compat.
+  trigger?: ReleaseTrigger;
 
   // Which strategy this workspace uses. Absent ⇒ 'branch_merge' (legacy default).
   strategy?: ReleaseStrategy;
@@ -507,6 +517,9 @@ export const missions = pgTable('missions', {
   primaryPrUrl: text('primary_pr_url'),
   // Dedup key for PR-ready push notifications — set to PR head SHA after each notify.
   lastNotifiedSha: text('last_notified_sha'),
+  // Set atomically by the first task completion that triggers a mission release.
+  // Prevents double-fire when multiple tasks complete near-simultaneously.
+  releasedAt: timestamp('released_at', { withTimezone: true }),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),

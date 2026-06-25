@@ -414,6 +414,13 @@
       "when": 1782360000000,
       "tag": "0058_heartbeat_state_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1750880000000,
+      "tag": "0059_missions_released_at",
+      "breakpoints": true
     }
   ]
 }

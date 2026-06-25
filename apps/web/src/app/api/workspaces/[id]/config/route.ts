@@ -121,9 +121,12 @@ export async function POST(
             const rc = body.releaseConfig;
             let releaseConfig: WorkspaceReleaseConfig | null = null;
             if (rc && typeof rc === 'object') {
+                const validTriggers = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
                 releaseConfig = {
                     enabled: Boolean(rc.enabled ?? true),
                     ...(typeof rc.strategy === 'string' ? { strategy: rc.strategy } : {}),
+                    // trigger policy (cadence)
+                    ...(typeof rc.trigger === 'string' && validTriggers.includes(rc.trigger) ? { trigger: rc.trigger } : {}),
                     // workflow_dispatch
                     ...(typeof rc.workflowFile === 'string' ? { workflowFile: rc.workflowFile } : {}),
                     ...(typeof rc.ref === 'string' ? { ref: rc.ref } : {}),
