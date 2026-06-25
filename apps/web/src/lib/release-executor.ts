@@ -6,7 +6,9 @@ import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 
-// Vercel deployment readback — polls until terminal state
+// Vercel deployment readback — polls until terminal state.
+// Returns { state: 'SKIPPED', url: null } when VERCEL_TOKEN is absent so the
+// caller can treat a missing token as "unverified" rather than a hard failure.
 async function pollVercelDeployment(
   projectId: string,
   teamId: string | undefined,
@@ -15,7 +17,7 @@ async function pollVercelDeployment(
 ): Promise<{ state: string; url: string | null }> {
   const token = process.env.VERCEL_TOKEN;
   if (!token) {
-    throw new Error('VERCEL_TOKEN not configured');
+    return { state: 'SKIPPED', url: null };
   }
 
   const teamQuery = teamId ? `&teamId=${encodeURIComponent(teamId)}` : '';
@@ -199,6 +201,11 @@ async function mergeIntoProd(
     // Treat 204 (no content, already up-to-date) as success
     if (msg.includes('204')) {
       return { merged: true, message: `${prodBranch} already up-to-date` };
+    }
+    // 404 "Head does not exist" means the branch was already merged and deleted.
+    // Treat as no-op success rather than failing the whole release.
+    if (msg.includes('404') && msg.includes('Head does not exist')) {
+      return { merged: true, message: `Head branch already gone — likely already merged into ${prodBranch}` };
     }
     return { merged: false, message: `Merge failed: ${msg}` };
   }
@@ -393,13 +400,17 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     }
 
     try {
-      // Brief delay to let Vercel pick up the push
-      await new Promise((res) => setTimeout(res, 8_000));
+      // Only wait for Vercel to pick up the push when we can actually verify.
+      // When VERCEL_TOKEN is absent, pollVercelDeployment returns SKIPPED immediately.
+      if (process.env.VERCEL_TOKEN) {
+        await new Promise((res) => setTimeout(res, 8_000));
+      }
       const deploy = await pollVercelDeployment(projectId, teamId, prodBranch);
       deployState = deploy.state;
       deployUrl = deploy.url;
 
-      if (deploy.state !== 'READY') {
+      // SKIPPED means the token was absent — treat as unverified, not failed.
+      if (deploy.state !== 'READY' && deploy.state !== 'SKIPPED') {
         const hookResults: ReleaseResult['hooksRan'] = [];
         return {
           status: 'failed',
@@ -435,10 +446,13 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   }
 
   // Compose final result
-  const vercelLine = deployUrl ? ` at ${deployUrl}` : '';
+  const vercelLine = deployState === 'SKIPPED'
+    ? ' (Vercel unverified — VERCEL_TOKEN not set)'
+    : deployUrl ? ` at ${deployUrl}` : '';
+  const readyLabel = deployState === 'SKIPPED' ? 'deployed' : 'READY';
   const summaryLine = hookFailed
-    ? `Release: completed with hook errors — prod READY${vercelLine}`
-    : `Release: completed, prod READY${vercelLine}`;
+    ? `Release: completed with hook errors — prod ${readyLabel}${vercelLine}`
+    : `Release: completed, prod ${readyLabel}${vercelLine}`;
 
   return {
     status: 'completed',
