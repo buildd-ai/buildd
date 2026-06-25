@@ -966,12 +966,17 @@ export async function PATCH(
     );
   }
 
-  // Broadcast budget-reset task back to pending (so dashboard updates)
+  // Broadcast budget-reset task status change for dashboard visibility.
+  // Intentionally NOT sending TASK_ASSIGNED here: that event tells the runner
+  // to immediately re-claim, which triggers a refire before the runner's
+  // circuit breaker (trip-on-error) can prevent it — reproducing the exact
+  // burst observed in the 2026-06-25 session-limit storm. The task is already
+  // pending and the runner's next poll picks it up when the budget resets.
   if (isBudgetReset && worker.taskId) {
     await triggerEvent(
       channels.workspace(worker.workspaceId),
-      events.TASK_ASSIGNED,
-      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+      events.TASK_UPDATED,
+      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } }
     );
   }
 
