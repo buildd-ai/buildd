@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "description": "Golden query set for the retrieval eval harness. Source paths are root-relative within each sub-app/package, matching how the SPEC_SYNC ingestion stores them (e.g. 'core/knowledge-store/pg-vector-store.ts', not 'packages/core/...'). Code namespace = SPEC_SYNC_NAMESPACE:code; docs namespace = SPEC_SYNC_NAMESPACE:docs. The spec namespace defaults to workspaceId:spec and is typically empty until a spec-sync run.",
+  "curated": [
+    {
+      "id": "code-rrf-001",
+      "corpus": "code",
+      "query": "reciprocal rank fusion vector lexical merge scores",
+      "expectedSourcePaths": ["core/knowledge-store/pg-vector-store.ts"],
+      "notes": "RRF implementation — requires vector search; BM25 misses 'merg'+'vector' co-occurrence across chunks"
+    },
+    {
+      "id": "code-ks-types-001",
+      "corpus": "code",
+      "query": "KnowledgeStore interface upsert query delete namespace",
+      "expectedSourcePaths": ["core/knowledge-store/types.ts"],
+      "notes": "KnowledgeStore, QueryResult, UpsertChunk interfaces — BM25-friendly (distinctive type names)"
+    },
+    {
+      "id": "code-embedder-001",
+      "corpus": "code",
+      "query": "voyage embedder model dimensions embed texts input type query document",
+      "expectedSourcePaths": ["core/knowledge-store/voyage-embedder.ts"],
+      "notes": "VoyageEmbedder class — BM25-friendly on 'voyage' and 'embedder'"
+    },
+    {
+      "id": "code-chunker-001",
+      "corpus": "code",
+      "query": "chunk markdown heading overlap window text split code docs",
+      "expectedSourcePaths": ["core/knowledge-store/chunker.ts"],
+      "notes": "chunkText, chunkMarkdown, chunkCode — requires vector for full recall"
+    },
+    {
+      "id": "code-ingest-001",
+      "corpus": "code",
+      "query": "ingest files source path knowledge chunks upsert workspace corpus",
+      "expectedSourcePaths": ["core/knowledge-store/ingest.ts"],
+      "notes": "ingestFiles and fileToChunks — BM25 may match mcp-tools instead"
+    },
+    {
+      "id": "code-reranker-001",
+      "corpus": "code",
+      "query": "voyage reranker cross encoder apply rerank documents scores",
+      "expectedSourcePaths": ["core/knowledge-store/reranker.ts"],
+      "notes": "VoyageReranker and applyRerank() — BM25-friendly on 'reranker'"
+    },
+    {
+      "id": "code-pg-vector-query-001",
+      "corpus": "code",
+      "query": "PgVectorStore query hybrid vector lexical tsquery embedding cosine",
+      "expectedSourcePaths": ["core/knowledge-store/pg-vector-store.ts"],
+      "notes": "PgVectorStore.query() hybrid retrieval path"
+    },
+    {
+      "id": "code-cards-001",
+      "corpus": "code",
+      "query": "buildTaskCard buildPrCard buildArtifactCard knowledge store card content",
+      "expectedSourcePaths": ["core/knowledge-store/cards.ts"],
+      "notes": "card builders that mirror work products into knowledge store"
+    },
+    {
+      "id": "code-mcp-query-knowledge-001",
+      "corpus": "code",
+      "query": "query_knowledge memory action namespace teamId workspaceId corpus mode",
+      "expectedSourcePaths": ["core/mcp-tools.ts"],
+      "notes": "handleMemoryAction query_knowledge handler in mcp-tools.ts"
+    },
+    {
+      "id": "code-worker-claim-001",
+      "corpus": "code",
+      "query": "worker claim task POST route maxConcurrent skill assignment",
+      "expectedSourcePaths": [
+        "web/src/app/api/workers/claim/route.ts"
+      ],
+      "notes": "worker claim endpoint"
+    },
+    {
+      "id": "code-db-schema-knowledge-001",
+      "corpus": "code",
+      "query": "knowledge_chunks table namespace embedding vector source_id content_hash",
+      "expectedSourcePaths": ["core/db/schema.ts"],
+      "notes": "knowledge_chunks schema definition"
+    },
+    {
+      "id": "code-mission-context-001",
+      "corpus": "code",
+      "query": "mission context builder workspace roles active workers prompt injection",
+      "expectedSourcePaths": ["web/src/lib/mission-context.ts"],
+      "notes": "mission-context.ts — requires vector search for semantic match"
+    },
+    {
+      "id": "code-release-executor-001",
+      "corpus": "code",
+      "query": "release executor branch merge strategy deploy trigger workflow",
+      "expectedSourcePaths": [
+        "web/src/lib/release-executor.ts"
+      ],
+      "notes": "release executor — 'merge' is common; requires vector for precision"
+    },
+    {
+      "id": "code-role-config-001",
+      "corpus": "code",
+      "query": "role config packaging CLAUDE.md mcp.json env mapping R2 upload",
+      "expectedSourcePaths": ["web/src/lib/role-config.ts"],
+      "notes": "role-config.ts bundles agent config for roles"
+    },
+    {
+      "id": "code-assess-knowledge-001",
+      "corpus": "code",
+      "query": "assess knowledge retrieval recall MRR self-retrieval sample chunk",
+      "expectedSourcePaths": [
+        "core/scripts/assess-knowledge.ts"
+      ],
+      "notes": "existing assess-knowledge.ts self-retrieval probe"
+    },
+    {
+      "id": "docs-missions-arch-001",
+      "corpus": "docs",
+      "query": "missions architecture goal task progress schedule",
+      "expectedSourcePaths": ["plans/buildd/missions-architecture.md"],
+      "notes": "Missions architecture plan — BM25-friendly (distinctive term 'missions')"
+    },
+    {
+      "id": "docs-testing-strategy-001",
+      "corpus": "docs",
+      "query": "testing strategy route handler unit smoke integration bun",
+      "expectedSourcePaths": ["plans/buildd/testing-strategy.md"],
+      "notes": "Testing strategy plan — requires vector; BM25 misses 'bun' as uncommon term in docs"
+    },
+    {
+      "id": "docs-sdk-research-001",
+      "corpus": "docs",
+      "query": "claude SDK agent streaming tool use anthropic model ecosystem",
+      "expectedSourcePaths": ["research/technical/sdk-ecosystem-research.md"],
+      "notes": "Claude SDK ecosystem research — requires vector for multi-concept query"
+    },
+    {
+      "id": "spec-kg-retrieval-layer1-001",
+      "corpus": "spec",
+      "query": "source_ts is_current superseded_by recency decay half life corpus authority",
+      "expectedSourcePaths": ["docs/design/knowledge-graph-retrieval.md"],
+      "notes": "Layer 1 recency spec — NOTE: spec namespace is empty in default setup; skipped"
+    },
+    {
+      "id": "spec-kg-retrieval-graph-001",
+      "corpus": "spec",
+      "query": "graph edges expansion 1-hop proximity score spreading activation",
+      "expectedSourcePaths": ["docs/design/knowledge-graph-retrieval.md"],
+      "notes": "Layer 3 graph retrieval spec — NOTE: spec namespace is empty in default setup; skipped"
+    }
+  ],
+  "sampled": [
+    {
+      "corpus": "memory",
+      "sampleSize": 30,
+      "k": 10,
+      "notes": "Self-retrieval: sample workspace team memories, probe with first meaningful line"
+    },
+    {
+      "corpus": "task",
+      "sampleSize": 25,
+      "k": 10,
+      "notes": "Self-retrieval: sample task outcome cards"
+    },
+    {
+      "corpus": "artifact",
+      "sampleSize": 20,
+      "k": 10,
+      "notes": "Self-retrieval: sample artifact cards"
+    },
+    {
+      "corpus": "pr",
+      "sampleSize": 20,
+      "k": 10,
+      "notes": "Self-retrieval: sample PR cards"
+    }
+  ]
+}
