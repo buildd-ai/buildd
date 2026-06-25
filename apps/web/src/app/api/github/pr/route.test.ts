@@ -672,7 +672,7 @@ describe('POST /api/github/pr', () => {
     });
 
     // First call: list existing PRs (returns one match)
-    // Second call should not happen (dedup)
+    // Second call: fetch individual PR detail for diff stats
     mockGithubApi.mockResolvedValueOnce([
       {
         number: 42,
@@ -681,6 +681,15 @@ describe('POST /api/github/pr', () => {
         title: 'Existing PR',
       },
     ]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'Existing PR',
+      additions: 807,
+      deletions: 12,
+      changed_files: 5,
+    });
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -694,8 +703,104 @@ describe('POST /api/github/pr', () => {
     expect(data.deduplicated).toBe(true);
     expect(data.pr.number).toBe(42);
     expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
-    // Should have called githubApi only once (the list check), not a second time (create)
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    // Should have called githubApi twice: list check + individual PR fetch for stats
+    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('stores diff stats from GitHub response when creating PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    // List check returns empty, then create returns PR with diff stats
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      additions: 807,
+      deletions: 23,
+      changed_files: 14,
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.linesAdded).toBe(807);
+    expect(capturedSetData.linesRemoved).toBe(23);
+    expect(capturedSetData.filesChanged).toBe(14);
+  });
+
+  it('stores diff stats from GitHub response when deduplicating via existing PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
+      additions: 150, deletions: 8, changed_files: 3,
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.linesAdded).toBe(150);
+    expect(capturedSetData.linesRemoved).toBe(8);
+    expect(capturedSetData.filesChanged).toBe(3);
   });
 
   it('returns 500 when githubApi throws an error', async () => {

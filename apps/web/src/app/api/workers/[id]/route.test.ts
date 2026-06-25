@@ -800,6 +800,110 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
   });
 
+  it('preserves non-zero PR diff stats when runner reports zeros on completion', async () => {
+    // Regression: create_pr stores real diff stats from GitHub (e.g. 807 additions).
+    // If the runner then sends filesChanged:0/linesAdded:0 at completion (wrong local git
+    // base), those zeros must NOT overwrite the real stats already in the DB.
+    let capturedWorkerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedWorkerSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // Worker already has real diff stats from create_pr (GitHub API)
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'buildd/abc-feature',
+      commitCount: 3,
+      filesChanged: 14,
+      linesAdded: 807,
+      linesRemoved: 23,
+      prUrl: 'https://github.com/org/repo/pull/990',
+      prNumber: 990,
+      pendingInstructions: null,
+      milestones: null,
+      waitingFor: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required', missionId: null });
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    // Runner sends zeros (wrong local git base — the bug scenario)
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // The worker DB update must NOT have overwritten the real stats with zeros
+    expect(capturedWorkerSet.filesChanged).toBeUndefined();
+    expect(capturedWorkerSet.linesAdded).toBeUndefined();
+    expect(capturedWorkerSet.linesRemoved).toBeUndefined();
+  });
+
+  it('accepts zero diff stats on completion when worker has no prior stats', async () => {
+    // Reverts with zero changes are legitimate — don't suppress them when the worker starts at 0.
+    let capturedWorkerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedWorkerSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'buildd/xyz-revert',
+      commitCount: 0,
+      filesChanged: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      prUrl: null,
+      prNumber: null,
+      pendingInstructions: null,
+      milestones: null,
+      waitingFor: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Explicit zeros ARE stored when worker starts with no prior stats (legitimate 0-change task)
+    expect(capturedWorkerSet.filesChanged).toBe(0);
+    expect(capturedWorkerSet.linesAdded).toBe(0);
+    expect(capturedWorkerSet.linesRemoved).toBe(0);
+  });
+
   describe('output requirement validation ordering', () => {
     it('allows completion with warning when commits exist but no PR (auto mode)', async () => {
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
