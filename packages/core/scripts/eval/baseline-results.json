@@ -1,0 +1,386 @@
+{
+  "schemaVersion": 1,
+  "runAt": "2026-06-25T16:38:37.918Z",
+  "workspaceId": "57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6",
+  "k": 10,
+  "pipeline": "bm25-lexical-only-no-voyage-key",
+  "overall": {
+    "queriesRun": 22,
+    "queriesSkipped": 2,
+    "recallAt5": 0.29363636363636364,
+    "recallAt10": 0.29515151515151516,
+    "mrr": 0.28185786435786436,
+    "ndcg10": 0.28521736649902407
+  },
+  "byCorpus": [
+    {
+      "corpus": "code",
+      "queriesRun": 15,
+      "queriesSkipped": 0,
+      "recallAt5": 0.13333333333333333,
+      "recallAt10": 0.13333333333333333,
+      "mrr": 0.13333333333333333,
+      "ndcg10": 0.13333333333333333
+    },
+    {
+      "corpus": "docs",
+      "queriesRun": 3,
+      "queriesSkipped": 0,
+      "recallAt5": 0.3333333333333333,
+      "recallAt10": 0.3333333333333333,
+      "mrr": 0.3333333333333333,
+      "ndcg10": 0.3333333333333333
+    },
+    {
+      "corpus": "spec",
+      "queriesRun": 0,
+      "queriesSkipped": 2,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "mrr": 0,
+      "ndcg10": 0
+    },
+    {
+      "corpus": "memory",
+      "queriesRun": 1,
+      "queriesSkipped": 0,
+      "recallAt5": 0.5,
+      "recallAt10": 0.5333333333333333,
+      "mrr": 0.38087301587301586,
+      "ndcg10": 0.4181217319785214
+    },
+    {
+      "corpus": "task",
+      "queriesRun": 1,
+      "queriesSkipped": 0,
+      "recallAt5": 0.96,
+      "recallAt10": 0.96,
+      "mrr": 0.92,
+      "ndcg10": 0.9304743802857166
+    },
+    {
+      "corpus": "artifact",
+      "queriesRun": 1,
+      "queriesSkipped": 0,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "mrr": 0.925,
+      "ndcg10": 0.9446394630357187
+    },
+    {
+      "corpus": "pr",
+      "queriesRun": 1,
+      "queriesSkipped": 0,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "mrr": 0.975,
+      "ndcg10": 0.9815464876785729
+    }
+  ],
+  "queries": [
+    {
+      "queryId": "code-rrf-001",
+      "corpus": "code",
+      "query": "reciprocal rank fusion vector lexical merge scores",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-ks-types-001",
+      "corpus": "code",
+      "query": "KnowledgeStore interface upsert query delete namespace",
+      "mode": "curated",
+      "recall5": 1,
+      "recall10": 1,
+      "mrr": 1,
+      "ndcg10": 1,
+      "topResults": [
+        {
+          "rank": 1,
+          "sourcePath": "core/knowledge-store/types.ts",
+          "sourceType": "code",
+          "score": 0.8998639,
+          "relevant": true
+        }
+      ]
+    },
+    {
+      "queryId": "code-embedder-001",
+      "corpus": "code",
+      "query": "voyage embedder model dimensions embed texts input type query document",
+      "mode": "curated",
+      "recall5": 1,
+      "recall10": 1,
+      "mrr": 1,
+      "ndcg10": 1,
+      "topResults": [
+        {
+          "rank": 1,
+          "sourcePath": "core/knowledge-store/voyage-embedder.ts",
+          "sourceType": "code",
+          "score": 0.99782544,
+          "relevant": true
+        },
+        {
+          "rank": 2,
+          "sourcePath": "core/knowledge-store/types.ts",
+          "sourceType": "code",
+          "score": 0.99743325,
+          "relevant": false
+        }
+      ]
+    },
+    {
+      "queryId": "code-chunker-001",
+      "corpus": "code",
+      "query": "chunk markdown heading overlap window text split code docs",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-ingest-001",
+      "corpus": "code",
+      "query": "ingest files source path knowledge chunks upsert workspace corpus",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-reranker-001",
+      "corpus": "code",
+      "query": "voyage reranker cross encoder apply rerank documents scores",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-pg-vector-query-001",
+      "corpus": "code",
+      "query": "PgVectorStore query hybrid vector lexical tsquery embedding cosine",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-cards-001",
+      "corpus": "code",
+      "query": "buildTaskCard buildPrCard buildArtifactCard knowledge store card content",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-mcp-query-knowledge-001",
+      "corpus": "code",
+      "query": "query_knowledge memory action namespace teamId workspaceId corpus mode",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-worker-claim-001",
+      "corpus": "code",
+      "query": "worker claim task POST route maxConcurrent skill assignment",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-db-schema-knowledge-001",
+      "corpus": "code",
+      "query": "knowledge_chunks table namespace embedding vector source_id content_hash",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-mission-context-001",
+      "corpus": "code",
+      "query": "mission context builder workspace roles active workers prompt injection",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-release-executor-001",
+      "corpus": "code",
+      "query": "release executor branch merge strategy deploy trigger workflow",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-role-config-001",
+      "corpus": "code",
+      "query": "role config packaging CLAUDE.md mcp.json env mapping R2 upload",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "code-assess-knowledge-001",
+      "corpus": "code",
+      "query": "assess knowledge retrieval recall MRR self-retrieval sample chunk",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "docs-missions-arch-001",
+      "corpus": "docs",
+      "query": "missions architecture goal task progress schedule",
+      "mode": "curated",
+      "recall5": 1,
+      "recall10": 1,
+      "mrr": 1,
+      "ndcg10": 1,
+      "topResults": [
+        {
+          "rank": 1,
+          "sourcePath": "plans/buildd/missions-architecture.md",
+          "sourceType": "docs",
+          "score": 0.5966051,
+          "relevant": true
+        },
+        {
+          "rank": 2,
+          "sourcePath": "plans/buildd/missions-automation-diagram.md",
+          "sourceType": "docs",
+          "score": 0.32029986,
+          "relevant": false
+        }
+      ]
+    },
+    {
+      "queryId": "docs-testing-strategy-001",
+      "corpus": "docs",
+      "query": "testing strategy route handler unit smoke integration bun",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "docs-sdk-research-001",
+      "corpus": "docs",
+      "query": "claude SDK agent streaming tool use anthropic model ecosystem",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": []
+    },
+    {
+      "queryId": "spec-kg-retrieval-layer1-001",
+      "corpus": "spec",
+      "query": "source_ts is_current superseded_by recency decay half life corpus authority",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": [],
+      "skipped": "namespace 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6:spec empty"
+    },
+    {
+      "queryId": "spec-kg-retrieval-graph-001",
+      "corpus": "spec",
+      "query": "graph edges expansion 1-hop proximity score spreading activation",
+      "mode": "curated",
+      "recall5": 0,
+      "recall10": 0,
+      "mrr": 0,
+      "ndcg10": 0,
+      "topResults": [],
+      "skipped": "namespace 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6:spec empty"
+    },
+    {
+      "queryId": "memory-sampled",
+      "corpus": "memory",
+      "query": "(30 self-retrieval probes)",
+      "mode": "sampled",
+      "recall5": 0.5,
+      "recall10": 0.5333333333333333,
+      "mrr": 0.38087301587301586,
+      "ndcg10": 0.4181217319785214,
+      "topResults": []
+    },
+    {
+      "queryId": "task-sampled",
+      "corpus": "task",
+      "query": "(25 self-retrieval probes)",
+      "mode": "sampled",
+      "recall5": 0.96,
+      "recall10": 0.96,
+      "mrr": 0.92,
+      "ndcg10": 0.9304743802857166,
+      "topResults": []
+    },
+    {
+      "queryId": "artifact-sampled",
+      "corpus": "artifact",
+      "query": "(20 self-retrieval probes)",
+      "mode": "sampled",
+      "recall5": 1,
+      "recall10": 1,
+      "mrr": 0.925,
+      "ndcg10": 0.9446394630357187,
+      "topResults": []
+    },
+    {
+      "queryId": "pr-sampled",
+      "corpus": "pr",
+      "query": "(20 self-retrieval probes)",
+      "mode": "sampled",
+      "recall5": 1,
+      "recall10": 1,
+      "mrr": 0.975,
+      "ndcg10": 0.9815464876785729,
+      "topResults": []
+    }
+  ]
+}
