@@ -166,6 +166,11 @@ mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
 }));
 
+const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
+mock.module('@buildd/core/routing-analytics', () => ({
+  recordTaskOutcome: mockRecordTaskOutcome,
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {
@@ -1254,9 +1259,12 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      // Task must stay 'completed' — executeRelease should skip for feature tasks
-      const lastTaskSet = capturedTaskSets[capturedTaskSets.length - 1];
-      expect(lastTaskSet?.status).toBe('completed');
+      // Task must stay 'completed' — executeRelease should skip for feature tasks.
+      // The initial task update sets status: 'completed'; the release 'else' branch
+      // may write a second update (releaseResult) without a status field, so we check
+      // the first status-bearing update rather than the last entry.
+      const statusUpdate = capturedTaskSets.find((s: any) => s?.status !== undefined);
+      expect(statusUpdate?.status).toBe('completed');
       // No task update should have set status to 'failed'
       const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
       expect(anyFailed).toBe(false);
@@ -2237,6 +2245,60 @@ describe('PATCH /api/workers/[id]', () => {
       // lost first attempt must NOT have notified either.
       expect(captured.budgetAlertsSent).toEqual([50]);
       expect(budgetNotifies()).toHaveLength(0);
+    });
+  });
+
+  describe('recordTaskOutcome totalTurns safety', () => {
+    // Regression: when no explicit `turns` or `resultMeta.numTurns` is provided,
+    // updates.turns is set to sql`${workers.turns} + 1` (a Drizzle SQL expression).
+    // Passing that expression as totalTurns to recordTaskOutcome caused Drizzle to
+    // embed `workers.turns` in the INSERT VALUES clause without a FROM clause,
+    // producing "missing FROM-clause entry for table workers" on every completion.
+    // The fix: guard with typeof === 'number' and fall back to worker.turns.
+    it('passes a numeric totalTurns (not a SQL expression) to recordTaskOutcome when turns are auto-incremented', async () => {
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        turns: 7,
+        pendingInstructions: null,
+      });
+      // outputRequirement: 'none' bypasses all output validation so we reach
+      // the recordTaskOutcome call without needing PR/artifact setup.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        // No `turns` or `resultMeta.numTurns` → updates.turns = sql`${workers.turns} + 1`
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome).toHaveBeenCalled();
+      const callArgs = mockRecordTaskOutcome.mock.calls[0][0];
+      // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
+      expect(typeof callArgs.totalTurns).toBe('number');
+      expect(callArgs.totalTurns).toBe(7);
     });
   });
 });
