@@ -106,3 +106,39 @@ describe('ingestFiles', () => {
     expect(result.chunks).toBe(0);
   });
 });
+
+// ── sourceTs propagation ──────────────────────────────────────────────────────
+
+describe('fileToChunks sourceTs', () => {
+  it('propagates sourceTs from SourceFile to all chunks', () => {
+    const ts = new Date('2026-01-15T12:00:00Z');
+    const chunks = fileToChunks({ path: 'src/foo.ts', content: 'export const x = 1;', sourceTs: ts }, 'code', {});
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].sourceTs).toEqual(ts);
+  });
+
+  it('leaves sourceTs undefined when not set on SourceFile', () => {
+    const chunks = fileToChunks({ path: 'src/bar.ts', content: 'const y = 2;' }, 'code', {});
+    expect(chunks[0].sourceTs).toBeNull();
+  });
+
+  it('propagates sourceTs to all chunks of a multi-chunk file', () => {
+    const ts = new Date('2025-11-01T00:00:00Z');
+    const big = Array.from({ length: 60 }, (_, i) => `line ${i}`).join('\n');
+    const chunks = fileToChunks({ path: 'big.ts', content: big, sourceTs: ts }, 'code', { maxChars: 100, overlap: 0 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(c.sourceTs).toEqual(ts);
+    }
+  });
+});
+
+describe('ingestFiles sourceTs', () => {
+  it('passes sourceTs through to the store chunks', async () => {
+    const { store, chunks } = makeRecordingStore();
+    const ts = new Date('2026-03-10T08:00:00Z');
+    await ingestFiles(store, 'ws-ts', 'code', [{ path: 'x.ts', content: 'export const x = 1;', sourceTs: ts }]);
+    const chunk = [...chunks.values()][0];
+    expect(chunk.sourceTs).toEqual(ts);
+  });
+});

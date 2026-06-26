@@ -1,5 +1,13 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { reciprocalRankFusion, buildNamespace } from '../knowledge-store/pg-vector-store';
+// All pure functions live in scoring.ts — no drizzle-orm dependency
+import {
+  buildNamespace,
+  reciprocalRankFusion,
+  recencyDecay,
+  applyRecencyAuthority,
+  CORPUS_AUTHORITY,
+  HALF_LIFE_DAYS,
+} from '../knowledge-store/scoring';
 import { VoyageEmbedder, isCodeCorpus } from '../knowledge-store/voyage-embedder';
 import type { KnowledgeStore, UpsertChunk, QueryResult, Embedder, Corpus } from '../knowledge-store/types';
 
@@ -280,5 +288,159 @@ describe('handleMemoryAction with KnowledgeStore wiring', () => {
     expect(embedder.model).toBe('test-model');
     expect(embedder.dimensions).toBe(4);
     expect(typeof store.upsert).toBe('function');
+  });
+});
+
+// ── recencyDecay ─────────────────────────────────────────────────────────────
+
+describe('recencyDecay', () => {
+  it('returns 1.0 when sourceTs is null (no penalty)', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    expect(recencyDecay(null, 90, now)).toBe(1.0);
+    expect(recencyDecay(undefined, 90, now)).toBe(1.0);
+  });
+
+  it('returns 1.0 for a freshly-dated chunk (age ≈ 0)', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const sourceTs = new Date('2026-06-25T00:00:00Z');
+    expect(recencyDecay(sourceTs, 90, now)).toBeCloseTo(1.0, 4);
+  });
+
+  it('returns 0.5 at exactly one half-life', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const halfLife = 90;
+    const sourceTs = new Date(now.getTime() - halfLife * 86_400_000);
+    expect(recencyDecay(sourceTs, halfLife, now)).toBeCloseTo(0.5, 4);
+  });
+
+  it('returns ~0.25 at two half-lives', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const halfLife = 90;
+    const sourceTs = new Date(now.getTime() - 2 * halfLife * 86_400_000);
+    expect(recencyDecay(sourceTs, halfLife, now)).toBeCloseTo(0.25, 4);
+  });
+
+  it('returns 1.0 for future-dated content (no penalty for forward-dated chunks)', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const sourceTs = new Date('2026-12-31T00:00:00Z'); // in the future
+    expect(recencyDecay(sourceTs, 90, now)).toBe(1.0);
+  });
+});
+
+// ── CORPUS_AUTHORITY and HALF_LIFE_DAYS coverage ─────────────────────────────
+
+describe('CORPUS_AUTHORITY', () => {
+  it('spec has the highest authority', () => {
+    const entries = Object.entries(CORPUS_AUTHORITY) as [Corpus, number][];
+    const max = Math.max(...entries.map(([, v]) => v));
+    expect(CORPUS_AUTHORITY.spec).toBe(max);
+  });
+
+  it('session has the lowest authority', () => {
+    const entries = Object.entries(CORPUS_AUTHORITY) as [Corpus, number][];
+    const min = Math.min(...entries.map(([, v]) => v));
+    expect(CORPUS_AUTHORITY.session).toBe(min);
+  });
+
+  it('covers all Corpus values', () => {
+    const expected: Corpus[] = ['memory','code','docs','spec','task','artifact','pr','plan','session'];
+    for (const corpus of expected) {
+      expect(CORPUS_AUTHORITY[corpus]).toBeDefined();
+    }
+  });
+});
+
+describe('HALF_LIFE_DAYS', () => {
+  it('spec has the longest half-life', () => {
+    const entries = Object.entries(HALF_LIFE_DAYS) as [Corpus, number][];
+    const max = Math.max(...entries.map(([, v]) => v));
+    expect(HALF_LIFE_DAYS.spec).toBe(max);
+  });
+
+  it('session has the shortest half-life', () => {
+    const entries = Object.entries(HALF_LIFE_DAYS) as [Corpus, number][];
+    const min = Math.min(...entries.map(([, v]) => v));
+    expect(HALF_LIFE_DAYS.session).toBe(min);
+  });
+});
+
+// ── applyRecencyAuthority ─────────────────────────────────────────────────────
+
+function makeResult(overrides: Partial<QueryResult> & { id: string }): QueryResult {
+  return {
+    id: overrides.id,
+    namespace: 'ws-1:spec',
+    corpus: (overrides.corpus ?? 'spec') as Corpus,
+    sourceType: overrides.sourceType ?? 'spec',
+    sourcePath: overrides.sourcePath ?? null,
+    sourceUrl: overrides.sourceUrl ?? null,
+    content: overrides.content ?? 'test content',
+    metadata: overrides.metadata ?? {},
+    score: overrides.score ?? 1.0,
+    sourceTs: overrides.sourceTs ?? null,
+  };
+}
+
+describe('applyRecencyAuthority', () => {
+  it('multiplies score by corpus authority and recency decay', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const freshSpec = makeResult({ id: 'a', corpus: 'spec', score: 1.0, sourceTs: now });
+    const results = applyRecencyAuthority([freshSpec], now);
+    // spec authority=1.0, decay≈1.0 at age 0 → score ≈ 1.0
+    expect(results[0].score).toBeCloseTo(1.0, 3);
+  });
+
+  it('a recent spec chunk outscores an old task chunk at equal base scores', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const oneYearAgo = new Date(now.getTime() - 365 * 86_400_000);
+    const recentSpec = makeResult({ id: 'spec', corpus: 'spec', score: 1.0, sourceTs: now });
+    const oldTask = makeResult({ id: 'task', corpus: 'task', score: 1.0, sourceTs: oneYearAgo });
+    const results = applyRecencyAuthority([recentSpec, oldTask], now);
+    const specScore = results.find(r => r.id === 'spec')!.score;
+    const taskScore = results.find(r => r.id === 'task')!.score;
+    expect(specScore).toBeGreaterThan(taskScore);
+  });
+
+  it('a spec chunk with null sourceTs beats an equally old task chunk (no penalty for unknown age)', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const oneYearAgo = new Date(now.getTime() - 365 * 86_400_000);
+    const specNoTs = makeResult({ id: 'spec', corpus: 'spec', score: 1.0, sourceTs: null });
+    const oldTask = makeResult({ id: 'task', corpus: 'task', score: 1.0, sourceTs: oneYearAgo });
+    const results = applyRecencyAuthority([specNoTs, oldTask], now);
+    const specScore = results.find(r => r.id === 'spec')!.score;
+    const taskScore = results.find(r => r.id === 'task')!.score;
+    // spec authority (1.0) × decay (1.0 — no penalty) > task authority (0.4) × heavy decay
+    expect(specScore).toBeGreaterThan(taskScore);
+  });
+
+  it('preserves non-score fields', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const r = makeResult({ id: 'x', corpus: 'memory', score: 0.8, content: 'hello' });
+    const results = applyRecencyAuthority([r], now);
+    expect(results[0].content).toBe('hello');
+    expect(results[0].id).toBe('x');
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(applyRecencyAuthority([], new Date())).toEqual([]);
+  });
+
+  it('eval delta — spec beats task for same topic, demonstrating Phase 0 → Phase 1 improvement', () => {
+    const now = new Date('2026-06-25T00:00:00Z');
+    const sixMonthsAgo = new Date(now.getTime() - 180 * 86_400_000);
+
+    // Phase 0: both have same RRF score = 0.7
+    const specChunk = makeResult({ id: 'spec', corpus: 'spec', score: 0.7, sourceTs: now });
+    const oldTaskChunk = makeResult({ id: 'task', corpus: 'task', score: 0.7, sourceTs: sixMonthsAgo });
+
+    // Phase 0 order: tied at 0.7 each
+    // Phase 1 order: spec (authority × recency) >> task
+    const phase1Results = applyRecencyAuthority([specChunk, oldTaskChunk], now);
+    const specFinal = phase1Results.find(r => r.id === 'spec')!.score;
+    const taskFinal = phase1Results.find(r => r.id === 'task')!.score;
+
+    // spec: 0.7 × 1.0 × ~1.0 ≈ 0.7
+    // task: 0.7 × 0.4 × 2^(-180/30) ≈ 0.7 × 0.4 × 0.0156 ≈ 0.0044
+    expect(specFinal).toBeGreaterThan(taskFinal * 10); // spec dominates by >10×
   });
 });

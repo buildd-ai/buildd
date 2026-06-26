@@ -1,6 +1,6 @@
 import type { KnowledgeStore, UpsertChunk, Corpus } from './types';
 import { chunkMarkdown, chunkCode, type ChunkOptions, type ChunkPiece } from './chunker';
-import { buildNamespace } from './pg-vector-store';
+import { buildNamespace } from './scoring';
 
 // Phase 2 ingestion: turn source files (code, docs) into multiple retrievable
 // chunks. A file becomes N chunks whose ids are `path#startLine` — stable
@@ -14,6 +14,8 @@ export interface SourceFile {
   content: string;
   /** Optional base URL; chunks get `#L<startLine>` appended. */
   sourceUrl?: string;
+  /** Source event timestamp (git commit time or file mtime). Passed to all chunks. */
+  sourceTs?: Date | null;
 }
 
 export interface IngestResult {
@@ -55,6 +57,7 @@ export function fileToChunks(
       sourceType: corpus,
       sourcePath: file.path,
       sourceUrl: file.sourceUrl ? `${file.sourceUrl}#L${piece.startLine}` : undefined,
+      sourceTs: file.sourceTs ?? null,
       metadata: {
         startLine: piece.startLine,
         endLine: piece.endLine,

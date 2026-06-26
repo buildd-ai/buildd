@@ -90,7 +90,7 @@ async function ingestCorpus(
         const stat = await fs.stat(f);
         if (stat.size > MAX_FILE_BYTES) continue;
         const content = await fs.readFile(f, 'utf8');
-        sources.push({ path: path.relative(root, f), content });
+        sources.push({ path: path.relative(root, f), content, sourceTs: stat.mtime });
       } catch {
         // unreadable / binary — skip
       }

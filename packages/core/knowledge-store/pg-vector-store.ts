@@ -3,6 +3,17 @@ import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, R
 import { applyRerank } from './reranker';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
 import { createHash } from 'crypto';
+import {
+  buildNamespace as _buildNamespace,
+  reciprocalRankFusion,
+  applyRecencyAuthority,
+  CORPUS_AUTHORITY,
+  HALF_LIFE_DAYS,
+  recencyDecay,
+} from './scoring';
+
+// Re-export pure scoring utilities so callers only need one import.
+export { reciprocalRankFusion, applyRecencyAuthority, CORPUS_AUTHORITY, HALF_LIFE_DAYS, recencyDecay };
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
 async function getDb() {
@@ -13,7 +24,7 @@ async function getDb() {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 export function buildNamespace(workspaceId: string, corpus: Corpus): string {
-  return `${workspaceId}:${corpus}`;
+  return _buildNamespace(workspaceId, corpus);
 }
 
 function sha256(text: string): string {
@@ -24,27 +35,13 @@ function vectorToString(v: number[]): string {
   return `[${v.join(',')}]`;
 }
 
-/**
- * Reciprocal Rank Fusion — fuse vector ANN and lexical BM25 result lists.
- * k=60 is the standard constant from the original RRF paper.
- */
-export function reciprocalRankFusion(
-  vectorResults: Array<{ id: string; score: number }>,
-  lexicalResults: Array<{ id: string; score: number }>,
-  k = 60,
-): Array<{ id: string; score: number }> {
-  const scores = new Map<string, number>();
+// ── Feature flag ─────────────────────────────────────────────────────────────
 
-  vectorResults.forEach(({ id }, idx) => {
-    scores.set(id, (scores.get(id) ?? 0) + 1 / (k + idx + 1));
-  });
-  lexicalResults.forEach(({ id }, idx) => {
-    scores.set(id, (scores.get(id) ?? 0) + 1 / (k + idx + 1));
-  });
-
-  return Array.from(scores.entries())
-    .map(([id, score]) => ({ id, score }))
-    .sort((a, b) => b.score - a.score);
+function isRecencyAuthorityEnabled(override?: boolean): boolean {
+  if (override !== undefined) return override;
+  const env = process.env.ENABLE_RECENCY_AUTHORITY;
+  // Disabled only when explicitly set to '0' or 'false'. On by default.
+  return env !== '0' && env !== 'false';
 }
 
 // ── Row shape returned by raw SQL queries ────────────────────────────────────
@@ -59,6 +56,7 @@ interface ChunkRow {
   source_url: string | null;
   content: string;
   metadata: Record<string, unknown>;
+  source_ts: string | null;
   score?: number;
 }
 
@@ -97,12 +95,14 @@ export class PgVectorStore implements KnowledgeStore {
       const embedding = embeddings[i];
       const contentHash = sha256(chunk.content);
       const lexicalText = chunk.lexicalText ?? chunk.content;
+      const sourceTs = chunk.sourceTs ?? null;
 
       if (embedding) {
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, embedding, embedding_model, metadata, content_hash, updated_at)
+             content, lexical_text, embedding, embedding_model, metadata, content_hash,
+             source_ts, is_current, updated_at)
           VALUES
             (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
              ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
@@ -110,45 +110,89 @@ export class PgVectorStore implements KnowledgeStore {
              ${vectorToString(embedding)}::vector,
              ${activeEmbedder!.model},
              ${JSON.stringify(chunk.metadata ?? {})}::jsonb,
-             ${contentHash}, NOW())
+             ${contentHash},
+             ${sourceTs ? sourceTs.toISOString() : null}::timestamptz,
+             true,
+             NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
-            content       = EXCLUDED.content,
-            lexical_text  = EXCLUDED.lexical_text,
-            embedding     = EXCLUDED.embedding,
+            content         = EXCLUDED.content,
+            lexical_text    = EXCLUDED.lexical_text,
+            embedding       = EXCLUDED.embedding,
             embedding_model = EXCLUDED.embedding_model,
-            metadata      = EXCLUDED.metadata,
-            content_hash  = EXCLUDED.content_hash,
-            source_path   = EXCLUDED.source_path,
-            source_url    = EXCLUDED.source_url,
-            updated_at    = NOW()
+            metadata        = EXCLUDED.metadata,
+            content_hash    = EXCLUDED.content_hash,
+            source_path     = EXCLUDED.source_path,
+            source_url      = EXCLUDED.source_url,
+            source_ts       = CASE
+                                WHEN EXCLUDED.source_ts IS NOT NULL THEN EXCLUDED.source_ts
+                                ELSE knowledge_chunks.source_ts
+                              END,
+            is_current      = true,
+            superseded_by   = NULL,
+            updated_at      = NOW()
         `);
       } else {
         // No embedder — store text-only (lexical search will still work)
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, metadata, content_hash, updated_at)
+             content, lexical_text, metadata, content_hash,
+             source_ts, is_current, updated_at)
           VALUES
             (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
              ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
              ${chunk.content}, ${lexicalText},
              ${JSON.stringify(chunk.metadata ?? {})}::jsonb,
-             ${contentHash}, NOW())
+             ${contentHash},
+             ${sourceTs ? sourceTs.toISOString() : null}::timestamptz,
+             true,
+             NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
-            content      = EXCLUDED.content,
-            lexical_text = EXCLUDED.lexical_text,
-            metadata     = EXCLUDED.metadata,
-            content_hash = EXCLUDED.content_hash,
-            source_path  = EXCLUDED.source_path,
-            source_url   = EXCLUDED.source_url,
-            updated_at   = NOW()
+            content       = EXCLUDED.content,
+            lexical_text  = EXCLUDED.lexical_text,
+            metadata      = EXCLUDED.metadata,
+            content_hash  = EXCLUDED.content_hash,
+            source_path   = EXCLUDED.source_path,
+            source_url    = EXCLUDED.source_url,
+            source_ts     = CASE
+                              WHEN EXCLUDED.source_ts IS NOT NULL THEN EXCLUDED.source_ts
+                              ELSE knowledge_chunks.source_ts
+                            END,
+            is_current    = true,
+            superseded_by = NULL,
+            updated_at    = NOW()
+        `);
+      }
+
+      // Coarse supersession: mark older chunks for the same source_path as not current.
+      // Uses source_path as a proxy entity key until Phase 2 introduces entity ids.
+      // This is a no-op when deleteBySource was called first (the normal ingest path)
+      // but matters for direct upserts where history is retained.
+      if (chunk.sourcePath && sourceTs) {
+        await db.execute(sql`
+          UPDATE knowledge_chunks
+          SET    is_current    = false,
+                 superseded_by = ${chunk.id}
+          WHERE  namespace     = ${namespace}
+            AND  source_path   = ${chunk.sourcePath}
+            AND  source_id    != ${chunk.id}
+            AND  is_current    = true
+            AND  (source_ts IS NULL OR source_ts < ${sourceTs.toISOString()}::timestamptz)
         `);
       }
     }
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
-    const { text, mode = 'hybrid', topK = 10, filters } = params;
+    const {
+      text,
+      mode = 'hybrid',
+      topK = 10,
+      filters,
+      history = false,
+      rerankInstruction,
+      useRecencyAuthority,
+    } = params;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     // Use corpus-appropriate embedder so query vectors match the stored chunk vectors
@@ -165,6 +209,9 @@ export class PgVectorStore implements KnowledgeStore {
       ? sql`AND source_type = ${filters.sourceType}`
       : sql``;
 
+    // Supersession filter: exclude superseded chunks unless history mode requested
+    const currentClause = history ? sql`` : sql`AND is_current = true`;
+
     let chunkRows: ChunkRow[];
     let rrfScores: Map<string, number> | null = null;
 
@@ -180,6 +227,7 @@ export class PgVectorStore implements KnowledgeStore {
         FROM knowledge_chunks
         WHERE namespace = ${namespace}
           AND embedding IS NOT NULL
+          ${currentClause}
           ${filterClause}
         ORDER BY embedding <=> ${embeddingStr}::vector
         LIMIT ${limit * 2}
@@ -192,9 +240,9 @@ export class PgVectorStore implements KnowledgeStore {
         // Vector-only: fetch full rows for top results
         const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
         if (ids.length === 0) return [];
-        const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
+        const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
         const scoreMap = new Map(vectorRanked.map(r => [r.id, r.score]));
-        return this._finalize(this._toResults(rows, scoreMap, ids), text, limit);
+        return this._finalize(this._toResults(rows, scoreMap, ids), text, limit, rerankInstruction, useRecencyAuthority);
       }
 
       // Hybrid: also run lexical, then fuse
@@ -206,6 +254,7 @@ export class PgVectorStore implements KnowledgeStore {
         WHERE namespace = ${namespace}
           AND to_tsvector('english', coalesce(lexical_text, content))
               @@ websearch_to_tsquery('english', ${text})
+          ${currentClause}
           ${filterClause}
         ORDER BY score DESC
         LIMIT ${limit * 2}
@@ -219,8 +268,8 @@ export class PgVectorStore implements KnowledgeStore {
 
       const ids = fused.map(r => r.id);
       if (ids.length === 0) return [];
-      const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
-      return this._finalize(this._toResults(rows, rrfScores, ids), text, limit);
+      const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
+      return this._finalize(this._toResults(rows, rrfScores, ids), text, limit, rerankInstruction, useRecencyAuthority);
     }
 
     // Lexical-only
@@ -232,6 +281,7 @@ export class PgVectorStore implements KnowledgeStore {
       WHERE namespace = ${namespace}
         AND to_tsvector('english', coalesce(lexical_text, content))
             @@ websearch_to_tsquery('english', ${text})
+        ${currentClause}
         ${filterClause}
       ORDER BY score DESC
       LIMIT ${candidateLimit}
@@ -242,18 +292,39 @@ export class PgVectorStore implements KnowledgeStore {
 
     if (lexRanked.length === 0) return [];
     const ids = lexRanked.map(r => r.id);
-    const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause);
+    const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
     const scoreMap = new Map(lexRanked.map(r => [r.id, r.score]));
-    return this._finalize(this._toResults(rows, scoreMap, ids), text, limit);
+    return this._finalize(this._toResults(rows, scoreMap, ids), text, limit, rerankInstruction, useRecencyAuthority);
   }
 
   /**
-   * Apply the optional reranker, then trim to `limit`. When no reranker is
-   * configured this is just a slice, so the RRF/vector/lexical order stands.
+   * Apply the optional reranker (semantic relevance), then recency × authority
+   * multipliers, then trim to `limit`.
+   *
+   * Pipeline: reranker (semantic, optional) → applyRecencyAuthority (deterministic) → slice
+   * The reranker refines semantic relevance; the multipliers ensure recency/authority
+   * are never overridden by the semantic model.
    */
-  private async _finalize(results: QueryResult[], text: string, limit: number): Promise<QueryResult[]> {
-    if (!this.reranker || results.length <= 1) return results.slice(0, limit);
-    const reranked = await applyRerank(this.reranker, text, results, limit);
+  private async _finalize(
+    results: QueryResult[],
+    text: string,
+    limit: number,
+    rerankInstruction?: string,
+    useRecencyAuthorityOverride?: boolean,
+  ): Promise<QueryResult[]> {
+    // Step 1: optional cross-encoder reranker (semantic relevance)
+    let reranked = results;
+    if (this.reranker && results.length > 1) {
+      reranked = await applyRerank(this.reranker, text, results, limit, rerankInstruction);
+    }
+
+    // Step 2: deterministic recency × authority multipliers
+    if (isRecencyAuthorityEnabled(useRecencyAuthorityOverride)) {
+      reranked = applyRecencyAuthority(reranked, new Date());
+      // Re-sort after multipliers change relative order
+      reranked = reranked.sort((a, b) => b.score - a.score);
+    }
+
     return reranked.slice(0, limit);
   }
 
@@ -300,14 +371,17 @@ export class PgVectorStore implements KnowledgeStore {
     namespace: string,
     sourceIds: string[],
     filterClause: ReturnType<typeof sql>,
+    currentClause: ReturnType<typeof sql>,
   ): Promise<ChunkRow[]> {
     if (sourceIds.length === 0) return [];
     const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
     const res = await db.execute(sql`
-      SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata
+      SELECT source_id, namespace, corpus, source_type, source_path, source_url,
+             content, metadata, source_ts
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND source_id IN (${inList})
+        ${currentClause}
         ${filterClause}
     `);
     return res.rows as unknown as ChunkRow[];
@@ -323,6 +397,7 @@ export class PgVectorStore implements KnowledgeStore {
       .map(id => {
         const row = byId.get(id);
         if (!row) return null;
+        const sourceTs = row.source_ts ? new Date(row.source_ts) : null;
         return {
           id: row.source_id,
           namespace: row.namespace,
@@ -333,6 +408,7 @@ export class PgVectorStore implements KnowledgeStore {
           content: row.content,
           metadata: row.metadata ?? {},
           score: scoreMap.get(id) ?? 0,
+          sourceTs,
         } satisfies QueryResult;
       })
       .filter((r): r is QueryResult => r !== null);

@@ -1060,11 +1060,17 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   // SHA-256 of content for idempotency — skip re-embed when unchanged
   contentHash: text('content_hash'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Phase 1 recency+authority columns
+  sourceTs: timestamp('source_ts', { withTimezone: true }),
+  isCurrent: boolean('is_current').notNull().default(true),
+  supersededBy: text('superseded_by'),
 }, (t) => ({
   namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
   // Unique per (namespace, sourceId) — enforces one chunk per source entity per namespace
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
+  // Supports supersession queries and is_current filtering
+  entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
 }));
 
 // Relations

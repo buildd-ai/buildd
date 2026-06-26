@@ -45,6 +45,8 @@ export interface TaskCardInput {
   prUrl?: string | null;
   missionId?: string | null;
   sourceUrl?: string | null;
+  /** Task completion time — used for recency scoring. */
+  sourceTs?: Date | null;
 }
 
 export function buildTaskCard(input: TaskCardInput): UpsertChunk {
@@ -70,6 +72,7 @@ export function buildTaskCard(input: TaskCardInput): UpsertChunk {
     lexicalText: truncate(joinSections([input.title, input.description, input.summary])),
     sourceType: 'task',
     sourceUrl: input.sourceUrl ?? `/app/tasks/${input.taskId}`,
+    sourceTs: input.sourceTs ?? null,
     metadata,
   };
 }
@@ -85,6 +88,8 @@ export interface PrCardInput {
   changedFiles?: string[] | null;
   taskId?: string | null;
   missionId?: string | null;
+  /** PR merged_at (or created_at as fallback) — used for recency scoring. */
+  sourceTs?: Date | null;
 }
 
 export function buildPrCard(input: PrCardInput): UpsertChunk {
@@ -112,6 +117,7 @@ export function buildPrCard(input: PrCardInput): UpsertChunk {
     lexicalText: truncate(joinSections([input.title, input.body])),
     sourceType: 'pr',
     sourceUrl: input.url ?? null,
+    sourceTs: input.sourceTs ?? null,
     metadata,
   };
 }
@@ -127,6 +133,8 @@ export interface ArtifactCardInput {
   shareUrl?: string | null;
   taskId?: string | null;
   missionId?: string | null;
+  /** Artifact creation time — used for recency scoring. */
+  sourceTs?: Date | null;
 }
 
 export function buildArtifactCard(input: ArtifactCardInput): UpsertChunk {
@@ -150,6 +158,7 @@ export function buildArtifactCard(input: ArtifactCardInput): UpsertChunk {
     lexicalText: truncate(joinSections([input.title, input.content])),
     sourceType: 'artifact',
     sourceUrl: input.shareUrl ?? input.url ?? null,
+    sourceTs: input.sourceTs ?? null,
     metadata,
   };
 }
@@ -162,6 +171,8 @@ export interface PlanCardInput {
   plan: string;
   missionId?: string | null;
   sourceUrl?: string | null;
+  /** Plan approval time — used for recency scoring. */
+  sourceTs?: Date | null;
 }
 
 /** A single step from a planning task's structured output. */
@@ -209,6 +220,7 @@ export function buildPlanCard(input: PlanCardInput): UpsertChunk {
     lexicalText: truncate(joinSections([input.title, input.plan])),
     sourceType: 'plan',
     sourceUrl: input.sourceUrl ?? `/app/tasks/${input.taskId}`,
+    sourceTs: input.sourceTs ?? null,
     metadata,
   };
 }

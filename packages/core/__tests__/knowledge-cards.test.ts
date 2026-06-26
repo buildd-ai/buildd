@@ -206,3 +206,36 @@ describe('VoyageEmbedder input_type', () => {
     }
   });
 });
+
+// ── sourceTs propagation ──────────────────────────────────────────────────────
+
+describe('card sourceTs propagation', () => {
+  it('buildTaskCard preserves sourceTs', () => {
+    const ts = new Date('2026-06-01T10:00:00Z');
+    const chunk = buildTaskCard({ taskId: 't-ts', title: 'Test', success: true, sourceTs: ts });
+    expect(chunk.sourceTs).toEqual(ts);
+  });
+
+  it('buildTaskCard yields null sourceTs when omitted', () => {
+    const chunk = buildTaskCard({ taskId: 't-no-ts', title: 'Test', success: true });
+    expect(chunk.sourceTs).toBeNull();
+  });
+
+  it('buildPrCard preserves sourceTs', () => {
+    const ts = new Date('2026-05-15T14:30:00Z');
+    const chunk = buildPrCard({ prNumber: 42, title: 'feat: x', sourceTs: ts });
+    expect(chunk.sourceTs).toEqual(ts);
+  });
+
+  it('buildArtifactCard preserves sourceTs', () => {
+    const ts = new Date('2026-04-20T09:00:00Z');
+    const chunk = buildArtifactCard({ artifactId: 'a-1', title: 'Report', sourceTs: ts });
+    expect(chunk.sourceTs).toEqual(ts);
+  });
+
+  it('buildPlanCard preserves sourceTs', () => {
+    const ts = new Date('2026-03-01T16:00:00Z');
+    const chunk = buildPlanCard({ taskId: 'p-1', plan: '1. Do stuff', sourceTs: ts });
+    expect(chunk.sourceTs).toEqual(ts);
+  });
+});

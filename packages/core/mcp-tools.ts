@@ -740,6 +740,7 @@ export async function handleBuilddAction(
 
             // Mirror the completed task into the KnowledgeStore (best-effort).
             const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
+            const completedAt = workerData?.completedAt ? new Date(workerData.completedAt) : null;
             await mirrorWorkProduct(ctx, 'task', buildTaskCard({
               taskId,
               title: taskData?.title ?? null,
@@ -748,6 +749,7 @@ export async function handleBuilddAction(
               success: true,
               prUrl,
               missionId: taskData?.missionId ?? null,
+              sourceTs: completedAt,
             }));
           }
         } catch { /* non-fatal */ }
@@ -785,6 +787,11 @@ export async function handleBuilddAction(
           taskId = workerData?.taskId ?? null;
           missionId = workerData?.task?.missionId ?? workerData?.missionId ?? null;
         } catch { /* linkage is optional */ }
+        const prSourceTs = data.pr.merged_at
+          ? new Date(data.pr.merged_at)
+          : data.pr.created_at
+          ? new Date(data.pr.created_at)
+          : null;
         await mirrorWorkProduct(ctx, 'pr', buildPrCard({
           prNumber: data.pr.number,
           title: data.pr.title ?? (params.title as string),
@@ -792,6 +799,7 @@ export async function handleBuilddAction(
           url: data.pr.url ?? (params.prUrl as string) ?? null,
           taskId,
           missionId,
+          sourceTs: prSourceTs,
         }));
       } catch { /* non-fatal */ }
 
@@ -1586,6 +1594,7 @@ export async function handleBuilddAction(
       const upserted = artifactData.upserted ? ' (updated existing)' : '';
 
       // Mirror the artifact into the KnowledgeStore (best-effort).
+      const artifactSourceTs = art.createdAt ? new Date(art.createdAt) : null;
       await mirrorWorkProduct(ctx, 'artifact', buildArtifactCard({
         artifactId: art.id,
         title: art.title,
@@ -1595,6 +1604,7 @@ export async function handleBuilddAction(
         shareUrl: art.shareUrl ?? null,
         taskId: art.taskId ?? null,
         missionId: (params.missionId as string) ?? art.missionId ?? null,
+        sourceTs: artifactSourceTs,
       }));
 
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
@@ -1901,11 +1911,13 @@ export async function handleBuilddAction(
           const taskData = await api(`/api/tasks/${params.taskId}`);
           const planText = renderPlanText(taskData?.result?.structuredOutput?.plan);
           if (planText) {
+            const planSourceTs = taskData?.updatedAt ? new Date(taskData.updatedAt) : null;
             await mirrorWorkProduct(ctx, 'plan', buildPlanCard({
               taskId: params.taskId as string,
               title: taskData?.title ?? null,
               plan: planText,
               missionId: taskData?.missionId ?? null,
+              sourceTs: planSourceTs,
             }));
           }
         } catch { /* non-fatal */ }
@@ -2581,12 +2593,14 @@ export async function handleMemoryAction(
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
+        const memorySourceTs = m.updatedAt ? new Date(m.updatedAt) : m.createdAt ? new Date(m.createdAt) : null;
         await ctx.knowledgeStore.upsert(ns, [{
           id: m.id,
           content: m.content,
           lexicalText,
           sourceType: 'memory',
           sourceUrl: `/app/memory/${m.id}`,
+          sourceTs: memorySourceTs,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
         }]).catch(() => {}); // Best-effort — don't fail the memory save if indexing fails
       }
@@ -2630,12 +2644,14 @@ export async function handleMemoryAction(
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
+        const memorySourceTs = m.updatedAt ? new Date(m.updatedAt) : m.createdAt ? new Date(m.createdAt) : null;
         await ctx.knowledgeStore.upsert(ns, [{
           id: m.id,
           content: m.content,
           lexicalText,
           sourceType: 'memory',
           sourceUrl: `/app/memory/${m.id}`,
+          sourceTs: memorySourceTs,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
         }]).catch(() => {});
       }

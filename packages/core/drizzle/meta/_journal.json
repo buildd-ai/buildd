@@ -428,6 +428,13 @@
       "when": 1782966000000,
       "tag": "0060_roles_team_level",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1782500000000,
+      "tag": "0061_knowledge_chunks_recency",
+      "breakpoints": true
     }
   ]
 }

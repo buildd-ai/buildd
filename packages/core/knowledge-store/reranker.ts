@@ -73,16 +73,22 @@ export function getVoyageReranker(): VoyageReranker | null {
  * Reorder query results by a reranker's relevance scores, rewriting `score`
  * to the reranker's value. Pure (no I/O beyond the injected reranker) so it can
  * be unit-tested and shared by every KnowledgeStore implementation.
+ *
+ * `instruction` is prepended to `query` for instruction-following models like
+ * rerank-2.5. It nudges the semantic scoring without replacing deterministic
+ * recency/authority multipliers applied downstream.
  */
 export async function applyRerank(
   reranker: Reranker,
   query: string,
   candidates: QueryResult[],
   topK?: number,
+  instruction?: string,
 ): Promise<QueryResult[]> {
   if (candidates.length === 0) return candidates;
 
-  const ranked = await reranker.rerank(query, candidates.map(c => c.content), topK);
+  const effectiveQuery = instruction ? `${instruction}\n\n${query}` : query;
+  const ranked = await reranker.rerank(effectiveQuery, candidates.map(c => c.content), topK);
   return ranked
     .filter(r => r.index >= 0 && r.index < candidates.length)
     .map(r => ({ ...candidates[r.index], score: r.score }));

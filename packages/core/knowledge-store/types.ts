@@ -52,6 +52,8 @@ export interface UpsertChunk {
   sourcePath?: string | null;
   sourceUrl?: string | null;
   metadata?: Record<string, unknown>;
+  /** When the source event occurred (commit time, task completion, memory update, etc.). */
+  sourceTs?: Date | null;
 }
 
 export interface QueryResult {
@@ -64,6 +66,8 @@ export interface QueryResult {
   content: string;
   metadata: Record<string, unknown>;
   score: number;
+  /** Source event timestamp, when available. Used for recency scoring. */
+  sourceTs?: Date | null;
 }
 
 export interface QueryParams {
@@ -74,6 +78,23 @@ export interface QueryParams {
   };
   mode?: QueryMode;
   topK?: number;
+  /**
+   * When true, apply recency × authority multipliers to final scores.
+   * Defaults to the ENABLE_RECENCY_AUTHORITY env var (default: enabled).
+   */
+  useRecencyAuthority?: boolean;
+  /**
+   * When true, include superseded chunks (is_current = false) in results.
+   * Off by default — only relevant for historical queries.
+   */
+  history?: boolean;
+  /**
+   * Optional instruction prepended to the reranker query for rerank-2.5.
+   * The reranker is instruction-following; use this for soft priority hints
+   * (e.g. "prefer current specifications over historical task outcomes").
+   * Recency/authority/supersession are always applied deterministically.
+   */
+  rerankInstruction?: string;
 }
 
 // ── KnowledgeStore interface ──────────────────────────────────────────────────
