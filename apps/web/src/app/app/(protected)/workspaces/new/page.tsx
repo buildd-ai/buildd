@@ -28,6 +28,13 @@ interface Repo {
 
 type NameMode = 'repo' | 'full' | 'custom';
 
+// The team switcher persists the active team in the `buildd-team` cookie.
+function readActiveTeamCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/(?:^|;\s*)buildd-team=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function NameModal({
   repo,
   currentName,
@@ -252,12 +259,18 @@ export default function NewWorkspacePage() {
         const res = await fetch('/api/teams');
         if (res.ok) {
           const data = await res.json();
+          const teams: { id: string; slug: string }[] = data.teams || [];
           setUserTeams(data.teams || []);
-          const personal = (data.teams || []).find((t: { slug: string }) => t.slug.startsWith('personal-'));
-          if (personal) {
+          // Prefer the team the user is currently viewing (set by the team switcher)
+          const activeId = readActiveTeamCookie();
+          const active = activeId ? teams.find((t) => t.id === activeId) : undefined;
+          const personal = teams.find((t) => t.slug.startsWith('personal-'));
+          if (active) {
+            setSelectedTeamId(active.id);
+          } else if (personal) {
             setSelectedTeamId(personal.id);
-          } else if (data.teams?.length > 0) {
-            setSelectedTeamId(data.teams[0].id);
+          } else if (teams.length > 0) {
+            setSelectedTeamId(teams[0].id);
           }
         }
       } catch {
