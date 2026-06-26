@@ -21,7 +21,6 @@ interface Account {
   maxConcurrentSessions: number | null;
   budgetExhaustedAt: string | null;
   budgetResetsAt: string | null;
-  hasOauthToken?: boolean;
   team: { name: string } | null;
   accountWorkspaces?: { workspaceId: string }[];
 }
@@ -32,18 +31,13 @@ interface Workspace {
   repo: string | null;
 }
 
-export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
+export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [regenerateTarget, setRegenerateTarget] = useState<Account | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<{ accountName: string; apiKey: string } | null>(null);
-  const [oauthTarget, setOauthTarget] = useState<Account | null>(null);
-  const [oauthTokenInput, setOauthTokenInput] = useState('');
-  const [oauthSaving, setOauthSaving] = useState(false);
-  const [oauthError, setOauthError] = useState<string | null>(null);
-  const [revokeTarget, setRevokeTarget] = useState<Account | null>(null);
 
   async function handleRegenerate() {
     if (!regenerateTarget) return;
@@ -71,76 +65,28 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
     }
   }
 
-  async function handleOauthSave() {
-    if (!oauthTarget || !oauthTokenInput) return;
-    setOauthSaving(true);
-    setOauthError(null);
-
-    try {
-      const res = await fetch(`/api/accounts/${oauthTarget.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ oauthToken: oauthTokenInput }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to update token');
-      }
-
-      setOauthTarget(null);
-      setOauthTokenInput('');
-      router.refresh();
-    } catch (err) {
-      setOauthError(err instanceof Error ? err.message : 'Failed to update token');
-    } finally {
-      setOauthSaving(false);
-    }
-  }
-
-  async function handleOauthRevoke() {
-    if (!revokeTarget) return;
-    setOauthSaving(true);
-    setOauthError(null);
-
-    try {
-      const res = await fetch(`/api/accounts/${revokeTarget.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revokeOauthToken: true }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to revoke token');
-      }
-
-      setRevokeTarget(null);
-      router.refresh();
-    } catch (err) {
-      setOauthError(err instanceof Error ? err.message : 'Failed to revoke token');
-    } finally {
-      setOauthSaving(false);
-    }
-  }
-
   return (
     <section>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="section-label">API Keys</h2>
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="section-label">Runner Tokens</h2>
         <Link
           href="/app/accounts/new"
           className="text-sm text-text-secondary hover:text-text-primary transition-colors"
         >
-          + New Account
+          + New Token
         </Link>
       </div>
 
+      <p className="text-xs text-text-secondary mb-4">
+        Runner tokens authenticate your runner to buildd — they don&apos;t contain model credentials.
+        Set model credentials in Agent Backends.
+      </p>
+
       {accounts.length === 0 ? (
         <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No accounts yet</p>
+          <p className="text-text-muted text-sm mb-3">No runner tokens yet</p>
           <Link href="/app/accounts/new" className="text-sm text-primary hover:underline">
-            Create an account to get an API key
+            Create a runner token
           </Link>
         </div>
       ) : (
@@ -189,7 +135,7 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
                           <><span>·</span><span>Cost: ${account.totalCost}</span></>
                         )}
                         {account.authType === 'oauth' && (
-                          <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '\u221E'}</span></>
+                          <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '∞'}</span></>
                         )}
                         {account.budgetExhaustedAt && (
                           <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
@@ -197,29 +143,7 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
                       </div>
 
                       {hasWarning && (
-                        <p className="text-xs text-status-warning">No workspace linked — API key can&apos;t claim or create tasks.</p>
-                      )}
-
-                      {account.authType === 'oauth' && (
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className={account.hasOauthToken ? 'text-status-success' : 'text-status-warning'}>
-                            {account.hasOauthToken ? 'Token set' : 'No token'}
-                          </span>
-                          <button
-                            onClick={() => { setOauthError(null); setOauthTokenInput(''); setOauthTarget(account); }}
-                            className="text-text-secondary hover:text-text-primary"
-                          >
-                            {account.hasOauthToken ? 'Rotate' : 'Set token'}
-                          </button>
-                          {account.hasOauthToken && (
-                            <button
-                              onClick={() => setRevokeTarget(account)}
-                              className="text-text-muted hover:text-status-error"
-                            >
-                              Revoke
-                            </button>
-                          )}
-                        </div>
+                        <p className="text-xs text-status-warning">No workspace linked — token can&apos;t claim or create tasks.</p>
                       )}
 
                       <div className="flex items-center gap-3 text-xs">
@@ -246,8 +170,8 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
       {/* Regenerate confirmation dialog */}
       <ConfirmDialog
         open={!!regenerateTarget}
-        title="Regenerate API Key?"
-        message={regenerateError || `This will invalidate the current key for "${regenerateTarget?.name}". Any workers using the old key will stop working immediately.`}
+        title="Regenerate Runner Token?"
+        message={regenerateError || `This will invalidate the current token for "${regenerateTarget?.name}". Any runners using the old token will stop working immediately.`}
         confirmLabel="Regenerate"
         variant="warning"
         loading={regenerating}
@@ -268,69 +192,6 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
           onClose={() => setNewKey(null)}
         />
       )}
-
-      {/* OAuth token set/rotate dialog */}
-      {oauthTarget && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
-            <h3 className="text-lg font-semibold">
-              {oauthTarget.hasOauthToken ? 'Rotate' : 'Set'} OAuth Token
-            </h3>
-            <p className="text-sm text-text-secondary">
-              {oauthTarget.hasOauthToken
-                ? `Enter a new OAuth token for "${oauthTarget.name}". This will replace the existing token.`
-                : `Enter the CLAUDE_CODE_OAUTH_TOKEN for "${oauthTarget.name}".`}
-            </p>
-            {oauthError && (
-              <div className="p-3 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error text-sm">
-                {oauthError}
-              </div>
-            )}
-            <input
-              type="password"
-              value={oauthTokenInput}
-              onChange={(e) => setOauthTokenInput(e.target.value)}
-              placeholder="Paste OAuth token"
-              className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
-              autoFocus
-            />
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => {
-                  setOauthTarget(null);
-                  setOauthTokenInput('');
-                  setOauthError(null);
-                }}
-                className="px-4 py-2 text-sm border border-border-default rounded-md hover:bg-surface-3"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleOauthSave}
-                disabled={!oauthTokenInput || oauthSaving}
-                className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
-              >
-                {oauthSaving ? 'Saving...' : 'Save Token'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* OAuth token revoke confirmation */}
-      <ConfirmDialog
-        open={!!revokeTarget}
-        title="Revoke OAuth Token?"
-        message={`This will remove the OAuth token from "${revokeTarget?.name}". Workers using this account will lose access to Claude Code until a new token is set.`}
-        confirmLabel="Revoke"
-        variant="warning"
-        loading={oauthSaving}
-        onConfirm={handleOauthRevoke}
-        onCancel={() => {
-          setRevokeTarget(null);
-          setOauthError(null);
-        }}
-      />
     </section>
   );
 }
@@ -338,7 +199,7 @@ export default function ApiKeysSection({ accounts, workspaces = [] }: { accounts
 // ── MCP Setup Section (collapsed by default) ────────────────────────────
 
 function McpSetupSection({ apiKey, workspaces = [] }: { apiKey: string | null; workspaces?: Workspace[] }) {
-  const key = apiKey ? `${apiKey}...` : 'YOUR_API_KEY';
+  const key = apiKey ? `${apiKey}...` : 'YOUR_RUNNER_TOKEN';
   const reposWithWorkspaces = workspaces.filter(w => w.repo);
 
   function mcpCommand(repo?: string) {

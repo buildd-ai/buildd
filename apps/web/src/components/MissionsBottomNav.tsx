@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useNeedsInput } from './NeedsInputProvider';
+import { isNavActive } from '@/lib/nav-active';
 
 const missionTabs = [
   {
@@ -27,6 +28,17 @@ const missionTabs = [
     ),
   },
   {
+    label: 'Activity',
+    href: '/app/tasks',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+        <path d="M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+        <path d="M9 14l2 2 4-4" />
+      </svg>
+    ),
+  },
+  {
     label: 'Team',
     href: '/app/team',
     icon: (
@@ -39,23 +51,11 @@ const missionTabs = [
     ),
   },
   {
-    label: 'Activity',
-    href: '/app/tasks',
+    label: 'Health',
+    href: '/app/health',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
-        <path d="M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-        <path d="M9 14l2 2 4-4" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Settings',
-    href: '/app/settings',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+        <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
       </svg>
     ),
   },
@@ -69,18 +69,7 @@ export default function MissionsBottomNav() {
     <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-center justify-around h-14">
         {missionTabs.map((tab) => {
-          const isActive =
-            pathname === tab.href ||
-            (tab.href === '/app/home' && pathname === '/app/dashboard') ||
-            (tab.href === '/app/missions' && pathname.startsWith('/app/missions')) ||
-            (tab.href === '/app/team' && pathname.startsWith('/app/team')) ||
-            (tab.href === '/app/tasks' && pathname.startsWith('/app/tasks')) ||
-            (tab.href === '/app/settings' && pathname.startsWith('/app/settings')) ||
-            (tab.href === '/app/settings' && pathname.startsWith('/app/you')) ||
-            (tab.href === '/app/settings' && pathname.startsWith('/app/artifacts')) ||
-            (tab.href === '/app/settings' && pathname.startsWith('/app/teams')) ||
-            (tab.href === '/app/settings' && pathname.startsWith('/app/accounts'));
-
+          const active = isNavActive(pathname, tab.href);
           const showBadge = tab.href === '/app/tasks' && needsInputCount > 0;
 
           return (
@@ -88,10 +77,10 @@ export default function MissionsBottomNav() {
               key={tab.href}
               href={tab.href}
               className={`flex flex-col items-center justify-center gap-1 flex-1 h-full transition-colors duration-200 ${
-                isActive ? 'text-accent-text' : 'text-text-muted'
+                active ? 'text-accent-text' : 'text-text-muted'
               }`}
             >
-              <span className={`relative w-[22px] h-[22px] ${isActive ? 'opacity-100' : 'opacity-35'}`}>
+              <span className={`relative w-[22px] h-[22px] ${active ? 'opacity-100' : 'opacity-35'}`}>
                 {tab.icon}
                 {showBadge && (
                   <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-warning text-white">
@@ -99,7 +88,7 @@ export default function MissionsBottomNav() {
                   </span>
                 )}
               </span>
-              <span className={`text-[10px] tracking-[0.3px] ${isActive ? 'font-medium' : 'font-normal'}`}>
+              <span className={`text-[10px] tracking-[0.3px] ${active ? 'font-medium' : 'font-normal'}`}>
                 {tab.label}
               </span>
             </Link>

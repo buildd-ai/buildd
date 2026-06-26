@@ -79,6 +79,47 @@ describe('classifyClaimError', () => {
     expect(res!.scope).toBe('context');
   });
 
+  // Regression: 2026-06-25 session-limit storm (3 workers in 10s for one task).
+  // classifyClaimError returned null for 'session limit', falling through to the
+  // generic rapid-failure path (3 failures → 5-min pause). That allowed workers
+  // 2 and 3 to be spawned serially via Pusher TASK_ASSIGNED events before the
+  // circuit breaker tripped. Fixed by returning a context-scoped pause immediately.
+  describe('OAuth seat session limit (2026-06-25 regression)', () => {
+    test('classifies "session limit" as context-scoped', () => {
+      const res = classifyClaimError("you've hit your session limit · resets 8:40pm (utc)");
+      expect(res).not.toBeNull();
+      expect(res!.scope).toBe('context');
+      expect(res!.label).toContain('Session limit hit');
+    });
+
+    test('parses the reset time from the error string', () => {
+      const res = classifyClaimError("you've hit your session limit · resets 8pm (utc)");
+      expect(res).not.toBeNull();
+      // Should pause until 8pm UTC, which is well beyond a 5-min fallback
+      expect(res!.pauseMs).toBeGreaterThan(5 * 60 * 1000);
+    });
+
+    test('"hit your session" variant is also caught', () => {
+      const res = classifyClaimError('claude code returned an error result: you hit your session limit');
+      expect(res).not.toBeNull();
+      expect(res!.scope).toBe('context');
+    });
+
+    test('uses 5h default when no reset time is parseable', () => {
+      const res = classifyClaimError('hit your session limit');
+      expect(res).not.toBeNull();
+      expect(res!.pauseMs).toBe(5 * 60 * 60 * 1000);
+    });
+
+    test('is detected before generic rate-limit patterns', () => {
+      // Ensure session limit is not accidentally caught by a different branch
+      // (e.g. 'rate limit') — the specific session-limit case must win so the
+      // scope is 'context' (account-only) not 'global' (all claims paused).
+      const res = classifyClaimError("you've hit your session limit · resets 3am (utc)");
+      expect(res!.scope).toBe('context');
+    });
+  });
+
   test('unknown errors return null (no breaker action)', () => {
     expect(classifyClaimError('some weird worker-specific bug')).toBeNull();
     expect(classifyClaimError('econnreset')).toBeNull();

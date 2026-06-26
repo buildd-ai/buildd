@@ -24,7 +24,8 @@
     "seed:completed-tasks": "bun run scripts/seed/completed-tasks.ts",
     "seed:multi-user": "bun run scripts/seed/multi-user.ts",
     "seed:concurrent": "bun run scripts/seed/concurrent.ts",
-    "seed:reset": "bun run scripts/seed/reset.ts"
+    "seed:reset": "bun run scripts/seed/reset.ts",
+    "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts"
   },
   "dependencies": {
     "next": "^15.1.0",

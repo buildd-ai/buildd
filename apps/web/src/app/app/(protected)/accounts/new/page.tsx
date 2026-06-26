@@ -47,7 +47,6 @@ export default function NewAccountPage() {
       setAuthType('api');
     }
   }
-  const [oauthToken, setOauthToken] = useState('');
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULTS.maxConcurrentWorkers.toString());
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -109,10 +108,6 @@ export default function NewAccountPage() {
     if (selectedWorkspaceId) {
       data.workspaceId = selectedWorkspaceId;
     }
-    if (authType === 'oauth' && oauthToken) {
-      data.oauthToken = oauthToken;
-    }
-
     try {
       const res = await fetch('/api/accounts', {
         method: 'POST',
@@ -265,25 +260,6 @@ export default function NewAccountPage() {
                         { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
                       ]}
                     />
-                  </div>
-                )}
-
-                {authType === 'oauth' && (
-                  <div>
-                    <label htmlFor="oauthToken" className="block text-sm font-medium mb-2">
-                      OAuth Token
-                    </label>
-                    <input
-                      type="password"
-                      id="oauthToken"
-                      value={oauthToken}
-                      onChange={(e) => setOauthToken(e.target.value)}
-                      placeholder="CLAUDE_CODE_OAUTH_TOKEN value"
-                      className="w-full px-4 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
-                    />
-                    <p className="text-xs text-text-secondary mt-1">
-                      The OAuth token used for seat-based Claude Code authentication. Can also be added later in settings.
-                    </p>
                   </div>
                 )}
 

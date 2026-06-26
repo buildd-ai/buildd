@@ -2,13 +2,20 @@
 
 import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { WatchedProjectRow, WorkspaceOption, VercelTokenOption } from './page';
+import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import { isRunnerOnline } from '@/lib/runner-heartbeats';
+import type { WatchedProjectRow, WorkspaceOption, VercelTokenOption, UsageStats } from './page';
+import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
 
 interface Props {
   initialRows: WatchedProjectRow[];
   workspaces: WorkspaceOption[];
   vercelTokens: VercelTokenOption[];
   hasGlobalVercelToken: boolean;
+  runners: RunnerHeartbeat[];
+  usageStats: UsageStats | null;
+  teamWorkspaces: { id: string; name: string }[];
+  wsFilter: string | null;
 }
 
 interface FormState {
@@ -93,7 +100,16 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export function HealthClient({ initialRows, workspaces, vercelTokens, hasGlobalVercelToken }: Props) {
+export function HealthClient({
+  initialRows,
+  workspaces,
+  vercelTokens,
+  hasGlobalVercelToken,
+  runners,
+  usageStats,
+  teamWorkspaces,
+  wsFilter,
+}: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [editing, setEditing] = useState<{ mode: 'create' | 'edit'; row?: WatchedProjectRow } | null>(null);
@@ -236,88 +252,175 @@ export function HealthClient({ initialRows, workspaces, vercelTokens, hasGlobalV
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 sm:py-6 pb-24">
-      <div className="flex items-center justify-between mb-4">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Project Health</h1>
-          <p className="text-sm text-text-tertiary">Watcher fires a task + Pushover when CI breaks on release PRs or prod deploys go bad.</p>
-        </div>
-      </div>
-
-      {!hasGlobalVercelToken && vercelTokens.length === 0 && initialRows.some((r) => r.vercelProjectId) && (
-        <div className="mb-4 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-          <div className="font-medium text-status-warning">No Vercel token configured</div>
-          <p className="text-text-secondary mt-1">
-            Some watched projects have a Vercel project ID set but no API token. Add one in the edit drawer of any row — it gets stored encrypted at the team level and reused across rows.
+          <p className="text-sm text-text-tertiary">
+            Watcher fires a task + Pushover when CI breaks on release PRs or prod deploys go bad.
           </p>
         </div>
+        <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+      </div>
+
+      {/* Runners */}
+      <section className="mb-6">
+        <h2 className="section-label mb-3">Runners</h2>
+        <div className="card">
+          {runners.length === 0 ? (
+            <div className="p-4 text-center">
+              <p className="text-sm text-text-muted">No runners connected</p>
+              <p className="text-xs text-text-muted mt-1">Runners appear here when they send heartbeats.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border-default">
+              {runners.map((hb) => {
+                const online = isRunnerOnline(hb.lastHeartbeatAt);
+                return (
+                  <div key={hb.id} className="flex items-center gap-3 px-4 py-3">
+                    <span
+                      className={`glow-dot ${online ? 'glow-dot-success' : ''}`}
+                      style={!online ? { background: 'var(--text-muted)' } : undefined}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm text-text-primary truncate">
+                          {hb.accountName || 'Runner'}
+                        </p>
+                        <span className={`text-[10px] font-mono ${online ? 'text-status-success' : 'text-text-muted'}`}>
+                          {online ? 'online' : 'stale'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-muted">
+                        {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers · last beat {timeAgo(hb.lastHeartbeatAt)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Usage (30d) */}
+      {usageStats && usageStats.total > 0 && (
+        <section className="mb-6">
+          <h2 className="section-label mb-3">Usage (30d)</h2>
+          <div className="card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-text-secondary">{usageStats.total} tasks</span>
+              <div className="flex items-center gap-3 text-xs">
+                <span className="text-status-success">{usageStats.completed} done</span>
+                {usageStats.failed > 0 && (
+                  <span className="text-status-error">{usageStats.failed} failed</span>
+                )}
+              </div>
+            </div>
+            {usageStats.byRole.length > 0 && (
+              <div className="space-y-2 pt-1">
+                {usageStats.byRole.map((r) => (
+                  <div key={r.slug} className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+                    <span className="text-xs text-text-primary flex-1 truncate">{r.name}</span>
+                    <span className="text-xs text-text-muted tabular-nums">
+                      {r.completed} done{r.failed > 0 ? ` / ${r.failed} failed` : ''}
+                    </span>
+                  </div>
+                ))}
+                {usageStats.unassigned > 0 && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full shrink-0 bg-text-muted" />
+                    <span className="text-xs text-text-muted flex-1">No role</span>
+                    <span className="text-xs text-text-muted tabular-nums">{usageStats.unassigned}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
-      {initialRows.length === 0 ? (
-        <div className="border border-dashed rounded-xl p-8 text-center text-text-tertiary">
-          <p className="mb-3">No watched projects yet.</p>
-          <button
-            onClick={startCreate}
-            className="inline-flex items-center px-4 h-11 rounded-lg bg-status-info text-white font-medium"
-          >
-            Add a project
-          </button>
-        </div>
-      ) : (
-        <ul className="space-y-3">
-          {initialRows.map((row) => (
-            <li
-              key={row.id}
-              className="rounded-xl border bg-surface-elevated p-4 active:bg-surface-pressed"
+      {/* Watched Projects */}
+      <section>
+        <h2 className="section-label mb-3">Watched Projects</h2>
+
+        {!hasGlobalVercelToken && vercelTokens.length === 0 && initialRows.some((r) => r.vercelProjectId) && (
+          <div className="mb-4 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
+            <div className="font-medium text-status-warning">No Vercel token configured</div>
+            <p className="text-text-secondary mt-1">
+              Some watched projects have a Vercel project ID set but no API token. Add one in the edit drawer of any row — it gets stored encrypted at the team level and reused across rows.
+            </p>
+          </div>
+        )}
+
+        {initialRows.length === 0 ? (
+          <div className="border border-dashed rounded-xl p-8 text-center text-text-tertiary">
+            <p className="mb-3">No watched projects yet.</p>
+            <button
+              onClick={startCreate}
+              className="inline-flex items-center px-4 h-11 rounded-lg bg-status-info text-white font-medium"
             >
-              <button onClick={() => startEdit(row)} className="w-full text-left">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="font-semibold truncate">{row.repo}</div>
-                    <div className="text-xs text-text-tertiary mt-0.5">{row.workspaceName}</div>
+              Add a project
+            </button>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {initialRows.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-xl border bg-surface-elevated p-4 active:bg-surface-pressed"
+              >
+                <button onClick={() => startEdit(row)} className="w-full text-left">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold truncate">{row.repo}</div>
+                      <div className="text-xs text-text-tertiary mt-0.5">{row.workspaceName}</div>
+                    </div>
+                    <span className={`text-[11px] px-2 py-0.5 rounded-full ${row.enabled ? 'bg-status-success/10 text-status-success' : 'bg-text-tertiary/10 text-text-tertiary'}`}>
+                      {row.enabled ? 'enabled' : 'disabled'}
+                    </span>
                   </div>
-                  <span className={`text-[11px] px-2 py-0.5 rounded-full ${row.enabled ? 'bg-status-success/10 text-status-success' : 'bg-text-tertiary/10 text-text-tertiary'}`}>
-                    {row.enabled ? 'enabled' : 'disabled'}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-text-secondary">
-                  <div>Last check: {timeAgo(row.lastCheckedAt)}</div>
-                  <div>Vercel: {row.vercelProjectId ? '✓' : '—'}</div>
-                  <div>In-flight: {row.inFlightWindowMin}m</div>
-                  <div>Prod grace: {row.prodGraceMin}m</div>
-                </div>
-                {row.lastError && (
-                  <div className="mt-2 text-xs text-status-error truncate">⚠ {row.lastError}</div>
-                )}
-                {vercelMissing(row) && (
-                  <div className="mt-2 text-xs text-status-warning">
-                    ⚠ Vercel project set but no token — prod-deploy check is disabled. Tap Edit to add one.
+                  <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-text-secondary">
+                    <div>Last check: {timeAgo(row.lastCheckedAt)}</div>
+                    <div>Vercel: {row.vercelProjectId ? '✓' : '—'}</div>
+                    <div>In-flight: {row.inFlightWindowMin}m</div>
+                    <div>Prod grace: {row.prodGraceMin}m</div>
                   </div>
-                )}
-                {row.recentEvents.length > 0 && (
-                  <div className="mt-2 text-xs text-text-tertiary">
-                    {row.recentEvents.length} recent firing(s) — latest {timeAgo(row.recentEvents[0].firedAt)}
-                  </div>
-                )}
-              </button>
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={() => runNow(row)}
-                  disabled={busy}
-                  className="flex-1 h-11 rounded-lg bg-surface text-text-primary border text-sm font-medium disabled:opacity-50"
-                >
-                  Run now
+                  {row.lastError && (
+                    <div className="mt-2 text-xs text-status-error truncate">⚠ {row.lastError}</div>
+                  )}
+                  {vercelMissing(row) && (
+                    <div className="mt-2 text-xs text-status-warning">
+                      ⚠ Vercel project set but no token — prod-deploy check is disabled. Tap Edit to add one.
+                    </div>
+                  )}
+                  {row.recentEvents.length > 0 && (
+                    <div className="mt-2 text-xs text-text-tertiary">
+                      {row.recentEvents.length} recent firing(s) — latest {timeAgo(row.recentEvents[0].firedAt)}
+                    </div>
+                  )}
                 </button>
-                <button
-                  onClick={() => startEdit(row)}
-                  className="flex-1 h-11 rounded-lg bg-status-info text-white text-sm font-medium"
-                >
-                  Edit
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => runNow(row)}
+                    disabled={busy}
+                    className="flex-1 h-11 rounded-lg bg-surface text-text-primary border text-sm font-medium disabled:opacity-50"
+                  >
+                    Run now
+                  </button>
+                  <button
+                    onClick={() => startEdit(row)}
+                    className="flex-1 h-11 rounded-lg bg-status-info text-white text-sm font-medium"
+                  >
+                    Edit
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {initialRows.length > 0 && (
         <div className="fixed left-0 right-0 bottom-0 p-4 bg-surface/95 backdrop-blur border-t">
@@ -386,7 +489,7 @@ export function HealthClient({ initialRows, workspaces, vercelTokens, hasGlobalV
                       <option value="">
                         {hasGlobalVercelToken ? 'Use global VERCEL_API_TOKEN' : 'None — prod check disabled'}
                       </option>
-                      {teamTokens.map((t) => (
+                      {teamTokens.map((t: VercelTokenOption) => (
                         <option key={t.id} value={t.id}>{t.label || t.id}</option>
                       ))}
                     </select>

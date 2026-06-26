@@ -215,10 +215,13 @@ export interface ReleaseInput {
   taskId: string;
   workerId: string;
   workspaceId: string;
+  // When true: called from the mission-complete hook, not per-task. Bypasses
+  // per-task trigger policy so the mission release actually fires.
+  isMissionRelease?: boolean;
 }
 
 export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult> {
-  const { taskId, workerId, workspaceId } = input;
+  const { taskId, workerId, workspaceId, isMissionRelease = false } = input;
 
   // Fetch task release flag and worker PR info
   const [task, worker, workspace] = await Promise.all([
@@ -244,16 +247,17 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
   }
 
-  // Honour the workspace trigger policy before doing anything expensive.
-  // 'manual'             → owner fires trigger_release explicitly; never auto-fires.
-  // 'on_mission_complete' → the mission-complete hook fires once; per-task path skips.
-  // 'every_merge' / absent → proceed as normal (current behaviour).
-  const trigger = releaseConfig?.trigger;
-  if (trigger === 'manual') {
-    return { status: 'skipped', message: 'Release: trigger=manual — use trigger_release to release manually.' };
-  }
-  if (trigger === 'on_mission_complete') {
-    return { status: 'skipped', message: 'Release: trigger=on_mission_complete — fires after all mission tasks complete.' };
+  // Trigger policy: governs cadence. Per-task releases check this; mission-
+  // driven releases (isMissionRelease=true) bypass so the hook actually fires.
+  if (!isMissionRelease) {
+    const trigger = releaseConfig?.trigger ?? 'every_merge';
+    if (trigger === 'manual') {
+      return { status: 'skipped', message: 'Release: trigger=manual — use trigger_release to release manually.' };
+    }
+    if (trigger === 'on_mission_complete') {
+      return { status: 'skipped', message: 'Release: trigger=on_mission_complete — fires after all mission tasks complete.' };
+    }
+    // trigger === 'every_merge' or absent: proceed as normal
   }
 
   // Resolve the workspace's declared strategy. executeRelease is the

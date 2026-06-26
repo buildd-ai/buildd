@@ -11,7 +11,8 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workspaceSkills } from '@buildd/core/db/schema';
+import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 
 const BUILDD_MCP = {
@@ -154,6 +155,20 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Manage release pipelines (changelog, version bumps, deploy)
 - Handle dependency updates and repo hygiene
 
+## Before Starting — Check Memory First
+
+**Before diagnosing any error, CI failure, credential issue, or git problem — always check memory:**
+\`\`\`
+buildd_memory action=query_knowledge params={query: "<error class or task title>", corpus: "memory"}
+\`\`\`
+If a relevant gotcha exists, use the recorded fix. Do not re-derive what has already been solved.
+
+Specific triggers to always check:
+- CI/build failures → query "CI <error message>"
+- Credential or auth errors → query "credential auth token"
+- Git/branch/worktree errors → query "git <error type>"
+- Any error you haven't seen before → query the error message verbatim
+
 ## Approach
 - Before modifying an existing feature, use \`buildd_memory action=query_knowledge params={query: "<feature>", corpus: "code"}\` to understand how it's currently implemented — don't guess at the codebase
 - Follow the buildd workflow: claim → plan → implement → test → ship
@@ -161,6 +176,24 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 - Keep PRs focused — one concern per PR
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 - Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
+
+## End-of-Task Memory (Gotchas Only)
+
+Only save a memory if you hit a **real gotcha** — a non-obvious error or fix that future builders would re-derive from scratch.
+
+**Step 1 — dedup check first:**
+\`\`\`
+buildd_memory action=query_knowledge params={query: "<concise gotcha description>", corpus: "memory"}
+\`\`\`
+If a near-duplicate already exists, skip or update it (action=update) rather than adding another entry.
+
+**Step 2 — save in this exact template** (type: gotcha):
+- **Situation**: what you were trying to do
+- **Failure**: what broke and the exact error (use repo-relative paths like \`packages/core/...\`, NOT \`/home/coder/project/buildd/.buildd-worktrees/buildd_<id>/...\`)
+- **Root cause**: why it failed
+- **Fix/rule**: the concrete command or change that resolved it
+
+Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/buildd-ci dir causes phantom test failures")
 `,
     color: '#D4724A',
     // Builder defaults to Opus. Overrides flow downward via task.complexity
@@ -186,6 +219,14 @@ You are the Researcher — responsible for gathering intelligence, analyzing eco
 - Monitor SDK ecosystems for relevant updates and breaking changes
 - Analyze competitive landscape and market trends
 - Produce structured findings and recommendations
+
+## Before Starting — Check Memory First
+
+Before diving into external research, query memory for prior work on this topic:
+\`\`\`
+buildd_memory action=query_knowledge params={query: "<research topic>", corpus: "memory"}
+\`\`\`
+If prior research exists, build on it rather than duplicating the effort.
 
 ## Approach
 - Be thorough but concise — surface what matters, skip noise
@@ -328,16 +369,17 @@ You are the Spec Validator — your job is to compare the SHIPPED implementation
 ];
 
 /**
- * Seed Tier 1 default roles into a newly created workspace.
- * Safe to call multiple times — uses onConflictDoNothing on (workspaceId, slug).
+ * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).
+ * Safe to call multiple times — uses onConflictDoNothing on (teamId, slug) WHERE workspaceId IS NULL.
  */
-export async function seedDefaultRoles(workspaceId: string): Promise<void> {
+export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
   const now = new Date();
 
   await db.insert(workspaceSkills)
     .values(DEFAULT_ROLES.map(role => ({
       id: crypto.randomUUID(),
-      workspaceId,
+      teamId,
+      workspaceId: null,
       slug: role.slug,
       name: role.name,
       description: role.description,
@@ -360,4 +402,17 @@ export async function seedDefaultRoles(workspaceId: string): Promise<void> {
       updatedAt: now,
     })))
     .onConflictDoNothing();
+}
+
+/**
+ * Seed Tier 1 default roles into a workspace's team (for backward compat — looks up teamId from workspace).
+ * Prefer seedDefaultRolesForTeam when the teamId is already known.
+ */
+export async function seedDefaultRoles(workspaceId: string): Promise<void> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { teamId: true },
+  });
+  if (!ws) return;
+  return seedDefaultRolesForTeam(ws.teamId);
 }

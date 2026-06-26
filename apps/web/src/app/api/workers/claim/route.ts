@@ -287,12 +287,16 @@ export async function POST(req: NextRequest) {
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
   // Scoped by runner so a healthy runner can still pick up the task.
   const cooldownCutoff = new Date(Date.now() - CLAIM_COOLDOWN_MS);
+  // Per-runner cooldown covers both 'error' AND 'failed' — budget/session workers
+  // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
+  // only check missed them entirely and left the burn-loop gap that caused the
+  // 2026-06-25 session-limit storm.
   claimableConditions.push(
     sql`NOT EXISTS (
       SELECT 1 FROM ${workers} w_cd
       WHERE w_cd.task_id = ${tasks.id}
       AND w_cd.runner = ${runner}
-      AND w_cd.status = 'error'
+      AND w_cd.status IN ('error', 'failed')
       AND w_cd.updated_at > ${cooldownCutoff}
     )`
   );
@@ -406,20 +410,28 @@ export async function POST(req: NextRequest) {
   const recentClaimCount = recentClaims[0]?.count ?? 0;
 
   // Pre-fetch role floors for every unique roleSlug referenced by the filtered tasks.
-  // We look up workspace-level roles first, then fall back to account-level; matches
-  // the later roleConfig enrichment pattern but deduped up front.
+  // Resolution: workspace override > team default > account-level (legacy).
   const uniqueRoleSlugs = [...new Set(
     filteredTasks.map(t => (t as any).roleSlug as string | null).filter(Boolean) as string[],
   )];
   const roleFloorMap = new Map<string, Tier | 'inherit'>();
   if (uniqueRoleSlugs.length > 0) {
+    const taskTeamIds = [...new Set(
+      filteredTasks.map(t => (t as any).workspace?.teamId as string | undefined).filter(Boolean) as string[],
+    )];
     const wsRoles = await db.query.workspaceSkills.findMany({
       where: and(
         inArray(workspaceSkills.slug, uniqueRoleSlugs),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
         or(
+          // Workspace override rows
           inArray(workspaceSkills.workspaceId, workspaceIds),
+          // Team-level default rows
+          taskTeamIds.length > 0
+            ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, taskTeamIds))
+            : undefined,
+          // Legacy account-level fallback
           eq(workspaceSkills.accountId, account.id),
         ),
       ),
@@ -920,17 +932,29 @@ export async function POST(req: NextRequest) {
       const wsId = task?.workspaceId;
       if (!wsId) continue;
 
-      // Look up the role: workspace-level first, then account-level fallback
-      let role = await db.query.workspaceSkills.findFirst({
-        where: and(
-          eq(workspaceSkills.workspaceId, wsId),
-          eq(workspaceSkills.slug, roleSlug),
-          eq(workspaceSkills.enabled, true),
-          eq(workspaceSkills.isRole, true),
-        ),
-      });
+      // Look up the role: workspace override > team default (§C.2 precedence).
+      const teamId = (task as any).workspace?.teamId as string | undefined;
+      let role;
 
-      // Fallback: account-level role
+      if (teamId) {
+        const rows = await db.select()
+          .from(workspaceSkills)
+          .where(and(
+            eq(workspaceSkills.teamId, teamId),
+            eq(workspaceSkills.slug, roleSlug),
+            eq(workspaceSkills.enabled, true),
+            eq(workspaceSkills.isRole, true),
+            or(
+              isNull(workspaceSkills.workspaceId),
+              eq(workspaceSkills.workspaceId, wsId),
+            ),
+          ))
+          .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
+          .limit(1);
+        role = rows[0];
+      }
+
+      // Legacy account-level fallback
       if (!role) {
         role = await db.query.workspaceSkills.findFirst({
           where: and(

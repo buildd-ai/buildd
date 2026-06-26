@@ -44,7 +44,7 @@ export default async function NewMissionPage() {
   }
 
   // Query enabled roles across user's workspaces
-  let roles: { slug: string; name: string; color: string; workspaceId: string }[] = [];
+  let roles: { slug: string; name: string; color: string; workspaceId: string | null }[] = [];
   if (wsIds.length > 0) {
     roles = await db.query.workspaceSkills.findMany({
       where: and(

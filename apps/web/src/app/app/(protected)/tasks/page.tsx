@@ -1,18 +1,19 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
+import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import TaskGrid from './TaskGrid';
 
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string }>;
 }) {
-  const { mission: missionId } = await searchParams;
+  const { mission: missionId, workspace: wsFilter } = await searchParams;
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
@@ -40,92 +41,105 @@ export default async function TasksPage({
     budgetResetsAt: string | null;
   }> = [];
 
+  let teamWorkspaces: { id: string; name: string }[] = [];
+
   if (!isDev && user) {
     try {
-      const wsIds = await getUserWorkspaceIds(user.id);
-      if (wsIds.length > 0) {
-        // Fetch workspaces for name lookup
-        const userWorkspaces = await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, wsIds),
-          columns: { id: true, name: true },
-        });
-        const wsNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
+      const cookieStore = await cookies();
+      const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
 
-        // Fetch recent tasks (last 30 days, limit 200)
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-        const recentTasks = await db.query.tasks.findMany({
-          where: and(
-            inArray(tasks.workspaceId, wsIds),
-            gte(tasks.updatedAt, thirtyDaysAgo),
-          ),
-          columns: {
-            id: true,
-            title: true,
-            status: true,
-            category: true,
-            updatedAt: true,
-            workspaceId: true,
-            result: true,
-            missionId: true,
-            context: true,
-            backend: true,
-          },
-          orderBy: [desc(tasks.updatedAt)],
-          limit: 200,
-        });
+      if (activeTeamId) {
+        const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
 
-        // Fetch mission titles for tasks that have missionId
-        const missionIds = [...new Set(recentTasks.map(t => t.missionId).filter(Boolean))] as string[];
-        const missionTitleMap = new Map<string, string>();
-        if (missionIds.length > 0) {
-          const misns = await db.query.missions.findMany({
-            where: inArray(missions.id, missionIds),
-            columns: { id: true, title: true },
+        // Load team workspaces for filter dropdown + name lookup
+        if (teamWsIds.length > 0) {
+          teamWorkspaces = await db
+            .select({ id: workspacesTable.id, name: workspacesTable.name })
+            .from(workspacesTable)
+            .where(inArray(workspacesTable.id, teamWsIds));
+        }
+
+        // Narrow to selected workspace if filter is set (must belong to team)
+        const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
+        const wsNameMap = new Map(teamWorkspaces.map(w => [w.id, w.name]));
+
+        if (wsIds.length > 0) {
+          // Fetch recent tasks (last 30 days, limit 200)
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+          const recentTasks = await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.workspaceId, wsIds),
+              gte(tasks.updatedAt, thirtyDaysAgo),
+            ),
+            columns: {
+              id: true,
+              title: true,
+              status: true,
+              category: true,
+              updatedAt: true,
+              workspaceId: true,
+              result: true,
+              missionId: true,
+              context: true,
+              backend: true,
+            },
+            orderBy: [desc(tasks.updatedAt)],
+            limit: 200,
           });
-          for (const m of misns) {
-            missionTitleMap.set(m.id, m.title);
-          }
-        }
 
-        // Query workers waiting for input to enrich task status
-        const waitingWorkers = await db.query.workers.findMany({
-          where: eq(workers.status, 'waiting_input'),
-          columns: { taskId: true, waitingFor: true },
-        });
-        const waitingByTaskId = new Map<string, string>();
-        for (const w of waitingWorkers) {
-          if (w.taskId && w.waitingFor) {
-            const wf = w.waitingFor as { prompt?: string };
-            waitingByTaskId.set(w.taskId, wf.prompt || 'Needs input');
+          // Fetch mission titles for tasks that have missionId
+          const missionIds = [...new Set(recentTasks.map(t => t.missionId).filter(Boolean))] as string[];
+          const missionTitleMap = new Map<string, string>();
+          if (missionIds.length > 0) {
+            const misns = await db.query.missions.findMany({
+              where: inArray(missions.id, missionIds),
+              columns: { id: true, title: true },
+            });
+            for (const m of misns) {
+              missionTitleMap.set(m.id, m.title);
+            }
           }
-        }
 
-        gridTasks = recentTasks.map(t => {
-          const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
-          const isTerminal = t.status === 'completed' || t.status === 'failed';
-          const isWaiting = !isTerminal && waitingByTaskId.has(t.id);
-          const ctx = (t.context || {}) as Record<string, unknown>;
-          const budgetPaused = t.status === 'pending' && ctx.budgetExhausted === true;
-          return {
-            id: t.id,
-            title: t.title,
-            status: isWaiting ? 'waiting_input' : t.status,
-            category: t.category,
-            updatedAt: t.updatedAt.toISOString(),
-            workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
-            prUrl: result?.prUrl || null,
-            prNumber: result?.prNumber || null,
-            summary: result?.summary || null,
-            hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
-            filesChanged: result?.files?.length ?? null,
-            waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
-            missionId: t.missionId || null,
-            missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
-            budgetPaused,
-            budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
-            budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
-          };
-        });
+          // Query workers waiting for input to enrich task status
+          const waitingWorkers = await db.query.workers.findMany({
+            where: eq(workers.status, 'waiting_input'),
+            columns: { taskId: true, waitingFor: true },
+          });
+          const waitingByTaskId = new Map<string, string>();
+          for (const w of waitingWorkers) {
+            if (w.taskId && w.waitingFor) {
+              const wf = w.waitingFor as { prompt?: string };
+              waitingByTaskId.set(w.taskId, wf.prompt || 'Needs input');
+            }
+          }
+
+          gridTasks = recentTasks.map(t => {
+            const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
+            const isTerminal = t.status === 'completed' || t.status === 'failed';
+            const isWaiting = !isTerminal && waitingByTaskId.has(t.id);
+            const ctx = (t.context || {}) as Record<string, unknown>;
+            const budgetPaused = t.status === 'pending' && ctx.budgetExhausted === true;
+            return {
+              id: t.id,
+              title: t.title,
+              status: isWaiting ? 'waiting_input' : t.status,
+              category: t.category,
+              updatedAt: t.updatedAt.toISOString(),
+              workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
+              prUrl: result?.prUrl || null,
+              prNumber: result?.prNumber || null,
+              summary: result?.summary || null,
+              hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
+              filesChanged: result?.files?.length ?? null,
+              waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
+              missionId: t.missionId || null,
+              missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
+              budgetPaused,
+              budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
+              budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
+            };
+          });
+        }
       }
     } catch (error) {
       console.error('Tasks grid query error:', error);
@@ -144,5 +158,13 @@ export default async function TasksPage({
     } catch {}
   }
 
-  return <TaskGrid tasks={gridTasks} missionFilter={missionId || null} missionTitle={missionTitle} />;
+  return (
+    <TaskGrid
+      tasks={gridTasks}
+      missionFilter={missionId || null}
+      missionTitle={missionTitle}
+      workspaces={teamWorkspaces}
+      selectedWorkspaceId={wsFilter ?? null}
+    />
+  );
 }

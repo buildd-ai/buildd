@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
+import { isValidTaskId } from '@/lib/task-id';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
@@ -38,6 +39,7 @@ export default async function TaskDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  if (!isValidTaskId(id)) notFound();
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
