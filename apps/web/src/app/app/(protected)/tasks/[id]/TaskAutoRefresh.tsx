@@ -63,8 +63,8 @@ export default function TaskAutoRefresh({
       }
     };
 
-    // When a worker reports progress on this task
-    const handleWorkerProgress = (data: { worker: { taskId: string } }) => {
+    // When a worker reports progress, completes, or fails on this task
+    const handleWorkerEvent = (data: { worker: { taskId: string } }) => {
       if (data.worker?.taskId === taskId) {
         doRefresh();
       }
@@ -98,7 +98,9 @@ export default function TaskAutoRefresh({
     };
 
     channel.bind('task:claimed', handleClaimed);
-    channel.bind('worker:progress', handleWorkerProgress);
+    channel.bind('worker:progress', handleWorkerEvent);
+    channel.bind('worker:completed', handleWorkerEvent);
+    channel.bind('worker:failed', handleWorkerEvent);
     channel.bind('task:unblocked', handleTaskUnblocked);
     channel.bind('task:children_completed', handleChildrenCompleted);
     channel.bind('task:completed', handleTaskCompleted);
@@ -106,7 +108,9 @@ export default function TaskAutoRefresh({
 
     return () => {
       channel.unbind('task:claimed', handleClaimed);
-      channel.unbind('worker:progress', handleWorkerProgress);
+      channel.unbind('worker:progress', handleWorkerEvent);
+      channel.unbind('worker:completed', handleWorkerEvent);
+      channel.unbind('worker:failed', handleWorkerEvent);
       channel.unbind('task:unblocked', handleTaskUnblocked);
       channel.unbind('task:children_completed', handleChildrenCompleted);
       channel.unbind('task:completed', handleTaskCompleted);

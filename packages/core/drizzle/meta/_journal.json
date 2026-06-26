@@ -428,6 +428,20 @@
       "when": 1782966000000,
       "tag": "0060_roles_team_level",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1782980000000,
+      "tag": "0061_knowledge_graph",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1782990000000,
+      "tag": "0062_knowledge_trgm",
+      "breakpoints": true
     }
   ]
 }

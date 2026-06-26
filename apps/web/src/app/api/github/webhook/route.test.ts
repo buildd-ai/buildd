@@ -1021,5 +1021,26 @@ describe('POST /api/github/webhook', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
+
+    it('excludes drizzle/meta and lockfile noise from the line budget', async () => {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+      mockTasksFindFirst.mockReturnValue({ missionId: 'm1', title: 'Migration task' });
+      // Small real change + huge drizzle snapshot + lockfile — total would exceed limit, source lines don't
+      mockGithubApi.mockReturnValue(
+        Promise.resolve([
+          { filename: 'packages/core/db/schema.ts', additions: 5, deletions: 1 },
+          { filename: 'packages/core/drizzle/meta/0062_snapshot.json', additions: 5000, deletions: 0 },
+          { filename: 'bun.lockb', additions: 2000, deletions: 1800 },
+        ]),
+      );
+
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+
+      expect(res.status).toBe(200);
+      // Source-only lines (6) < limit (10) → should auto-merge
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
   });
 });
