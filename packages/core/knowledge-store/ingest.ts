@@ -14,6 +14,8 @@ export interface SourceFile {
   content: string;
   /** Optional base URL; chunks get `#L<startLine>` appended. */
   sourceUrl?: string;
+  /** Source timestamp (git commit time or mtime). Passed through to UpsertChunk for recency decay. */
+  sourceTs?: Date;
 }
 
 export interface IngestResult {
@@ -55,6 +57,7 @@ export function fileToChunks(
       sourceType: corpus,
       sourcePath: file.path,
       sourceUrl: file.sourceUrl ? `${file.sourceUrl}#L${piece.startLine}` : undefined,
+      sourceTs: file.sourceTs,
       metadata: {
         startLine: piece.startLine,
         endLine: piece.endLine,
