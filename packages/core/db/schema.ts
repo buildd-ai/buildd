@@ -1040,31 +1040,97 @@ export const deviceCodes = pgTable('device_codes', {
 // HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
 export const knowledgeChunks = pgTable('knowledge_chunks', {
   id: uuid('id').primaryKey().defaultRandom(),
-  // Source id (e.g. memoryId) — stable, used for idempotent upsert
   sourceId: text('source_id').notNull(),
-  // "{workspaceId}:{corpus}"
   namespace: text('namespace').notNull(),
-  // Column is plain `text`, so widening this union needs NO DB migration.
   corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'spec' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
   sourceType: text('source_type').notNull(),
   sourcePath: text('source_path'),
   sourceUrl: text('source_url'),
   content: text('content').notNull(),
-  // Separate field for BM25/tsvector search (may be title + content for memories)
   lexicalText: text('lexical_text'),
-  // pgvector embedding (voyage-4-large: 1024 dims; stored as string "[0.1,...]")
   embedding: vectorType('embedding', { dimensions: 1024 }),
-  // Model name + dim stored so re-embeds are detectable
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
-  // SHA-256 of content for idempotency — skip re-embed when unchanged
   contentHash: text('content_hash'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Phase 1: recency + supersession
+  sourceTs: timestamp('source_ts', { withTimezone: true }),
+  isCurrent: boolean('is_current').notNull().default(true),
+  supersededBy: text('superseded_by'),
 }, (t) => ({
   namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
-  // Unique per (namespace, sourceId) — enforces one chunk per source entity per namespace
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
+  entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
+}));
+
+// Phase 2: knowledge entities — canonical nodes for the entity graph.
+// workspace_id doubles as a scope id (team or workspace depending on corpus).
+export const knowledgeEntities = pgTable('knowledge_entities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: text('workspace_id').notNull(),
+  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
+  key: text('key').notNull(),
+  canonicalName: text('canonical_name').notNull(),
+  attributes: jsonb('attributes').default({}).$type<Record<string, unknown>>().notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceKindIdx: index('knowledge_entities_workspace_kind_idx').on(t.workspaceId, t.kind),
+  workspaceKeyIdx: uniqueIndex('knowledge_entities_workspace_key_idx').on(t.workspaceId, t.kind, t.key),
+}));
+
+// Phase 2: entity aliases for fuzzy resolution without LLM.
+export const entityAliases = pgTable('entity_aliases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  entityId: uuid('entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  alias: text('alias').notNull(),
+  source: text('source').notNull().default('system').$type<'scip' | 'system' | 'agent' | 'confirmed'>(),
+}, (t) => ({
+  entityAliasIdx: uniqueIndex('entity_aliases_entity_alias_idx').on(t.entityId, t.alias),
+}));
+
+// Phase 2: chunk↔entity junction — which entities does a chunk define/reference?
+export const chunkEntities = pgTable('chunk_entities', {
+  chunkSourceId: text('chunk_source_id').notNull(),
+  namespace: text('namespace').notNull(),
+  entityId: uuid('entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  role: text('role').notNull().default('mentions').$type<'defines' | 'references' | 'mentions'>(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.chunkSourceId, t.namespace, t.entityId, t.role] }),
+  entityIdx: index('chunk_entities_entity_idx').on(t.entityId),
+}));
+
+// Phase 2: unresolved entity refs — queued for auto-heal or one-tap confirm.
+export const pendingEntityRefs = pgTable('pending_entity_refs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: text('workspace_id').notNull(),
+  rawRef: text('raw_ref').notNull(),
+  kindHint: text('kind_hint'),
+  sourceChunkId: text('source_chunk_id'),
+  source: text('source').$type<'agent' | 'ingest'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedEntityId: uuid('resolved_entity_id').references(() => knowledgeEntities.id),
+}, (t) => ({
+  workspaceIdx: index('pending_entity_refs_workspace_idx').on(t.workspaceId, t.resolvedAt),
+}));
+
+// Phase 3: directed edges between entities — the knowledge graph.
+export const knowledgeEdges = pgTable('knowledge_edges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: text('workspace_id').notNull(),
+  fromEntityId: uuid('from_entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  toEntityId: uuid('to_entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  type: text('type').notNull().$type<'imports' | 'defines' | 'references' | 'produced' | 'implements' | 'supersedes' | 'references_doc' | 'relates_to' | 'outcome_of' | 'part_of'>(),
+  weight: decimal('weight', { precision: 5, scale: 4 }).notNull().default('1.0'),
+  sourceChunkId: text('source_chunk_id'),
+  rule: text('rule').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceFromIdx: index('knowledge_edges_from_idx').on(t.workspaceId, t.fromEntityId),
+  workspaceToIdx: index('knowledge_edges_to_idx').on(t.workspaceId, t.toEntityId),
+  uniqueEdge: uniqueIndex('knowledge_edges_unique_idx').on(t.workspaceId, t.fromEntityId, t.toEntityId, t.type),
 }));
 
 // Relations

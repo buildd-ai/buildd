@@ -740,7 +740,7 @@ export async function handleBuilddAction(
 
             // Mirror the completed task into the KnowledgeStore (best-effort).
             const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
-            await mirrorWorkProduct(ctx, 'task', buildTaskCard({
+            const taskChunk = buildTaskCard({
               taskId,
               title: taskData?.title ?? null,
               description: taskData?.description ?? null,
@@ -748,7 +748,11 @@ export async function handleBuilddAction(
               success: true,
               prUrl,
               missionId: taskData?.missionId ?? null,
-            }));
+            });
+            // Stamp with completion time for recency decay scoring.
+            const completedAtRaw = workerData?.completedAt ?? taskData?.completedAt;
+            if (completedAtRaw) taskChunk.sourceTs = new Date(completedAtRaw);
+            await mirrorWorkProduct(ctx, 'task', taskChunk);
           }
         } catch { /* non-fatal */ }
       }
@@ -785,14 +789,18 @@ export async function handleBuilddAction(
           taskId = workerData?.taskId ?? null;
           missionId = workerData?.task?.missionId ?? workerData?.missionId ?? null;
         } catch { /* linkage is optional */ }
-        await mirrorWorkProduct(ctx, 'pr', buildPrCard({
+        const prChunk = buildPrCard({
           prNumber: data.pr.number,
           title: data.pr.title ?? (params.title as string),
           body: (params.body as string) ?? null,
           url: data.pr.url ?? (params.prUrl as string) ?? null,
           taskId,
           missionId,
-        }));
+        });
+        // Stamp with PR creation time for recency decay scoring.
+        const prCreatedAt = data.pr.createdAt ?? data.pr.created_at;
+        if (prCreatedAt) prChunk.sourceTs = new Date(prCreatedAt);
+        await mirrorWorkProduct(ctx, 'pr', prChunk);
       } catch { /* non-fatal */ }
 
       return text(`Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);

@@ -52,6 +52,14 @@ export interface UpsertChunk {
   sourcePath?: string | null;
   sourceUrl?: string | null;
   metadata?: Record<string, unknown>;
+  /** When the source event occurred (commit time, task completion time, etc.). Phase 1+. */
+  sourceTs?: Date | null;
+  /** Agent-supplied entity refs for this chunk. Phase 2+. */
+  entities?: EntityRef[];
+  /** Agent-supplied directed relations. Phase 2+. */
+  relations?: RelationRef[];
+  /** Entity keys or source_ids this chunk supersedes. Phase 2+. */
+  supersedes?: string[];
 }
 
 export interface QueryResult {
@@ -64,6 +72,8 @@ export interface QueryResult {
   content: string;
   metadata: Record<string, unknown>;
   score: number;
+  /** Graph proximity boost (1.0 for seed chunks, ≤1.0 for expanded neighbors). Phase 3+. */
+  graphProximity?: number;
 }
 
 export interface QueryParams {
@@ -74,6 +84,10 @@ export interface QueryParams {
   };
   mode?: QueryMode;
   topK?: number;
+  /** Enable 1-hop graph expansion (Phase 3). Default true. */
+  useGraph?: boolean;
+  /** Include superseded (is_current=false) chunks. Default false. */
+  history?: boolean;
 }
 
 // ── KnowledgeStore interface ──────────────────────────────────────────────────
@@ -81,8 +95,6 @@ export interface QueryParams {
 /**
  * Swappable store interface for semantic + lexical retrieval.
  * namespace = `${workspaceId}:${corpus}` (e.g. "ws-abc123:memory").
- * Phase 1 implements memory corpus only; code + docs come in Phase 2.
- * Phase 4 will add TurbopufferStore — new class, zero call-site changes.
  */
 export interface KnowledgeStore {
   upsert(namespace: string, chunks: UpsertChunk[]): Promise<void>;
@@ -92,11 +104,80 @@ export interface KnowledgeStore {
   /**
    * Delete every chunk for a given source file (all `path#idx` chunks).
    * Used by code/docs ingestion to clean up before re-chunking a file, so a
-   * file that shrank doesn't leave orphaned tail chunks. Optional — stores that
-   * predate multi-chunk sources may omit it.
+   * file that shrank doesn't leave orphaned tail chunks.
    */
   deleteBySource?(
     namespace: string,
     selector: { sourcePath?: string; sourceType?: string },
   ): Promise<void>;
+}
+
+// ── Entity / Relation types (Phase 2+) ────────────────────────────────────────
+
+export type EntityKind =
+  | 'file'
+  | 'symbol'
+  | 'heading'
+  | 'pr'
+  | 'task'
+  | 'mission'
+  | 'wikilink'
+  | 'concept'
+  | 'feature'
+  | 'component';
+
+export interface EntityRef {
+  kind: EntityKind;
+  /** Loose name the agent wrote; resolver binds to canonical. */
+  ref: string;
+  role?: 'defines' | 'references' | 'mentions';
+}
+
+export type RelationType =
+  | 'imports'
+  | 'defines'
+  | 'references'
+  | 'produced'
+  | 'implements'
+  | 'supersedes'
+  | 'references_doc'
+  | 'relates_to'
+  | 'outcome_of'
+  | 'part_of';
+
+export interface RelationRef {
+  from: string;
+  type: RelationType;
+  to: string;
+  weight?: number;
+}
+
+// ── Edge builder types (Phase 3) ─────────────────────────────────────────────
+
+export interface EntityUpsert {
+  workspaceId: string;
+  kind: EntityKind;
+  key: string;
+  canonicalName: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface EdgeUpsert {
+  workspaceId: string;
+  fromEntityKey: string;
+  fromEntityKind: EntityKind;
+  toEntityKey: string;
+  toEntityKind: EntityKind;
+  type: RelationType;
+  weight: number;
+  sourceChunkId?: string;
+  rule: string;
+}
+
+export interface PendingRef {
+  workspaceId: string;
+  rawRef: string;
+  kindHint?: EntityKind;
+  sourceChunkId?: string;
+  source: 'agent' | 'ingest';
 }

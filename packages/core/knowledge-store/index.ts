@@ -1,4 +1,4 @@
-export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker } from './types';
+export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker, EntityRef, RelationRef, EntityKind, RelationType, EntityUpsert, EdgeUpsert, PendingRef } from './types';
 export {
   buildTaskCard,
   buildPrCard,
@@ -16,3 +16,17 @@ export { chunkText, chunkMarkdown, chunkCode } from './chunker';
 export type { ChunkOptions, ChunkPiece } from './chunker';
 export { ingestFiles, fileToChunks } from './ingest';
 export type { SourceFile, IngestResult } from './ingest';
+export { recencyDecay, applyRecencyAuthority, CORPUS_AUTHORITY, HALF_LIFE_DAYS } from './recency-authority';
+export { extractEntities } from './entity-extractor';
+export type { ExtractEntityInput } from './entity-extractor';
+export { buildEdges } from './edge-builder';
+export type { EdgeBuilderInput, EdgeBuilderOutput } from './edge-builder';
+export {
+  upsertEntity,
+  upsertAlias,
+  resolveEntity,
+  autoHealPendingRefs,
+  insertPendingRef,
+  upsertEdge,
+  upsertChunkEntity,
+} from './entity-resolver';
