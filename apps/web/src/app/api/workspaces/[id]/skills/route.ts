@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workspaces, accounts } from '@buildd/core/db/schema';
+import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -41,10 +41,16 @@ async function authenticateRequest(req: NextRequest) {
     const apiKey = authHeader?.replace('Bearer ', '') || null;
 
     if (apiKey) {
-        const account = await db.query.accounts.findFirst({
-            where: eq(accounts.apiKey, hashApiKey(apiKey)),
-        });
-        if (account) return { type: 'api' as const, account };
+        const account = await authenticateApiKey(apiKey);
+        if (account) {
+            // Skills management requires admin-level access. Worker/trigger tokens
+            // are rejected here; OAuth JWTs are always resolved as admin.
+            if (account.level !== 'admin') {
+                return { type: 'denied' as const };
+            }
+            return { type: 'api' as const, account };
+        }
+        // Invalid/unrecognized token — fall through to session auth
     }
 
     if (process.env.NODE_ENV !== 'development') {
@@ -72,7 +78,7 @@ export async function GET(
 ) {
     const { id } = await params;
     const auth = await authenticateRequest(req);
-    if (!auth) {
+    if (!auth || auth.type === 'denied') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -123,7 +129,7 @@ export async function POST(
 ) {
     const { id } = await params;
     const auth = await authenticateRequest(req);
-    if (!auth) {
+    if (!auth || auth.type === 'denied') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

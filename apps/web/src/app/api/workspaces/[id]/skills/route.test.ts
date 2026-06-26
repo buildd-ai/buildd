@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
-const mockAccountsFindFirst = mock(() => null as any);
+const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockSkillsSelect = mock(() => null as any);
@@ -18,9 +18,19 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
-// Mock api-auth
+// Mock storage + role-config (prevent aws-sdk resolution in test env)
+mock.module('@/lib/storage', () => ({
+  isStorageConfigured: () => false,
+}));
+
+mock.module('@/lib/role-config', () => ({
+  packageRoleConfig: mock(() => Promise.resolve({})),
+  uploadRoleConfig: mock(() => Promise.resolve({ configHash: 'hash', configStorageKey: 'key' })),
+}));
+
+// Mock api-auth — uses authenticateApiKey (handles both bld_* keys and OAuth JWTs)
 mock.module('@/lib/api-auth', () => ({
-  hashApiKey: (key: string) => `hashed_${key}`,
+  authenticateApiKey: mockAuthenticateApiKey,
 }));
 
 // Mock team-access
@@ -33,7 +43,6 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      accounts: { findFirst: mockAccountsFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
     },
@@ -54,7 +63,6 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { apiKey: 'apiKey', id: 'id' },
   workspaces: { id: 'id' },
   workspaceSkills: {
     id: 'id',
@@ -96,11 +104,16 @@ function createMockRequest(options: {
   return new NextRequest(url, init);
 }
 
+// Shared admin account fixture
+const adminAccount = { id: 'account-123', level: 'admin' as const, teamId: 'team-123' };
+const workerAccount = { id: 'account-456', level: 'worker' as const, teamId: 'team-123' };
+const triggerAccount = { id: 'account-789', level: 'trigger' as const, teamId: 'team-123' };
+
 describe('GET /api/workspaces/[id]/skills', () => {
   beforeEach(() => {
     process.env.NODE_ENV = 'test';
     mockGetCurrentUser.mockReset();
-    mockAccountsFindFirst.mockReset();
+    mockAuthenticateApiKey.mockReset();
     mockSkillsSelect.mockReset();
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
@@ -110,7 +123,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
   it('returns 401 when no auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
 
     const request = createMockRequest();
     const params = Promise.resolve({ id: 'ws-1' });
@@ -121,14 +134,44 @@ describe('GET /api/workspaces/[id]/skills', () => {
     expect(data.error).toBe('Unauthorized');
   });
 
-  it('returns skills list for API key auth', async () => {
+  it('returns 401 when worker-level token is used', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(workerAccount);
+
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer bld_worker' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(401);
+    const data = await response.json();
+    expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 401 when trigger-level token is used', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(triggerAccount);
+
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer bld_trigger' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(401);
+    const data = await response.json();
+    expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns skills list for admin API key auth', async () => {
     const mockSkills = [
       { id: 'skill-1', workspaceId: 'ws-1', name: 'Skill 1', slug: 'skill-1', enabled: true },
       { id: 'skill-2', workspaceId: 'ws-1', name: 'Skill 2', slug: 'skill-2', enabled: true },
     ];
 
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'hashed_bld_xxx' });
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
 
     const mockWhere = mock(() => ({
@@ -138,7 +181,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
     mockSkillsSelect.mockReturnValue({ from: mockFrom });
 
     const request = createMockRequest({
-      headers: { Authorization: 'Bearer bld_xxx' },
+      headers: { Authorization: 'Bearer bld_admin_xxx' },
     });
     const params = Promise.resolve({ id: 'ws-1' });
     const response = await GET(request, { params });
@@ -149,13 +192,41 @@ describe('GET /api/workspaces/[id]/skills', () => {
     expect(data.skills[0].id).toBe('skill-1');
   });
 
+  it('returns skills list for OAuth JWT (admin-level token)', async () => {
+    const mockSkills = [
+      { id: 'skill-1', workspaceId: 'ws-1', name: 'Skill 1', slug: 'skill-1', enabled: true },
+    ];
+
+    // OAuth JWTs are always resolved as admin by authenticateApiKey
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+
+    const mockWhere = mock(() => ({
+      orderBy: mock(() => Promise.resolve(mockSkills)),
+    }));
+    const mockFrom = mock(() => ({ where: mockWhere }));
+    mockSkillsSelect.mockReturnValue({ from: mockFrom });
+
+    // Simulate a JWT bearer (authenticateApiKey handles the JWT path)
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fake.jwt' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.skills).toHaveLength(1);
+  });
+
   it('returns skills list for session auth', async () => {
     const mockSkills = [
       { id: 'skill-1', workspaceId: 'ws-1', name: 'Skill 1', slug: 'skill-1', enabled: true },
     ];
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
 
     const mockWhere = mock(() => ({
@@ -179,7 +250,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
     ];
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
 
     const mockWhere = mock(() => ({
@@ -201,7 +272,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
 
   it('returns 404 when workspace access denied for session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(false);
 
     const request = createMockRequest();
@@ -213,13 +284,13 @@ describe('GET /api/workspaces/[id]/skills', () => {
     expect(data.error).toBe('Workspace not found');
   });
 
-  it('returns 404 when workspace access denied for API key auth', async () => {
+  it('returns 404 when workspace access denied for admin API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'hashed_bld_xxx' });
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
 
     const request = createMockRequest({
-      headers: { Authorization: 'Bearer bld_xxx' },
+      headers: { Authorization: 'Bearer bld_admin_xxx' },
     });
     const params = Promise.resolve({ id: 'ws-1' });
     const response = await GET(request, { params });
@@ -234,7 +305,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
   beforeEach(() => {
     process.env.NODE_ENV = 'test';
     mockGetCurrentUser.mockReset();
-    mockAccountsFindFirst.mockReset();
+    mockAuthenticateApiKey.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspaceSkillsFindFirst.mockReset();
     mockSkillsInsert.mockReset();
@@ -245,7 +316,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
   it('returns 401 when no auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
 
     const request = createMockRequest({
       method: 'POST',
@@ -259,9 +330,43 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(data.error).toBe('Unauthorized');
   });
 
+  it('returns 401 when worker-level token attempts to create skill', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(workerAccount);
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_worker' },
+      body: { name: 'Test Skill', content: '# Test' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await POST(request, { params });
+
+    expect(response.status).toBe(401);
+    const data = await response.json();
+    expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 401 when trigger-level token attempts to create skill', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(triggerAccount);
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_trigger' },
+      body: { name: 'Test Skill', content: '# Test' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await POST(request, { params });
+
+    expect(response.status).toBe(401);
+    const data = await response.json();
+    expect(data.error).toBe('Unauthorized');
+  });
+
   it('returns 400 when name is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
 
     const request = createMockRequest({
@@ -278,7 +383,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
   it('returns 400 when content is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
 
     const request = createMockRequest({
@@ -295,7 +400,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
   it('returns 400 when slug format is invalid', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
 
     const request = createMockRequest({
@@ -310,7 +415,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(data.error).toContain('slug must be lowercase alphanumeric');
   });
 
-  it('creates skill with valid body', async () => {
+  it('creates skill with valid body (session auth)', async () => {
     const createdSkill = {
       id: 'skill-123',
       workspaceId: 'ws-1',
@@ -322,7 +427,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null); // No existing skill
@@ -344,6 +449,73 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(data.skill.name).toBe('Test Skill');
   });
 
+  it('creates skill with admin API key auth', async () => {
+    const createdSkill = {
+      id: 'skill-123',
+      workspaceId: 'ws-1',
+      name: 'Test Skill',
+      slug: 'test-skill',
+      content: '# Test',
+      enabled: true,
+    };
+
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+
+    const mockReturning = mock(() => [createdSkill]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockSkillsInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_admin_xxx' },
+      body: { name: 'Test Skill', content: '# Test' },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await POST(request, { params });
+
+    expect(response.status).toBe(201);
+    const data = await response.json();
+    expect(data.skill.id).toBe('skill-123');
+  });
+
+  it('creates skill via OAuth JWT (admin-level connector token)', async () => {
+    const createdSkill = {
+      id: 'skill-123',
+      workspaceId: 'ws-1',
+      name: 'Builder Role',
+      slug: 'builder',
+      content: '# Builder',
+      enabled: true,
+    };
+
+    // OAuth JWT resolves to admin account in authenticateApiKey
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+
+    const mockReturning = mock(() => [createdSkill]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockSkillsInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fake.jwt' },
+      body: { name: 'Builder Role', content: '# Builder', isRole: true },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await POST(request, { params });
+
+    expect(response.status).toBe(201);
+    const data = await response.json();
+    expect(data.skill.name).toBe('Builder Role');
+  });
+
   it('updates existing skill when slug matches', async () => {
     const existingSkill = {
       id: 'skill-123',
@@ -360,7 +532,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
@@ -393,7 +565,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
@@ -416,7 +588,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
 
   it('returns 404 when workspace not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
     mockWorkspacesFindFirst.mockResolvedValue(null);
 
@@ -430,39 +602,6 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(response.status).toBe(404);
     const data = await response.json();
     expect(data.error).toBe('Workspace not found');
-  });
-
-  it('creates skill with API key auth', async () => {
-    const createdSkill = {
-      id: 'skill-123',
-      workspaceId: 'ws-1',
-      name: 'Test Skill',
-      slug: 'test-skill',
-      content: '# Test',
-      enabled: true,
-    };
-
-    mockGetCurrentUser.mockResolvedValue(null);
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'hashed_bld_xxx' });
-    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
-    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
-
-    const mockReturning = mock(() => [createdSkill]);
-    const mockValues = mock(() => ({ returning: mockReturning }));
-    mockSkillsInsert.mockReturnValue({ values: mockValues });
-
-    const request = createMockRequest({
-      method: 'POST',
-      headers: { Authorization: 'Bearer bld_xxx' },
-      body: { name: 'Test Skill', content: '# Test' },
-    });
-    const params = Promise.resolve({ id: 'ws-1' });
-    const response = await POST(request, { params });
-
-    expect(response.status).toBe(201);
-    const data = await response.json();
-    expect(data.skill.id).toBe('skill-123');
   });
 
   it('creates skill with all optional fields', async () => {
@@ -479,7 +618,7 @@ describe('POST /api/workspaces/[id]/skills', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockAccountsFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
