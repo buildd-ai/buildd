@@ -424,7 +424,20 @@ export default async function HomePage({
             {/* Right Now */}
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
-              {activeItems.length === 0 && totalTaskCount === 0 ? (
+              {activeItems.length === 0 && teamWorkspaces.length === 0 ? (
+                <div className="border border-dashed border-border-default rounded-[10px] p-5">
+                  <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
+                  <p className="text-[13px] text-text-secondary mb-4">
+                    This team doesn&rsquo;t have a workspace yet. Connect a GitHub repo to start running agents here.
+                  </p>
+                  <Link
+                    href="/app/workspaces/new"
+                    className="inline-flex items-center gap-1.5 rounded-[6px] bg-primary px-3 py-2 text-[13px] font-medium text-white hover:opacity-90 transition-opacity"
+                  >
+                    Connect a repo
+                  </Link>
+                </div>
+              ) : activeItems.length === 0 && totalTaskCount === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
