@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -24,7 +24,14 @@ function timeAgo(date: Date | string): string {
 
 export interface RoleWithActivity {
   id: string;
+  teamId: string;
   workspaceId: string | null;
+  /** "All workspaces" for team-defaults, workspace name for workspace-scoped overrides */
+  scopeLabel: string;
+  /** Count of workspace-override rows for this slug (only on team-default entries) */
+  overrideCount: number;
+  /** Workspace overrides for this slug (only populated on team-default entries) */
+  overrides: { id: string; workspaceId: string; scopeLabel: string }[];
   slug: string;
   name: string;
   description: string | null;
@@ -74,28 +81,25 @@ export default async function TeamPage() {
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
 
-  // Get all enabled roles: workspace-override OR team-default OR account-level (legacy)
+  // Get workspace name map for scope labels
+  const workspaceList = await db.query.workspaces.findMany({
+    where: inArray(workspaces.id, wsIds),
+    columns: { id: true, name: true },
+  });
+  const wsNameMap = new Map(workspaceList.map(w => [w.id, w.name]));
+
+  // Get ALL role rows (both team-defaults AND workspace overrides) — no dedup
   const allSkillsRaw = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.isRole, true),
       or(
-        inArray(workspaceSkills.workspaceId, wsIds),
+        wsIds.length > 0 ? inArray(workspaceSkills.workspaceId, wsIds) : undefined,
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
-  });
-  // Workspace-scoped rows take priority over team-level defaults
-  const sortedSkillsRaw = [...allSkillsRaw].sort((a, b) =>
-    (a.workspaceId !== null ? 0 : 1) - (b.workspaceId !== null ? 0 : 1)
-  );
-  const seenSlugs = new Set<string>();
-  const allSkills = sortedSkillsRaw.filter(s => {
-    if (seenSlugs.has(s.slug)) return false;
-    seenSlugs.add(s.slug);
-    return true;
   });
 
   // Get historical task counts per role (last 30 days)
@@ -148,11 +152,9 @@ export default async function TeamPage() {
   for (const w of activeWorkers) {
     const task = w.task as any;
     if (!task) continue;
-
     const roleSlug = task.roleSlug as string | null;
     const skillSlugs = (task.context as any)?.skillSlugs as string[] | undefined;
     const slugs = roleSlug ? [roleSlug] : (skillSlugs || []);
-
     for (const slug of slugs) {
       if (!roleActivity[slug]) {
         roleActivity[slug] = {
@@ -168,25 +170,78 @@ export default async function TeamPage() {
     }
   }
 
-  // Build role list with activity
-  const roles: RoleWithActivity[] = allSkills.map(skill => ({
-    id: skill.id,
-    workspaceId: skill.workspaceId,
-    slug: skill.slug,
-    name: skill.name,
-    description: skill.description,
-    color: skill.color,
-    model: skill.model,
-    allowedTools: skill.allowedTools as string[],
-    canDelegateTo: skill.canDelegateTo as string[],
-    enabled: skill.enabled,
-    isRole: skill.isRole,
-    stats: roleStats[skill.slug] || null,
-    currentTask: roleActivity[skill.slug] || null,
-  }));
+  // Separate team defaults and workspace overrides
+  const teamDefaults = allSkillsRaw.filter(s => s.workspaceId === null);
+  const wsOverrides = allSkillsRaw.filter(s => s.workspaceId !== null);
 
-  const activeRoles = roles.filter(r => r.currentTask);
-  const idleRoles = roles.filter(r => !r.currentTask);
+  // Build override count map: slug → list of overrides
+  const overridesBySlug = new Map<string, { id: string; workspaceId: string; scopeLabel: string }[]>();
+  for (const o of wsOverrides) {
+    const label = o.workspaceId ? (wsNameMap.get(o.workspaceId) || o.workspaceId) : o.workspaceId!;
+    if (!overridesBySlug.has(o.slug)) overridesBySlug.set(o.slug, []);
+    overridesBySlug.get(o.slug)!.push({ id: o.id, workspaceId: o.workspaceId!, scopeLabel: label });
+  }
+
+  // Build deduplicated role list for display:
+  // - Team defaults shown first with override counts
+  // - Workspace-specific roles that have no team default shown separately
+  const seenSlugsWithDefault = new Set(teamDefaults.map(d => d.slug));
+
+  const teamDefaultRoles: RoleWithActivity[] = teamDefaults.map(skill => {
+    const overrides = overridesBySlug.get(skill.slug) || [];
+    return {
+      id: skill.id,
+      teamId: skill.teamId,
+      workspaceId: skill.workspaceId,
+      scopeLabel: 'All workspaces',
+      overrideCount: overrides.length,
+      overrides,
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      color: skill.color,
+      model: skill.model,
+      allowedTools: skill.allowedTools as string[],
+      canDelegateTo: skill.canDelegateTo as string[],
+      enabled: skill.enabled,
+      isRole: skill.isRole,
+      stats: roleStats[skill.slug] || null,
+      currentTask: roleActivity[skill.slug] || null,
+    };
+  });
+
+  // Workspace-scoped roles that have no team-level default (legacy or standalone overrides)
+  const wsOnlyRoles: RoleWithActivity[] = wsOverrides
+    .filter(s => !seenSlugsWithDefault.has(s.slug))
+    .reduce((acc, skill) => {
+      // Dedup by slug (workspace override wins, same as before)
+      if (!acc.find(r => r.slug === skill.slug)) {
+        acc.push({
+          id: skill.id,
+          teamId: skill.teamId,
+          workspaceId: skill.workspaceId,
+          scopeLabel: skill.workspaceId ? (wsNameMap.get(skill.workspaceId) || skill.workspaceId) : 'Unknown',
+          overrideCount: 0,
+          overrides: [],
+          slug: skill.slug,
+          name: skill.name,
+          description: skill.description,
+          color: skill.color,
+          model: skill.model,
+          allowedTools: skill.allowedTools as string[],
+          canDelegateTo: skill.canDelegateTo as string[],
+          enabled: skill.enabled,
+          isRole: skill.isRole,
+          stats: roleStats[skill.slug] || null,
+          currentTask: roleActivity[skill.slug] || null,
+        });
+      }
+      return acc;
+    }, [] as RoleWithActivity[]);
+
+  const allRoles = [...teamDefaultRoles, ...wsOnlyRoles];
+  const activeRoles = allRoles.filter(r => r.currentTask);
+  const idleRoles = allRoles.filter(r => !r.currentTask);
 
   return (
     <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
@@ -195,6 +250,7 @@ export default async function TeamPage() {
           activeRoles={JSON.parse(JSON.stringify(activeRoles))}
           idleRoles={JSON.parse(JSON.stringify(idleRoles))}
           workspaceIds={wsIds}
+          teamId={teamIds[0] || null}
         />
       </div>
     </main>
