@@ -411,6 +411,6 @@ export class PgVectorStore implements KnowledgeStore {
           sourceTs,
         } satisfies QueryResult;
       })
-      .filter((r): r is QueryResult => r !== null);
+      .filter((r): r is NonNullable<typeof r> => r !== null);
   }
 }
