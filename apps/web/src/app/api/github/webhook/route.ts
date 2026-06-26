@@ -859,9 +859,14 @@ async function evaluateAutoMergeSafety(
     }
   }
 
-  const totalLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
+  const NOISE_PATTERNS = [/^packages\/core\/drizzle\/meta\//, /\.lock$/, /^bun\.lockb$/];
+  const sourceFiles = files.filter((f) => !NOISE_PATTERNS.some((p) => p.test(f.filename)));
+  const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
   if (totalLines > maxLines) {
-    return { ok: false, reason: `diff size ${totalLines} lines > limit ${maxLines}` };
+    return {
+      ok: false,
+      reason: `diff size ${totalLines} source lines > limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
+    };
   }
 
   return { ok: true };
