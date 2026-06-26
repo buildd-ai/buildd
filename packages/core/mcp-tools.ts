@@ -114,7 +114,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion? } — if error present, marks task as failed. nextSuggestion hints what the orchestrator should consider next. workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations/supersedes are optional Layer 2 metadata; response includes entityBinding { bound, ambiguous, unresolved }. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) }',
@@ -164,7 +164,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     context: '{ project? } — get markdown-formatted memory context for agent injection',
     search: '{ query?, type?, files? (array), project?, limit?, offset? }',
-    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source? }',
+    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, entities? (EntityRef[] — e.g. [{kind:"feature",ref:"knowledge graph retrieval"}]), relations? (RelationRef[]), supersedes? (string[]) } — response includes entityBinding { bound, ambiguous, unresolved }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
@@ -397,6 +397,54 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
 }
 
 /**
+ * Best-effort entity binding after a chunk is indexed.
+ *
+ * Runs entity extraction on the chunk content, resolves agent-supplied entity
+ * refs, and persists chunk_entities + knowledge_edges. Returns EntityBinding
+ * for caller feedback; all errors are swallowed so entity failure never blocks
+ * the underlying action.
+ */
+async function processEntityRefs(
+  workspaceId: string,
+  chunkSourceId: string,
+  namespace: string,
+  chunkContent: string,
+  corpus: string,
+  sourcePath: string | null | undefined,
+  metadata: Record<string, unknown> | undefined,
+  agentRefs: EntityRef[] | undefined,
+  agentRelations: RelationRef[] | undefined,
+): Promise<EntityBinding> {
+  try {
+    const extracted = extractEntities({
+      content: chunkContent,
+      sourcePath: sourcePath ?? undefined,
+      metadata,
+      corpus,
+    });
+
+    const result = await resolveAndPersistEntities({
+      workspaceId,
+      chunkSourceId,
+      namespace,
+      extracted,
+      agentRefs,
+      agentRelations,
+      source: 'mcp',
+    });
+
+    // Best-effort graph edges from agent relations
+    if (agentRelations && agentRelations.length > 0) {
+      await buildAgentRelationEdges(workspaceId, agentRelations, chunkSourceId).catch(() => {});
+    }
+
+    return result.binding;
+  } catch {
+    return { bound: 0, ambiguous: [], unresolved: [] };
+  }
+}
+
+/**
  * Best-effort mirror of an agent work-product "card" into the KnowledgeStore.
  *
  * Mirrors the memory-mirroring pattern from `handleMemoryAction`: resolve the
@@ -610,7 +658,31 @@ export async function handleBuilddAction(
         openPRsSection = `\n\n## Open PRs in this workspace\nThese PRs are from other agents working in the same repo. Avoid modifying the same files if possible, or rebase on top of their branches.\n${prLines.join('\n')}`;
       }
 
-      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${openPRsSection}${memorySection}\n\nUse the worker ID to report progress and completion.`);
+      // Entity catalog: inject known file entities for files the task touches.
+      // Agents use this to pick real entity names instead of inventing strings.
+      let entityCatalogSection = '';
+      if (ctx.knowledgeStore && wsId) {
+        try {
+          const { db } = await import('./db/index');
+          const { sql: drizzleSql } = await import('drizzle-orm');
+          const taskDesc = workers[0]?.task?.description ?? '';
+          // Pull up to 20 recently-seen file entities for this workspace
+          const entityRes = await db.execute(drizzleSql`
+            SELECT kind, key, canonical_name
+            FROM knowledge_entities
+            WHERE workspace_id = ${wsId} AND kind = 'file'
+            ORDER BY last_seen_at DESC
+            LIMIT 20
+          `);
+          const fileEntities = entityRes.rows as Array<{ kind: string; key: string; canonical_name: string }>;
+          if (fileEntities.length > 0) {
+            const catalog = fileEntities.map(e => `  - file: \`${e.key}\``).join('\n');
+            entityCatalogSection = `\n\n## Entity Catalog (touched files)\nWhen saving memories or completing this task, use these exact entity refs:\n${catalog}\nUse kind="file" and ref=<key> for file entities. SCIP symbols and other kinds are resolved automatically.`;
+          }
+        } catch { /* entity catalog is non-fatal */ }
+      }
+
+      return text(`Claimed ${workers.length} task(s):\n\n${claimed}${openPRsSection}${memorySection}${entityCatalogSection}\n\nUse the worker ID to report progress and completion.`);
     }
 
     case 'update_progress': {
@@ -684,6 +756,7 @@ export async function handleBuilddAction(
       }
 
       let result: any;
+      let entityBinding: EntityBinding | null = null;
       try {
         result = await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
@@ -740,7 +813,7 @@ export async function handleBuilddAction(
 
             // Mirror the completed task into the KnowledgeStore (best-effort).
             const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
-            await mirrorWorkProduct(ctx, 'task', buildTaskCard({
+            const taskCard = buildTaskCard({
               taskId,
               title: taskData?.title ?? null,
               description: taskData?.description ?? null,
@@ -748,12 +821,41 @@ export async function handleBuilddAction(
               success: true,
               prUrl,
               missionId: taskData?.missionId ?? null,
-            }));
+            });
+            await mirrorWorkProduct(ctx, 'task', taskCard);
+
+            // Layer 2: bind entity refs and build edges (best-effort)
+            const wsId = ctx.workspaceId ?? await ctx.getWorkspaceId();
+            if (wsId && ctx.knowledgeStore) {
+              const ns = buildNamespace(wsId, 'task');
+              entityBinding = await processEntityRefs(
+                wsId, taskCard.id, ns,
+                taskCard.content, 'task', null,
+                { taskId, missionId: taskData?.missionId ?? null, prNumber: prUrl ? undefined : undefined },
+                params.entities as EntityRef[] | undefined,
+                params.relations as RelationRef[] | undefined,
+              );
+              // outcome_of edge: task → mission
+              if (taskData?.missionId) {
+                await buildOutcomeOfEdge(wsId, taskId, taskData.missionId, taskCard.id).catch(() => {});
+              }
+            }
           }
         } catch { /* non-fatal */ }
       }
 
-      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}`);
+      let entityBindingText = '';
+      if (entityBinding && (entityBinding.bound > 0 || entityBinding.ambiguous.length > 0 || entityBinding.unresolved.length > 0)) {
+        entityBindingText = `\n\nEntity binding: ${entityBinding.bound} bound`;
+        if (entityBinding.ambiguous.length > 0) {
+          entityBindingText += `, ${entityBinding.ambiguous.length} ambiguous (${entityBinding.ambiguous.map(a => a.ref).join(', ')})`;
+        }
+        if (entityBinding.unresolved.length > 0) {
+          entityBindingText += `, ${entityBinding.unresolved.length} unresolved`;
+        }
+      }
+
+      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}${entityBindingText}`);
     }
 
     case 'create_pr': {
@@ -2456,7 +2558,7 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
-import type { KnowledgeStore, Embedder, Corpus, UpsertChunk } from './knowledge-store/types';
+import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import {
   buildTaskCard,
@@ -2465,6 +2567,9 @@ import {
   buildPlanCard,
   renderPlanText,
 } from './knowledge-store/cards';
+import { extractEntities, toEntityRefs } from './knowledge-store/entity-extractor';
+import { resolveAndPersistEntities, upsertEntity, upsertAlias } from './knowledge-store/entity-resolver';
+import { buildOutcomeOfEdge, buildAgentRelationEdges } from './knowledge-store/edge-builder';
 
 // Default spec-sync namespace. Used by both spec_compare (admin dev tool) and
 // query_knowledge(corpus:code|docs) which reads from the same index.
@@ -2577,6 +2682,7 @@ export async function handleMemoryAction(
 
       // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
       // belong to a team, not a workspace).
+      let memEntityBinding: EntityBinding | null = null;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
@@ -2589,9 +2695,21 @@ export async function handleMemoryAction(
           sourceUrl: `/app/memory/${m.id}`,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
         }]).catch(() => {}); // Best-effort — don't fail the memory save if indexing fails
+
+        // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
+        memEntityBinding = await processEntityRefs(
+          ctx.teamId, m.id, ns,
+          `${m.title}\n\n${m.content}`, 'memory', null,
+          { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
+          params.entities as EntityRef[] | undefined,
+          params.relations as RelationRef[] | undefined,
+        );
       }
 
-      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
+      const bindingStr = memEntityBinding && memEntityBinding.bound > 0
+        ? ` | ${memEntityBinding.bound} entities bound${memEntityBinding.ambiguous.length > 0 ? `, ${memEntityBinding.ambiguous.length} ambiguous` : ''}`
+        : '';
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}`);
     }
 
     case 'get': {
@@ -2626,6 +2744,7 @@ export async function handleMemoryAction(
       const data = await memoryClient.update(params.id as string, updateFields);
 
       // Mirror update into KnowledgeStore (team-scoped)
+      let updateEntityBinding: EntityBinding | null = null;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
@@ -2638,9 +2757,21 @@ export async function handleMemoryAction(
           sourceUrl: `/app/memory/${m.id}`,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
         }]).catch(() => {});
+
+        // Layer 2: re-bind entity refs on update
+        updateEntityBinding = await processEntityRefs(
+          ctx.teamId, m.id, ns,
+          `${m.title}\n\n${m.content}`, 'memory', null,
+          { memoryId: m.id, type: m.type },
+          params.entities as EntityRef[] | undefined,
+          params.relations as RelationRef[] | undefined,
+        );
       }
 
-      return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}`);
+      const updateBindingStr = updateEntityBinding && updateEntityBinding.bound > 0
+        ? ` | ${updateEntityBinding.bound} entities bound`
+        : '';
+      return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${updateBindingStr}`);
     }
 
     case 'delete': {

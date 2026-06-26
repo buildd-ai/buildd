@@ -43,6 +43,54 @@ export type Corpus =
   | 'session';
 export type QueryMode = 'hybrid' | 'vector' | 'lexical';
 
+// ── Entity types (Layer 2) ────────────────────────────────────────────────────
+
+export type EntityKind =
+  | 'file'
+  | 'symbol'
+  | 'heading'
+  | 'pr'
+  | 'task'
+  | 'mission'
+  | 'wikilink'
+  | 'concept'
+  | 'feature'
+  | 'component';
+
+export type EdgeType =
+  | 'imports'
+  | 'defines'
+  | 'references'
+  | 'produced'
+  | 'implements'
+  | 'supersedes'
+  | 'references_doc'
+  | 'relates_to'
+  | 'outcome_of'
+  | 'part_of';
+
+/** Agent-supplied entity reference (loose name; resolved to canonical by the resolver). */
+export interface EntityRef {
+  kind: EntityKind;
+  ref: string;
+  role?: 'defines' | 'references' | 'mentions';
+}
+
+/** Agent-supplied directed relation between two loose entity refs. */
+export interface RelationRef {
+  from: string;
+  type: EdgeType;
+  to: string;
+  weight?: number;
+}
+
+/** Resolver outcome returned to callers of resolveEntities(). */
+export interface EntityBinding {
+  bound: number;
+  ambiguous: Array<{ ref: string; candidates: string[] }>;
+  unresolved: string[];
+}
+
 export interface UpsertChunk {
   id: string;
   content: string;
@@ -52,6 +100,14 @@ export interface UpsertChunk {
   sourcePath?: string | null;
   sourceUrl?: string | null;
   metadata?: Record<string, unknown>;
+  /** Layer 1: source event timestamp (commit time, completedAt, etc.). */
+  sourceTs?: Date | null;
+  /** Layer 2: entity refs to bind to this chunk at ingest time. */
+  entities?: EntityRef[];
+  /** Layer 2: directed relations to assert from this chunk. */
+  relations?: RelationRef[];
+  /** Layer 2: entity keys / source_ids this chunk supersedes. */
+  supersedes?: string[];
 }
 
 export interface QueryResult {

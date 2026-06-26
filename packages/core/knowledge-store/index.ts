@@ -1,4 +1,4 @@
-export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker } from './types';
+export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker, EntityKind, EdgeType, EntityRef, RelationRef, EntityBinding } from './types';
 export {
   buildTaskCard,
   buildPrCard,
@@ -16,3 +16,8 @@ export { chunkText, chunkMarkdown, chunkCode } from './chunker';
 export type { ChunkOptions, ChunkPiece } from './chunker';
 export { ingestFiles, fileToChunks } from './ingest';
 export type { SourceFile, IngestResult } from './ingest';
+export { extractEntities, toEntityRefs, extractFromScipSymbols, runScipExtraction } from './entity-extractor';
+export type { ExtractedEntity, ExtractionInput, ScipSymbol } from './entity-extractor';
+export { resolveAndPersistEntities, upsertEntity, upsertAlias, upsertChunkEntity, upsertExtractedEntities } from './entity-resolver';
+export type { EntityUpsertInput, ResolveEntitiesInput, ResolveEntitiesOutput } from './entity-resolver';
+export { upsertEdge, buildScipEdges, buildImplementsEdges, buildPrProducedEdges, buildOutcomeOfEdge, buildAgentRelationEdges } from './edge-builder';

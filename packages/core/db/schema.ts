@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, real, index, uniqueIndex, primaryKey, bigint, pgEnum, customType
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -1060,11 +1060,100 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   // SHA-256 of content for idempotency — skip re-embed when unchanged
   contentHash: text('content_hash'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Layer 1: recency + supersession signals
+  sourceTs: timestamp('source_ts', { withTimezone: true }),
+  isCurrent: boolean('is_current').notNull().default(true),
+  supersededBy: text('superseded_by'),
 }, (t) => ({
   namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
   // Unique per (namespace, sourceId) — enforces one chunk per source entity per namespace
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
+  // Recency query index: is_current + source_ts descending per namespace
+  entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
+}));
+
+// ── Layer 2: Entity tables ───────────────────────────────────────────────────
+
+// Canonical entities extracted deterministically from code/docs/task/memory chunks.
+// pg_trgm GIN indexes (key_trgm, alias_trgm) are added in the migration SQL
+// because drizzle-kit doesn't support GIN on custom-op-class columns.
+export const knowledgeEntities = pgTable('knowledge_entities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // workspace_id doubles as team_id for memory-scoped entities (see §11 Q3)
+  workspaceId: text('workspace_id').notNull(),
+  // file|symbol|heading|pr|task|mission|concept|feature|component|wikilink
+  kind: text('kind').notNull(),
+  // stable, unique per (workspace_id, kind) — e.g. repo-relative path for files
+  key: text('key').notNull(),
+  canonicalName: text('canonical_name').notNull(),
+  attributes: jsonb('attributes').notNull().default({}).$type<Record<string, unknown>>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  workspaceKindIdx: index('knowledge_entities_workspace_kind_idx').on(t.workspaceId, t.kind),
+  // Unique entity per (workspace, kind, key)
+  uniqueEntityIdx: uniqueIndex('knowledge_entities_unique_idx').on(t.workspaceId, t.kind, t.key),
+}));
+
+// Aliases for entity resolution: SCIP monikers, basenames, class names, confirmed refs.
+export const entityAliases = pgTable('entity_aliases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  entityId: uuid('entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  alias: text('alias').notNull(),
+  // 'scip'|'system'|'agent'|'confirmed'
+  source: text('source').notNull().default('system'),
+}, (t) => ({
+  uniqueAliasIdx: uniqueIndex('entity_aliases_unique_idx').on(t.entityId, t.alias),
+  // pg_trgm GIN index on alias column — added in migration SQL
+}));
+
+// Junction table linking chunks to their extracted/resolved entities.
+export const chunkEntities = pgTable('chunk_entities', {
+  chunkSourceId: text('chunk_source_id').notNull(),
+  namespace: text('namespace').notNull(),
+  entityId: uuid('entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  // 'defines'|'references'|'mentions'
+  role: text('role').notNull().default('mentions'),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.chunkSourceId, t.namespace, t.entityId, t.role] }),
+  entityIdx: index('chunk_entities_entity_idx').on(t.entityId),
+}));
+
+// Unresolved entity refs from agent-supplied metadata, queued for auto-heal or confirm.
+export const pendingEntityRefs = pgTable('pending_entity_refs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: text('workspace_id').notNull(),
+  rawRef: text('raw_ref').notNull(),
+  kindHint: text('kind_hint'),
+  sourceChunkId: text('source_chunk_id'),
+  source: text('source'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedEntityId: uuid('resolved_entity_id').references(() => knowledgeEntities.id),
+}, (t) => ({
+  workspaceIdx: index('pending_entity_refs_workspace_idx').on(t.workspaceId, t.resolvedAt),
+}));
+
+// ── Layer 3: Graph edges ─────────────────────────────────────────────────────
+
+// Directed edges between entities built deterministically from SCIP, path conventions,
+// PR diffs, and agent-asserted relations.
+export const knowledgeEdges = pgTable('knowledge_edges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: text('workspace_id').notNull(),
+  fromEntityId: uuid('from_entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  toEntityId: uuid('to_entity_id').notNull().references(() => knowledgeEntities.id, { onDelete: 'cascade' }),
+  // imports|defines|references|produced|implements|supersedes|references_doc|relates_to|outcome_of|part_of
+  type: text('type').notNull(),
+  weight: real('weight').notNull().default(1.0),
+  sourceChunkId: text('source_chunk_id'),
+  rule: text('rule').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqueEdgeIdx: uniqueIndex('knowledge_edges_unique_idx').on(t.workspaceId, t.fromEntityId, t.toEntityId, t.type),
+  fromIdx: index('knowledge_edges_from_idx').on(t.workspaceId, t.fromEntityId),
+  toIdx: index('knowledge_edges_to_idx').on(t.workspaceId, t.toEntityId),
 }));
 
 // Relations

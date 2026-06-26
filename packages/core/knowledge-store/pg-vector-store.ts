@@ -98,11 +98,14 @@ export class PgVectorStore implements KnowledgeStore {
       const contentHash = sha256(chunk.content);
       const lexicalText = chunk.lexicalText ?? chunk.content;
 
+      const sourceTs = chunk.sourceTs ?? null;
+
       if (embedding) {
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, embedding, embedding_model, metadata, content_hash, updated_at)
+             content, lexical_text, embedding, embedding_model, metadata, content_hash,
+             updated_at, source_ts)
           VALUES
             (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
              ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
@@ -110,30 +113,31 @@ export class PgVectorStore implements KnowledgeStore {
              ${vectorToString(embedding)}::vector,
              ${activeEmbedder!.model},
              ${JSON.stringify(chunk.metadata ?? {})}::jsonb,
-             ${contentHash}, NOW())
+             ${contentHash}, NOW(), ${sourceTs})
           ON CONFLICT (namespace, source_id) DO UPDATE SET
-            content       = EXCLUDED.content,
-            lexical_text  = EXCLUDED.lexical_text,
-            embedding     = EXCLUDED.embedding,
+            content         = EXCLUDED.content,
+            lexical_text    = EXCLUDED.lexical_text,
+            embedding       = EXCLUDED.embedding,
             embedding_model = EXCLUDED.embedding_model,
-            metadata      = EXCLUDED.metadata,
-            content_hash  = EXCLUDED.content_hash,
-            source_path   = EXCLUDED.source_path,
-            source_url    = EXCLUDED.source_url,
-            updated_at    = NOW()
+            metadata        = EXCLUDED.metadata,
+            content_hash    = EXCLUDED.content_hash,
+            source_path     = EXCLUDED.source_path,
+            source_url      = EXCLUDED.source_url,
+            updated_at      = NOW(),
+            source_ts       = COALESCE(EXCLUDED.source_ts, knowledge_chunks.source_ts)
         `);
       } else {
         // No embedder — store text-only (lexical search will still work)
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, metadata, content_hash, updated_at)
+             content, lexical_text, metadata, content_hash, updated_at, source_ts)
           VALUES
             (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
              ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
              ${chunk.content}, ${lexicalText},
              ${JSON.stringify(chunk.metadata ?? {})}::jsonb,
-             ${contentHash}, NOW())
+             ${contentHash}, NOW(), ${sourceTs})
           ON CONFLICT (namespace, source_id) DO UPDATE SET
             content      = EXCLUDED.content,
             lexical_text = EXCLUDED.lexical_text,
@@ -141,7 +145,8 @@ export class PgVectorStore implements KnowledgeStore {
             content_hash = EXCLUDED.content_hash,
             source_path  = EXCLUDED.source_path,
             source_url   = EXCLUDED.source_url,
-            updated_at   = NOW()
+            updated_at   = NOW(),
+            source_ts    = COALESCE(EXCLUDED.source_ts, knowledge_chunks.source_ts)
         `);
       }
     }
