@@ -190,6 +190,8 @@ export interface LocalWorker {
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
   lastAssistantMessage?: string;
+  // Set after the first loop-guard nudge is injected so we don't double-send
+  loopNudgeSent?: boolean;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;

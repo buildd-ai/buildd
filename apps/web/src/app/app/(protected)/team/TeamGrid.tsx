@@ -7,6 +7,7 @@ interface Props {
   activeRoles: RoleWithActivity[];
   idleRoles: RoleWithActivity[];
   workspaceIds: string[];
+  teamId: string | null;
 }
 
 function RoleAvatar({ name, color, size = 40 }: { name: string; color: string; size?: number }) {
@@ -43,7 +44,45 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
+/** Scope pill — "All workspaces" (team-default) or workspace name (override) */
+function ScopeBadge({ scopeLabel, workspaceId }: { scopeLabel: string; workspaceId: string | null }) {
+  const isTeamDefault = workspaceId === null;
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded ${
+      isTeamDefault
+        ? 'bg-accent-text/10 text-accent-text'
+        : 'bg-surface-3 text-text-muted'
+    }`}>
+      {isTeamDefault ? (
+        <>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+          {scopeLabel}
+        </>
+      ) : (
+        <>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <polyline points="9,22 9,12 15,12 15,22" />
+          </svg>
+          {scopeLabel}
+        </>
+      )}
+    </span>
+  );
+}
+
+/** Returns the edit URL for a role — team-level roles use /app/team/[slug]/settings */
+function editUrl(role: RoleWithActivity, firstWsId?: string): string {
+  if (role.workspaceId) {
+    return `/app/workspaces/${role.workspaceId}/skills/${role.id}`;
+  }
+  // Team-level role editor
+  return `/app/team/${role.slug}/settings`;
+}
+
+function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId?: string }) {
   const borderColor = role.currentTask?.workerStatus === 'waiting_input'
     ? 'var(--status-warning)'
     : 'var(--status-success)';
@@ -65,9 +104,21 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
               </span>
             )}
           </div>
-          <div className="text-[12px] text-text-muted truncate">{role.description || role.slug}</div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-[12px] text-text-muted truncate">{role.description || role.slug}</span>
+          </div>
         </div>
         {role.currentTask && <StatusBadge status={role.currentTask.workerStatus} />}
+      </div>
+
+      {/* Scope + overrides */}
+      <div className="flex items-center gap-2 mb-3">
+        <ScopeBadge scopeLabel={role.scopeLabel} workspaceId={role.workspaceId} />
+        {role.overrideCount > 0 && (
+          <span className="text-[10px] text-text-muted">
+            +{role.overrideCount} override{role.overrideCount !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
 
       {role.currentTask && (
@@ -114,6 +165,13 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
       <div className="flex-1 min-w-0">
         <span className="text-[13px] font-medium text-text-primary truncate block">{role.name}</span>
       </div>
+      {/* Scope badge */}
+      <ScopeBadge scopeLabel={role.scopeLabel} workspaceId={role.workspaceId} />
+      {role.overrideCount > 0 && (
+        <span className="text-[10px] text-text-muted shrink-0">
+          +{role.overrideCount}
+        </span>
+      )}
       {role.model && (
         <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
           {role.model}
@@ -128,8 +186,9 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
   );
 }
 
-export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
+export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId }: Props) {
   const totalRoles = activeRoles.length + idleRoles.length;
+  const firstWsId = workspaceIds[0];
 
   return (
     <div>
@@ -146,13 +205,16 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
             </span>
           )}
         </div>
-        {workspaceIds.length > 0 && (
-          <Link
-            href={`/app/workspaces/${workspaceIds[0]}/skills?new=1`}
-            className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md text-sm font-medium transition-colors"
-          >
-            + New Role
-          </Link>
+        {/* New Role — creates a team-level role by default */}
+        {(teamId || firstWsId) && (
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/app/team/new`}
+              className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md text-sm font-medium transition-colors"
+            >
+              + New Role
+            </Link>
+          </div>
         )}
       </div>
 
@@ -161,9 +223,9 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
           <p className="text-[15px] text-text-secondary mb-3">
             No roles configured yet. Create a role to define agent personas with specific models, tools, and delegation rules.
           </p>
-          {workspaceIds.length > 0 && (
+          {(teamId || firstWsId) && (
             <Link
-              href={`/app/workspaces/${workspaceIds[0]}/skills?new=1`}
+              href={`/app/team/new`}
               className="inline-flex px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md text-sm font-medium"
             >
               + New Role
@@ -177,7 +239,7 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds }: Props) {
             <div className="mb-8">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {activeRoles.map((role) => (
-                  <ActiveRoleCard key={role.id} role={role} />
+                  <ActiveRoleCard key={role.id} role={role} firstWsId={firstWsId} />
                 ))}
               </div>
             </div>

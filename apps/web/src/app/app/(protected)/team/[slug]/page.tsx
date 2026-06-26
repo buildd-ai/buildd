@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workers, tasks, missions, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, or, inArray, desc, sql, count } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, desc, sql, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -75,16 +75,22 @@ export default async function RoleProfilePage({
   });
   const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
 
-  // Find role by slug
+  // Get user's team IDs for team-level role lookup
+  const { getUserTeamIds } = await import('@/lib/team-access');
+  const teamIds = await getUserTeamIds(user.id);
+
+  // Find role by slug — prefer workspace-override, fall back to team default
   const role = await db.query.workspaceSkills.findFirst({
     where: and(
       eq(workspaceSkills.slug, slug),
       eq(workspaceSkills.isRole, true),
       or(
-        inArray(workspaceSkills.workspaceId, wsIds),
+        wsIds.length > 0 ? inArray(workspaceSkills.workspaceId, wsIds) : undefined,
+        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
     ),
+    orderBy: [sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`],
   });
 
   if (!role) notFound();
@@ -255,7 +261,10 @@ export default async function RoleProfilePage({
             )}
           </div>
           <Link
-            href={`/app/workspaces/${role.workspaceId}/skills/${role.id}`}
+            href={role.workspaceId
+              ? `/app/workspaces/${role.workspaceId}/skills/${role.id}`
+              : `/app/team/${role.slug}/settings`
+            }
             className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary border border-border-default rounded-md hover:bg-surface-2 transition-colors shrink-0"
           >
             Edit Config

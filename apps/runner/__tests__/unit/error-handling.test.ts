@@ -126,6 +126,7 @@ mock.module('fs', () => ({
   readdirSync: () => [],
   appendFileSync: () => {},
   statSync: () => ({ size: 0, mtimeMs: 0 }),
+  copyFileSync: () => {},
 }));
 
 // Mock worker-store
@@ -244,22 +245,28 @@ describe('Error Handling', () => {
 
   describe('Abort Scenarios', () => {
     test('loop detection abort: sets worker to error with reason', async () => {
-      // SDK emits a series of identical tool_use calls that trigger loop detection
+      // Use a non-benign mutating Bash command (not on the cd/ls/grep/git-diff exclusion list).
+      // Abort threshold = 2 × MAX_IDENTICAL_TOOL_CALLS (5) = 10 identical calls.
       const identicalToolUse = {
         type: 'assistant',
         message: {
           content: [{
             type: 'tool_use',
             id: 'toolu_loop',
-            name: 'Read',
-            input: { file_path: '/same/file.ts' },
+            name: 'Bash',
+            input: { command: 'touch /tmp/buildd-abort-test.txt' },
           }],
         },
       };
 
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-loop' },
-        // 5 identical Read calls → triggers MAX_IDENTICAL_TOOL_CALLS
+        // 10 identical non-benign Bash calls → hits 2×MAX_IDENTICAL_TOOL_CALLS abort threshold
+        identicalToolUse,
+        identicalToolUse,
+        identicalToolUse,
+        identicalToolUse,
+        identicalToolUse,
         identicalToolUse,
         identicalToolUse,
         identicalToolUse,
