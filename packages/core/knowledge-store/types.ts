@@ -181,3 +181,9 @@ export interface PendingRef {
   sourceChunkId?: string;
   source: 'agent' | 'ingest';
 }
+
+export interface EntityBinding {
+  bound: number;
+  ambiguous: Array<{ ref: string; candidates: string[] }>;
+  unresolved: string[];
+}

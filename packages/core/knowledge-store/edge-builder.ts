@@ -295,3 +295,87 @@ export function buildEdges(input: EdgeBuilderInput): EdgeBuilderOutput {
     pendingRefs,
   };
 }
+
+// ── DB-backed async edge writers ──────────────────────────────────────────────
+// All DB access is lazy (dynamic imports) so pure-function tests for buildEdges
+// don't pull in drizzle-orm or the DB client at module load time.
+
+async function findEntityId(
+  workspaceId: string,
+  kind: string,
+  key: string,
+): Promise<string | null> {
+  const { sql } = await import('drizzle-orm');
+  const { db } = await import('../db/index');
+  const res = await db.execute(sql`
+    SELECT id FROM knowledge_entities
+    WHERE workspace_id = ${workspaceId} AND kind = ${kind} AND key = ${key}
+    LIMIT 1
+  `);
+  const row = res.rows[0] as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+async function resolveByAliasDb(
+  workspaceId: string,
+  ref: string,
+): Promise<string | null> {
+  const { sql } = await import('drizzle-orm');
+  const { db } = await import('../db/index');
+  const normalised = ref.toLowerCase().trim();
+  const res = await db.execute(sql`
+    SELECT ea.entity_id
+    FROM entity_aliases ea
+    JOIN knowledge_entities ke ON ke.id = ea.entity_id
+    WHERE ke.workspace_id = ${workspaceId} AND ea.alias = ${normalised}
+    LIMIT 1
+  `);
+  const row = res.rows[0] as { entity_id: string } | undefined;
+  return row?.entity_id ?? null;
+}
+
+/**
+ * Write a task→mission outcome_of edge.
+ * No-ops if either entity doesn't exist yet.
+ */
+export async function buildOutcomeOfEdge(
+  workspaceId: string,
+  taskId: string,
+  missionId: string,
+  sourceChunkId: string | null = null,
+): Promise<void> {
+  const taskEntityId = await findEntityId(workspaceId, 'task', `task:${taskId}`);
+  const missionEntityId = await findEntityId(workspaceId, 'mission', `mission:${missionId}`);
+  if (!taskEntityId || !missionEntityId) return;
+  const { upsertEdge } = await import('./entity-resolver');
+  const { db } = await import('../db/index');
+  await upsertEdge(
+    db, workspaceId, taskEntityId, missionEntityId,
+    'outcome_of', EDGE_WEIGHTS.outcome_of,
+    sourceChunkId ?? undefined, 'metadata:missionId',
+  );
+}
+
+/**
+ * Build edges from agent-supplied relations.
+ * Resolves from/to by alias; silently skips unresolvable refs.
+ */
+export async function buildAgentRelationEdges(
+  workspaceId: string,
+  relations: RelationRef[],
+  sourceChunkId: string | null = null,
+): Promise<void> {
+  const { upsertEdge } = await import('./entity-resolver');
+  const { db } = await import('../db/index');
+  for (const rel of relations) {
+    const fromId = await resolveByAliasDb(workspaceId, rel.from);
+    const toId = await resolveByAliasDb(workspaceId, rel.to);
+    if (!fromId || !toId) continue;
+    const weight = rel.weight ?? EDGE_WEIGHTS[rel.type] ?? 0.7;
+    await upsertEdge(
+      db, workspaceId, fromId, toId,
+      rel.type, weight,
+      sourceChunkId ?? undefined, 'agent:relation',
+    );
+  }
+}

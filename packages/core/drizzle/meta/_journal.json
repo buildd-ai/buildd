@@ -435,6 +435,13 @@
       "when": 1782980000000,
       "tag": "0061_knowledge_graph",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1782990000000,
+      "tag": "0062_knowledge_trgm",
+      "breakpoints": true
     }
   ]
 }

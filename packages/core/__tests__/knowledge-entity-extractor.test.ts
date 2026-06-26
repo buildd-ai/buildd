@@ -41,16 +41,29 @@ describe('extractEntities', () => {
     expect(prEntities.some(e => e.key === 'pr#1001')).toBe(true);
   });
 
-  it('extracts task UUID references from content', () => {
+  it('extracts task UUID when it matches metadata.taskId', () => {
     const taskId = 'c21dfeb7-3eb4-4f75-a597-9f79e6ffa3c7';
     const entities = extractEntities({
       content: `See task ${taskId} for context.`,
       corpus: 'memory',
       workspaceId: 'ws-1',
+      metadata: { taskId },
     });
     const taskEntity = entities.find(e => e.kind === 'task');
     expect(taskEntity).toBeDefined();
     expect(taskEntity!.key).toBe(`task:${taskId}`);
+  });
+
+  it('does not emit task entity for UUID in content with no matching metadata', () => {
+    const unrelatedUuid = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    const entities = extractEntities({
+      content: `Connection string: ${unrelatedUuid} is a random uuid.`,
+      corpus: 'memory',
+      workspaceId: 'ws-1',
+      // No metadata.taskId/missionId — UUID guard filters out content UUID
+    });
+    const taskEntities = entities.filter(e => e.kind === 'task');
+    expect(taskEntities.length).toBe(0);
   });
 
   it('extracts wikilink entities [[Target]] from markdown', () => {

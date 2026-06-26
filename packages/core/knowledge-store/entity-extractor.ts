@@ -81,17 +81,27 @@ export function extractEntities(input: ExtractEntityInput): EntityUpsert[] {
   }
 
   // ── Task UUID references ─────────────────────────────────────────────────
+  // Only emit a UUID as a task entity when it matches the known task/mission
+  // from metadata — prevents spurious entities from checksums or connection strings.
   {
+    const knownTaskId = metadata?.taskId && typeof metadata.taskId === 'string'
+      ? metadata.taskId.toLowerCase()
+      : null;
+    const knownMissionId = metadata?.missionId && typeof metadata.missionId === 'string'
+      ? metadata.missionId.toLowerCase()
+      : null;
     let m: RegExpExecArray | null;
     TASK_UUID_RE.lastIndex = 0;
     while ((m = TASK_UUID_RE.exec(content)) !== null) {
       const uuid = m[1].toLowerCase();
-      entities.push({
-        workspaceId,
-        kind: 'task',
-        key: `task:${uuid}`,
-        canonicalName: `Task ${uuid.slice(0, 8)}`,
-      });
+      if (uuid === knownTaskId || uuid === knownMissionId) {
+        entities.push({
+          workspaceId,
+          kind: 'task',
+          key: `task:${uuid}`,
+          canonicalName: `Task ${uuid.slice(0, 8)}`,
+        });
+      }
     }
   }
 
