@@ -171,6 +171,10 @@ mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
 }));
 
+mock.module('@/lib/mission-release', () => ({
+  fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {

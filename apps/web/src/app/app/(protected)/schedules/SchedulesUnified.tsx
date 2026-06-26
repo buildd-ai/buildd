@@ -4,6 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
+import { isValidTaskId } from '@/lib/task-id';
 
 export type PendingSuggestion = {
   cronExpression?: string;
@@ -171,7 +172,7 @@ function SuggestionBanner({
             >
               Dismiss
             </button>
-            {s.suggestedByTaskId && (
+            {isValidTaskId(s.suggestedByTaskId) && (
               <a
                 href={`/app/tasks/${s.suggestedByTaskId}`}
                 onClick={(e) => e.stopPropagation()}

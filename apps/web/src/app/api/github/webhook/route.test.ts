@@ -83,7 +83,10 @@ mock.module('@buildd/core/db', () => ({
       set: (values: any) => {
         updateCalls.push({ table, setValues: values });
         return {
-          where: (condition: any) => Promise.resolve(),
+          where: (condition: any) => ({
+            returning: () => Promise.resolve([{ id: 'row-1' }]),
+            then: (resolve: any) => resolve(undefined),
+          }),
         };
       },
     }),
@@ -102,6 +105,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
@@ -111,6 +115,38 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
   workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
   workspaces: { id: 'id', repo: 'repo' },
+  missions: { id: 'id', releasedAt: 'released_at' },
+}));
+
+// Mock release-strategy (real logic but isolated from DB)
+const mockResolveReleaseStrategy = mock((config: any) => {
+  if (!config || !config.enabled) return { ok: false, reason: 'not_configured', message: 'not configured' };
+  const kind = config.strategy ?? 'branch_merge';
+  if (kind === 'branch_merge') {
+    return { ok: true, strategy: { kind, prodBranch: config.prodBranch ?? 'main' } };
+  }
+  if (kind === 'workflow_dispatch') {
+    return {
+      ok: true,
+      strategy: {
+        kind,
+        workflowFile: config.workflowFile ?? 'release.yml',
+        ref: config.ref ?? 'dev',
+        inputs: config.inputs ?? {},
+      },
+    };
+  }
+  return { ok: false, reason: 'invalid', message: 'unknown strategy' };
+});
+mock.module('@buildd/core/release-strategy', () => ({
+  resolveReleaseStrategy: mockResolveReleaseStrategy,
+}));
+
+// Mock mission-release helpers
+const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
+mock.module('@/lib/mission-release', () => ({
+  countPendingTasksForMission: mockCountPendingTasksForMission,
+  fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
 // Import handler AFTER mocks
@@ -201,6 +237,8 @@ function resetAll() {
   mockWorkspacesFindMany.mockReset();
   mockWorkersFindFirst.mockReset();
   mockTasksFindFirst.mockReset();
+  mockResolveReleaseStrategy.mockReset();
+  mockCountPendingTasksForMission.mockReset();
 
   insertCalls = [];
   deleteCalls = [];
@@ -219,6 +257,18 @@ function resetAll() {
   mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
   mockMergePullRequest.mockReturnValue(Promise.resolve({ merged: true, message: 'ok' }));
   mockNotifyMissionPrReady.mockReturnValue(Promise.resolve());
+  // Default: no pending tasks (all-terminal)
+  mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+  // Default: resolve based on workspace config
+  mockResolveReleaseStrategy.mockImplementation((config: any) => {
+    if (!config || !config.enabled) return { ok: false, reason: 'not_configured', message: 'not configured' };
+    const kind = config.strategy ?? 'branch_merge';
+    if (kind === 'branch_merge') return { ok: true, strategy: { kind, prodBranch: config.prodBranch ?? 'main' } };
+    if (kind === 'workflow_dispatch') {
+      return { ok: true, strategy: { kind, workflowFile: config.workflowFile ?? 'release.yml', ref: config.ref ?? 'dev', inputs: config.inputs ?? {} } };
+    }
+    return { ok: false, reason: 'invalid', message: 'unknown strategy' };
+  });
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -753,7 +803,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('completes task and triggers release workflow when task.release is "true"', async () => {
+    it('completes task — branch_merge workspace: Path A handles release, Path B does NOT dispatch', async () => {
       const payload = {
         action: 'closed',
         pull_request: {
@@ -780,7 +830,7 @@ describe('POST /api/github/webhook', () => {
       });
       mockWorkspacesFindFirst.mockReturnValue({
         id: 'ws1',
-        releaseConfig: { enabled: true, prodBranch: 'main' },
+        releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
         gitConfig: { defaultBranch: 'dev' },
       });
       mockGithubApi.mockReturnValue(Promise.resolve({}));
@@ -789,10 +839,172 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(true);
+      // Path B must NOT dispatch for branch_merge — Path A is authoritative
+      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
+        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
+      );
+      expect(dispatchCall).toBeUndefined();
+    });
+
+    it('workflow_dispatch + trigger=every_merge: dispatches configured workflow file', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 8,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t2-feat', sha: 'sha-8' },
+          html_url: 'https://github.com/test-org/test-repo/pull/8',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w2',
+        task: { id: 't2', status: 'pending', workspaceId: 'ws2', release: 'inherit', title: 'Feature', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws2',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'ship.yml',
+          ref: 'dev',
+          trigger: 'every_merge',
+        },
+        gitConfig: { defaultBranch: 'dev' },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
+        (c) => typeof c[1] === 'string' && (c[1] as string).includes('/ship.yml/dispatches'),
+      );
+      expect(dispatchCall).toBeDefined();
+    });
+
+    it('workflow_dispatch + trigger=manual: does not dispatch', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 9,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t3-feat', sha: 'sha-9' },
+          html_url: 'https://github.com/test-org/test-repo/pull/9',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w3',
+        task: { id: 't3', status: 'pending', workspaceId: 'ws3', release: 'inherit', title: 'Feature', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws3',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'manual',
+        },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
+        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
+      );
+      expect(dispatchCall).toBeUndefined();
+    });
+
+    it('workflow_dispatch + on_mission_complete: dispatches once when mission is all-terminal', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 10,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t4-feat', sha: 'sha-10' },
+          html_url: 'https://github.com/test-org/test-repo/pull/10',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w4',
+        task: { id: 't4', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      // All tasks in the mission are terminal (pending=0)
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
       const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
         (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
       );
       expect(dispatchCall).toBeDefined();
+    });
+
+    it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 11,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t5-feat', sha: 'sha-11' },
+          html_url: 'https://github.com/test-org/test-repo/pull/11',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w5',
+        task: { id: 't5', status: 'pending', workspaceId: 'ws5', release: 'inherit', title: 'Feature', missionId: 'mission-2' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws5',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      // Still 2 tasks pending in the mission
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(2));
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
+        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
+      );
+      expect(dispatchCall).toBeUndefined();
     });
 
     it('blocks merge and notifies when the diff exceeds the line budget', async () => {

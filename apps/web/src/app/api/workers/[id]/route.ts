@@ -21,6 +21,7 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { hasCodexCredential } from '@/lib/codex-credential';
 
@@ -252,18 +253,22 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // missionId for the completing task — fetched in the status==='completed' block below,
+  // used later in the mission-complete release hook.
+  let taskMissionId: string | null = null;
   if (status === 'completed') {
     // Fetch task to check outputRequirement. Explicit select (not the
     // relational query builder): `tasks` has a `workers` relation and the RQB
     // can intermittently emit "missing FROM-clause entry for table workers".
     const taskRow = worker.taskId
       ? await db
-          .select({ outputRequirement: tasks.outputRequirement })
+          .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId })
           .from(tasks)
           .where(eq(tasks.id, worker.taskId))
           .limit(1)
       : [];
     const outputReq = taskRow[0]?.outputRequirement ?? 'auto';
+    taskMissionId = taskRow[0]?.missionId ?? null;
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
@@ -735,6 +740,15 @@ export async function PATCH(
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
         }
+
+        // on_mission_complete: fire the mission-level release once when all tasks
+        // in the mission reach terminal state. Fire-and-forget — same pattern as
+        // other post-completion hooks. The helper checks the workspace trigger
+        // policy and deduplicates via missions.releasedAt.
+        if (taskMissionId) {
+          fireMissionReleaseIfComplete(worker.workspaceId, taskMissionId, worker.taskId, id)
+            .catch((err) => console.error(`[Worker ${id}] Mission release check failed:`, err));
+        }
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -966,12 +980,17 @@ export async function PATCH(
     );
   }
 
-  // Broadcast budget-reset task back to pending (so dashboard updates)
+  // Broadcast budget-reset task status change for dashboard visibility.
+  // Intentionally NOT sending TASK_ASSIGNED here: that event tells the runner
+  // to immediately re-claim, which triggers a refire before the runner's
+  // circuit breaker (trip-on-error) can prevent it — reproducing the exact
+  // burst observed in the 2026-06-25 session-limit storm. The task is already
+  // pending and the runner's next poll picks it up when the budget resets.
   if (isBudgetReset && worker.taskId) {
     await triggerEvent(
       channels.workspace(worker.workspaceId),
-      events.TASK_ASSIGNED,
-      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+      events.TASK_UPDATED,
+      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } }
     );
   }
 

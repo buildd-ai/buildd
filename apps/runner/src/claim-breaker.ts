@@ -70,6 +70,19 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
     };
   }
 
+  // OAuth seat session cap: "You've hit your session limit · resets 8:40pm (UTC)"
+  // Must be checked BEFORE generic rate-limit patterns — 'session limit' is an
+  // exhaustion event with a known reset time, not a transient 429.
+  if (err.includes('session limit') || err.includes('hit your session')) {
+    const resetMatch = err.match(/resets\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\s*\((\w+)\)/i);
+    const hourToken = resetMatch?.[1]?.replace(/:\d{2}/, '') ?? null; // strip :MM if present
+    const pauseMs = hourToken ? parseResetDelay(hourToken) : 5 * 60 * 60 * 1000;
+    const label = resetMatch
+      ? `Session limit hit (resets ${resetMatch[1]} ${resetMatch[2]})`
+      : 'Session limit hit';
+    return { label, pauseMs, scope: 'context' };
+  }
+
   if (err.includes('oauth budget exhausted') || (err.includes('429') && err.includes('budget exhausted'))) {
     return { label: 'OAuth budget exhausted', pauseMs: 60 * 60 * 1000, scope: 'context' };
   }

@@ -42,6 +42,11 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { teamId: 'teamId', createdAt: 'createdAt' },
+  accountWorkspaces: {},
+}));
+
+mock.module('@buildd/core/secrets', () => ({
+  setOAuthToken: mock(() => Promise.resolve()),
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -150,5 +155,29 @@ describe('POST /api/accounts', () => {
     const data = await res.json();
     // Should return plaintext key (starts with bld_)
     expect(data.apiKey).toBeDefined();
+  });
+
+  it('does not write plaintext oauthToken to accounts table even if provided', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    let capturedValues: any;
+    mockAccountsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          returning: mock(() => [{ id: 'account-new', name: 'OAuth Account', apiKey: 'hashed' }]),
+        };
+      }),
+    });
+
+    const req = new NextRequest('http://localhost:3000/api/accounts', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ name: 'OAuth Account', type: 'user', authType: 'oauth', oauthToken: 'secret-token' }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues?.oauthToken).toBeUndefined();
   });
 });

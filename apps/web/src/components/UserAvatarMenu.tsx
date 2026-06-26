@@ -38,7 +38,7 @@ export default function UserAvatarMenu({ userInitial }: UserAvatarMenuProps) {
             onClick={() => setOpen(false)}
             className="block px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
           >
-            Settings
+            Connections
           </Link>
           <div className="border-t border-border-default" />
           <button
