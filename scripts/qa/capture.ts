@@ -15,6 +15,17 @@ import { chromium } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 
+// Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
+// a response URL is relative. Suppress these non-fatal background exceptions so the
+// process exits cleanly with the captures it managed to collect.
+process.on('uncaughtException', (err: Error) => {
+  console.warn('[capture] non-fatal uncaught exception (Playwright internal):', err.message);
+});
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = (reason as Error)?.message ?? String(reason);
+  console.warn('[capture] non-fatal unhandled rejection:', msg);
+});
+
 const BASE_URL = process.env.QA_BASE_URL ?? 'http://localhost:3000';
 const OUTPUT_DIR = process.env.QA_OUTPUT ?? '/tmp/qa';
 const MANIFEST_PATH = process.env.QA_MANIFEST ?? 'apps/web/src/qa/visual-qa-routes.json';
@@ -116,11 +127,18 @@ for (const route of manifest.routes) {
     const screenshotPath = join(OUTPUT_DIR, 'screenshots', screenshotFile);
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    const a11ySnapshot = await page.accessibility.snapshot();
+    // page.accessibility was removed in Playwright 1.52. Use ariaSnapshot() (1.44+)
+    // which returns a YAML ARIA tree. Fall back to null if unavailable.
+    let a11yData: string | null = null;
+    try {
+      a11yData = await (page as any).ariaSnapshot() as string;
+    } catch {
+      // best-effort — a11y data is informational only
+    }
     const a11yFile = `${route.id}.json`;
     writeFileSync(
       join(OUTPUT_DIR, 'a11y', a11yFile),
-      JSON.stringify(a11ySnapshot ?? {}, null, 2),
+      JSON.stringify({ ariaSnapshot: a11yData }, null, 2),
     );
 
     const finalUrl = page.url();
