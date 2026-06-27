@@ -1,13 +1,75 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-18
-**Covering**: v0.2.114 → v0.3.181
+**Last updated**: 2026-06-27
+**Covering**: v0.2.114 → v0.3.195
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.181 (2026-06-17) — current latest
+### v0.3.195 (2026-06-27) — current latest
+- **Parity with Claude Code v2.1.195**
+- **Bug fix (Buildd-relevant): hook matchers with hyphenated identifiers now exact-match** — e.g. `mcp__brave-search` previously matched any tool containing that substring; now requires `mcp__brave-search__.*` to match all tools from a hyphenated server. Audit Buildd hook matcher patterns if any reference hyphenated MCP server names.
+- **Bug fix**: Background jobs no longer disappear from `claude agents` or lose data when written by a newer Claude Code version
+- **Bug fix**: Reopening a crashed background task no longer shows a blank screen for up to 5s
+- **Bug fix**: Background agent daemons no longer become unreachable when the control socket fails to start
+
+### v0.3.193 (2026-06-26)
+- **Parity with Claude Code v2.1.193**
+- **`autoMode.classifyAllShell` setting**: Routes all Bash/PowerShell commands through the auto-mode classifier (not just arbitrary-code-execution patterns) — allows tighter control in Buildd worker auto mode
+- **Auto-mode denial reasons in transcript**: Denial reasons are now written to the transcript, the denial toast, and `/permissions` recent denials — improves visibility into why auto mode blocked a Buildd action
+- **`claude_code.assistant_response` OTEL log event (Buildd-relevant)**: New OpenTelemetry log event containing the model's response text; redacted unless `OTEL_LOG_ASSISTANT_RESPONSES=1`. NOTE: if `OTEL_LOG_USER_PROMPTS` is already set, this will also start emitting response content — set `OTEL_LOG_ASSISTANT_RESPONSES=0` to keep prompts-only behavior
+- **MCP `headersHelper` auto-reconnects on 401/403 (Buildd-relevant)**: The OAuth helper now re-runs and reconnects automatically when a tool call returns auth errors — improves resilience for Buildd's connector token expiry scenarios
+- **Bug fix**: `/model` and client-data-gated UI no longer shows stale/empty state after `/login`
+- **Bug fix**: Backgrounding mid-turn no longer spuriously cancels with "N background tasks would be abandoned"
+
+### v0.3.191 (2026-06-25)
+- **Parity with Claude Code v2.1.191**
+- **Bug fix (Buildd-relevant): background agents no longer resurrect after being stopped** — stopping an agent from the tasks panel is now permanent; previously stopped agents could reappear
+- **Bug fix (Buildd-relevant): hooks with comma-separated matchers silently never fired** — e.g. `"Bash,PowerShell"` in a hook matcher would never trigger. Audit any hook configurations using comma-separated tool names.
+- `/rewind` support for resuming conversation from before `/clear` was run
+- Bug fix: `/permissions` Recently-denied tab approval now persists on close
+
+### v0.3.190 (2026-06-24)
+- **Parity with Claude Code v2.1.190** — bug fixes and reliability improvements
+
+### v0.3.187 (2026-06-21)
+- **Parity with Claude Code v2.1.187**
+- **`sandbox.credentials` setting (Buildd-relevant)**: Blocks sandboxed commands from reading credential files and secret environment variables — enables security isolation for Buildd workers that should not access host credentials
+- **Org-configured model restrictions (Buildd-relevant)**: Model restrictions set at org level are enforced in the model picker, `--model`, `/model`, and `ANTHROPIC_MODEL` — relevant for workspace-level model control in Buildd roles
+- **Bug fix (Buildd-relevant): Remote MCP tool calls no longer hang indefinitely** — calls that get no response for 5 minutes now abort with an error (override with `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`); previously Buildd's MCP server calls could block forever
+- **Bug fix (Buildd-relevant): `--json-schema` and workflow `agent({schema})` structured output fixed** — models no longer re-call `StructuredOutput` indefinitely after a successful call, and follow-up turns now reliably return structured output
+- **Bug fix**: Subagent depth restored correctly on resume; forked subagents now count toward depth cap
+- **Bug fix**: Leaked worktree registrations from killed agents now cleaned up automatically
+- Bug fix: `--resume` failing with "No conversation found" when original `-p` run had no model turns
+
+### v0.3.186 (2026-06-20)
+- **Parity with Claude Code v2.1.186**
+- **`claude mcp login <name>` / `claude mcp logout <name>`**: Authenticate MCP servers from the CLI with `--no-browser` for SSH environments
+- **Bug fix (Buildd-relevant): `Agent(type)` deny rules and `Agent(x,y)` allowed-type restrictions now enforced for named subagent spawns** — previously named agent spawns bypassed these restrictions
+- **Bug fix (Buildd-relevant): Workflow `agent({schema})` no longer loops forever on repeated schema validation failures** — now aborts after 5 attempts; prevents stuck workers
+- **`CLAUDE_CODE_MAX_RETRIES` capped at 15** — for unattended Buildd sessions, use `CLAUDE_CODE_RETRY_WATCHDOG` instead
+- **Background subagents now surface permission prompts in the main session** — dialog shows which agent is asking; Esc denies just that tool (previously auto-denied)
+- Skill frontmatter now accepts kebab-case, snake_case, and camelCase for all keys
+- `/review <pr>` now uses the same engine as `/code-review medium`
+
+### v0.3.185 (2026-06-19)
+- **Parity with Claude Code v2.1.185**
+- Stream-stall hint now reads "Waiting for API response · will retry in …" (was "No response from API · Retrying in …"); triggers after 20s of silence instead of 10s
+
+### v0.3.183 (2026-06-19)
+- **Parity with Claude Code v2.1.183**
+- **Improved auto mode safety (Buildd-relevant)**: Destructive git commands (`git reset --hard`, `git checkout -- .`, `git clean -fd`, `git stash drop`) now blocked when the user didn't ask to discard local work; `git commit --amend` blocked for commits not made by the agent this session; `terraform destroy`/`pulumi destroy`/`cdk destroy` blocked unless explicitly requested — reduces risk in Buildd worker auto mode
+- **Model deprecation warnings (Buildd-relevant)**: Warning shown when requested model is deprecated or auto-updated to a newer model; shown in `-p` mode on stderr and covers models set in agent frontmatter
+- **`attribution.sessionUrl` setting**: Omit the claude.ai session link from commits and PRs in web and Remote Control sessions — useful for Buildd workers writing commits without leaking session URLs
+- Bug fix: `thinking.disabled` 400 errors on subagent spawns fixed
+- Bug fix: Turns silently completing with no visible output when model returned only a thinking block — Claude now re-prompts once
+- Bug fix: MCP servers requiring auth no longer expose auth-stub tools to the model in headless/SDK mode
+
+### v0.3.182 (2026-06-18)
+- **Parity with Claude Code v2.1.182** — no user-facing changes
+
+### v0.3.181 (2026-06-17)
 - **Parity with Claude Code v2.1.181**
 - **`SDKRateLimitInfo` enhanced fields**: `errorCode`, `canUserPurchaseCredits`, and `hasChargeableSavedPaymentMethod` added to rate limit info — allows callers to detect when a session is blocked due to insufficient credits vs. API overload, and whether the user can resolve it by purchasing credits
 - **`tool_use_meta.icon_url`**: Assistant messages with `tool_use_meta` sidecar now include an `icon_url` per tool call, populated from MCP server directory metadata — enables dashboard display of MCP tool icons alongside human-readable labels (extends the v0.3.179 `tool_use_meta` feature)
