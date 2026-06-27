@@ -154,4 +154,21 @@ describe('create_task — parentTaskId support', () => {
 
     expect(result.content[0].text).toContain('https://buildd.dev/app/tasks/task-new');
   });
+
+  it('response says queued with get_task hint instead of bare "pending"', async () => {
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'New task',
+        description: 'test',
+      },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).not.toContain('Status: pending');
+    expect(result.content[0].text).toContain('Queued');
+    expect(result.content[0].text).toContain('get_task');
+    expect(result.content[0].text).toContain('task-new');
+  });
 });
