@@ -6,13 +6,12 @@ import { authenticateApiKey } from '@/lib/api-auth';
  * POST /api/admin/backfill-entity-graph
  *
  * Runs an idempotent entity-graph backfill over all existing knowledge_chunks
- * (or a single namespace when ?namespace=... is provided). Populates:
- *   - knowledge_entities / entity_aliases (entity upsert + alias seeding)
- *   - chunk_entities (chunk→entity junction, enables graph-expansion on query)
- *   - knowledge_edges (rule-based edges: PR-ref, part_of, outcome_of, etc.)
+ * (or a single namespace when body.namespace is supplied). Populates:
+ *   - knowledge_entities / entity_aliases  (entity upsert + alias seeding)
+ *   - chunk_entities                       (chunk→entity junction for graph expansion)
+ *   - knowledge_edges                      (PR-ref, part_of, outcome_of, etc.)
  *
- * Processes chunks in pages of 100. Runs synchronously within the request so
- * the caller receives before/after counts in the response.
+ * Processes chunks in pages of 100. Returns before/after row counts.
  *
  * Request body (optional):
  *   { namespace?: string, backfillTs?: boolean, dryRun?: boolean }
@@ -20,7 +19,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
  * Admin-level API key required.
  */
 
-export const maxDuration = 300; // Vercel Pro: up to 300s
+export const maxDuration = 300; // Vercel Pro max 300s
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
@@ -37,27 +36,30 @@ export async function POST(req: NextRequest) {
 
   let body: { namespace?: string; backfillTs?: boolean; dryRun?: boolean } = {};
   try { body = (await req.json().catch(() => ({}))) ?? {}; } catch { body = {}; }
-
   const { namespace: targetNamespace, backfillTs = false, dryRun = false } = body;
 
+  // All imports are lazy — avoids pulling in DB/knowledge-store at module load time
   const { sql } = await import('drizzle-orm');
-  const { db } = await import('@buildd/core/db/index');
-  const { buildEdges, buildOutcomeOfEdge } = await import('@buildd/core/knowledge-store/edge-builder');
+  const { db } = await import('@buildd/core/db');
+  const { buildEdges, buildOutcomeOfEdge } = await import('@buildd/core/knowledge-store');
   const {
-    upsertEntity, upsertAlias, upsertChunkEntity, upsertEdge,
-  } = await import('@buildd/core/knowledge-store/entity-resolver');
-  type Corpus = import('@buildd/core/knowledge-store/types').Corpus;
+    upsertEntity,
+    upsertAlias,
+    upsertChunkEntity,
+    upsertEdge,
+  } = await import('@buildd/core/knowledge-store');
+  type Corpus = import('@buildd/core/knowledge-store').Corpus;
 
-  async function count(table: string): Promise<number> {
+  async function countTable(table: string): Promise<number> {
     const r = await db.execute(sql.raw(`SELECT count(*) AS c FROM ${table}`));
     return parseInt((r.rows[0] as { c: string }).c, 10);
   }
 
   // Before counts
   const [entBefore, edgeBefore, ceBefore] = await Promise.all([
-    count('knowledge_entities'),
-    count('knowledge_edges'),
-    count('chunk_entities'),
+    countTable('knowledge_entities'),
+    countTable('knowledge_edges'),
+    countTable('chunk_entities'),
   ]);
 
   // Discover namespaces
@@ -77,15 +79,19 @@ export async function POST(req: NextRequest) {
   }
 
   const BATCH = 100;
-  let totalChunks = 0, totalEntities = 0, totalEdges = 0, totalTsFixed = 0;
+  let totalChunks = 0;
+  let totalEntities = 0;
+  let totalEdges = 0;
+  let totalTsFixed = 0;
   const namespaceStats: Record<string, { chunks: number; entities: number; edges: number }> = {};
 
   for (const ns of namespaces) {
-    const countRes = await db.execute(sql`SELECT count(*) AS c FROM knowledge_chunks WHERE namespace = ${ns}`);
+    const countRes = await db.execute(
+      sql`SELECT count(*) AS c FROM knowledge_chunks WHERE namespace = ${ns}`,
+    );
     const total = parseInt((countRes.rows[0] as { c: string }).c, 10);
     namespaceStats[ns] = { chunks: 0, entities: 0, edges: 0 };
 
-    // Optional source_ts backfill from metadata
     if (!dryRun && backfillTs) {
       const tsRes = await db.execute(sql`
         UPDATE knowledge_chunks
@@ -155,16 +161,22 @@ export async function POST(req: NextRequest) {
             const toId = entityIdMap.get(`${edge.toEntityKind}:${edge.toEntityKey}`);
             if (!fromId || !toId) continue;
             try {
-              await upsertEdge(db, scopeId, fromId, toId, edge.type, edge.weight, chunk.source_id, edge.rule);
+              await upsertEdge(
+                db, scopeId, fromId, toId,
+                edge.type, edge.weight, chunk.source_id, edge.rule,
+              );
               totalEdges++;
               namespaceStats[ns].edges++;
             } catch { /* best-effort */ }
           }
 
-          // outcome_of for task/plan chunks
+          // outcome_of edges for task/plan chunks carrying missionId in metadata
           const missionId = chunk.metadata?.missionId;
           const taskId = chunk.metadata?.taskId;
-          if (missionId && taskId && typeof missionId === 'string' && typeof taskId === 'string') {
+          if (
+            missionId && taskId &&
+            typeof missionId === 'string' && typeof taskId === 'string'
+          ) {
             await buildOutcomeOfEdge(scopeId, taskId, missionId, chunk.source_id).catch(() => {});
           }
         }
@@ -173,22 +185,31 @@ export async function POST(req: NextRequest) {
         namespaceStats[ns].chunks++;
       }
 
-      offset += batch.length;
+      offset += BATCH;
     }
   }
 
+  // After counts
   const [entAfter, edgeAfter, ceAfter] = await Promise.all([
-    count('knowledge_entities'),
-    count('knowledge_edges'),
-    count('chunk_entities'),
+    countTable('knowledge_entities'),
+    countTable('knowledge_edges'),
+    countTable('chunk_entities'),
   ]);
 
   return NextResponse.json({
     dryRun,
-    namespaces: namespaces.length,
-    before: { knowledge_entities: entBefore, knowledge_edges: edgeBefore, chunk_entities: ceBefore },
-    after:  { knowledge_entities: entAfter,  knowledge_edges: edgeAfter,  chunk_entities: ceAfter },
-    delta:  {
+    namespacesProcessed: namespaces.length,
+    before: {
+      knowledge_entities: entBefore,
+      knowledge_edges:    edgeBefore,
+      chunk_entities:     ceBefore,
+    },
+    after: {
+      knowledge_entities: entAfter,
+      knowledge_edges:    edgeAfter,
+      chunk_entities:     ceAfter,
+    },
+    delta: {
       knowledge_entities: entAfter - entBefore,
       knowledge_edges:    edgeAfter - edgeBefore,
       chunk_entities:     ceAfter - ceBefore,
