@@ -33,7 +33,7 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     case 'on-schedule': return 'scheduled';
     case 'shipped':
     case 'paused': return 'completed';
-    case 'idle': return progress === 100 ? 'completed' : 'attention';
+    case 'idle': return 'attention';
   }
 }
 

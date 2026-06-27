@@ -225,7 +225,7 @@ export default async function HomePage({
             inArray(workers.workspaceId, wsIds),
             inArray(workers.status, ['completed', 'failed', 'error'])
           ),
-          orderBy: desc(workers.completedAt),
+          orderBy: sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) DESC`,
           limit: 6,
           with: {
             task: {

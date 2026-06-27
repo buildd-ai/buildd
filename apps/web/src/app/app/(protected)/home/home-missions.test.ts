@@ -104,6 +104,33 @@ describe('deriveMissionHealth', () => {
     expect(h).toBe('shipped');
     expect(healthToGroup(h, 100)).toBe('completed');
   });
+
+  it('idle mission at 100% progress goes to attention, not completed', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+    });
+    expect(h).toBe('idle');
+    // Regression: idle missions were incorrectly bucketed as 'completed' when progress===100
+    expect(healthToGroup(h, 100)).toBe('attention');
+    expect(healthToGroup(h, 50)).toBe('attention');
+    expect(healthToGroup(h, 0)).toBe('attention');
+  });
+
+  it('only shipped health maps to completed group', () => {
+    // The only path into 'completed' is status=completed → health=shipped
+    expect(healthToGroup('shipped', 100)).toBe('completed');
+    expect(healthToGroup('shipped', 0)).toBe('completed');
+    // All other health values must NOT map to completed
+    expect(healthToGroup('idle', 100)).not.toBe('completed');
+    expect(healthToGroup('idle', 0)).not.toBe('completed');
+    expect(healthToGroup('active', 100)).not.toBe('completed');
+    expect(healthToGroup('stalled', 100)).not.toBe('completed');
+    expect(healthToGroup('on-schedule', 100)).not.toBe('completed');
+  });
 });
 
 // ---------------------------------------------------------------------------
