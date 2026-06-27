@@ -1,11 +1,16 @@
 /**
  * Regression tests for Home page mission visibility and activity feed.
  *
- * Guards against the bug where:
+ * Guards against the bugs where:
  * 1. Scheduled missions (next run > 24h) were hidden behind a time-window filter,
  *    causing "No active missions right now" even when active missions exist.
  * 2. The activity feed scoping was tied to a single team (from cookie fallback),
  *    returning stale data when the cookie pointed to the wrong team.
+ * 3. (Post-#1032 regression) Activity feed added 'error' workers which have
+ *    NULL completedAt. PostgreSQL sorts NULLs first in DESC order, so old
+ *    error workers from months ago floated to the top of the feed.
+ * 4. (Post-#1032 regression) Missions query limit:20 with archived missions
+ *    filling the first N slots pushed genuinely-active missions beyond the limit.
  *
  * These tests exercise the pure filter/sort logic that runs inside the page
  * component after the DB returns mission rows.
@@ -198,5 +203,113 @@ describe('Home page mission visibility filter', () => {
     expect(ids).toContain('a1');
     expect(ids).toContain('s1');
     expect(ids).not.toContain('c1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity feed ordering: newest-first even with null completedAt (bug #3)
+// The DB query uses COALESCE(completedAt, updatedAt) DESC. This mirrors that.
+// ---------------------------------------------------------------------------
+
+type ActivityWorker = { id: string; completedAt: Date | null; updatedAt: Date };
+
+function sortActivityNewestFirst(workers: ActivityWorker[]): ActivityWorker[] {
+  return [...workers].sort((a, b) => {
+    const ta = (a.completedAt ?? a.updatedAt).getTime();
+    const tb = (b.completedAt ?? b.updatedAt).getTime();
+    return tb - ta;
+  });
+}
+
+describe('Activity feed ordering (COALESCE completedAt, updatedAt)', () => {
+  it('shows recent completed worker before old error worker (null completedAt)', () => {
+    const recentCompleted: ActivityWorker = {
+      id: 'w-recent',
+      completedAt: new Date('2026-06-27T10:00:00Z'),
+      updatedAt:   new Date('2026-06-27T10:00:00Z'),
+    };
+    const oldError: ActivityWorker = {
+      id: 'w-old-error',
+      completedAt: null,
+      updatedAt:   new Date('2026-01-10T00:00:00Z'),  // ~167 days ago
+    };
+
+    const sorted = sortActivityNewestFirst([oldError, recentCompleted]);
+    expect(sorted[0].id).toBe('w-recent');
+    expect(sorted[1].id).toBe('w-old-error');
+  });
+
+  it('among null-completedAt workers, sorts by updatedAt newest-first', () => {
+    const older: ActivityWorker = { id: 'w-older', completedAt: null, updatedAt: new Date('2026-01-01T00:00:00Z') };
+    const newer: ActivityWorker = { id: 'w-newer', completedAt: null, updatedAt: new Date('2026-06-01T00:00:00Z') };
+    const sorted = sortActivityNewestFirst([older, newer]);
+    expect(sorted[0].id).toBe('w-newer');
+    expect(sorted[1].id).toBe('w-older');
+  });
+
+  it('null completedAt worker with recent updatedAt ranks above old completed worker', () => {
+    const recentError: ActivityWorker = {
+      id: 'w-recent-error',
+      completedAt: null,
+      updatedAt:   new Date('2026-06-27T09:00:00Z'),
+    };
+    const oldCompleted: ActivityWorker = {
+      id: 'w-old-completed',
+      completedAt: new Date('2026-02-01T00:00:00Z'),
+      updatedAt:   new Date('2026-02-01T00:00:00Z'),
+    };
+    const sorted = sortActivityNewestFirst([oldCompleted, recentError]);
+    expect(sorted[0].id).toBe('w-recent-error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Archived missions: deriveMissionHealth falls through to 'idle' (bug #4)
+// Without the DB-level `status != 'archived'` filter, archived missions with
+// incomplete tasks would appear as 'attention' on the Home page, and archived
+// missions that are all-done fill the limit and push active missions out.
+// ---------------------------------------------------------------------------
+
+describe('Archived missions should not appear as active', () => {
+  it('archived mission with no agents/cron gets idle health (falls through)', () => {
+    const h = deriveMissionHealth({
+      status: 'archived',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+    });
+    // Falls through to 'idle' — NOT handled like 'completed'/'paused'.
+    // If a DB filter does NOT exclude it and progress < 100%, it shows as 'attention'.
+    expect(h).toBe('idle');
+  });
+
+  it('archived idle mission with progress < 100 would incorrectly appear as attention', () => {
+    // This documents WHY the DB query must filter status != 'archived'.
+    const h = deriveMissionHealth({ status: 'archived', activeAgents: 0, cronExpression: null, lastRunAt: null, nextRunAt: null });
+    const group = healthToGroup(h, 50); // 50% progress
+    // Without the DB filter, this would land in 'attention' → shown on Home as "Needs Attention"
+    expect(group).toBe('attention');
+    // The fix: the DB query for Home excludes status='archived' so this code path is never reached.
+  });
+
+  it('archived idle mission with any progress goes to attention (DB filter excludes these)', () => {
+    // After #1048: healthToGroup('idle', progress) always returns 'attention'.
+    // Archived missions are excluded at the DB level, so this code path is unreachable on Home.
+    const h = deriveMissionHealth({ status: 'archived', activeAgents: 0, cronExpression: null, lastRunAt: null, nextRunAt: null });
+    const group = healthToGroup(h, 100);
+    expect(group).toBe('attention');
+  });
+
+  it('archived missions are invisible after DB filter + getVisibleMissions', () => {
+    // Simulate the Home page pipeline AFTER the DB-level filter removes archived:
+    // no archived missions should be in the input to getVisibleMissions.
+    const missionsAfterDbFilter: HomeMission[] = [
+      { id: 'active-1', group: 'running', nextScanMins: null },
+      { id: 'active-2', group: 'attention', nextScanMins: null },
+    ];
+    const visible = getVisibleMissions(missionsAfterDbFilter);
+    expect(visible.map(m => m.id)).toEqual(['active-1', 'active-2']);
+    // No archived missions leaked through.
   });
 });

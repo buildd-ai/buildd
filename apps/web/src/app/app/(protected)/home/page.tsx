@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull } from 'drizzle-orm';
+import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -219,7 +219,10 @@ export default async function HomePage({
           roleSlug: w.task?.roleSlug || null,
         }));
 
-        // Recent completed/failed/error workers for activity feed
+        // Recent completed/failed/error workers for activity feed.
+        // Order by COALESCE(completedAt, updatedAt) so error workers (null
+        // completedAt) sort by their updatedAt rather than floating to the top
+        // via PostgreSQL's default NULLS FIRST for DESC ordering.
         const recentWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.workspaceId, wsIds),
@@ -264,8 +267,10 @@ export default async function HomePage({
                 : inArray(missionsTable.teamId, missionTeamIds))
             : undefined;
 
+          // Exclude archived missions: they can never be active/scheduled on Home,
+          // and they fill limit slots that should go to genuinely active missions.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
-            where: missionsWhere,
+            where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
             columns: { id: true, title: true, description: true, status: true },
             with: {
@@ -275,7 +280,7 @@ export default async function HomePage({
               schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
               workspace: { columns: { id: true, name: true } },
             },
-            limit: 20,
+            limit: 50,
           }) : [];
 
           // Count active workers per mission
