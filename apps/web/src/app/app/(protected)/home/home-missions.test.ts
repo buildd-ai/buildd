@@ -293,10 +293,12 @@ describe('Archived missions should not appear as active', () => {
     // The fix: the DB query for Home excludes status='archived' so this code path is never reached.
   });
 
-  it('archived idle mission with progress 100 goes to completed (invisible on Home)', () => {
+  it('archived idle mission with any progress goes to attention (DB filter excludes these)', () => {
+    // After #1048: healthToGroup('idle', progress) always returns 'attention'.
+    // Archived missions are excluded at the DB level, so this code path is unreachable on Home.
     const h = deriveMissionHealth({ status: 'archived', activeAgents: 0, cronExpression: null, lastRunAt: null, nextRunAt: null });
     const group = healthToGroup(h, 100);
-    expect(group).toBe('completed');
+    expect(group).toBe('attention');
   });
 
   it('archived missions are invisible after DB filter + getVisibleMissions', () => {
