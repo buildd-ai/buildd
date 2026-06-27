@@ -442,6 +442,13 @@
       "when": 1782990000000,
       "tag": "0062_knowledge_trgm",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "5",
+      "when": 1782995000000,
+      "tag": "0063_remove_visual_qa_role",
+      "breakpoints": true
     }
   ]
 }
