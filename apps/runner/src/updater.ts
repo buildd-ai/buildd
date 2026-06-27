@@ -65,6 +65,18 @@ export function applyUpdate(): UpdateResult {
       stdio: 'pipe',
     });
 
+    // After code update, ensure Playwright Chromium binary is present.
+    // install.sh handles the first-time --with-deps install (system libs);
+    // this idempotent step keeps the binary in sync across auto-updates.
+    try {
+      execSync('bun x playwright install chromium', {
+        cwd: join(INSTALL_DIR, 'apps', 'runner'),
+        encoding: 'utf-8',
+        timeout: 120_000,
+        stdio: 'pipe',
+      });
+    } catch { /* non-fatal — browser capability just won't be advertised */ }
+
     const newCommit = getCurrentCommit();
     return { success: true, previousCommit: previousCommit || undefined, newCommit: newCommit || undefined };
   } catch (err: any) {
