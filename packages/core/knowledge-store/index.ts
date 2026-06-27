@@ -19,7 +19,7 @@ export type { SourceFile, IngestResult } from './ingest';
 export { recencyDecay, applyRecencyAuthority, CORPUS_AUTHORITY, HALF_LIFE_DAYS } from './recency-authority';
 export { extractEntities } from './entity-extractor';
 export type { ExtractEntityInput } from './entity-extractor';
-export { buildEdges } from './edge-builder';
+export { buildEdges, buildOutcomeOfEdge, buildAgentRelationEdges } from './edge-builder';
 export type { EdgeBuilderInput, EdgeBuilderOutput } from './edge-builder';
 export {
   upsertEntity,

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.122.0",
+  "version": "0.123.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate:pg",
@@ -29,10 +29,13 @@
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
     "./release-strategy": "./release-strategy.ts",
-    "./knowledge-store": "./knowledge-store/index.ts"
+    "./knowledge-store": "./knowledge-store/index.ts",
+    "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
+    "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
+    "./knowledge-store/types": "./knowledge-store/types.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.191",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.195",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^0.9.0",
     "@openai/codex-sdk": "^0.44.0",
