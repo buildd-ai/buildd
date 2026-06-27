@@ -222,7 +222,10 @@ jobs:
         run: bun scripts/qa/judge.ts
         env:
           BUILDD_QA_URL: https://buildd.dev
-          BUILDD_QA_KEY: ${{ secrets.BUILDD_QA_KEY }}
+          # BUILDD_QA_KEY: dedicated read-only key scoped to /api/qa/judge.
+          # Falls back to BUILDD_API_KEY (workspace key already in secrets) until
+          # a scoped key is provisioned.
+          BUILDD_QA_KEY: ${{ secrets.BUILDD_QA_KEY || secrets.BUILDD_API_KEY }}
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
