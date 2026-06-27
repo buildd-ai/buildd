@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
+import { CAPABILITY_BROWSER } from '@buildd/shared';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
@@ -41,6 +42,43 @@ const DEFAULT_ENV_KEYS = [
   // General
   'NPM_TOKEN', 'DOCKER_USERNAME',
 ];
+
+/**
+ * Self-check: does headless Chromium actually launch on this runner?
+ *
+ * Checks system-installed Chromium binaries first (cheapest), then falls back
+ * to scanning Playwright's browser cache directory for a downloaded binary.
+ * This runs once at startup and determines whether the runner advertises the
+ * 'browser' capability — making the flag truthful, not just image-intent.
+ */
+export function checkBrowserCapability(): boolean {
+  // Check well-known system Chromium binary names
+  const bins = ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'];
+  for (const bin of bins) {
+    try {
+      execSync(`which ${bin}`, { timeout: 2000, stdio: 'pipe' });
+      // Verify the binary is actually functional (not just on PATH)
+      const out = execSync(`${bin} --version`, { timeout: 5000, stdio: 'pipe' }).toString();
+      if (/chromium|chrome/i.test(out)) return true;
+    } catch { /* not found or broken, try next */ }
+  }
+
+  // Check Playwright's browser cache (populated by `playwright install chromium`)
+  const cacheDir = process.env.PLAYWRIGHT_BROWSERS_PATH ||
+    join(homedir(), '.cache', 'ms-playwright');
+  if (existsSync(cacheDir)) {
+    try {
+      // Fast binary existence check — avoids spawning a browser process
+      const result = execSync(
+        `find "${cacheDir}" -maxdepth 5 -name "chrome" -perm -u+x 2>/dev/null | head -1`,
+        { timeout: 3000, stdio: 'pipe' },
+      ).toString().trim();
+      if (result.length > 0) return true;
+    } catch { /* cache dir unreadable or find failed */ }
+  }
+
+  return false;
+}
 
 function probeTool(name: string, cmd?: string): WorkerTool | null {
   try {
@@ -188,6 +226,14 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
   const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+
+  // Self-check: does headless Chromium actually launch on this runner?
+  const hasBrowser = checkBrowserCapability();
+  if (hasBrowser) {
+    envKeys.push(CAPABILITY_BROWSER);
+  } else {
+    console.log('[env-scan] Headless Chromium not found — browser capability not advertised. Install via: bunx playwright install --with-deps chromium');
+  }
 
   return {
     tools,
