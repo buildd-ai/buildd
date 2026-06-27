@@ -46,6 +46,9 @@ jobs:
         run: bunx playwright install chromium --with-deps
 
       # --- Ephemeral Neon branch (same pattern as build.yml integration job) ---
+      # NEON_PROD_PARENT_BRANCH_ID must be set in GitHub repo secrets to the Neon
+      # prod branch ID (find it at console.neon.tech → your project → Branches).
+      # It is intentionally separate from NEON_PARENT_BRANCH_ID (dev branch).
       - name: Create Neon preview branch
         id: neon
         run: |
@@ -67,7 +70,7 @@ jobs:
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $NEON_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$NEON_PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
+            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$NEON_PROD_PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
             "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
 
           BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
@@ -104,9 +107,15 @@ jobs:
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
-          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
+          NEON_PROD_PARENT_BRANCH_ID: ${{ secrets.NEON_PROD_PARENT_BRANCH_ID }}
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
+
+      - name: Scrub PII from prod clone
+        run: |
+          psql "$DATABASE_URL" -f scripts/qa/scrub-pii.sql
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Run migrations
         run: cd packages/core && bun db:migrate
@@ -143,6 +152,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ci-placeholder
           GITHUB_APP_CLIENT_ID: ci-placeholder
           GITHUB_APP_CLIENT_SECRET: ci-placeholder
+          # Prevent the app from writing back to the prod-shaped ephemeral branch
+          DISABLE_WRITES: "true"
 
       # --- Playwright capture ---
       - name: Capture screenshots and a11y snapshots
