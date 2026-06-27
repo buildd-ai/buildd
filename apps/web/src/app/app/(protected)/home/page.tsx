@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/team-access';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 
@@ -132,24 +132,39 @@ export default async function HomePage({
 
     try {
       const cookieStore = await cookies();
-      const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
+      const cookieTeamId = cookieStore.get('buildd-team')?.value;
 
-      if (!activeTeamId) {
-        // No team — nothing to show; fall through to empty state
-      } else {
-
-      const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
-
-      // Load team workspaces for filter dropdown
-      if (teamWsIds.length > 0) {
-        teamWorkspaces = await db
-          .select({ id: workspacesTable.id, name: workspacesTable.name })
-          .from(workspacesTable)
-          .where(inArray(workspacesTable.id, teamWsIds));
+      // Only scope to a specific team when the cookie is explicitly set and the
+      // user is a member of that team. Without a valid cookie, show cross-team
+      // data for all the user's workspaces (same as pre-#1009 behaviour) so
+      // the Home screen is never empty or stale on first load / after clearing cookies.
+      let activeTeamId: string | null = null;
+      if (cookieTeamId) {
+        const userTeamIds = await getUserTeamIds(user.id);
+        if (userTeamIds.includes(cookieTeamId)) {
+          activeTeamId = cookieTeamId;
+        }
       }
 
-      // Narrow to selected workspace if filter is set (must belong to team)
-      const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
+      // Workspace IDs for worker/task queries
+      let wsIds: string[];
+      if (activeTeamId) {
+        const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
+
+        // Load team workspaces for filter dropdown
+        if (teamWsIds.length > 0) {
+          teamWorkspaces = await db
+            .select({ id: workspacesTable.id, name: workspacesTable.name })
+            .from(workspacesTable)
+            .where(inArray(workspacesTable.id, teamWsIds));
+        }
+
+        // Narrow to selected workspace if filter is set (must belong to team)
+        wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
+      } else {
+        // No valid team cookie → show all user workspaces cross-team
+        wsIds = await getUserWorkspaceIds(user.id);
+      }
 
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
@@ -204,11 +219,11 @@ export default async function HomePage({
           roleSlug: w.task?.roleSlug || null,
         }));
 
-        // Recent completed/failed workers for activity feed
+        // Recent completed/failed/error workers for activity feed
         const recentWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.workspaceId, wsIds),
-            inArray(workers.status, ['completed', 'failed'])
+            inArray(workers.status, ['completed', 'failed', 'error'])
           ),
           orderBy: desc(workers.completedAt),
           limit: 6,
@@ -233,16 +248,23 @@ export default async function HomePage({
           missionTitle: (w.task as any)?.mission?.title || null,
         }));
 
-        // Missions with task progress + health (scoped to active team, filtered by workspace if set)
+        // Missions with task progress + health
+        // Scope: active team (cookie set) or all user teams (no cookie).
         {
-          const missionsWhere = wsFilter
-            ? and(
-                eq(missionsTable.teamId, activeTeamId),
-                or(eq(missionsTable.workspaceId, wsFilter), isNull(missionsTable.workspaceId)),
-              )
-            : eq(missionsTable.teamId, activeTeamId);
+          const missionTeamIds = activeTeamId
+            ? [activeTeamId]
+            : await getUserTeamIds(user.id);
 
-          const allMissions = await db.query.missions.findMany({
+          const missionsWhere = missionTeamIds.length > 0
+            ? (wsFilter && activeTeamId
+                ? and(
+                    eq(missionsTable.teamId, activeTeamId),
+                    or(eq(missionsTable.workspaceId, wsFilter), isNull(missionsTable.workspaceId)),
+                  )
+                : inArray(missionsTable.teamId, missionTeamIds))
+            : undefined;
+
+          const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: missionsWhere,
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
             columns: { id: true, title: true, description: true, status: true },
@@ -254,7 +276,7 @@ export default async function HomePage({
               workspace: { columns: { id: true, name: true } },
             },
             limit: 20,
-          });
+          }) : [];
 
           // Count active workers per mission
           const missionIds = allMissions.map(m => m.id);
@@ -386,7 +408,6 @@ export default async function HomePage({
           workspaceId: r.workspaceId,
         }));
       }
-      } // end else (activeTeamId exists)
     } catch (error) {
       console.error('Home page query error:', error);
     }
@@ -572,8 +593,10 @@ export default async function HomePage({
             {(() => {
               // Home shows running + attention + imminent scheduled (< 24h)
               const activeMissions = missions.filter(m => m.group === 'running' || m.group === 'attention');
+              // Show all scheduled missions (not just those within 24h) so active
+              // missions with infrequent cron schedules are never hidden on Home.
               const soonScheduled = missions
-                .filter(m => m.group === 'scheduled' && m.nextScanMins !== null && m.nextScanMins < 1440)
+                .filter(m => m.group === 'scheduled')
                 .sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity))
                 .slice(0, 3);
               const visibleMissions = [...activeMissions, ...soonScheduled];
