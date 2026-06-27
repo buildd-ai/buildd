@@ -240,19 +240,29 @@ export async function POST(req: NextRequest) {
   );
 
   // Exclude tasks whose dependencies haven't completed yet.
-  // We filter with a SQL subquery so the LIMIT applies to actually-claimable tasks.
+  // "Done" = task.status='completed' AND (no PR opened, OR PR is merged).
+  // This prevents downstream tasks from starting while an upstream PR is still open —
+  // which was the root cause of the 6-overlapping-PR burst (PRs #1044-1049).
+  // The mergedAt column on workers is set by the GitHub webhook when the PR merges.
   claimableConditions.push(
     or(
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-      // All dependencies must be completed (failed deps block downstream tasks)
+      // All dependencies must be completed AND their PRs merged (if any were opened)
       sql`NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${tasks} t2
           WHERE t2.id = dep_id::uuid
           AND t2.status = 'completed'
+          AND NOT EXISTS (
+            -- Block if the dep task has any worker with an open (unmerged) PR
+            SELECT 1 FROM ${workers} w
+            WHERE w.task_id = t2.id
+            AND w.pr_url IS NOT NULL
+            AND w.merged_at IS NULL
+          )
         )
       )`
     )
