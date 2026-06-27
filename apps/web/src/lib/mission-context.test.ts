@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll} from 'bun:test';
 import { isWithinActiveHours } from './mission-context';
 
 // ── isWithinActiveHours ──
@@ -1026,3 +1026,5 @@ describe('getWorkspaceRoles', () => {
     expect(slugs).toEqual(['builder', 'organizer']);
   });
 });
+
+afterAll(() => mock.restore());

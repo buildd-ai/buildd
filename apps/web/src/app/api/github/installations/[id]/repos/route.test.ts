@@ -175,3 +175,5 @@ describe('GET /api/github/installations/[id]/repos', () => {
     expect(data.error).toBe('Failed to get repos');
   });
 });
+
+afterAll(() => mock.restore());

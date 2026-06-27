@@ -138,3 +138,5 @@ describe('DELETE /api/accounts/[id]', () => {
     expect(data.success).toBe(true);
   });
 });
+
+afterAll(() => mock.restore());

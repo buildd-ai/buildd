@@ -276,3 +276,5 @@ describe('GET /api/github/callback', () => {
   });
 
 });
+
+afterAll(() => mock.restore());

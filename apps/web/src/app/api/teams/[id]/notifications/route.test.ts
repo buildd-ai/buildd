@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -124,3 +124,5 @@ describe('/api/teams/[id]/notifications', () => {
     expect(res.status).toBe(401);
   });
 });
+
+afterAll(() => mock.restore());

@@ -515,3 +515,5 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(200);
   });
 });
+
+afterAll(() => mock.restore());

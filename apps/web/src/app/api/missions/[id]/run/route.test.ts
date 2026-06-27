@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -223,3 +223,5 @@ describe('POST /api/missions/[id]/run', () => {
     expect(response.status).toBe(403);
   });
 });
+
+afterAll(() => mock.restore());

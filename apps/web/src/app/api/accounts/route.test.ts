@@ -181,3 +181,5 @@ describe('POST /api/accounts', () => {
     expect(capturedValues?.oauthToken).toBeUndefined();
   });
 });
+
+afterAll(() => mock.restore());

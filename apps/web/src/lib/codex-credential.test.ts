@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn, afterAll} from 'bun:test';
 
 // ── mock setup (before any imports that trigger module loading) ───────────────
 
@@ -506,3 +506,5 @@ describe('verifyCodexCredential', () => {
     logSpy.mockRestore(); errSpy.mockRestore(); warnSpy.mockRestore();
   });
 });
+
+afterAll(() => mock.restore());

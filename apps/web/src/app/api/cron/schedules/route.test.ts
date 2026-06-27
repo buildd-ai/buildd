@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // --- Mock setup ---
@@ -549,3 +549,5 @@ describe('GET /api/cron/schedules', () => {
     (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(true);
   });
 });
+
+afterAll(() => mock.restore());

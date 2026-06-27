@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -330,3 +330,5 @@ describe('POST /api/missions/[id]/notes', () => {
     expect(updatedNoteValues).toEqual({ status: 'answered' });
   });
 });
+
+afterAll(() => mock.restore());

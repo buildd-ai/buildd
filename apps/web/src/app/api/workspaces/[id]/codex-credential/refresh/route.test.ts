@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── mock setup (before any imports that trigger module loading) ───────────────
@@ -98,3 +98,5 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh', () => {
     expect(data.status).toBe('locked');
   });
 });
+
+afterAll(() => mock.restore());

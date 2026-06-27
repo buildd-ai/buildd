@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock functions
 const mockFindFirst = mock(() => null as any);
@@ -541,3 +541,5 @@ describe('dependency failure cascade', () => {
     expect(eventNames).not.toContain('task:unblocked');
   });
 });
+
+afterAll(() => mock.restore());

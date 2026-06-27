@@ -1,6 +1,6 @@
 process.env.NODE_ENV = 'test';
 
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll} from 'bun:test';
 
 // ── Mocks (must be set up before any import of the module under test) ─────────
 
@@ -350,3 +350,5 @@ describe('executeRelease — trigger policy', () => {
     expect(result.status).not.toBe('skipped');
   });
 });
+
+afterAll(() => mock.restore());

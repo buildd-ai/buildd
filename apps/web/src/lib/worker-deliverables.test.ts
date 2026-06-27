@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterAll} from 'bun:test';
 
 // Inline the pure function to avoid bun's process-global mock.module() pollution.
 // Other test files (stale-workers.test.ts) mock '@/lib/worker-deliverables' which
@@ -161,3 +161,5 @@ describe('checkWorkerDeliverables', () => {
     expect(result.hasAny).toBe(false);
   });
 });
+
+afterAll(() => mock.restore());

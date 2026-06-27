@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // --- Mocks ---
 const mockWorkersFindMany = mock(() => [] as any[]);
@@ -617,3 +617,5 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet.status).toBe('completed');
   });
 });
+
+afterAll(() => mock.restore());

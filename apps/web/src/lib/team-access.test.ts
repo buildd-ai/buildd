@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock only the db layer — let real schema + drizzle-orm load. Mocking those
 // globally (bun's mock.module is process-wide) would shadow exports other
@@ -115,3 +115,5 @@ describe('resolveActiveTeamId', () => {
     expect(await resolveActiveTeamId('user-1', null)).toBe('personal-team-id');
   });
 });
+
+afterAll(() => mock.restore());

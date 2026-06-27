@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsInsert = mock(() => ({
@@ -185,3 +185,5 @@ describe('upsertAutoArtifact', () => {
     expect(mockArtifactsInsert).not.toHaveBeenCalled();
   });
 });
+
+afterAll(() => mock.restore());

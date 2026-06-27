@@ -155,3 +155,5 @@ describe('POST /api/workspaces/[id]/create-repo', () => {
     expect(res.status).toBe(422);
   });
 });
+
+afterAll(() => mock.restore());

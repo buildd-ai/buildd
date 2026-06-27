@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock functions with proper typing
 const mockAccountsFindFirst = mock(() => null as any);
@@ -393,3 +393,5 @@ describe('task-service', () => {
     });
   });
 });
+
+afterAll(() => mock.restore());

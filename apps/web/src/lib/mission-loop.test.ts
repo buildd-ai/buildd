@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // ── Mock state ──
 let missionFindFirstResult: any = null;
@@ -579,3 +579,5 @@ describe('mission-loop', () => {
     );
   });
 });
+
+afterAll(() => mock.restore());

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -190,3 +190,5 @@ describe('GET /api/tasks/waiting-input', () => {
     expect(data.tasks[0].id).toBe('task-1');
   });
 });
+
+afterAll(() => mock.restore());

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // --- Mocks ---
@@ -203,3 +203,5 @@ describe('POST /api/tasks/bulk', () => {
     expect(res.status).toBe(200);
   });
 });
+
+afterAll(() => mock.restore());

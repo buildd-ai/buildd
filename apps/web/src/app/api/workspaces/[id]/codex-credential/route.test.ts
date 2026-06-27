@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── mock setup (before any imports that trigger module loading) ───────────────
@@ -263,3 +263,5 @@ describe('DELETE /api/workspaces/[id]/codex-credential', () => {
     expect(data.connected).toBe(false);
   });
 });
+
+afterAll(() => mock.restore());

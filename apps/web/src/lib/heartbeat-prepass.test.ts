@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // ── Mock state ──
 let missionsFindFirstResult: any = null;
@@ -327,3 +327,5 @@ describe('evaluateHeartbeatPrepass', () => {
     expect(result.action).toBe('skip_blocked');
   });
 });
+
+afterAll(() => mock.restore());

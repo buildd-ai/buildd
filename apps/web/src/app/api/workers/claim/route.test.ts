@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -2140,3 +2140,5 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers).toHaveLength(1);
   });
 });
+
+afterAll(() => mock.restore());

@@ -833,3 +833,5 @@ describe('POST /api/github/pr', () => {
     expect(data.error).toBe('GitHub API rate limit exceeded');
   });
 });
+
+afterAll(() => mock.restore());

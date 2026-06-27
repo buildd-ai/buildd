@@ -162,3 +162,5 @@ describe('GET /api/workspaces/[id]/last-release', () => {
     expect(res.status).toBe(200);
   });
 });
+
+afterAll(() => mock.restore());

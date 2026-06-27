@@ -288,3 +288,5 @@ describe('POST /api/workspaces', () => {
     expect(res.status).toBe(401);
   });
 });
+
+afterAll(() => mock.restore());

@@ -149,3 +149,5 @@ describe('GET /api/github/installations', () => {
     expect(data.error).toBe('Failed to get installations');
   });
 });
+
+afterAll(() => mock.restore());

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -286,3 +286,5 @@ describe('GET /api/workspaces/[id]/runners', () => {
     expect(expectedOnlineThreshold).toBeGreaterThanOrEqual(60 * 60_000);
   });
 });
+
+afterAll(() => mock.restore());

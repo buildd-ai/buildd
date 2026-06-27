@@ -390,3 +390,5 @@ describe('DELETE /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 });
+
+afterAll(() => mock.restore());

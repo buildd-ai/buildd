@@ -133,3 +133,5 @@ describe('DELETE /api/github/installations/[id]', () => {
     expect(data.error).toBe('Failed to disconnect');
   });
 });
+
+afterAll(() => mock.restore());

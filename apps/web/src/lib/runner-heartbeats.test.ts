@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll} from 'bun:test';
 
 // Mock DB dependencies BEFORE dynamic-importing the module under test.
 // Static `import` is hoisted so we must use dynamic import for the module
@@ -45,3 +45,5 @@ describe('isRunnerOnline', () => {
     expect(isRunnerOnline(new Date(Date.now() - 5 * 60 * 1000))).toBe(false);
   });
 });
+
+afterAll(() => mock.restore());

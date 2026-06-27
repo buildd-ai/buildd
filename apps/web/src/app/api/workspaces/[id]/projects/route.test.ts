@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -439,3 +439,5 @@ describe('POST /api/workspaces/[id]/projects', () => {
     expect(data.projects.map((p: any) => p.name).sort()).toEqual(['@mono/core', '@mono/web']);
   });
 });
+
+afterAll(() => mock.restore());

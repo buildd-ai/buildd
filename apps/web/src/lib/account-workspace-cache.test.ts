@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock database
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
@@ -191,3 +191,5 @@ describe('cache invalidation', () => {
     expect(mockAccountWorkspacesFindMany).toHaveBeenCalledTimes(4);
   });
 });
+
+afterAll(() => mock.restore());

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 // Mock functions for deps injected via DI (not mock.module — avoids polluting other test files)
 const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
@@ -456,3 +456,5 @@ describe('runMission', () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 });
+
+afterAll(() => mock.restore());

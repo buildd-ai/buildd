@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
@@ -96,3 +96,5 @@ describe('POST /api/workspaces/[id]/codex-credential/verify', () => {
     expect(mockGetCodexSecretId).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
   });
 });
+
+afterAll(() => mock.restore());

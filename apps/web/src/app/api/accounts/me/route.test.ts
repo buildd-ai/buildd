@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -73,3 +73,5 @@ describe('GET /api/accounts/me', () => {
     expect(data.totalCost).toBeUndefined();
   });
 });
+
+afterAll(() => mock.restore());

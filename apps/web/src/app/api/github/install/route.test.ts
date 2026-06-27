@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -99,3 +99,5 @@ describe('GET /api/github/install', () => {
     expect(decoded.returnUrl).toBe('/app/workspaces/ws-123');
   });
 });
+
+afterAll(() => mock.restore());

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -566,3 +566,5 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.canTakeover).toBeFalsy(); // Not owner and not stale
   });
 });
+
+afterAll(() => mock.restore());

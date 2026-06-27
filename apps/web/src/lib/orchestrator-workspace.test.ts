@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, afterAll} from 'bun:test';
 
 const mockFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [{ id: 'new-ws-id' }] as any);
@@ -71,3 +71,5 @@ describe('getOrCreateCoordinationWorkspace', () => {
     expect(insertCall.teamId).toBe('team-2');
   });
 });
+
+afterAll(() => mock.restore());
