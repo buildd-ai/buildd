@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:test';
 import { createHash } from 'crypto';
 
 // Mock database
@@ -10,9 +10,6 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGetCachedApiKey = mock(() => Promise.resolve(null) as any);
 const mockSetCachedApiKey = mock(() => Promise.resolve());
 const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
-
-// Mock OAuth token verification
-const mockVerifyJwt = mock(() => Promise.resolve(null) as any);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -41,11 +38,7 @@ mock.module('./redis', () => ({
   invalidateCachedApiKey: mockInvalidateCachedApiKey,
 }));
 
-mock.module('./oauth/tokens', () => ({
-  verifyAccessTokenAnyAudience: mockVerifyJwt,
-  looksLikeJwt: (token: string) => /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token),
-}));
-
+import * as tokensModule from './oauth/tokens';
 import {
   hashApiKey,
   extractApiKeyPrefix,
@@ -54,6 +47,11 @@ import {
   invalidateAccountCacheByHash,
   clearAccountCache,
 } from './api-auth';
+
+// Spy on verifyAccessTokenAnyAudience so spyVerifyJwt.mockRestore() properly unwinds it
+// after this file, preventing pollution into tokens.test.ts.
+// (mock.module + mock.restore() does NOT restore module mocks — spyOn does.)
+const spyVerifyJwt = spyOn(tokensModule, 'verifyAccessTokenAnyAudience');
 
 describe('hashApiKey', () => {
   it('returns SHA-256 hex hash of the input', () => {
@@ -102,7 +100,7 @@ describe('authenticateApiKey', () => {
     mockAccountsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    mockVerifyJwt.mockReset();
+    spyVerifyJwt.mockReset();
     mockGetCachedApiKey.mockReset();
     mockSetCachedApiKey.mockReset();
     mockInvalidateCachedApiKey.mockReset();
@@ -111,7 +109,7 @@ describe('authenticateApiKey', () => {
     mockInvalidateCachedApiKey.mockResolvedValue(undefined);
     mockTeamMembersFindFirst.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockResolvedValue(null);
-    mockVerifyJwt.mockResolvedValue(null);
+    spyVerifyJwt.mockResolvedValue(null);
     clearAccountCache();
   });
 
@@ -315,20 +313,20 @@ describe('authenticateApiKey', () => {
     const JWT_TOKEN = 'eyJhbGc.dGVzdA.c2ln';
 
     it('returns null when JWT verification fails', async () => {
-      mockVerifyJwt.mockResolvedValue(null);
+      spyVerifyJwt.mockResolvedValue(null);
       const result = await authenticateApiKey(JWT_TOKEN);
       expect(result).toBeNull();
     });
 
     it('returns null when workspace is not found', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue(null);
       const result = await authenticateApiKey(JWT_TOKEN);
       expect(result).toBeNull();
     });
 
     it('returns null when user is not a member of the workspace team', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockTeamMembersFindFirst.mockResolvedValue(null);
       const result = await authenticateApiKey(JWT_TOKEN);
@@ -336,7 +334,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('returns null when no type="user" account exists for workspace team', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockAccountsFindFirst.mockResolvedValue(null);
@@ -345,7 +343,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('returns account with admin level for valid JWT', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
       const mockAccount = { id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1', name: 'My Account' };
@@ -356,7 +354,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('overrides any existing level to admin', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
       const mockAccount = { id: 'acct-1', type: 'user', level: 'trigger', teamId: 'team-1', name: 'My Account' };
@@ -367,7 +365,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('caches the result so JWT is only verified once', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
       mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
@@ -376,11 +374,11 @@ describe('authenticateApiKey', () => {
       await authenticateApiKey(JWT_TOKEN);
 
       // JWT verification should only happen once (cached)
-      expect(mockVerifyJwt).toHaveBeenCalledTimes(1);
+      expect(spyVerifyJwt).toHaveBeenCalledTimes(1);
     });
 
     it('resolves the team via workspace_id from JWT claims, not teamMembers alone', async () => {
-      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-targeted', scope: 'mcp', client_id: 'c_1' });
+      spyVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-targeted', scope: 'mcp', client_id: 'c_1' });
       mockWorkspacesFindFirst.mockResolvedValue(null); // workspace not found → should bail
 
       const result = await authenticateApiKey(JWT_TOKEN);
@@ -391,5 +389,6 @@ describe('authenticateApiKey', () => {
   });
 });
 
-// Restore module mocks so they don't leak into other test files in the same run.
-afterAll(() => mock.restore());
+// Restore the spy so verifyAccessTokenAnyAudience is real again in subsequent test files.
+// spyOn + mockRestore() properly unwinds; mock.restore() does not restore mock.module() overrides.
+afterAll(() => spyVerifyJwt.mockRestore());

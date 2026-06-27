@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { accounts, users, teamMembers, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { TTLCache } from './cache';
-import { verifyAccessTokenAnyAudience, looksLikeJwt } from './oauth/tokens';
+import * as tokensModule from './oauth/tokens';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 
 /**
@@ -65,7 +65,7 @@ type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
  * never outlives the token.
  */
 async function authenticateOauthJwt(jwt: string) {
-  const claims = await verifyAccessTokenAnyAudience(jwt);
+  const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
   if (!claims) return null;
 
   const userId = claims.sub;
@@ -111,7 +111,7 @@ export async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
 
   // OAuth bearer path — verify the JWT before any DB work.
-  if (looksLikeJwt(apiKey)) {
+  if (tokensModule.looksLikeJwt(apiKey)) {
     const hashed = hashApiKey(apiKey);
     if (negativeCache.get(hashed)) return null;
     const cached = accountCache.get(hashed);
