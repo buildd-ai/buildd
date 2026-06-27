@@ -134,7 +134,10 @@ export async function getTeamWorkspaceIds(teamId: string): Promise<string[]> {
 }
 
 /**
- * Get all team IDs a user belongs to.
+ * Get all team IDs a user belongs to, including their personal team.
+ * Falls back to the personal team (slug = personal-{userId}) so that
+ * accounts created before teamMembers enforcement still resolve their
+ * own missions and workspaces — mirrors the getUserWorkspaceIds fallback.
  */
 export async function getUserTeamIds(userId: string): Promise<string[]> {
   const memberships = await db.query.teamMembers.findMany({
@@ -142,7 +145,18 @@ export async function getUserTeamIds(userId: string): Promise<string[]> {
     columns: { teamId: true },
   });
 
-  return memberships.map(m => m.teamId);
+  const ids = new Set(memberships.map(m => m.teamId));
+
+  // Personal-team fallback for accounts missing a teamMembers row
+  const personalTeam = await db.query.teams.findFirst({
+    where: eq(teams.slug, `personal-${userId}`),
+    columns: { id: true },
+  });
+  if (personalTeam) {
+    ids.add(personalTeam.id);
+  }
+
+  return [...ids];
 }
 
 /**
