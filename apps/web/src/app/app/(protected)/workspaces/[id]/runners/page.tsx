@@ -16,10 +16,10 @@ interface Runner {
   activeWorkerCount: number;
   capacity: number;
   environment?: {
-    tools?: string[];
+    tools?: { name: string; version?: string }[];
     envKeys?: string[];
     mcp?: string[];
-    labels?: string[];
+    labels?: Record<string, string>;
     scannedAt?: string;
   } | null;
 }
@@ -111,7 +111,7 @@ export default function RunnersPage() {
                   <div key={runner.id} className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className="font-medium text-text-primary truncate">
                             {runner.accountName}
                           </span>
@@ -126,6 +126,11 @@ export default function RunnersPage() {
                             }`} />
                             {runner.status === 'online' ? 'Online' : 'Stale'}
                           </span>
+                          {runner.environment?.envKeys?.includes('browser') && (
+                            <span className="px-1.5 py-0.5 text-[10px] font-medium rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/30" title="Headless Chromium available">
+                              Browser
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-muted">
@@ -144,14 +149,14 @@ export default function RunnersPage() {
                     </div>
 
                     {/* Environment labels */}
-                    {runner.environment?.labels && runner.environment.labels.length > 0 && (
+                    {runner.environment?.labels && Object.keys(runner.environment.labels).length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
-                        {runner.environment.labels.map((label) => (
+                        {Object.entries(runner.environment.labels).map(([key, value]) => (
                           <span
-                            key={label}
+                            key={key}
                             className="px-1.5 py-0.5 text-[10px] bg-surface-3 text-text-secondary rounded"
                           >
-                            {label}
+                            {key}: {value}
                           </span>
                         ))}
                       </div>
