@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { createHash } from 'crypto';
 
 // Mock database
@@ -390,3 +390,6 @@ describe('authenticateApiKey', () => {
     });
   });
 });
+
+// Restore module mocks so they don't leak into other test files in the same run.
+afterAll(() => mock.restore());
