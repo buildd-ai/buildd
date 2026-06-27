@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockConsumeAuthCode = mock(() => ({ error: 'invalid_grant' }) as any);
@@ -201,3 +201,6 @@ describe('POST /api/oauth/token — account auto-creation', () => {
     });
   });
 });
+
+// Restore module mocks so they don't leak into other test files in the same run.
+afterAll(() => mock.restore());
