@@ -72,11 +72,13 @@ jobs:
             sleep 2
           fi
 
-          # Clone off PROD branch (copy-on-write — no data is moved or duplicated)
+          # Clone off PROD branch (copy-on-write — no data is moved or duplicated).
+          # Falls back to NEON_PARENT_BRANCH_ID if NEON_PROD_BRANCH_ID is not yet configured.
+          PARENT_BRANCH_ID="${NEON_PROD_BRANCH_ID:-$NEON_PARENT_BRANCH_ID}"
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $NEON_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$NEON_PROD_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
+            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
             "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
 
           BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
@@ -115,6 +117,7 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           NEON_PROD_BRANCH_ID: ${{ secrets.NEON_PROD_BRANCH_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
 
@@ -217,7 +220,10 @@ jobs:
         run: bun scripts/qa/judge.ts
         env:
           BUILDD_QA_URL: https://buildd.dev
-          BUILDD_QA_KEY: ${{ secrets.BUILDD_QA_KEY }}
+          # BUILDD_QA_KEY: dedicated read-only key scoped to /api/qa/judge.
+          # Falls back to BUILDD_API_KEY (workspace key already in secrets) until
+          # a scoped key is provisioned.
+          BUILDD_QA_KEY: ${{ secrets.BUILDD_QA_KEY || secrets.BUILDD_API_KEY }}
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
