@@ -1,9 +1,9 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { accounts, users, teamMembers } from '@buildd/core/db/schema';
+import { accounts, users, teamMembers, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { TTLCache } from './cache';
-import { verifyAccessTokenAnyAudience, looksLikeJwt } from './oauth/tokens';
+import * as tokensModule from './oauth/tokens';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 
 /**
@@ -65,19 +65,29 @@ type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
  * never outlives the token.
  */
 async function authenticateOauthJwt(jwt: string) {
-  const claims = await verifyAccessTokenAnyAudience(jwt);
+  const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
   if (!claims) return null;
 
   const userId = claims.sub;
-  // Find the user's primary 'user'-type account via team membership.
+
+  // The JWT is scoped to a specific workspace. Use that workspace's team
+  // rather than the user's first team membership, which is wrong for
+  // multi-team users (the first membership may not match the requested workspace).
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, claims.workspace_id),
+    columns: { teamId: true },
+  });
+  if (!workspace) return null;
+
+  // Verify the requesting user still has membership in the workspace's team.
   const membership = await db.query.teamMembers.findFirst({
-    where: eq(teamMembers.userId, userId),
+    where: and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId)),
     columns: { teamId: true },
   });
   if (!membership) return null;
 
   const account = await db.query.accounts.findFirst({
-    where: and(eq(accounts.teamId, membership.teamId), eq(accounts.type, 'user')),
+    where: and(eq(accounts.teamId, workspace.teamId), eq(accounts.type, 'user')),
   });
   if (!account) return null;
 
@@ -101,7 +111,7 @@ export async function authenticateApiKey(apiKey: string | null) {
   if (!apiKey) return null;
 
   // OAuth bearer path — verify the JWT before any DB work.
-  if (looksLikeJwt(apiKey)) {
+  if (tokensModule.looksLikeJwt(apiKey)) {
     const hashed = hashApiKey(apiKey);
     if (negativeCache.get(hashed)) return null;
     const cached = accountCache.get(hashed);

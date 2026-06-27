@@ -2,9 +2,10 @@
  * Default roles seeded into new workspaces.
  *
  * Roles: Organizer (Opus), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
- * Analyst (Sonnet). Model choices feed the claim-time router — Organizer/Builder
- * default to Opus and downshift via task complexity; the others start at Sonnet
- * and can downshift to Haiku under budget pressure.
+ * Analyst (Sonnet), Spec Validator (Sonnet).
+ * Model choices feed the claim-time router — Organizer/Builder default to Opus and
+ * downshift via task complexity; the others start at Sonnet and can downshift to
+ * Haiku under budget pressure.
  *
  * MCP configs use ${VAR} interpolation; users store secrets via /api/secrets
  * with purpose='mcp_credential' and matching labels.
@@ -367,6 +368,7 @@ You are the Spec Validator — your job is to compare the SHIPPED implementation
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
   },
 ];
+
 
 /**
  * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).

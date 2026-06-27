@@ -1,12 +1,63 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'crypto';
 import {
   consumeAuthCode,
   consumeRefreshToken,
   createRefreshToken,
 } from '@/lib/oauth/storage';
 import { signAccessToken } from '@/lib/oauth/tokens';
+import { db } from '@buildd/core/db';
+import { accounts, workspaces, users } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 
 export const dynamic = 'force-dynamic';
+
+function generateApiKey(): string {
+  return `bld_${randomBytes(32).toString('hex')}`;
+}
+
+/**
+ * Option B: ensure the workspace's team has a type='user' account so
+ * authenticateOauthJwt can find one. Users who authorize the MCP connector
+ * for the first time (without having gone through device/CLI auth) won't
+ * have one yet. Creates a minimal account and silently skips on any error
+ * so the token response is never blocked.
+ */
+async function ensureUserAccount(userId: string, workspaceId: string): Promise<void> {
+  try {
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { teamId: true },
+    });
+    if (!workspace) return;
+
+    const existing = await db.query.accounts.findFirst({
+      where: and(eq(accounts.teamId, workspace.teamId), eq(accounts.type, 'user')),
+      columns: { id: true },
+    });
+    if (existing) return;
+
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { name: true, email: true },
+    });
+
+    const plaintextKey = generateApiKey();
+    await db.insert(accounts).values({
+      name: `${user?.name || user?.email || 'User'}'s Account`,
+      type: 'user',
+      authType: 'oauth',
+      apiKey: hashApiKey(plaintextKey),
+      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+      maxConcurrentWorkers: 10,
+      teamId: workspace.teamId,
+    });
+  } catch {
+    // Non-fatal: the token is valid even if account provisioning fails.
+    // The user may 401 on MCP tool calls until the account is created.
+  }
+}
 
 function tokenError(error: string, description?: string, status = 400) {
   return NextResponse.json(
@@ -54,6 +105,8 @@ export async function POST(req: NextRequest) {
     const result = await consumeAuthCode({ code, clientId, redirectUri, codeVerifier });
     if ('error' in result) return tokenError(result.error);
 
+    await ensureUserAccount(result.userId, result.workspaceId);
+
     const scope = result.scope ?? 'mcp';
     const { token, expiresIn } = await signAccessToken({
       userId: result.userId,
@@ -89,6 +142,8 @@ export async function POST(req: NextRequest) {
 
     const result = await consumeRefreshToken({ token: refreshToken, clientId });
     if ('error' in result) return tokenError(result.error);
+
+    await ensureUserAccount(result.userId, result.workspaceId);
 
     const scope = result.scope ?? 'mcp';
     const { token, expiresIn } = await signAccessToken({

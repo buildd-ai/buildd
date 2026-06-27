@@ -898,3 +898,8 @@ export const SENSITIVE_PATHS = [
   /id_rsa/,
 ] as const;
 
+// Runner capability keys — advertised in WorkerEnvironment.envKeys, matched
+// against Task.requiredCapabilities during claim.
+// Use these constants everywhere so typos can't cause silent mismatches.
+export const CAPABILITY_BROWSER = 'browser';
+

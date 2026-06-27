@@ -1,0 +1,263 @@
+{
+  "version": "1",
+  "description": "Per-page QA route manifest. Derived from docs/SPEC.md. Each route's expectations are the acceptance criteria the visual-QA agent verifies against the rendered preview.",
+  "specSource": "docs/SPEC.md",
+  "updatedAt": "2026-06-26",
+  "routes": [
+    {
+      "id": "home",
+      "path": "/app/home",
+      "title": "Home / Dashboard",
+      "specRef": "§2 domain model — Workspace, Worker, Task; §8 live subsystems",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "home-active-workers",
+          "desc": "Active workers panel or count is visible",
+          "specClaim": "Workers table tracks agent execution sessions; dashboard surfaces active runners"
+        },
+        {
+          "id": "home-task-counts",
+          "desc": "Pending or completed task counts are surfaced",
+          "specClaim": "task.status lifecycle: pending → completed, visible in coordination layer"
+        },
+        {
+          "id": "home-feed-or-empty-state",
+          "desc": "Recent activity feed is present, OR a recognisable empty-state hero is shown when no activity",
+          "specClaim": "Dashboard reflects task/worker lifecycle for new and active workspaces alike"
+        },
+        {
+          "id": "home-no-errors",
+          "desc": "Page renders without visible JS/render errors or broken layout",
+          "specClaim": "Shipped, live UI (§8)"
+        }
+      ]
+    },
+    {
+      "id": "missions",
+      "path": "/app/missions",
+      "title": "Missions list",
+      "specRef": "§2 Mission — first-class goal, status, scheduleId, maxConcurrentTasks",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "missions-list",
+          "desc": "Mission cards or list rows are rendered (or an empty-state if none exist)",
+          "specClaim": "Mission is a first-class entity with status: active | paused | completed | archived"
+        },
+        {
+          "id": "missions-status",
+          "desc": "Mission status badge is visible on each row",
+          "specClaim": "Mission status stored, health derived; both must surface in UI"
+        },
+        {
+          "id": "missions-create-cta",
+          "desc": "Create / New Mission button or link is present and navigable",
+          "specClaim": "Missions API: POST /api/missions"
+        },
+        {
+          "id": "missions-no-errors",
+          "desc": "Page renders without visible errors or broken layout",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "mission-detail",
+      "path": "/app/missions/:id",
+      "title": "Mission detail",
+      "specRef": "§2 Mission — workingBranch, primaryPrUrl, requiresReview, maxConcurrentTasks, dependsOnMission",
+      "category": "core",
+      "paramHint": "Use any existing mission ID. Skip if no missions exist.",
+      "expectations": [
+        {
+          "id": "mission-detail-tasks",
+          "desc": "Task list for the mission is visible",
+          "specClaim": "tasks.missionId FK — mission aggregates tasks"
+        },
+        {
+          "id": "mission-detail-pr-link",
+          "desc": "Primary PR link is shown if a working branch / PR exists",
+          "specClaim": "Mission.workingBranch + primaryPrNumber/primaryPrUrl"
+        },
+        {
+          "id": "mission-detail-notes",
+          "desc": "Notes / mission feed section is present",
+          "specClaim": "mission_notes: append-only agent↔user feed"
+        },
+        {
+          "id": "mission-detail-no-errors",
+          "desc": "Page renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "team",
+      "path": "/app/team",
+      "title": "Team / Roles",
+      "specRef": "§2 Role/Skill — isRole, model, allowedTools, canDelegateTo, color; §3 default roles: Organizer, Builder, Researcher",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "team-role-cards",
+          "desc": "Role cards (Organizer, Builder, Researcher at minimum) are rendered",
+          "specClaim": "Default roles seeded per workspace: Organizer, Builder, Researcher"
+        },
+        {
+          "id": "team-active-idle",
+          "desc": "Each role shows active-worker count or idle indicator",
+          "specClaim": "Roles are claim-time routing constraints; UI should reflect load"
+        },
+        {
+          "id": "team-workspace-scoped",
+          "desc": "Roles are scoped to the current workspace (not mixing team-global with workspace-override unexpectedly)",
+          "specClaim": "workspace override > team default precedence (§C.2)"
+        },
+        {
+          "id": "team-no-errors",
+          "desc": "Page renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "path": "/app/tasks",
+      "title": "Tasks list / Activity",
+      "specRef": "§2 Task — status lifecycle, mode, outputRequirement, roleSlug; §4 GET /api/tasks",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "tasks-list",
+          "desc": "Task rows are rendered with status badges visible",
+          "specClaim": "task.status: pending → assigned → in_progress → review → completed/failed"
+        },
+        {
+          "id": "tasks-filter",
+          "desc": "Status filter or sort controls are present",
+          "specClaim": "Tasks API supports filtering; UI should expose it"
+        },
+        {
+          "id": "tasks-create-cta",
+          "desc": "New task button is present and navigable",
+          "specClaim": "POST /api/tasks + dashboard CTA"
+        },
+        {
+          "id": "tasks-no-errors",
+          "desc": "Page renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "task-detail",
+      "path": "/app/tasks/:id",
+      "title": "Task detail",
+      "specRef": "§2 Task — status, Worker.waitingFor, milestones, prUrl; sibling bug task 4818f4f8 (status badge stuck on Assigned)",
+      "category": "critical",
+      "paramHint": "Use a recently-completed task. The status badge MUST NOT read 'Assigned' for a completed task.",
+      "expectations": [
+        {
+          "id": "task-detail-status-badge",
+          "desc": "Status badge reflects actual task.status — MUST NOT be stuck on 'Assigned' for a completed/in_progress task",
+          "specClaim": "task.status lifecycle is canonical; badge must track it (sibling bug 4818f4f8)"
+        },
+        {
+          "id": "task-detail-worker-card",
+          "desc": "Worker card or execution details visible (progress, cost, turns) for tasks that have been claimed",
+          "specClaim": "Worker: status, costUsd, turns, milestones, prUrl"
+        },
+        {
+          "id": "task-detail-pr-link",
+          "desc": "PR link visible for tasks where a PR was created",
+          "specClaim": "worker.prUrl / worker.prNumber"
+        },
+        {
+          "id": "task-detail-actions",
+          "desc": "Edit / Reassign / Delete actions are present and appear wired (not dead buttons)",
+          "specClaim": "Task CRUD: PATCH /api/tasks/[id], POST /api/tasks/[id]/reassign"
+        },
+        {
+          "id": "task-detail-no-errors",
+          "desc": "Page renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "task-create",
+      "path": "/app/tasks/new",
+      "title": "Create task form",
+      "specRef": "§2 Task — title, description, roleSlug, priority, outputRequirement; §4 POST /api/tasks",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "task-create-form",
+          "desc": "Task creation form renders with title and description fields",
+          "specClaim": "Task: title (required), description; POST /api/tasks"
+        },
+        {
+          "id": "task-create-role-select",
+          "desc": "Role selector is present to route to a specific role",
+          "specClaim": "task.roleSlug — claim-time routing constraint"
+        },
+        {
+          "id": "task-create-submit",
+          "desc": "Submit button is present and appears wired",
+          "specClaim": "POST /api/tasks returns new task; should navigate to task detail"
+        },
+        {
+          "id": "task-create-no-errors",
+          "desc": "Form renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "path": "/app/settings",
+      "title": "Settings",
+      "specRef": "§2 Workspace gitConfig, releaseConfig, webhookConfig; §4 PATCH /api/workspaces/[id]/config",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "settings-renders",
+          "desc": "Settings page renders without a blank screen or error",
+          "specClaim": "Workspace config (gitConfig, releaseConfig) must be editable"
+        },
+        {
+          "id": "settings-key-toggles",
+          "desc": "Key config toggles (e.g. auto-merge, CI retries) are present",
+          "specClaim": "gitConfig: autoMergeOnGreenCI, maxCiRetries, etc."
+        },
+        {
+          "id": "settings-no-errors",
+          "desc": "Page renders without visible errors",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    }
+  ],
+  "verdictVocabulary": {
+    "MATCHES-SPEC": "Element/behaviour is present and matches the spec claim",
+    "CONTRADICTED": "Element is built but behaves contrary to the spec claim",
+    "DOCUMENTED-NOT-BUILT": "Spec claims this should exist but it is absent from the rendered UI",
+    "SHIPPED-NOT-DOCUMENTED": "UI shows something not mentioned in spec — flag for spec backfill"
+  },
+  "authSetup": {
+    "vercelPreviewBypass": {
+      "header": "x-vercel-protection-bypass",
+      "envVar": "VERCEL_AUTOMATION_BYPASS_SECRET",
+      "secretLabel": "vercel-bypass-secret",
+      "notes": "Set this header on every request to bypass Vercel preview protection"
+    },
+    "appAuth": {
+      "method": "storage-state",
+      "envVar": "VISUAL_QA_STORAGE_STATE_PATH",
+      "secretLabel": "visual-qa-storage-state",
+      "alternativeDevMode": "DEV_USER_EMAIL=your@email.com (local dev only)",
+      "notes": "Pre-authenticated Playwright storage state (JSON) containing the session cookie. Generate once with the setup script, store as encrypted secret."
+    }
+  }
+}
