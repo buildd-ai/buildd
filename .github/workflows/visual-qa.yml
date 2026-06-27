@@ -152,11 +152,12 @@ jobs:
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
-      # --- Claude judgment ---
+      # --- Claude judgment (proxied through /api/qa/judge — no model key in CI) ---
       - name: Judge pages (Claude API)
         run: bun scripts/qa/judge.ts
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+          BUILDD_API_URL: https://buildd.dev
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
