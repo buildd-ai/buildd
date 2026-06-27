@@ -290,28 +290,28 @@ jobs:
               `<sub>Workflow run [#${context.runNumber}](${runUrl}) · \`scripts/qa/\`</sub>`,
             ].filter(line => line !== undefined).join('\n');
 
-            // Delete previous visual-qa bot comments
-            const { data: existingComments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            for (const c of existingComments) {
-              if (c.user?.type === 'Bot' && c.body?.includes('🔍 Visual QA')) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: c.id,
-                }).catch(() => {});
+            // Post PR comment (skipped for workflow_dispatch runs without a PR)
+            const prNumber = context.payload.pull_request?.number ?? context.issue?.number;
+            if (prNumber) {
+              // Delete previous visual-qa bot comments
+              const { data: existingComments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+              });
+              for (const c of existingComments) {
+                if (c.user?.type === 'Bot' && c.body?.includes('🔍 Visual QA')) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: c.id,
+                  }).catch(() => {});
+                }
               }
-            }
-
-            // Post updated comment (skip on workflow_dispatch with no PR)
-            if (context.issue?.number) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: prNumber,
                 body: commentBody,
               });
             }

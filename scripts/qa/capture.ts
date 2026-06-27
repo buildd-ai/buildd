@@ -116,12 +116,18 @@ for (const route of manifest.routes) {
     const screenshotPath = join(OUTPUT_DIR, 'screenshots', screenshotFile);
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    const a11ySnapshot = await page.accessibility.snapshot();
-    const a11yFile = `${route.id}.json`;
-    writeFileSync(
-      join(OUTPUT_DIR, 'a11y', a11yFile),
-      JSON.stringify(a11ySnapshot ?? {}, null, 2),
-    );
+    // page.accessibility was removed in Playwright 1.44+; use ariaSnapshot() instead.
+    let a11yContent = '';
+    try {
+      a11yContent = await (page as any).ariaSnapshot({ selector: 'body' }).catch(
+        () => (page as any).ariaSnapshot(),
+      );
+    } catch {
+      // a11y capture is best-effort — a missing snapshot degrades judgment quality but
+      // does not block the screenshot or the overall capture.
+    }
+    const a11yFile = `${route.id}.txt`;
+    writeFileSync(join(OUTPUT_DIR, 'a11y', a11yFile), a11yContent);
 
     const finalUrl = page.url();
     captures.push({

@@ -55,7 +55,7 @@ async function judgeRoute(capture: any, route: any): Promise<RouteVerdict> {
       screenshotB64 = readFileSync(screenshotPath).toString('base64');
     }
     if (capture.a11yFile && existsSync(a11yPath)) {
-      a11yText = readFileSync(a11yPath, 'utf-8').substring(0, 4000);
+      a11yText = readFileSync(a11yPath, 'utf-8');
     }
   }
 
