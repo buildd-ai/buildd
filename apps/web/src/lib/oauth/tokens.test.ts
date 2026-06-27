@@ -1,9 +1,6 @@
-import { describe, it, expect, beforeAll, mock } from 'bun:test';
+import { describe, it, expect, beforeAll } from 'bun:test';
 
 beforeAll(() => {
-  // Clear any stale module mocks from previously-run test files (e.g. api-auth.test.ts
-  // mocks './oauth/tokens' and may not have fully restored before this file runs).
-  mock.restore();
   process.env.OAUTH_JWT_SECRET = 'test-secret-do-not-use-in-prod-test-secret-do-not-use';
   process.env.OAUTH_ISSUER = 'https://buildd.test';
 });

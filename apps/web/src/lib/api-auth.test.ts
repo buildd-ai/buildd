@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:test';
 import { createHash } from 'crypto';
 
 // Mock database
@@ -10,9 +10,6 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGetCachedApiKey = mock(() => Promise.resolve(null) as any);
 const mockSetCachedApiKey = mock(() => Promise.resolve());
 const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
-
-// Mock OAuth token verification
-const mockVerifyJwt = mock(() => Promise.resolve(null) as any);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -41,10 +38,12 @@ mock.module('./redis', () => ({
   invalidateCachedApiKey: mockInvalidateCachedApiKey,
 }));
 
-mock.module('./oauth/tokens', () => ({
-  verifyAccessTokenAnyAudience: mockVerifyJwt,
-  looksLikeJwt: (token: string) => /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token),
-}));
+// Use the real oauth/tokens module — spyOn intercepts verifyAccessTokenAnyAudience without
+// leaving a mock.module() registration that leaks into tokens.test.ts.
+import * as tokensModule from './oauth/tokens';
+
+// Create the spy once; reset in beforeEach so call counts start at 0 per test.
+const mockVerifyJwt = spyOn(tokensModule, 'verifyAccessTokenAnyAudience').mockResolvedValue(null as any);
 
 import {
   hashApiKey,
@@ -102,7 +101,6 @@ describe('authenticateApiKey', () => {
     mockAccountsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    mockVerifyJwt.mockReset();
     mockGetCachedApiKey.mockReset();
     mockSetCachedApiKey.mockReset();
     mockInvalidateCachedApiKey.mockReset();
@@ -111,7 +109,8 @@ describe('authenticateApiKey', () => {
     mockInvalidateCachedApiKey.mockResolvedValue(undefined);
     mockTeamMembersFindFirst.mockResolvedValue(null);
     mockWorkspacesFindFirst.mockResolvedValue(null);
-    mockVerifyJwt.mockResolvedValue(null);
+    mockVerifyJwt.mockReset();
+    mockVerifyJwt.mockResolvedValue(null as any);
     clearAccountCache();
   });
 
