@@ -1,0 +1,276 @@
+name: Visual QA
+
+# Runs ONLY on release PRs (dev→main). Stands the app up ephemerally on the
+# runner (bun dev + Neon preview branch), captures Playwright screenshots and
+# a11y snapshots per route, judges via Claude, then posts results as a PR
+# comment + a report-only (neutral) check run. Never blocks the merge.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: visual-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  visual-qa:
+    name: Visual QA — spec-driven page audit
+    runs-on: ubuntu-latest
+    # Release PRs are dev→main only. Hotfix PRs (feature→main) bypass this.
+    if: github.head_ref == 'dev'
+
+    env:
+      QA_OUTPUT: ${{ runner.temp }}/qa
+      QA_BASE_URL: http://localhost:3000
+      QA_MANIFEST: apps/web/src/qa/visual-qa-routes.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Playwright + Chromium
+        run: bunx playwright install chromium --with-deps
+
+      # --- Ephemeral Neon branch (same pattern as build.yml integration job) ---
+      - name: Create Neon preview branch
+        id: neon
+        run: |
+          BRANCH_NAME="ci/visual-qa-pr-${{ github.event.pull_request.number }}"
+
+          EXISTING=$(curl -sf \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches" \
+            | jq -r --arg n "$BRANCH_NAME" '.branches[] | select(.name == $n) | .id')
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "Deleting stale Neon branch: $EXISTING"
+            curl -sf -X DELETE \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$EXISTING" || true
+            sleep 2
+          fi
+
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$NEON_PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
+
+          BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
+          if [ -z "$BRANCH_ID" ] || [ "$BRANCH_ID" = "null" ]; then
+            echo "::error::Failed to create Neon branch: $(echo "$RESPONSE" | jq -c .)"
+            exit 1
+          fi
+
+          CONNECTION_URI=$(echo "$RESPONSE" | jq -r '.connection_uris[0].connection_uri // empty')
+          if [ -z "$CONNECTION_URI" ]; then
+            ENDPOINT_ID=$(echo "$RESPONSE" | jq -r '.endpoints[0].id // empty')
+            if [ -n "$ENDPOINT_ID" ]; then
+              CONN_RESPONSE=$(curl -sf \
+                -H "Authorization: Bearer $NEON_API_KEY" \
+                "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/connection_uri?branch_id=$BRANCH_ID&endpoint_id=$ENDPOINT_ID&database_name=neondb")
+              CONNECTION_URI=$(echo "$CONN_RESPONSE" | jq -r '.uri // empty')
+            fi
+          fi
+
+          if [ -z "$CONNECTION_URI" ]; then
+            ENDPOINTS=$(curl -sf \
+              -H "Authorization: Bearer $NEON_API_KEY" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID/endpoints")
+            HOST=$(echo "$ENDPOINTS" | jq -r '.endpoints[0].host')
+            CONNECTION_URI="postgresql://${NEON_DB_USER}:${NEON_DB_PASSWORD}@${HOST}/neondb?sslmode=require"
+          fi
+
+          [[ "$CONNECTION_URI" != *"sslmode=require"* ]] && \
+            CONNECTION_URI="${CONNECTION_URI}$(echo "$CONNECTION_URI" | grep -q '?' && echo '&' || echo '?')sslmode=require"
+
+          echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
+          echo "database_url=$CONNECTION_URI" >> "$GITHUB_OUTPUT"
+          echo "::notice::Neon branch $BRANCH_NAME ($BRANCH_ID) created"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
+          NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
+          NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
+
+      - name: Run migrations
+        run: cd packages/core && bun db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+
+      # --- Start app in dev mode (CI-seeded auth) ---
+      # NODE_ENV=development enables the `dev-auto-login` credentials provider in
+      # apps/web/src/auth.ts so Playwright can get a session without OAuth.
+      - name: Start app
+        run: |
+          cd apps/web
+          bun dev > /tmp/app.log 2>&1 &
+          echo $! > /tmp/app.pid
+          echo "Waiting for app to be ready..."
+          for i in $(seq 1 24); do
+            sleep 5
+            if curl -sf http://localhost:3000/api/version >/dev/null 2>&1; then
+              echo "App ready after $((i * 5))s"
+              break
+            fi
+            if [ "$i" -eq 24 ]; then
+              echo "::error::App failed to start after 120s"
+              tail -50 /tmp/app.log || true
+              exit 1
+            fi
+          done
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          NEXTAUTH_URL: http://localhost:3000
+          # Placeholder OAuth credentials — only dev-auto-login is used in CI
+          GOOGLE_CLIENT_ID: ci-placeholder
+          GOOGLE_CLIENT_SECRET: ci-placeholder
+          GITHUB_APP_CLIENT_ID: ci-placeholder
+          GITHUB_APP_CLIENT_SECRET: ci-placeholder
+
+      # --- Playwright capture ---
+      - name: Capture screenshots and a11y snapshots
+        run: bun scripts/qa/capture.ts
+        env:
+          QA_BASE_URL: ${{ env.QA_BASE_URL }}
+          QA_OUTPUT: ${{ env.QA_OUTPUT }}
+          QA_MANIFEST: ${{ env.QA_MANIFEST }}
+
+      # --- Claude judgment ---
+      - name: Judge pages (Claude API)
+        run: bun scripts/qa/judge.ts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          QA_OUTPUT: ${{ env.QA_OUTPUT }}
+          QA_MANIFEST: ${{ env.QA_MANIFEST }}
+
+      # --- Upload screenshots as workflow artifacts ---
+      - name: Upload screenshots
+        id: screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-qa-screenshots-pr${{ github.event.pull_request.number }}-run${{ github.run_number }}
+          path: ${{ runner.temp }}/qa/screenshots/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # --- Post PR comment + create report-only check run ---
+      - name: Post results
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          QA_OUTPUT: ${{ runner.temp }}/qa
+          SCREENSHOTS_URL: ${{ steps.screenshots.outputs.artifact-url }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const outputDir = process.env.QA_OUTPUT;
+
+            const reportPath = path.join(outputDir, 'report.md');
+            const verdictsPath = path.join(outputDir, 'verdicts.json');
+            const screenshotsUrl = process.env.SCREENSHOTS_URL || '';
+
+            const hasReport = fs.existsSync(reportPath);
+            const hasVerdicts = fs.existsSync(verdictsPath);
+
+            let report = hasReport ? fs.readFileSync(reportPath, 'utf8') : '_No QA report generated._';
+            let verdicts = hasVerdicts ? JSON.parse(fs.readFileSync(verdictsPath, 'utf8')) : [];
+
+            const pass = verdicts.filter(v => v.overallVerdict === 'PASS').length;
+            const fail = verdicts.filter(v => ['FAIL', 'ERROR'].includes(v.overallVerdict)).length;
+            const total = verdicts.length;
+            const overallStatus = fail > 0 ? '❌ Findings' : (total > 0 ? '✅ All clear' : '⚪ No data');
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const commentBody = [
+              `## 🔍 Visual QA — ${overallStatus}`,
+              screenshotsUrl ? `[📸 Download screenshots](${screenshotsUrl})` : '',
+              '',
+              report,
+              '',
+              `<sub>Workflow run [#${context.runNumber}](${runUrl}) · \`scripts/qa/\`</sub>`,
+            ].filter(line => line !== undefined).join('\n');
+
+            // Delete previous visual-qa bot comments
+            const { data: existingComments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const c of existingComments) {
+              if (c.user?.type === 'Bot' && c.body?.includes('🔍 Visual QA')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id,
+                }).catch(() => {});
+              }
+            }
+
+            // Post updated comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody,
+            });
+
+            // Report-only check run — conclusion is always 'neutral' (never blocks merge)
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Visual QA',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'neutral',
+              output: {
+                title: `Visual QA: ${overallStatus} (${pass}/${total} pages clear)`,
+                summary: report.substring(0, 65535),
+              },
+            });
+
+            core.notice(`Visual QA posted: ${overallStatus} — ${pass}/${total} pages`);
+
+      # --- Cleanup ---
+      - name: Stop app
+        if: always()
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill "$(cat /tmp/app.pid)" 2>/dev/null || true
+          fi
+
+      - name: Dump app log on failure
+        if: failure()
+        run: tail -100 /tmp/app.log 2>/dev/null || echo '(no app log)'
+
+      - name: Cleanup Neon branch
+        if: always()
+        run: |
+          BRANCH_ID="${{ steps.neon.outputs.branch_id }}"
+          [ -z "$BRANCH_ID" ] && exit 0
+          curl -sf -X DELETE \
+            -H "Authorization: Bearer $NEON_API_KEY" \
+            "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID" || true
+          echo "Deleted Neon branch: $BRANCH_ID"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
