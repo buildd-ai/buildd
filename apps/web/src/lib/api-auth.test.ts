@@ -3,32 +3,47 @@ import { createHash } from 'crypto';
 
 // Mock database
 const mockAccountsFindFirst = mock(() => null as any);
+const mockTeamMembersFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
 
 // Mock Redis — default to no-ops so existing L1 tests are unaffected
 const mockGetCachedApiKey = mock(() => Promise.resolve(null) as any);
 const mockSetCachedApiKey = mock(() => Promise.resolve());
 const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
 
+// Mock OAuth token verification
+const mockVerifyJwt = mock(() => Promise.resolve(null) as any);
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
     },
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ type: 'and', args }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { apiKey: 'apiKey', id: 'id' },
+  accounts: { apiKey: 'apiKey', id: 'id', teamId: 'teamId', type: 'type' },
+  teamMembers: { userId: 'userId', teamId: 'teamId' },
+  workspaces: { id: 'id', teamId: 'teamId' },
 }));
 
 mock.module('./redis', () => ({
   getCachedApiKey: mockGetCachedApiKey,
   setCachedApiKey: mockSetCachedApiKey,
   invalidateCachedApiKey: mockInvalidateCachedApiKey,
+}));
+
+mock.module('./oauth/tokens', () => ({
+  verifyAccessTokenAnyAudience: mockVerifyJwt,
+  looksLikeJwt: (token: string) => /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token),
 }));
 
 import {
@@ -85,12 +100,18 @@ describe('extractApiKeyPrefix', () => {
 describe('authenticateApiKey', () => {
   beforeEach(() => {
     mockAccountsFindFirst.mockReset();
+    mockTeamMembersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockVerifyJwt.mockReset();
     mockGetCachedApiKey.mockReset();
     mockSetCachedApiKey.mockReset();
     mockInvalidateCachedApiKey.mockReset();
     mockGetCachedApiKey.mockResolvedValue(null);
     mockSetCachedApiKey.mockResolvedValue(undefined);
     mockInvalidateCachedApiKey.mockResolvedValue(undefined);
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockVerifyJwt.mockResolvedValue(null);
     clearAccountCache();
   });
 
@@ -286,6 +307,86 @@ describe('authenticateApiKey', () => {
       await authenticateApiKey('bld_key_a');
       await authenticateApiKey('bld_key_b');
       expect(mockAccountsFindFirst).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe('OAuth JWT path', () => {
+    // A string that matches the looksLikeJwt regex (three base64url segments)
+    const JWT_TOKEN = 'eyJhbGc.dGVzdA.c2ln';
+
+    it('returns null when JWT verification fails', async () => {
+      mockVerifyJwt.mockResolvedValue(null);
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when workspace is not found', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when user is not a member of the workspace team', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockTeamMembersFindFirst.mockResolvedValue(null);
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when no type="user" account exists for workspace team', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toBeNull();
+    });
+
+    it('returns account with admin level for valid JWT', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      const mockAccount = { id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1', name: 'My Account' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toEqual({ ...mockAccount, level: 'admin' });
+    });
+
+    it('overrides any existing level to admin', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      const mockAccount = { id: 'acct-1', type: 'user', level: 'trigger', teamId: 'team-1', name: 'My Account' };
+      mockAccountsFindFirst.mockResolvedValue(mockAccount);
+
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result?.level).toBe('admin');
+    });
+
+    it('caches the result so JWT is only verified once', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-1', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockTeamMembersFindFirst.mockResolvedValue({ teamId: 'team-1' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', type: 'user', level: 'worker', teamId: 'team-1' });
+
+      await authenticateApiKey(JWT_TOKEN);
+      await authenticateApiKey(JWT_TOKEN);
+
+      // JWT verification should only happen once (cached)
+      expect(mockVerifyJwt).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves the team via workspace_id from JWT claims, not teamMembers alone', async () => {
+      mockVerifyJwt.mockResolvedValue({ sub: 'user-1', workspace_id: 'ws-targeted', scope: 'mcp', client_id: 'c_1' });
+      mockWorkspacesFindFirst.mockResolvedValue(null); // workspace not found → should bail
+
+      const result = await authenticateApiKey(JWT_TOKEN);
+      expect(result).toBeNull();
+      // The workspace lookup must have been called
+      expect(mockWorkspacesFindFirst).toHaveBeenCalledTimes(1);
     });
   });
 });
