@@ -1,14 +1,19 @@
 name: Visual QA
 
 # Runs ONLY on release PRs (dev→main). Stands the app up ephemerally on the
-# runner (bun dev + Neon preview branch), captures Playwright screenshots and
-# a11y snapshots per route, judges via Claude, then posts results as a PR
-# comment + a report-only (neutral) check run. Never blocks the merge.
+# runner (bun dev + Neon prod-clone branch, PII-scrubbed), captures Playwright
+# screenshots and a11y snapshots per route, judges via the buildd /api/qa/judge
+# endpoint (server-side Claude — NO ANTHROPIC_API_KEY in CI secrets), then posts
+# results as a PR comment + a report-only (neutral) check run. Never blocks merge.
+#
+# Neon branch: copy-on-write off NEON_PROD_PARENT_BRANCH_ID → PII scrubbed → auto-deleted.
+# Judge: BUILDD_QA_KEY (bld_xxx) → POST /api/qa/judge → server calls Anthropic.
 
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 concurrency:
   group: visual-qa-${{ github.ref }}
@@ -25,7 +30,7 @@ jobs:
     name: Visual QA — spec-driven page audit
     runs-on: ubuntu-latest
     # Release PRs are dev→main only. Hotfix PRs (feature→main) bypass this.
-    if: github.head_ref == 'dev'
+    if: github.head_ref == 'dev' || github.event_name == 'workflow_dispatch'
 
     env:
       QA_OUTPUT: ${{ runner.temp }}/qa
@@ -45,14 +50,14 @@ jobs:
       - name: Install Playwright + Chromium
         run: bunx playwright install chromium --with-deps
 
-      # --- Ephemeral Neon branch (same pattern as build.yml integration job) ---
-      # NEON_PROD_PARENT_BRANCH_ID must be set in GitHub repo secrets to the Neon
-      # prod branch ID (find it at console.neon.tech → your project → Branches).
-      # It is intentionally separate from NEON_PARENT_BRANCH_ID (dev branch).
-      - name: Create Neon preview branch
+      # --- Ephemeral Neon branch cloned off PROD ---
+      # Copy-on-write off the production branch so the app sees real-shaped data.
+      # The branch is auto-deleted in the "Cleanup Neon branch" step (always runs).
+      # Never log connection URIs or row contents.
+      - name: Create Neon prod-clone branch
         id: neon
         run: |
-          BRANCH_NAME="ci/visual-qa-pr-${{ github.event.pull_request.number }}"
+          BRANCH_NAME="ci/visual-qa-pr-${{ github.event.pull_request.number || github.run_number }}"
 
           EXISTING=$(curl -sf \
             -H "Authorization: Bearer $NEON_API_KEY" \
@@ -67,10 +72,13 @@ jobs:
             sleep 2
           fi
 
+          # Clone off PROD branch (copy-on-write — no data is moved or duplicated).
+          # Falls back to NEON_PARENT_BRANCH_ID if NEON_PROD_PARENT_BRANCH_ID is not yet configured.
+          PARENT_BRANCH_ID="${NEON_PROD_PARENT_BRANCH_ID:-$NEON_PARENT_BRANCH_ID}"
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $NEON_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$NEON_PROD_PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
+            -d "{\"branch\":{\"name\":\"$BRANCH_NAME\",\"parent_id\":\"$PARENT_BRANCH_ID\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
             "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches")
 
           BRANCH_ID=$(echo "$RESPONSE" | jq -r '.branch.id')
@@ -102,29 +110,71 @@ jobs:
             CONNECTION_URI="${CONNECTION_URI}$(echo "$CONNECTION_URI" | grep -q '?' && echo '&' || echo '?')sslmode=require"
 
           echo "branch_id=$BRANCH_ID" >> "$GITHUB_OUTPUT"
+          # Do NOT echo the connection URI — it contains credentials
           echo "database_url=$CONNECTION_URI" >> "$GITHUB_OUTPUT"
-          echo "::notice::Neon branch $BRANCH_NAME ($BRANCH_ID) created"
+          echo "::notice::Neon branch $BRANCH_NAME ($BRANCH_ID) created from prod"
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           NEON_PROD_PARENT_BRANCH_ID: ${{ secrets.NEON_PROD_PARENT_BRANCH_ID }}
+          NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
           NEON_DB_USER: ${{ secrets.NEON_DB_USER }}
           NEON_DB_PASSWORD: ${{ secrets.NEON_DB_PASSWORD }}
-
-      - name: Scrub PII from prod clone
-        run: |
-          psql "$DATABASE_URL" -f scripts/qa/scrub-pii.sql
-        env:
-          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Run migrations
         run: cd packages/core && bun db:migrate
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
+      # --- PII scrub (required before app starts, before any data is rendered) ---
+      # Anonymizes user emails + names in-place on the cloned branch.
+      # Designates one team owner as the CI QA user (ci-qa@buildd.dev) so the
+      # app shows real workspace data when started with DEV_USER_EMAIL.
+      # Clears all secrets and device_codes — these must never leave prod.
+      # Row IDs and foreign keys are preserved; only PII text fields are changed.
+      - name: Scrub PII from prod clone
+        id: scrub
+        run: |
+          psql "$DATABASE_URL" <<'EOSQL'
+            -- Designate one workspace owner as the CI QA user (must run BEFORE general scrub)
+            UPDATE users
+            SET email = 'ci-qa@buildd.dev', name = 'CI QA User'
+            WHERE id = (
+              SELECT u.id
+              FROM users u
+              JOIN team_members tm ON tm.user_id = u.id
+              WHERE tm.role = 'owner'
+              ORDER BY u.created_at
+              LIMIT 1
+            );
+
+            -- Anonymize all remaining users
+            UPDATE users
+            SET
+              email = 'user-' || REPLACE(id::text, '-', '') || '@scrubbed.local',
+              name  = 'User ' || LEFT(id::text, 8),
+              image = NULL
+            WHERE email != 'ci-qa@buildd.dev';
+
+            -- Anonymize team invitations
+            UPDATE team_invitations
+            SET email = 'invite-' || REPLACE(id::text, '-', '') || '@scrubbed.local';
+
+            -- Wipe all encrypted secrets and device auth codes
+            DELETE FROM secrets;
+            DELETE FROM device_codes;
+          EOSQL
+          echo "ci_user_email=ci-qa@buildd.dev" >> "$GITHUB_OUTPUT"
+          echo "::notice::PII scrub complete — prod clone is now anonymized"
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          PGPASSWORD: ""
+
       # --- Start app in dev mode (CI-seeded auth) ---
       # NODE_ENV=development enables the `dev-auto-login` credentials provider in
       # apps/web/src/auth.ts so Playwright can get a session without OAuth.
+      # DEV_USER_EMAIL points to the CI QA user we designated in the scrub step,
+      # so getCurrentUser() resolves to their real workspace data (stale from prod).
       - name: Start app
         run: |
           cd apps/web
@@ -147,6 +197,7 @@ jobs:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
           NEXTAUTH_URL: http://localhost:3000
+          DEV_USER_EMAIL: ${{ steps.scrub.outputs.ci_user_email }}
           # Placeholder OAuth credentials — only dev-auto-login is used in CI
           GOOGLE_CLIENT_ID: ci-placeholder
           GOOGLE_CLIENT_SECRET: ci-placeholder
@@ -163,11 +214,15 @@ jobs:
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
-      # --- Claude judgment ---
-      - name: Judge pages (Claude API)
+      # --- Judge via buildd (server-side Claude — no ANTHROPIC_API_KEY in CI) ---
+      # CI posts each capture to POST /api/qa/judge on the buildd server.
+      # The buildd server calls Anthropic using its own credentials.
+      # Only BUILDD_QA_KEY (a bld_xxx API key) is needed in GitHub secrets.
+      - name: Judge pages (via buildd)
         run: bun scripts/qa/judge.ts
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BUILDD_QA_URL: https://buildd.dev
+          BUILDD_QA_KEY: ${{ secrets.BUILDD_QA_KEY }}
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
 
@@ -177,7 +232,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: visual-qa-screenshots-pr${{ github.event.pull_request.number }}-run${{ github.run_number }}
+          name: visual-qa-screenshots-pr${{ github.event.pull_request.number || github.run_number }}-run${{ github.run_number }}
           path: ${{ runner.temp }}/qa/screenshots/
           retention-days: 30
           if-no-files-found: warn
@@ -237,20 +292,23 @@ jobs:
               }
             }
 
-            // Post updated comment
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: commentBody,
-            });
+            // Post updated comment (skip on workflow_dispatch with no PR)
+            if (context.issue?.number) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody,
+              });
+            }
 
             // Report-only check run — conclusion is always 'neutral' (never blocks merge)
+            const headSha = context.payload.pull_request?.head?.sha || context.sha;
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: 'Visual QA',
-              head_sha: context.payload.pull_request.head.sha,
+              head_sha: headSha,
               status: 'completed',
               conclusion: 'neutral',
               output: {
@@ -273,6 +331,8 @@ jobs:
         if: failure()
         run: tail -100 /tmp/app.log 2>/dev/null || echo '(no app log)'
 
+      # The Neon prod-clone branch is always deleted — success or failure.
+      # This is the only write-back to Neon: branch deletion. No prod data is modified.
       - name: Cleanup Neon branch
         if: always()
         run: |
