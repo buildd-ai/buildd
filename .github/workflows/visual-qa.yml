@@ -4,6 +4,10 @@ name: Visual QA
 # runner (bun dev + Neon preview branch), captures Playwright screenshots and
 # a11y snapshots per route, judges via Claude, then posts results as a PR
 # comment + a report-only (neutral) check run. Never blocks the merge.
+#
+# DESIGN DECISION (PR #1029): Visual QA is intentionally CI-only. There is NO
+# corresponding 'visual-qa' agent role in workspace_skills / Team page. Any such
+# row is stray and should be removed (migration 0063_remove_visual_qa_role.sql).
 
 on:
   pull_request:

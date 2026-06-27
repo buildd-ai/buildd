@@ -186,6 +186,12 @@ This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
 - **Dev (stable)**: `https://buildd-git-dev-maxs-projects-45386f31.vercel.app`
 - **PR previews**: `https://buildd-git-<branch-slug>-maxs-projects-45386f31.vercel.app`
 
+## CI Workflows — Intentionally NOT Agent Roles
+
+Some workflows exist as GitHub Actions only and must NOT be registered as routable agent roles:
+
+- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration `0063_remove_visual_qa_role.sql` removes it.
+
 ## Skills
 
 - **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
