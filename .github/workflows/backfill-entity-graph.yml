@@ -1,0 +1,55 @@
+# One-shot entity-graph backfill for existing knowledge_chunks.
+#
+# Populates knowledge_entities, entity_aliases, chunk_entities, and
+# knowledge_edges for all chunks that were ingested before processEntityRefs
+# was wired into the write path (pre-PR-#1024).
+#
+# Fully idempotent — safe to re-run. Only needs DATABASE_URL (no Voyage key
+# required since entity extraction is deterministic and requires no embeddings).
+#
+# Trigger manually from the Actions tab or via:
+#   gh workflow run backfill-entity-graph.yml
+name: Backfill Entity Graph
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace_prefix:
+        description: 'Optional namespace prefix to limit scope (e.g. "57ffc0e4")'
+        required: false
+        default: ''
+      backfill_ts:
+        description: 'Also backfill source_ts column from metadata.source_ts'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run — count chunks without writing'
+        type: boolean
+        default: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run entity-graph backfill
+        run: |
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ "${{ inputs.backfill_ts }}" = "true" ]; then ARGS="$ARGS --backfill-ts"; fi
+          if [ -n "${{ inputs.namespace_prefix }}" ]; then ARGS="$ARGS ${{ inputs.namespace_prefix }}"; fi
+          bun packages/core/scripts/backfill-entity-graph.ts $ARGS
