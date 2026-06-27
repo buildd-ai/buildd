@@ -18,7 +18,40 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { resolveActiveTeamId, getTeamWorkspaceIds } = await import('./team-access');
+const { resolveActiveTeamId, getTeamWorkspaceIds, getUserTeamIds } = await import('./team-access');
+
+describe('getUserTeamIds', () => {
+  beforeEach(() => {
+    mockTeamMembersFindMany.mockReset();
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+  });
+
+  it('returns team ids from teamMembers', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'A' }, { teamId: 'B' }]);
+    expect(await getUserTeamIds('user-1')).toEqual(['A', 'B']);
+  });
+
+  it('includes personal team when teamMembers is empty but personal team exists', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'personal-team-id' });
+    expect(await getUserTeamIds('user-1')).toEqual(['personal-team-id']);
+  });
+
+  it('deduplicates when personal team is already in teamMembers', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'personal-team-id' }, { teamId: 'B' }]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'personal-team-id' });
+    const result = await getUserTeamIds('user-1');
+    expect(result.filter(id => id === 'personal-team-id')).toHaveLength(1);
+    expect(result).toContain('B');
+  });
+
+  it('returns empty array when no memberships and no personal team', async () => {
+    mockTeamMembersFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue(null);
+    expect(await getUserTeamIds('user-1')).toEqual([]);
+  });
+});
 
 describe('getTeamWorkspaceIds', () => {
   beforeEach(() => {
@@ -60,14 +93,25 @@ describe('resolveActiveTeamId', () => {
     expect(await resolveActiveTeamId('user-1', null)).toBe('A');
   });
 
-  it('does not pick a personal team the user is not a member of', async () => {
+  it('prefers personal team over first team when personal team exists (no cookie)', async () => {
+    // getUserTeamIds now includes the personal team via slug fallback, so
+    // resolveActiveTeamId will find it in teamIds and prefer it.
     mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'A' }]);
-    mockTeamsFindFirst.mockResolvedValue({ id: 'P' }); // personal P not in membership
-    expect(await resolveActiveTeamId('user-1', null)).toBe('A');
+    mockTeamsFindFirst.mockResolvedValue({ id: 'P' }); // personal team is P
+    expect(await resolveActiveTeamId('user-1', null)).toBe('P');
   });
 
   it('returns null when the user belongs to no team', async () => {
     mockTeamMembersFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue(null);
     expect(await resolveActiveTeamId('user-1', 'A')).toBeNull();
+  });
+
+  it('resolves personal team for accounts with no teamMembers row (P0 regression: mission detail 404)', async () => {
+    // Simulates a user whose personal team exists but has no teamMembers row —
+    // these accounts hit notFound() on the mission detail page before this fix.
+    mockTeamMembersFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'personal-team-id' });
+    expect(await resolveActiveTeamId('user-1', null)).toBe('personal-team-id');
   });
 });
