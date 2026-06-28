@@ -141,6 +141,14 @@ async function main() {
     process.exit(0);
   }
 
+  // neon() throws on invalid URLs — validate format before trying to connect.
+  try {
+    new URL(process.env.DATABASE_URL);
+  } catch {
+    console.warn('[ingest] DATABASE_URL is not a valid URL — skipping (check the DATABASE_URL secret)');
+    process.exit(0);
+  }
+
   const root = path.resolve(dirArg);
 
   const all: string[] = [];
