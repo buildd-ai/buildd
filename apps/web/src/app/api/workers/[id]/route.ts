@@ -484,7 +484,7 @@ export async function PATCH(
   }
 
   let shouldAutoRetry = false;
-  if (status === 'completed' || status === 'failed') {
+  if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
     // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
