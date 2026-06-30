@@ -371,6 +371,15 @@ async function handlePullRequestEvent(event: {
     with: { task: true },
   });
 
+  if (worker) {
+    // Stamp mergedAt regardless of task completion state so the dependsOn gate
+    // (which checks workers.mergedAt) is unblocked for downstream tasks.
+    await db
+      .update(workers)
+      .set({ mergedAt: new Date(), updatedAt: new Date() })
+      .where(eq(workers.id, worker.id));
+  }
+
   if (worker?.task && worker.task.status !== 'completed') {
     await db
       .update(tasks)

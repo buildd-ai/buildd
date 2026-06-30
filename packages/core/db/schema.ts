@@ -641,6 +641,9 @@ export const workers = pgTable('workers', {
   // PR tracking
   prUrl: text('pr_url'),
   prNumber: integer('pr_number'),
+  // Set by webhook when the worker's PR is merged; used by dependsOn gate to
+  // distinguish "task completed before PR merged" from "PR actually landed".
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
