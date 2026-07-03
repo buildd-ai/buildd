@@ -1,7 +1,7 @@
 # Claude Agent SDK — Integration Status
 
-**Last updated**: 2026-06-27
-**SDK in package.json**: `^0.3.195` (up to date)
+**Last updated**: 2026-07-03
+**SDK in package.json**: `^0.3.199` (up to date)
 **Covered files**: `packages/core/worker-runner.ts`, `apps/runner/src/hook-factory.ts`
 
 ---
@@ -10,6 +10,10 @@
 
 | Date | Version in Buildd | Latest at time | PR |
 |------|------------------|----------------|-----|
+| 2026-07-03 | ^0.3.199 | 0.3.199 | #1055 |
+| 2026-07-01 | ^0.3.198 | 0.3.198 | #1055 |
+| 2026-06-30 | ^0.3.197 | 0.3.197 | #1055 |
+| 2026-06-29 | ^0.3.196 | 0.3.196 | #1055 |
 | 2026-06-27 | ^0.3.195 | 0.3.195 | pending |
 | 2026-06-18 | ^0.3.181 | 0.3.181 | pending |
 | 2026-06-17 | ^0.3.179 | 0.3.179 | #861 |
