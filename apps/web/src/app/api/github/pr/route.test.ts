@@ -42,11 +42,13 @@ mock.module('@buildd/core/db', () => ({
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id', accountId: 'accountId', prUrl: 'prUrl', prNumber: 'prNumber', updatedAt: 'updatedAt' },
+  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', updatedAt: 'updatedAt' },
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
 }));
 
@@ -801,6 +803,84 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData.linesAdded).toBe(150);
     expect(capturedSetData.linesRemoved).toBe(8);
     expect(capturedSetData.filesChanged).toBe(3);
+  });
+
+  it('deduplicates when a sibling worker on the same task already has a PR', async () => {
+    // Scenario: retry creates a new worker for the same task; the prior worker's PR should be reused.
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+
+    // First call: get current worker (no PR yet)
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+      },
+    });
+    // Second call: find sibling worker with PR
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deduplicated).toBe(true);
+    expect(data.pr.number).toBe(77);
+    expect(data.pr.url).toBe('https://github.com/owner/repo/pull/77');
+    // Must NOT call GitHub API to create a duplicate PR
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('mirrors sibling PR onto current worker when deduplicating by task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    await POST(req);
+
+    // The current worker should be updated with the sibling's PR info
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.prUrl).toBe('https://github.com/owner/repo/pull/77');
+    expect(capturedSetData.prNumber).toBe(77);
   });
 
   it('returns 500 when githubApi throws an error', async () => {

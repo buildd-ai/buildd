@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions } from '@buildd/core/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 
@@ -67,6 +67,38 @@ export async function POST(req: NextRequest) {
         ok: true,
         pr: { number: prNumber, url: existingPrUrl, state: 'open', title },
       });
+    }
+
+    // Dedup: if another worker on the SAME TASK already has an open PR, reuse it.
+    // This covers refires/retries where a new worker is created for the same task —
+    // ONE task = ONE branch = ONE PR, even across worker instances.
+    // Checked before workspace/repo lookup to short-circuit without hitting GitHub.
+    if (worker.taskId) {
+      const siblingWorkerWithPr = await db.query.workers.findFirst({
+        where: and(
+          eq(workers.taskId, worker.taskId),
+          isNotNull(workers.prUrl),
+          isNotNull(workers.prNumber),
+        ),
+        columns: { prUrl: true, prNumber: true, id: true },
+      });
+      if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber) {
+        // Mirror the PR onto this worker too so future calls hit the fast path
+        await db
+          .update(workers)
+          .set({ prUrl: siblingWorkerWithPr.prUrl, prNumber: siblingWorkerWithPr.prNumber, updatedAt: new Date() })
+          .where(eq(workers.id, workerId));
+        return NextResponse.json({
+          ok: true,
+          pr: {
+            number: siblingWorkerWithPr.prNumber,
+            url: siblingWorkerWithPr.prUrl,
+            state: 'open',
+            title,
+          },
+          deduplicated: true,
+        });
+      }
     }
 
     const workspace = worker.workspace;

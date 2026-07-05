@@ -1022,6 +1022,80 @@ describe('POST /api/github/webhook', () => {
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
 
+    it('sets worker.mergedAt when PR merges (dependsOn gate prerequisite)', async () => {
+      resetAll();
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 55,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc12345-fix', sha: 'sha-55' },
+          html_url: 'https://github.com/test-org/test-repo/pull/55',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'worker-merge-test',
+        task: {
+          id: 'task-merge-test',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      // worker.mergedAt must be set — this is what the dependsOn gate checks
+      const workerUpdate = updateCalls.find(
+        (c) => (c.setValues as any).mergedAt instanceof Date,
+      );
+      expect(workerUpdate).toBeDefined();
+      expect((workerUpdate!.setValues as any).mergedAt).toBeInstanceOf(Date);
+    });
+
+    it('sets worker.mergedAt even when task was already completed', async () => {
+      resetAll();
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 56,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc12345-fix', sha: 'sha-56' },
+          html_url: 'https://github.com/test-org/test-repo/pull/56',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      // Task already completed (worker called complete_task before PR merged)
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'worker-already-done',
+        task: {
+          id: 'task-already-done',
+          status: 'completed',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      // mergedAt must still be set even though task was already 'completed'
+      const workerUpdate = updateCalls.find(
+        (c) => (c.setValues as any).mergedAt instanceof Date,
+      );
+      expect(workerUpdate).toBeDefined();
+    });
+
     it('excludes drizzle/meta and lockfile noise from the line budget', async () => {
       mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
