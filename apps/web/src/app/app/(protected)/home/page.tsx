@@ -75,6 +75,7 @@ export default async function HomePage({
 
   let recentActivity: {
     id: string;
+    taskId: string | null;
     type: 'completed' | 'started' | 'failed';
     title: string;
     workerName: string;
@@ -223,13 +224,17 @@ export default async function HomePage({
         // Order by COALESCE(completedAt, updatedAt) so error workers (null
         // completedAt) sort by their updatedAt rather than floating to the top
         // via PostgreSQL's default NULLS FIRST for DESC ordering.
+        // Window to 30 days: "Activity" is a recency feed — months-old workers
+        // from dormant workspaces are noise, an empty state is honest.
+        const activityWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
         const recentWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.workspaceId, wsIds),
-            inArray(workers.status, ['completed', 'failed', 'error'])
+            inArray(workers.status, ['completed', 'failed', 'error']),
+            sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) >= ${activityWindowStart}`
           ),
           orderBy: sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) DESC`,
-          limit: 6,
+          limit: 12,
           with: {
             task: {
               columns: { id: true, title: true, missionId: true },
@@ -242,14 +247,26 @@ export default async function HomePage({
           },
         });
 
-        recentActivity = recentWorkers.map((w: any) => ({
-          id: w.id,
-          type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
-          title: w.task?.title || w.name,
-          workerName: w.name,
-          timestamp: w.completedAt || w.updatedAt,
-          missionTitle: (w.task as any)?.mission?.title || null,
-        }));
+        // One row per task (a retried task can have several terminal workers —
+        // keep only the newest) and cap at 6 for the feed.
+        const seenTasks = new Set<string>();
+        recentActivity = recentWorkers
+          .filter((w: any) => {
+            const key = w.task?.id || w.id;
+            if (seenTasks.has(key)) return false;
+            seenTasks.add(key);
+            return true;
+          })
+          .slice(0, 6)
+          .map((w: any) => ({
+            id: w.id,
+            taskId: w.task?.id || null,
+            type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
+            title: w.task?.title || w.name,
+            workerName: w.name,
+            timestamp: w.completedAt || w.updatedAt,
+            missionTitle: (w.task as any)?.mission?.title || null,
+          }));
 
         // Missions with task progress + health
         // Scope: active team (cookie set) or all user teams (no cookie).
@@ -805,8 +822,8 @@ export default async function HomePage({
                     ? 'bg-text-muted'
                     : 'bg-accent';
 
-                  return (
-                    <div key={event.id} className={`flex items-start gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`}>
+                  const row = (
+                    <>
                       <div className={`w-[7px] h-[7px] ${dotColor} flex-shrink-0 mt-1.5`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] text-text-primary truncate">
@@ -820,6 +837,17 @@ export default async function HomePage({
                       <span className="font-mono text-[11px] text-text-muted whitespace-nowrap flex-shrink-0 pt-0.5">
                         {timeAgo(event.timestamp)}
                       </span>
+                    </>
+                  );
+                  const rowClass = `flex items-start gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`;
+
+                  return event.taskId ? (
+                    <Link key={event.id} href={`/app/tasks/${event.taskId}`} className={`${rowClass} hover:bg-surface-3 transition-colors`}>
+                      {row}
+                    </Link>
+                  ) : (
+                    <div key={event.id} className={rowClass}>
+                      {row}
                     </div>
                   );
                 })}
