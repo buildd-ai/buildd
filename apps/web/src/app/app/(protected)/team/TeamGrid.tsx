@@ -90,7 +90,7 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
   return (
     <Link
       href={`/app/team/${role.slug}`}
-      className="block rounded-[10px] bg-[var(--card)] p-5 transition-all hover:shadow-md"
+      className="block bg-[var(--card)] p-5 shadow-[var(--card-shadow)] transition-transform hover:-translate-y-px"
       style={{ border: `2px solid ${borderColor}` }}
     >
       <div className="flex items-center gap-3 mb-3">
@@ -159,7 +159,7 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
   return (
     <Link
       href={`/app/team/${role.slug}`}
-      className="flex items-center gap-2.5 rounded-lg bg-[var(--card)] border border-border-default px-4 py-3 hover:bg-surface-3 transition-colors"
+      className="flex items-center gap-2.5 bg-[var(--card)] border border-border-strong px-4 py-3 hover:bg-surface-3 transition-colors"
     >
       <RoleAvatar name={role.name} color={role.color} size={28} />
       <div className="flex-1 min-w-0">
