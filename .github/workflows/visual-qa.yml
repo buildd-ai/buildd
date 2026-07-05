@@ -12,7 +12,7 @@ name: Visual QA
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +30,12 @@ jobs:
     name: Visual QA — spec-driven page audit
     runs-on: ubuntu-latest
     # Release PRs are dev→main only. Hotfix PRs (feature→main) bypass this.
-    if: github.head_ref == 'dev' || github.event_name == 'workflow_dispatch'
+    # Label-gated: opt in per-PR with the 'visual-qa' label (or run manually via
+    # workflow_dispatch). Gate added while the judge path is being provisioned
+    # (ANTHROPIC_API_KEY on Vercel prod) — remove once a dispatch run comes back green.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.head_ref == 'dev' && contains(github.event.pull_request.labels.*.name, 'visual-qa'))
 
     env:
       QA_OUTPUT: /tmp/qa
