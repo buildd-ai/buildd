@@ -2,9 +2,10 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { TeamGrid } from './TeamGrid';
 
 export const dynamic = 'force-dynamic';
@@ -59,10 +60,14 @@ export default async function TeamPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
-  const [wsIds, teamIds] = await Promise.all([
-    getUserWorkspaceIds(user.id),
-    getUserTeamIds(user.id),
-  ]);
+  // Namespace this view to the active team (buildd-team cookie), matching the
+  // missions list. Without a resolvable team, fall back to all user workspaces.
+  const cookieStore = await cookies();
+  const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
+  const teamIds = activeTeamId ? [activeTeamId] : [];
+  const wsIds = activeTeamId
+    ? await getTeamWorkspaceIds(activeTeamId)
+    : await getUserWorkspaceIds(user.id);
   if (wsIds.length === 0) {
     return (
       <main className="min-h-screen p-8">

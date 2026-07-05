@@ -9,6 +9,7 @@ import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-help
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import ExternalLink from '@/components/ExternalLink';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
@@ -567,15 +568,12 @@ export default async function MissionDetailPage({
                                   )}
 
                                   {latestWorker?.prUrl && (
-                                    <a
+                                    <ExternalLink
                                       href={latestWorker.prUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
                                       className="text-[12px] md:text-[11px] text-accent-text hover:underline"
                                     >
                                       PR #{latestWorker.prNumber}
-                                    </a>
+                                    </ExternalLink>
                                   )}
 
                                   {isRunning && (
