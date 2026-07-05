@@ -70,7 +70,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
   const grouped = useMemo(() => {
     const groups: Record<MissionGroup, MissionItem[]> = {
-      running: [], attention: [], scheduled: [], completed: [],
+      running: [], attention: [], review: [], scheduled: [], completed: [],
     };
     for (const m of missions) {
       groups[healthToGroup(m.health, m.progress)].push(m);
@@ -147,7 +147,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
         // Sub-group this workspace's missions by health group
         const subGroups: Record<MissionGroup, MissionItem[]> = {
-          running: [], attention: [], scheduled: [], completed: [],
+          running: [], attention: [], review: [], scheduled: [], completed: [],
         };
         for (const m of bucket.missions) {
           subGroups[healthToGroup(m.health, m.progress)].push(m);

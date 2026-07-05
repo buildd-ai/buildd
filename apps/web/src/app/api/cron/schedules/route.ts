@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { archiveStaleDoneMissions } from '@/lib/mission-archive';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
@@ -729,6 +730,17 @@ export async function GET(req: NextRequest) {
       healthWatcher = { error: message };
     }
 
+    // Best-effort: archive done missions quiet for >24h (the "Awaiting
+    // review" group's TTL — see lib/mission-archive.ts).
+    let archivedMissions: string[] | { error: string } = [];
+    try {
+      archivedMissions = await archiveStaleDoneMissions(now);
+    } catch (archiveErr) {
+      const message = archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
+      console.warn('[Cron] mission archive failed:', message);
+      archivedMissions = { error: message };
+    }
+
     return NextResponse.json({
       processed,
       created,
@@ -740,6 +752,7 @@ export async function GET(req: NextRequest) {
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
       healthWatcher,
+      archivedMissions,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

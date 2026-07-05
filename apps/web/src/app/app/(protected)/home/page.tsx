@@ -617,7 +617,7 @@ export default async function HomePage({
             {/* Missions — active work only on Home */}
             {(() => {
               // Home shows running + attention + imminent scheduled (< 24h)
-              const activeMissions = missions.filter(m => m.group === 'running' || m.group === 'attention');
+              const activeMissions = missions.filter(m => m.group === 'running' || m.group === 'attention' || m.group === 'review');
               // Show all scheduled missions (not just those within 24h) so active
               // missions with infrequent cron schedules are never hidden on Home.
               const soonScheduled = missions
@@ -658,7 +658,7 @@ export default async function HomePage({
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      {(['running', 'attention', 'scheduled'] as const).map((groupKey) => {
+                      {(['running', 'attention', 'review', 'scheduled'] as const).map((groupKey) => {
                         const items = groupKey === 'scheduled'
                           ? soonScheduled
                           : visibleMissions.filter(m => m.group === groupKey);
