@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Home screen hides archived missions and caps activity feed at 50; NULLS-FIRST ordering (#1048)
+- Idle missions now visible on home screen; activity feed ordering restored (#1048)
+- Visual QA: Playwright 1.61 compat, workflow_dispatch crash, judge via buildd, prod-clone Neon (#1049)
 - Skip release when artifact_required is satisfied by artifact alone (#989)
 - Fix Codex runner backend (#859)
 - Send heartbeat on task claim to close stale-on-claim worker-kill edge (#830)
@@ -76,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Visual QA ephemeral Neon branch clones sanitized prod data (#1049)
 - Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
 - Pass release App private key to reusable release workflow (#923)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)

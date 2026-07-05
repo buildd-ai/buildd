@@ -10,6 +10,12 @@ describe('DEFAULT_ROLES', () => {
     ]);
   });
 
+  // Visual QA is a CI workflow only (visual-qa.yml) — NOT a routable agent role.
+  // If this fails, remove the 'visual-qa' entry from DEFAULT_ROLES.
+  it('does NOT seed a visual-qa role (CI-only workflow, not an agent role)', () => {
+    expect(bySlug['visual-qa']).toBeUndefined();
+  });
+
   it('Organizer defaults to Sonnet (router upshifts to Opus for complex coordination)', () => {
     expect(bySlug.organizer.model).toBe('sonnet');
   });

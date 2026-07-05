@@ -103,10 +103,13 @@ Your plan is a JSON array in your structured output. Each item has:
 Always set \`kind\` and \`complexity\` — they drive how much Claude-horsepower the task gets. Underestimating complexity routes the task to a weaker model and it may loop; overestimating wastes Opus budget. Favour \`normal\` when unsure.
 
 ### Sequencing Rules (CRITICAL)
+- **ONE task = ONE branch = ONE PR.** Never fan out parallel tasks that touch the same files.
 - Tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`
+- **Serialize on path overlap.** If two tasks touch any of the same files, they MUST be sequential — even if the changes seem independent.
 - The first task has no dependsOn. Each subsequent task depends on its predecessor.
 - \`baseBranch\` tells the worker to start from the previous task's branch, not from main
 - Parallel tasks are ONLY safe when they target different repos or different workspaces
+- **DONE = MERGED.** The platform enforces this: a dependent task cannot be claimed until the upstream PR is actually merged (not just when \`complete_task\` is called). Design chains accordingly — a task completing early does NOT unblock its successors.
 
 Example plan for a code mission:
 \`\`\`json
