@@ -1,9 +1,9 @@
 -- Knowledge Graph: Phase 1 (recency), Phase 2 (entities), Phase 3 (edges)
 -- Phase 1 -- add source_ts / is_current / superseded_by to knowledge_chunks
-ALTER TABLE "knowledge_chunks" ADD COLUMN "source_ts" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "knowledge_chunks" ADD COLUMN "is_current" boolean DEFAULT true NOT NULL;--> statement-breakpoint
-ALTER TABLE "knowledge_chunks" ADD COLUMN "superseded_by" text;--> statement-breakpoint
-CREATE INDEX "knowledge_chunks_entity_recency_idx" ON "knowledge_chunks" USING btree ("namespace","is_current","source_ts");--> statement-breakpoint
+ALTER TABLE "knowledge_chunks" ADD COLUMN IF NOT EXISTS "source_ts" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "knowledge_chunks" ADD COLUMN IF NOT EXISTS "is_current" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "knowledge_chunks" ADD COLUMN IF NOT EXISTS "superseded_by" text;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "knowledge_chunks_entity_recency_idx" ON "knowledge_chunks" USING btree ("namespace","is_current","source_ts");--> statement-breakpoint
 
 -- Phase 2 -- entity tables
 CREATE TABLE IF NOT EXISTS "knowledge_entities" (
@@ -88,11 +88,11 @@ EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
-CREATE UNIQUE INDEX "knowledge_entities_workspace_key_idx" ON "knowledge_entities" USING btree ("workspace_id","kind","key");--> statement-breakpoint
-CREATE INDEX "knowledge_entities_workspace_kind_idx" ON "knowledge_entities" USING btree ("workspace_id","kind");--> statement-breakpoint
-CREATE UNIQUE INDEX "entity_aliases_entity_alias_idx" ON "entity_aliases" USING btree ("entity_id","alias");--> statement-breakpoint
-CREATE INDEX "chunk_entities_entity_idx" ON "chunk_entities" USING btree ("entity_id");--> statement-breakpoint
-CREATE INDEX "pending_entity_refs_workspace_idx" ON "pending_entity_refs" USING btree ("workspace_id","resolved_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "knowledge_edges_unique_idx" ON "knowledge_edges" USING btree ("workspace_id","from_entity_id","to_entity_id","type");--> statement-breakpoint
-CREATE INDEX "knowledge_edges_from_idx" ON "knowledge_edges" USING btree ("workspace_id","from_entity_id");--> statement-breakpoint
-CREATE INDEX "knowledge_edges_to_idx" ON "knowledge_edges" USING btree ("workspace_id","to_entity_id");
+CREATE UNIQUE INDEX IF NOT EXISTS "knowledge_entities_workspace_key_idx" ON "knowledge_entities" USING btree ("workspace_id","kind","key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "knowledge_entities_workspace_kind_idx" ON "knowledge_entities" USING btree ("workspace_id","kind");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "entity_aliases_entity_alias_idx" ON "entity_aliases" USING btree ("entity_id","alias");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "chunk_entities_entity_idx" ON "chunk_entities" USING btree ("entity_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pending_entity_refs_workspace_idx" ON "pending_entity_refs" USING btree ("workspace_id","resolved_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "knowledge_edges_unique_idx" ON "knowledge_edges" USING btree ("workspace_id","from_entity_id","to_entity_id","type");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "knowledge_edges_from_idx" ON "knowledge_edges" USING btree ("workspace_id","from_entity_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "knowledge_edges_to_idx" ON "knowledge_edges" USING btree ("workspace_id","to_entity_id");
