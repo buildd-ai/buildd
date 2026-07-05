@@ -40,7 +40,7 @@ export default function TeamSwitcherRail({
     <div ref={ref} className="relative mb-2">
       <button
         onClick={() => multi && setOpen(!open)}
-        className={`group w-10 h-10 flex items-center justify-center rounded-[10px] text-xs font-semibold bg-accent-soft text-accent-text border border-border-default transition-colors ${
+        className={`group w-10 h-10 flex items-center justify-center text-xs font-semibold bg-accent-soft text-accent-text border border-border-default transition-colors ${
           multi ? 'cursor-pointer hover:border-border-strong' : 'cursor-default'
         }`}
         title={multi ? `Team: ${currentTeam.name} — click to switch` : currentTeam.name}
@@ -51,7 +51,7 @@ export default function TeamSwitcherRail({
       </button>
 
       {open && multi && (
-        <div className="absolute left-[52px] top-0 w-52 bg-card border border-border-strong rounded-lg shadow-lg overflow-hidden z-50 py-1">
+        <div className="absolute left-[52px] top-0 w-52 bg-card border border-border-strong shadow-[var(--card-shadow)] overflow-hidden z-50 py-1">
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-text-muted">Switch team</div>
           {teams.map((team) => (
             <button

@@ -237,13 +237,14 @@ export default async function HomePage({
           limit: 12,
           with: {
             task: {
-              columns: { id: true, title: true, missionId: true },
+              columns: { id: true, title: true, missionId: true, roleSlug: true },
               with: {
                 mission: {
                   columns: { title: true },
                 },
               },
             },
+            workspace: { columns: { name: true } },
           },
         });
 
@@ -263,7 +264,9 @@ export default async function HomePage({
             taskId: w.task?.id || null,
             type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
             title: w.task?.title || w.name,
-            workerName: w.name,
+            // "via <workspace> · <role>" beats the runner's machine name —
+            // runner names (e.g. coder-workspace-x) carry no meaning here.
+            workerName: [w.workspace?.name, w.task?.roleSlug].filter(Boolean).join(' · ') || w.name,
             timestamp: w.completedAt || w.updatedAt,
             missionTitle: (w.task as any)?.mission?.title || null,
           }));
@@ -704,9 +707,9 @@ export default async function HomePage({
                                     )}
                                     {mission.totalTasks > 0 && (
                                       <div className="mb-2">
-                                        <div className="h-[3px] bg-[rgba(255,245,230,0.06)] rounded-full overflow-hidden">
+                                        <div className="h-[3px] bg-[rgba(255,245,230,0.06)] overflow-hidden">
                                           <div
-                                            className="h-full rounded-full transition-all duration-500"
+                                            className="h-full transition-all duration-500"
                                             style={{
                                               width: `${mission.progress}%`,
                                               background: 'var(--accent)',

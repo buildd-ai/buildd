@@ -38,17 +38,16 @@ export default function MissionsSidebar({ userInitial = 'M', teams = [], current
           <Link
             key={item.href}
             href={item.href}
-            className={`group relative w-10 h-10 flex items-center justify-center rounded-[10px] mb-1 transition-colors ${
+            className={`group relative w-10 h-10 flex items-center justify-center mb-1 transition-colors ${
               active ? '' : 'hover:bg-accent-soft'
             }`}
-            title={item.label}
           >
             <span className={`w-5 h-5 transition-colors ${
               active ? 'text-accent-text' : 'text-text-muted group-hover:text-text-secondary'
             }`}>
               {item.icon}
             </span>
-            <span className="pointer-events-none absolute left-[52px] top-1/2 -translate-y-1/2 bg-card text-text-primary border border-border-strong text-[11px] font-medium px-2.5 py-1 rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
+            <span className="pointer-events-none absolute left-[52px] top-1/2 -translate-y-1/2 bg-card text-text-primary border border-border-strong text-[11px] font-medium px-2.5 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
               {item.label}
             </span>
           </Link>

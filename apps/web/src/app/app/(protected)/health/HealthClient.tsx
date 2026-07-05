@@ -455,11 +455,11 @@ export function HealthClient({
         )}
 
         {initialRows.length === 0 ? (
-          <div className="border border-dashed rounded-xl p-8 text-center text-text-tertiary">
+          <div className="border border-dashed border-border-strong p-8 text-center text-text-muted">
             <p className="mb-3">No watched projects yet.</p>
             <button
               onClick={startCreate}
-              className="inline-flex items-center px-4 h-11 rounded-lg bg-status-info text-white font-medium"
+              className="inline-flex items-center px-4 h-11 rounded-sm bg-primary text-white font-medium hover:bg-primary-hover transition-colors"
             >
               Add a project
             </button>
@@ -505,13 +505,13 @@ export function HealthClient({
                   <button
                     onClick={() => runNow(row)}
                     disabled={busy}
-                    className="flex-1 h-11 rounded-lg bg-surface text-text-primary border text-sm font-medium disabled:opacity-50"
+                    className="flex-1 h-11 rounded-sm bg-surface-3 text-text-primary border border-border-strong text-sm font-medium disabled:opacity-50"
                   >
                     Run now
                   </button>
                   <button
                     onClick={() => startEdit(row)}
-                    className="flex-1 h-11 rounded-lg bg-status-info text-white text-sm font-medium"
+                    className="flex-1 h-11 rounded-sm bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors"
                   >
                     Edit
                   </button>
@@ -523,10 +523,10 @@ export function HealthClient({
       </section>
 
       {initialRows.length > 0 && (
-        <div className="fixed left-0 right-0 bottom-0 p-4 bg-surface/95 backdrop-blur border-t">
+        <div className="fixed left-0 right-0 bottom-0 p-4 bg-surface-2/95 backdrop-blur border-t border-border-default">
           <button
             onClick={startCreate}
-            className="w-full h-12 rounded-lg bg-status-info text-white font-medium"
+            className="w-full h-12 rounded-sm bg-primary text-white font-medium hover:bg-primary-hover transition-colors"
           >
             Add a project
           </button>
@@ -551,7 +551,7 @@ export function HealthClient({
                   <select
                     value={form.workspaceId}
                     onChange={(e) => setForm({ ...form, workspaceId: e.target.value })}
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   >
                     {workspaces.map((w) => (
                       <option key={w.id} value={w.id}>{w.name}</option>
@@ -566,7 +566,7 @@ export function HealthClient({
                   placeholder="buildd-ai/buildd"
                   inputMode="text"
                   autoCapitalize="off"
-                  className="w-full h-11 px-3 rounded-lg border bg-surface"
+                  className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                 />
               </Field>
               <div className="rounded-lg border p-3 space-y-3">
@@ -576,7 +576,7 @@ export function HealthClient({
                     value={form.vercelProjectId}
                     onChange={(e) => setForm({ ...form, vercelProjectId: e.target.value })}
                     placeholder="prj_…"
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                 </Field>
                 {form.vercelProjectId && (
@@ -584,7 +584,7 @@ export function HealthClient({
                     <select
                       value={form.vercelTokenSecretId ?? ''}
                       onChange={(e) => setForm({ ...form, vercelTokenSecretId: e.target.value || null })}
-                      className="w-full h-11 px-3 rounded-lg border bg-surface"
+                      className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                     >
                       <option value="">
                         {hasGlobalVercelToken ? 'Use global VERCEL_API_TOKEN' : 'None — prod check disabled'}
@@ -606,20 +606,20 @@ export function HealthClient({
                         value={newTokenLabel}
                         onChange={(e) => setNewTokenLabel(e.target.value)}
                         placeholder="Label (e.g. 'Personal — read deployments')"
-                        className="w-full h-11 px-3 rounded-lg border bg-surface"
+                        className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                       />
                       <input
                         value={newToken}
                         onChange={(e) => setNewToken(e.target.value)}
                         type="password"
                         placeholder="Paste token here"
-                        className="w-full h-11 px-3 rounded-lg border bg-surface"
+                        className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                       />
                       <button
                         type="button"
                         onClick={addVercelToken}
                         disabled={busy || !newToken.trim()}
-                        className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+                        className="h-11 px-4 rounded-sm bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50"
                       >
                         Store token
                       </button>
@@ -634,7 +634,7 @@ export function HealthClient({
                     min={1}
                     value={form.inFlightWindowMin}
                     onChange={(e) => setForm({ ...form, inFlightWindowMin: Number(e.target.value) })}
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                 </Field>
                 <Field label="Prod grace (min)">
@@ -643,7 +643,7 @@ export function HealthClient({
                     min={1}
                     value={form.prodGraceMin}
                     onChange={(e) => setForm({ ...form, prodGraceMin: Number(e.target.value) })}
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                 </Field>
               </div>
@@ -653,19 +653,19 @@ export function HealthClient({
                     value={form.baseRef}
                     onChange={(e) => setForm({ ...form, baseRef: e.target.value })}
                     placeholder="base"
-                    className="h-11 px-3 rounded-lg border bg-surface"
+                    className="h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                   <input
                     value={form.labelFilter}
                     onChange={(e) => setForm({ ...form, labelFilter: e.target.value })}
                     placeholder="label"
-                    className="h-11 px-3 rounded-lg border bg-surface"
+                    className="h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                   <input
                     value={form.titlePrefix}
                     onChange={(e) => setForm({ ...form, titlePrefix: e.target.value })}
                     placeholder="title prefix"
-                    className="h-11 px-3 rounded-lg border bg-surface"
+                    className="h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                 </div>
               </Field>
@@ -675,14 +675,14 @@ export function HealthClient({
                     value={form.roleSlug}
                     onChange={(e) => setForm({ ...form, roleSlug: e.target.value })}
                     placeholder="ops"
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   />
                 </Field>
                 <Field label="Pushover app">
                   <select
                     value={form.pushoverApp}
                     onChange={(e) => setForm({ ...form, pushoverApp: e.target.value as 'tasks' | 'alerts' })}
-                    className="w-full h-11 px-3 rounded-lg border bg-surface"
+                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                   >
                     <option value="alerts">alerts</option>
                     <option value="tasks">tasks</option>
@@ -694,7 +694,7 @@ export function HealthClient({
                   value={form.notes}
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}
                   rows={2}
-                  className="w-full px-3 py-2 rounded-lg border bg-surface"
+                  className="w-full px-3 py-2 rounded-sm border border-border-default bg-surface-1"
                 />
               </Field>
               <label className="flex items-center gap-3">
@@ -722,7 +722,7 @@ export function HealthClient({
               <button
                 onClick={submit}
                 disabled={busy}
-                className="flex-1 h-11 rounded-lg bg-status-info text-white font-medium disabled:opacity-50"
+                className="flex-1 h-11 rounded-sm bg-primary text-white font-medium hover:bg-primary-hover transition-colors disabled:opacity-50"
               >
                 {busy ? 'Saving…' : 'Save'}
               </button>
