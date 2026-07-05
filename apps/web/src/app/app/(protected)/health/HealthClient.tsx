@@ -4,7 +4,8 @@ import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats';
-import type { WatchedProjectRow, WorkspaceOption, VercelTokenOption, UsageStats } from './page';
+import { findDuplicateScheduleIds } from '@/lib/schedule-health';
+import type { WatchedProjectRow, WorkspaceOption, VercelTokenOption, UsageStats, ScheduleRow } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
 
 interface Props {
@@ -14,6 +15,7 @@ interface Props {
   hasGlobalVercelToken: boolean;
   runners: RunnerHeartbeat[];
   usageStats: UsageStats | null;
+  schedules: ScheduleRow[];
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
 }
@@ -89,6 +91,17 @@ function formToBody(form: FormState): Record<string, unknown> {
   };
 }
 
+function timeUntil(iso: string | null): string {
+  if (!iso) return '—';
+  const seconds = Math.floor((new Date(iso).getTime() - Date.now()) / 1000);
+  if (seconds <= 0) return 'due';
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.floor(h / 24)}d`;
+}
+
 function timeAgo(iso: string | null): string {
   if (!iso) return 'never';
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -107,6 +120,7 @@ export function HealthClient({
   hasGlobalVercelToken,
   runners,
   usageStats,
+  schedules,
   teamWorkspaces,
   wsFilter,
 }: Props) {
@@ -234,6 +248,27 @@ export function HealthClient({
     }
   };
 
+  const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
+  const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
+
+  const toggleSchedule = async (s: ScheduleRow) => {
+    setScheduleBusyId(s.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${s.workspaceId}/schedules/${s.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !s.enabled }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Update failed');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Request failed');
+    } finally {
+      setScheduleBusyId(null);
+    }
+  };
+
   const runNow = async (row: WatchedProjectRow) => {
     setBusy(true);
     setError(null);
@@ -337,6 +372,71 @@ export function HealthClient({
                 )}
               </div>
             )}
+          </div>
+        </section>
+      )}
+
+      {/* Schedules */}
+      {schedules.length > 0 && (
+        <section className="mb-6">
+          <h2 className="section-label mb-3">Schedules</h2>
+
+          {duplicateScheduleIds.size > 0 && (
+            <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
+              <div className="font-medium text-status-warning">Duplicate crons detected</div>
+              <p className="text-text-secondary mt-1">
+                {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
+                workspace — they fire simultaneously. Pause the stale copy below.
+              </p>
+            </div>
+          )}
+
+          <div className="card divide-y divide-border-default">
+            {schedules.map((s) => {
+              const isDupe = duplicateScheduleIds.has(s.id);
+              return (
+                <div key={s.id} className={`px-4 py-3 ${isDupe ? 'bg-status-warning/5' : ''}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-text-primary truncate">{s.name}</p>
+                        {isDupe && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
+                            duplicate cron
+                          </span>
+                        )}
+                        {s.missionTitle && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
+                            {s.missionTitle}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-text-muted mt-0.5">
+                        <span className="font-mono">{s.cronExpression}</span> · {s.timezone} · {s.workspaceName}
+                      </p>
+                      <p className="text-xs text-text-tertiary mt-0.5">
+                        {s.enabled ? `next ${timeUntil(s.nextRunAt)}` : 'paused'} · last {timeAgo(s.lastRunAt)} · {s.totalRuns} runs
+                        {s.consecutiveFailures > 0 && (
+                          <span className="text-status-error"> · {s.consecutiveFailures} consecutive failures</span>
+                        )}
+                      </p>
+                      {s.lastError && (
+                        <p className="text-xs text-status-error mt-1 truncate">⚠ {s.lastError}</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => toggleSchedule(s)}
+                      disabled={scheduleBusyId === s.id}
+                      className={`shrink-0 text-xs px-3 h-8 rounded-lg border font-medium disabled:opacity-50 ${
+                        s.enabled ? 'text-text-secondary' : 'text-status-success border-status-success/40'
+                      }`}
+                    >
+                      {scheduleBusyId === s.id ? '…' : s.enabled ? 'Pause' : 'Resume'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}

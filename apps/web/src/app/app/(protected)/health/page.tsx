@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, secrets, tasks, workspaceSkills } from '@buildd/core/db/schema';
+import { watchedProjects, watcherEvents, workspaces, secrets, tasks, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -39,6 +39,23 @@ export interface VercelTokenOption {
   id: string;
   teamId: string;
   label: string | null;
+}
+
+export interface ScheduleRow {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  enabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  totalRuns: number;
+  taskTitle: string;
+  missionTitle: string | null;
 }
 
 export interface UsageStats {
@@ -93,8 +110,8 @@ export default async function HealthPage({
     ? [wsFilter]
     : teamWorkspaceIds;
 
-  // Parallel fetches: watched projects, vercel tokens, runners, usage
-  const [rows, vercelTokens, runners, usageStats] = await Promise.all([
+  // Parallel fetches: watched projects, vercel tokens, runners, usage, schedules
+  const [rows, vercelTokens, runners, usageStats, scheduleRows] = await Promise.all([
     // Watched projects
     db
       .select()
@@ -176,6 +193,26 @@ export default async function HealthPage({
           })),
       };
     })().catch(() => null),
+
+    // Schedules across the scoped workspaces, with mission linkage
+    (async () => {
+      const schedules = await db
+        .select()
+        .from(taskSchedules)
+        .where(inArray(taskSchedules.workspaceId, scopedWsIds));
+      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null })[];
+
+      const linkedMissions = await db
+        .select({ scheduleId: missions.scheduleId, title: missions.title })
+        .from(missions)
+        .where(inArray(missions.scheduleId, schedules.map((s: any) => s.id as string)));
+      const missionBySchedule = new Map(
+        (linkedMissions as any[])
+          .filter((m: any) => m.scheduleId)
+          .map((m: any) => [m.scheduleId as string, m.title as string] as const),
+      );
+      return (schedules as any[]).map((s: any) => ({ ...s, missionTitle: missionBySchedule.get(s.id) ?? null }));
+    })().catch(() => [] as any[]),
   ]);
 
   // Attach recent events to watched project rows
@@ -218,6 +255,28 @@ export default async function HealthPage({
     recentEvents: eventsByProject.get(r.id) ?? [],
   }));
 
+  const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
+    .map((s: any) => ({
+      id: s.id,
+      workspaceId: s.workspaceId,
+      workspaceName: wsById.get(s.workspaceId) ?? '(unknown)',
+      name: s.name,
+      cronExpression: s.cronExpression,
+      timezone: s.timezone,
+      enabled: s.enabled,
+      nextRunAt: s.nextRunAt ? s.nextRunAt.toISOString() : null,
+      lastRunAt: s.lastRunAt ? s.lastRunAt.toISOString() : null,
+      lastError: s.lastError,
+      consecutiveFailures: s.consecutiveFailures,
+      totalRuns: s.totalRuns,
+      taskTitle: s.taskTemplate?.title ?? '',
+      missionTitle: s.missionTitle,
+    }))
+    .sort((a: ScheduleRow, b: ScheduleRow) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return (a.nextRunAt ?? '9999') < (b.nextRunAt ?? '9999') ? -1 : 1;
+    });
+
   const workspaceOptions: WorkspaceOption[] = (teamWorkspaceRows as any[]).map((w: any) => ({
     id: w.id as string,
     name: w.name as string,
@@ -234,6 +293,7 @@ export default async function HealthPage({
       hasGlobalVercelToken={hasGlobalVercelToken}
       runners={runners}
       usageStats={usageStats}
+      schedules={serializedSchedules}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
     />
