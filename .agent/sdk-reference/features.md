@@ -1,13 +1,31 @@
 # Claude Agent SDK — Feature Reference
 
-**Last updated**: 2026-06-27
-**Covering**: v0.2.114 → v0.3.195
+**Last updated**: 2026-07-03
+**Covering**: v0.2.114 → v0.3.199
 
 ---
 
 ## SDK Release Timeline (since last scan)
 
-### v0.3.195 (2026-06-27) — current latest
+### v0.3.199 (2026-07-02) — current latest
+- **`requestId` in `canUseTool` callback options** — enables correlating out-of-band permission responses; returning `null` from the callback now suppresses the SDK's automatic control response (Buildd-relevant: hook-factory.ts `canUseTool` integration can leverage this for deferred permission flows)
+- **`blocked` field on `workflow_agent` progress events** — indicates when an agent was blocked by the auto-mode safety classifier (Buildd-relevant: surface in task detail progress stream so operators can see why a worker stalled)
+- **`mode:"mask"` and per-credential `injectHosts` on `sandbox.credentials`** — allows injecting masked credentials into sandboxed commands; `injectHosts` limits which command arguments the credential is injected for (Buildd-relevant: extends the credential sandboxing added in v0.3.187)
+
+### v0.3.198 (2026-07-01)
+- **Runtime warning when `canUseTool` + `allowedTools`/`bypassPermissions` conflict** — these settings shadow the callback; SDK now warns (Buildd-relevant: hook-factory.ts should not mix `canUseTool` with `allowedTools` in the same config)
+- **Per-server `request_timeout_ms` in `mcp_set_servers` control request** — configure per-server MCP timeouts at runtime (Buildd-relevant: allows tuning slow MCP servers without restarting)
+- **Bug fix: `SDKUserMessage.isSynthetic` now mapped to `isMeta` on ingestion** — synthetic messages were previously treated as real user messages
+- **Bug fix: workflow progress events no longer drop earliest agents** from the list while the phase counter stayed correct
+
+### v0.3.197 (2026-06-30)
+- **Parity with Claude Code v2.1.197** — bug fixes and reliability improvements
+
+### v0.3.196 (2026-06-29)
+- **`prompt_id` in hook input payloads (Buildd-relevant)** — all hook events now include a `prompt_id` for correlating with OpenTelemetry prompt-level spans; useful for Buildd's hook-based observability pipeline
+- **Bug fix (Buildd-relevant): control protocol dedup no longer drops tool-use IDs after 1000 resolutions** — long-running Buildd sessions could have received duplicate `tool_result` deliveries; now fixed
+
+### v0.3.195 (2026-06-27)
 - **Parity with Claude Code v2.1.195**
 - **Bug fix (Buildd-relevant): hook matchers with hyphenated identifiers now exact-match** — e.g. `mcp__brave-search` previously matched any tool containing that substring; now requires `mcp__brave-search__.*` to match all tools from a hyphenated server. Audit Buildd hook matcher patterns if any reference hyphenated MCP server names.
 - **Bug fix**: Background jobs no longer disappear from `claude agents` or lose data when written by a newer Claude Code version

@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import ExternalLink from '@/components/ExternalLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -297,15 +298,12 @@ export default async function RoleProfilePage({
                     {(currentWorker as any).prUrl && (
                       <>
                         <span>&middot;</span>
-                        <a
+                        <ExternalLink
                           href={(currentWorker as any).prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
                           className="text-accent-text hover:underline"
                         >
                           PR #{(currentWorker as any).prNumber}
-                        </a>
+                        </ExternalLink>
                       </>
                     )}
                     {(currentWorker.task as any).mission?.title && (
@@ -378,7 +376,7 @@ export default async function RoleProfilePage({
                         <span className="text-[11px] text-text-muted shrink-0">{task.status}</span>
                         {latestWorker?.prNumber && (
                           latestWorker.prUrl
-                            ? <a href={latestWorker.prUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-accent-text shrink-0 hover:underline">PR #{latestWorker.prNumber}</a>
+                            ? <ExternalLink href={latestWorker.prUrl} className="text-[11px] text-accent-text shrink-0 hover:underline">PR #{latestWorker.prNumber}</ExternalLink>
                             : <span className="text-[11px] text-accent-text shrink-0">PR #{latestWorker.prNumber}</span>
                         )}
                         <span className="text-[11px] text-text-muted shrink-0">{timeAgo(task.createdAt)}</span>

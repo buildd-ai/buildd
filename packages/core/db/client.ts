@@ -17,8 +17,16 @@ function getSql() {
   return _sql;
 }
 
+// When DISABLE_WRITES=true (set in visual-QA CI against the prod-clone Neon branch),
+// block insert/update/delete so the ephemeral app never mutates prod-shaped data.
+const DISABLE_WRITES = process.env.DISABLE_WRITES === 'true';
+const WRITE_OPS = new Set(['insert', 'update', 'delete']);
+
 export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
   get(_target, prop) {
+    if (DISABLE_WRITES && typeof prop === 'string' && WRITE_OPS.has(prop)) {
+      throw new Error(`[DISABLE_WRITES] Mutation blocked: db.${prop}() called in read-only mode`);
+    }
     if (!_db) {
       _db = drizzle(getSql(), { schema });
     }

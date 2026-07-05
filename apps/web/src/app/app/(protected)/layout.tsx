@@ -56,7 +56,7 @@ export default async function ProtectedLayout({
             {/* Global notification banner for tasks needing input */}
             <NeedsInputBanner />
             {/* Mobile page header for non-tasks pages */}
-            <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} />
+            <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} />
             <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
               {children}
             </main>
