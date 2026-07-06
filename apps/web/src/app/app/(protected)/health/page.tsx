@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, secrets, tasks, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
+import { watchedProjects, watcherEvents, workspaces, tasks, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -16,10 +16,7 @@ export interface WatchedProjectRow {
   workspaceName: string;
   repo: string;
   enabled: boolean;
-  vercelProjectId: string | null;
-  vercelTokenSecretId: string | null;
   inFlightWindowMin: number;
-  prodGraceMin: number;
   roleSlug: string;
   pushoverApp: 'tasks' | 'alerts';
   releasePrFilter: { base?: string; label?: string; titlePrefix?: string };
@@ -32,13 +29,6 @@ export interface WatchedProjectRow {
 export interface WorkspaceOption {
   id: string;
   name: string;
-  teamId: string;
-}
-
-export interface VercelTokenOption {
-  id: string;
-  teamId: string;
-  label: string | null;
 }
 
 export interface ScheduleRow {
@@ -110,22 +100,14 @@ export default async function HealthPage({
     ? [wsFilter]
     : teamWorkspaceIds;
 
-  // Parallel fetches: watched projects, vercel tokens, runners, usage, schedules
-  const [rows, vercelTokens, runners, usageStats, scheduleRows] = await Promise.all([
+  // Parallel fetches: watched projects, runners, usage, schedules
+  const [rows, runners, usageStats, scheduleRows] = await Promise.all([
     // Watched projects
     db
       .select()
       .from(watchedProjects)
       .where(inArray(watchedProjects.workspaceId, scopedWsIds))
       .orderBy(desc(watchedProjects.createdAt)),
-
-    // Vercel tokens for the active team
-    db
-      .select({ id: secrets.id, teamId: secrets.teamId, label: secrets.label })
-      .from(secrets)
-      .where(and(eq(secrets.teamId, activeTeamId), eq(secrets.purpose, 'vercel_token')))
-      .then((rows: any[]) => rows.map((s: any): VercelTokenOption => ({ id: s.id, teamId: s.teamId, label: s.label })))
-      .catch(() => [] as VercelTokenOption[]),
 
     // Runner heartbeats scoped to team (or workspace)
     getRunnerHeartbeats(activeTeamId, wsFilter && teamWorkspaceIds.includes(wsFilter) ? wsFilter : null)
@@ -242,10 +224,7 @@ export default async function HealthPage({
     workspaceName: wsById.get(r.workspaceId) ?? '(unknown)',
     repo: r.repo,
     enabled: r.enabled,
-    vercelProjectId: r.vercelProjectId,
-    vercelTokenSecretId: r.vercelTokenSecretId,
     inFlightWindowMin: r.inFlightWindowMin,
-    prodGraceMin: r.prodGraceMin,
     roleSlug: r.roleSlug,
     pushoverApp: r.pushoverApp,
     releasePrFilter: r.releasePrFilter ?? {},
@@ -280,17 +259,12 @@ export default async function HealthPage({
   const workspaceOptions: WorkspaceOption[] = (teamWorkspaceRows as any[]).map((w: any) => ({
     id: w.id as string,
     name: w.name as string,
-    teamId: w.teamId as string,
   }));
-
-  const hasGlobalVercelToken = Boolean(process.env.VERCEL_API_TOKEN);
 
   return (
     <HealthClient
       initialRows={serialized}
       workspaces={workspaceOptions}
-      vercelTokens={vercelTokens}
-      hasGlobalVercelToken={hasGlobalVercelToken}
       runners={runners}
       usageStats={usageStats}
       schedules={serializedSchedules}
