@@ -13,11 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cross-page visual consistency pass across web app (#1063)
+- Reframe `create_task` pending status as queued with `get_task` hint
 - Bump @anthropic-ai/claude-agent-sdk to ^0.3.179 (#861)
 - Bump @anthropic-ai/claude-agent-sdk to ^0.3.177 (#820)
 
 ### Added
 
+- Serialize concurrent agents to prevent PR collisions in orchestrator
+- Missions 'Awaiting review' group + 24h auto-archive for done missions (#1065)
+- Schedules section on Health page with duplicate-cron detection (#1061)
 - Pluggable AgentBackend abstraction with Claude and Codex support (#826)
 - Back api-key auth and account-workspace cache with Redis L2 (#821)
 - Capture agent error traces from tool output (#780)
@@ -44,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Activity feed NULLS-FIRST ordering + archived missions filling limit (re-fix)
+- Migration 0061 made idempotent to unblock prod deploys (#1062)
 - Home screen hides archived missions and caps activity feed at 50; NULLS-FIRST ordering (#1048)
 - Idle missions now visible on home screen; activity feed ordering restored (#1048)
 - Visual QA: Playwright 1.61 compat, workflow_dispatch crash, judge via buildd, prod-clone Neon (#1049)
@@ -79,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Visual QA PR runs label-gated behind 'visual-qa' label
 - Visual QA ephemeral Neon branch clones sanitized prod data (#1049)
 - Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
 - Pass release App private key to reusable release workflow (#923)
