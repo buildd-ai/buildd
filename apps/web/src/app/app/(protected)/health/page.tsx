@@ -109,8 +109,8 @@ export default async function HealthPage({
       .where(inArray(watchedProjects.workspaceId, scopedWsIds))
       .orderBy(desc(watchedProjects.createdAt)),
 
-    // Runner heartbeats scoped to team (or workspace)
-    getRunnerHeartbeats(activeTeamId, wsFilter && teamWorkspaceIds.includes(wsFilter) ? wsFilter : null)
+    // Runner heartbeats relevant to the scoped workspaces
+    getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
 
     // Usage stats (last 30 days)
