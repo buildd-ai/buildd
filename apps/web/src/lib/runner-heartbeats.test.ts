@@ -8,6 +8,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: Symbol('accounts'),
   accountWorkspaces: Symbol('accountWorkspaces'),
   workerHeartbeats: Symbol('workerHeartbeats'),
+  workers: Symbol('workers'),
 }));
 mock.module('drizzle-orm', () => ({
   and: (...a: any[]) => a,
@@ -17,7 +18,71 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b }),
 }));
 
-const { isRunnerOnline } = await import('./runner-heartbeats');
+const { isRunnerOnline, selectRelevantRunnerAccounts } = await import('./runner-heartbeats');
+
+describe('selectRelevantRunnerAccounts', () => {
+  const TEAM = 'team-a';
+  const OTHER_TEAM = 'team-b';
+
+  function relevance(
+    candidates: { accountId: string; accountTeamId: string | null }[],
+    opts: Partial<{ linkedAccountIds: Set<string>; workedAccountIds: Set<string> }> = {},
+  ) {
+    return selectRelevantRunnerAccounts(candidates, {
+      teamId: TEAM,
+      linkedAccountIds: opts.linkedAccountIds ?? new Set<string>(),
+      workedAccountIds: opts.workedAccountIds ?? new Set<string>(),
+    });
+  }
+
+  it('includes accounts that belong to the team', () => {
+    const result = relevance([{ accountId: 'acc-1', accountTeamId: TEAM }]);
+    expect(result.has('acc-1')).toBe(true);
+  });
+
+  it('includes accounts from another team that are linked to a scoped workspace', () => {
+    const result = relevance(
+      [{ accountId: 'acc-1', accountTeamId: OTHER_TEAM }],
+      { linkedAccountIds: new Set(['acc-1']) },
+    );
+    expect(result.has('acc-1')).toBe(true);
+  });
+
+  it('includes accounts from another team that have worked in a scoped workspace', () => {
+    // The real-world case: a runner account created under a personal team,
+    // claiming via open-access workspaces — no team match, no explicit link.
+    const result = relevance(
+      [{ accountId: 'acc-1', accountTeamId: OTHER_TEAM }],
+      { workedAccountIds: new Set(['acc-1']) },
+    );
+    expect(result.has('acc-1')).toBe(true);
+  });
+
+  it('excludes unrelated accounts even though open workspaces are claimable by anyone', () => {
+    // A stranger's runner could claim in an open workspace, but has never
+    // worked here and isn't linked — it must not appear on this team's Health.
+    const result = relevance([{ accountId: 'stranger', accountTeamId: OTHER_TEAM }]);
+    expect(result.size).toBe(0);
+  });
+
+  it('excludes accounts with no team when they have no link or work history', () => {
+    const result = relevance([{ accountId: 'acc-1', accountTeamId: null }]);
+    expect(result.size).toBe(0);
+  });
+
+  it('handles a mixed candidate list', () => {
+    const result = relevance(
+      [
+        { accountId: 'team-member', accountTeamId: TEAM },
+        { accountId: 'linked', accountTeamId: OTHER_TEAM },
+        { accountId: 'worked', accountTeamId: null },
+        { accountId: 'stranger', accountTeamId: OTHER_TEAM },
+      ],
+      { linkedAccountIds: new Set(['linked']), workedAccountIds: new Set(['worked']) },
+    );
+    expect([...result].sort()).toEqual(['linked', 'team-member', 'worked']);
+  });
+});
 
 describe('isRunnerOnline', () => {
   it('returns true when last heartbeat was under 2 minutes ago', () => {

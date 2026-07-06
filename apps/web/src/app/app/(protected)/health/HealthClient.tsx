@@ -5,14 +5,12 @@ import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { WatchedProjectRow, WorkspaceOption, VercelTokenOption, UsageStats, ScheduleRow } from './page';
+import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
 
 interface Props {
   initialRows: WatchedProjectRow[];
   workspaces: WorkspaceOption[];
-  vercelTokens: VercelTokenOption[];
-  hasGlobalVercelToken: boolean;
   runners: RunnerHeartbeat[];
   usageStats: UsageStats | null;
   schedules: ScheduleRow[];
@@ -23,10 +21,7 @@ interface Props {
 interface FormState {
   workspaceId: string;
   repo: string;
-  vercelProjectId: string;
-  vercelTokenSecretId: string | null;
   inFlightWindowMin: number;
-  prodGraceMin: number;
   roleSlug: string;
   pushoverApp: 'tasks' | 'alerts';
   baseRef: string;
@@ -40,10 +35,7 @@ function blankForm(workspaceId: string): FormState {
   return {
     workspaceId,
     repo: '',
-    vercelProjectId: '',
-    vercelTokenSecretId: null,
     inFlightWindowMin: 60,
-    prodGraceMin: 60,
     roleSlug: 'ops',
     pushoverApp: 'alerts',
     baseRef: 'main',
@@ -58,10 +50,7 @@ function rowToForm(row: WatchedProjectRow): FormState {
   return {
     workspaceId: row.workspaceId,
     repo: row.repo,
-    vercelProjectId: row.vercelProjectId ?? '',
-    vercelTokenSecretId: row.vercelTokenSecretId,
     inFlightWindowMin: row.inFlightWindowMin,
-    prodGraceMin: row.prodGraceMin,
     roleSlug: row.roleSlug,
     pushoverApp: row.pushoverApp,
     baseRef: row.releasePrFilter.base ?? 'main',
@@ -80,10 +69,7 @@ function formToBody(form: FormState): Record<string, unknown> {
   return {
     repo: form.repo.trim(),
     enabled: form.enabled,
-    vercelProjectId: form.vercelProjectId.trim() || null,
-    vercelTokenSecretId: form.vercelTokenSecretId,
     inFlightWindowMin: Number(form.inFlightWindowMin),
-    prodGraceMin: Number(form.prodGraceMin),
     roleSlug: form.roleSlug.trim() || 'ops',
     pushoverApp: form.pushoverApp,
     releasePrFilter,
@@ -116,8 +102,6 @@ function timeAgo(iso: string | null): string {
 export function HealthClient({
   initialRows,
   workspaces,
-  vercelTokens,
-  hasGlobalVercelToken,
   runners,
   usageStats,
   schedules,
@@ -130,25 +114,6 @@ export function HealthClient({
   const [form, setForm] = useState<FormState>(blankForm(workspaces[0]?.id ?? ''));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [newToken, setNewToken] = useState('');
-  const [newTokenLabel, setNewTokenLabel] = useState('');
-
-  const tokensByTeam = useMemo(() => {
-    const map = new Map<string, VercelTokenOption[]>();
-    for (const t of vercelTokens) {
-      const list = map.get(t.teamId) ?? [];
-      list.push(t);
-      map.set(t.teamId, list);
-    }
-    return map;
-  }, [vercelTokens]);
-
-  const activeTeamId = workspaces.find((w) => w.id === form.workspaceId)?.teamId ?? '';
-  const teamTokens = activeTeamId ? tokensByTeam.get(activeTeamId) ?? [] : [];
-
-  function vercelMissing(row: WatchedProjectRow): boolean {
-    return Boolean(row.vercelProjectId) && !row.vercelTokenSecretId && !hasGlobalVercelToken;
-  }
 
   const refresh = () => startTransition(() => router.refresh());
 
@@ -212,42 +177,6 @@ export function HealthClient({
     }
   };
 
-  const addVercelToken = async () => {
-    const value = newToken.trim();
-    if (!value) {
-      setError('Paste a Vercel API token first');
-      return;
-    }
-    if (!activeTeamId) {
-      setError('No team — pick a workspace first');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/secrets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          value,
-          purpose: 'vercel_token',
-          label: newTokenLabel.trim() || 'Vercel API token',
-          teamId: activeTeamId,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
-      setForm({ ...form, vercelTokenSecretId: data.id });
-      setNewToken('');
-      setNewTokenLabel('');
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to store token');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
   const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
 
@@ -292,7 +221,7 @@ export function HealthClient({
         <div>
           <h1 className="text-2xl font-bold">Project Health</h1>
           <p className="text-sm text-text-tertiary">
-            Watcher fires a task + Pushover when CI breaks on release PRs or prod deploys go bad.
+            Watcher fires a task + Pushover when CI breaks on release PRs.
           </p>
         </div>
         <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
@@ -445,15 +374,6 @@ export function HealthClient({
       <section>
         <h2 className="section-label mb-3">Watched Projects</h2>
 
-        {!hasGlobalVercelToken && vercelTokens.length === 0 && initialRows.some((r) => r.vercelProjectId) && (
-          <div className="mb-4 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-            <div className="font-medium text-status-warning">No Vercel token configured</div>
-            <p className="text-text-secondary mt-1">
-              Some watched projects have a Vercel project ID set but no API token. Add one in the edit drawer of any row — it gets stored encrypted at the team level and reused across rows.
-            </p>
-          </div>
-        )}
-
         {initialRows.length === 0 ? (
           <div className="border border-dashed border-border-strong p-8 text-center text-text-muted">
             <p className="mb-3">No watched projects yet.</p>
@@ -483,17 +403,10 @@ export function HealthClient({
                   </div>
                   <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-text-secondary">
                     <div>Last check: {timeAgo(row.lastCheckedAt)}</div>
-                    <div>Vercel: {row.vercelProjectId ? '✓' : '—'}</div>
                     <div>In-flight: {row.inFlightWindowMin}m</div>
-                    <div>Prod grace: {row.prodGraceMin}m</div>
                   </div>
                   {row.lastError && (
                     <div className="mt-2 text-xs text-status-error truncate">⚠ {row.lastError}</div>
-                  )}
-                  {vercelMissing(row) && (
-                    <div className="mt-2 text-xs text-status-warning">
-                      ⚠ Vercel project set but no token — prod-deploy check is disabled. Tap Edit to add one.
-                    </div>
                   )}
                   {row.recentEvents.length > 0 && (
                     <div className="mt-2 text-xs text-text-tertiary">
@@ -569,84 +482,15 @@ export function HealthClient({
                   className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
                 />
               </Field>
-              <div className="rounded-lg border p-3 space-y-3">
-                <div className="text-sm font-medium">Vercel (optional — for prod-deploy alerts)</div>
-                <Field label="Project ID">
-                  <input
-                    value={form.vercelProjectId}
-                    onChange={(e) => setForm({ ...form, vercelProjectId: e.target.value })}
-                    placeholder="prj_…"
-                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                  />
-                </Field>
-                {form.vercelProjectId && (
-                  <Field label="API token">
-                    <select
-                      value={form.vercelTokenSecretId ?? ''}
-                      onChange={(e) => setForm({ ...form, vercelTokenSecretId: e.target.value || null })}
-                      className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                    >
-                      <option value="">
-                        {hasGlobalVercelToken ? 'Use global VERCEL_API_TOKEN' : 'None — prod check disabled'}
-                      </option>
-                      {teamTokens.map((t: VercelTokenOption) => (
-                        <option key={t.id} value={t.id}>{t.label || t.id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
-                {form.vercelProjectId && !form.vercelTokenSecretId && (
-                  <details className="rounded-lg border border-dashed p-3">
-                    <summary className="cursor-pointer text-sm font-medium">+ Add a new Vercel token</summary>
-                    <div className="mt-3 space-y-2">
-                      <p className="text-xs text-text-tertiary">
-                        Generate one at <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">vercel.com/account/tokens</a> with read access to your project. Stored encrypted at the team level.
-                      </p>
-                      <input
-                        value={newTokenLabel}
-                        onChange={(e) => setNewTokenLabel(e.target.value)}
-                        placeholder="Label (e.g. 'Personal — read deployments')"
-                        className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                      />
-                      <input
-                        value={newToken}
-                        onChange={(e) => setNewToken(e.target.value)}
-                        type="password"
-                        placeholder="Paste token here"
-                        className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                      />
-                      <button
-                        type="button"
-                        onClick={addVercelToken}
-                        disabled={busy || !newToken.trim()}
-                        className="h-11 px-4 rounded-sm bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50"
-                      >
-                        Store token
-                      </button>
-                    </div>
-                  </details>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="In-flight window (min)">
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.inFlightWindowMin}
-                    onChange={(e) => setForm({ ...form, inFlightWindowMin: Number(e.target.value) })}
-                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                  />
-                </Field>
-                <Field label="Prod grace (min)">
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.prodGraceMin}
-                    onChange={(e) => setForm({ ...form, prodGraceMin: Number(e.target.value) })}
-                    className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
-                  />
-                </Field>
-              </div>
+              <Field label="In-flight window (min)">
+                <input
+                  type="number"
+                  min={1}
+                  value={form.inFlightWindowMin}
+                  onChange={(e) => setForm({ ...form, inFlightWindowMin: Number(e.target.value) })}
+                  className="w-full h-11 px-3 rounded-sm border border-border-default bg-surface-1"
+                />
+              </Field>
               <Field label="Release PR filter">
                 <div className="grid grid-cols-3 gap-2">
                   <input
