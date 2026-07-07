@@ -28,7 +28,7 @@ interface DefaultRole {
   description: string;
   content: string;
   color: string;
-  model: 'inherit' | 'sonnet' | 'opus' | 'haiku';
+  model: string;
   isRole: true;
   allowedTools: string[];
   canDelegateTo: string[];

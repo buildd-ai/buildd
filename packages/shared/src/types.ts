@@ -509,7 +509,7 @@ export interface TaskSchedule {
 
 export type WorkspaceSkillOrigin = 'scan' | 'manual';
 
-export type SkillModel = 'sonnet' | 'opus' | 'haiku' | 'inherit';
+export type SkillModel = 'sonnet' | 'opus' | 'haiku' | 'inherit' | (string & {});
 
 export interface WorkspaceSkill {
   id: string;
