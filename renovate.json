@@ -17,6 +17,10 @@
       "matchUpdateTypes": ["major"],
       "groupName": "Anthropic AI SDK (major)",
       "automerge": false
+    },
+    {
+      "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
+      "groupName": "drizzle"
     }
   ]
 }
