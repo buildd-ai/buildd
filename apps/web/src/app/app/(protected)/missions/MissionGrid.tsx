@@ -323,17 +323,17 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
         className="block p-4"
       >
         <div className="flex items-start justify-between gap-3 mb-1.5">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-start gap-2 min-w-0">
             {mission.role && (
               <span
-                className="w-2 h-2 rounded-full shrink-0"
+                className="w-2 h-2 rounded-full shrink-0 mt-1"
                 style={{ backgroundColor: mission.role.color }}
               />
             )}
-            <span className="text-[15px] font-medium text-text-primary leading-tight truncate">
+            <span className="text-[15px] font-medium text-text-primary leading-tight line-clamp-2 min-w-0">
               {mission.title}
             </span>
-            <span className={`health-pill ${healthDisplay.colorClass}`}>
+            <span className={`health-pill ${healthDisplay.colorClass} shrink-0`}>
               {healthDisplay.label}
             </span>
           </div>
@@ -448,11 +448,11 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
         className="block px-4 py-3"
       >
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[14px] font-medium text-text-secondary leading-tight truncate">
+          <div className="flex items-start gap-2 min-w-0">
+            <span className="text-[14px] font-medium text-text-secondary leading-tight line-clamp-2 min-w-0">
               {mission.title}
             </span>
-            <span className={`health-pill ${healthDisplay.colorClass}`}>
+            <span className={`health-pill ${healthDisplay.colorClass} shrink-0`}>
               {healthDisplay.label}
             </span>
           </div>
