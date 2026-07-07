@@ -197,7 +197,7 @@ export default async function MissionsPage({
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center flex-wrap gap-y-2 mb-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
           <span className="text-xs text-text-secondary font-light">
@@ -216,14 +216,14 @@ export default async function MissionsPage({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 ml-auto flex-shrink-0">
           <WorkspaceFilter
             workspaces={teamWorkspaces}
             selectedId={wsFilter ?? null}
           />
           <Link
             href="/app/missions/new"
-            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+            className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors whitespace-nowrap"
           >
             + New Mission
           </Link>
