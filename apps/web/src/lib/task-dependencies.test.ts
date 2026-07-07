@@ -88,7 +88,13 @@ mock.module('@/lib/pusher', () => ({
     CHILDREN_COMPLETED: 'task:children_completed',
     TASK_UNBLOCKED: 'task:unblocked',
     TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
+    TASK_ASSIGNED: 'task:assigned',
   },
+}));
+
+const mockDispatchUnblockedTask = mock(() => Promise.resolve());
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchUnblockedTask: mockDispatchUnblockedTask,
 }));
 
 import { resolveCompletedTask } from './task-dependencies';
@@ -105,6 +111,7 @@ function resetMocks() {
   mockUpdate.mockReset();
   mockUpdateSet.mockReset();
   mockUpdateWhere.mockReset();
+  mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
   selectCallCount = 0;
   selectWhereResults = [];
   findFirstCallCount = 0;
@@ -172,14 +179,16 @@ describe('task-dependencies', () => {
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
-  it('fires TASK_UNBLOCKED when completing a dependency', async () => {
+  it('fires TASK_UNBLOCKED and dispatches runner wake when completing a dependency', async () => {
     // findFirst[0]: task has no parent
     findFirstResults[0] = { parentTaskId: null };
     // select[0]: one task depends on the completed task
     // select[1]: fetch dep statuses — all resolved
+    // select[2]: workspace lookup for dispatch
     selectWhereResults = [
-      [{ id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1' }],
+      [{ id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1', title: 'Phase 2', description: null, mode: 'execution', priority: 0, missionId: null }],
       [{ id: 'task-1', status: 'completed' }],
+      [{ id: 'ws-1', name: 'my-workspace', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
     ];
 
     await resolveCompletedTask('task-1', 'ws-1');
@@ -192,15 +201,21 @@ describe('task-dependencies', () => {
         resolvedDependency: 'task-1',
       }
     );
+
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'dependent-1', workspaceId: 'ws-1' }),
+      expect.objectContaining({ id: 'ws-1', name: 'my-workspace' })
+    );
   });
 
-  it('does not fire TASK_UNBLOCKED when dependent has other unresolved deps', async () => {
+  it('does not fire TASK_UNBLOCKED or dispatch when dependent has other unresolved deps', async () => {
     // findFirst[0]: task has no parent
     findFirstResults[0] = { parentTaskId: null };
     // select[0]: dependent task has two deps
-    // select[1]: one dep still pending
+    // select[1]: one dep still pending — no unblocked tasks, no workspace select
     selectWhereResults = [
-      [{ id: 'dependent-1', dependsOn: ['task-1', 'other-id'], workspaceId: 'ws-1' }],
+      [{ id: 'dependent-1', dependsOn: ['task-1', 'other-id'], workspaceId: 'ws-1', title: 'Phase 2', description: null, mode: 'execution', priority: 0, missionId: null }],
       [
         { id: 'task-1', status: 'completed' },
         { id: 'other-id', status: 'waiting' },
@@ -210,19 +225,25 @@ describe('task-dependencies', () => {
     await resolveCompletedTask('task-1', 'ws-1');
 
     expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
   });
 
-  it('fires TASK_UNBLOCKED for multiple dependent tasks', async () => {
+  it('fires TASK_UNBLOCKED and dispatches for multiple dependent tasks', async () => {
     // findFirst[0]: task has no parent
     findFirstResults[0] = { parentTaskId: null };
     // select[0]: two tasks depend on the completed task
     // select[1]: fetch dep statuses
+    // select[2]: workspace lookup for both
     selectWhereResults = [
       [
-        { id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1' },
-        { id: 'dependent-2', dependsOn: ['task-1'], workspaceId: 'ws-2' },
+        { id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1', title: 'Phase 2a', description: null, mode: 'execution', priority: 0, missionId: null },
+        { id: 'dependent-2', dependsOn: ['task-1'], workspaceId: 'ws-2', title: 'Phase 2b', description: null, mode: 'execution', priority: 0, missionId: null },
       ],
       [{ id: 'task-1', status: 'completed' }],
+      [
+        { id: 'ws-1', name: 'workspace-a', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null },
+        { id: 'ws-2', name: 'workspace-b', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null },
+      ],
     ];
 
     await resolveCompletedTask('task-1', 'ws-1');
@@ -244,6 +265,7 @@ describe('task-dependencies', () => {
         resolvedDependency: 'task-1',
       }
     );
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -516,6 +538,56 @@ describe('dependency failure cascade', () => {
     // No cascade, no events
     expect(mockTriggerEvent).not.toHaveBeenCalled();
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('dispatches exactly once after last dep resolves in a 2-dep task', async () => {
+    // Simulates completing dep-A when dep-B is still pending: no dispatch.
+    // Then completing dep-B when dep-A is done: dispatch fires.
+
+    // --- First completion: dep-A completes, dep-B still pending ---
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed' };
+    selectWhereResults = [
+      // dependent task waiting on both dep-A and dep-B
+      [{ id: 'task-sdk', dependsOn: ['dep-A', 'dep-B'], workspaceId: 'ws-1', title: 'SDK feature adoption', description: null, mode: 'execution', priority: 0, missionId: null }],
+      // dep-B still pending
+      [
+        { id: 'dep-A', status: 'completed' },
+        { id: 'dep-B', status: 'pending' },
+      ],
+    ];
+
+    await resolveCompletedTask('dep-A', 'ws-1');
+
+    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalledWith(expect.anything(), 'task:unblocked', expect.anything());
+
+    // --- Second completion: dep-B completes, dep-A already done ---
+    resetMocks();
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed' };
+    selectWhereResults = [
+      [{ id: 'task-sdk', dependsOn: ['dep-A', 'dep-B'], workspaceId: 'ws-1', title: 'SDK feature adoption', description: null, mode: 'execution', priority: 0, missionId: null }],
+      [
+        { id: 'dep-A', status: 'completed' },
+        { id: 'dep-B', status: 'completed' },
+      ],
+      // workspace lookup
+      [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd', webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
+    ];
+
+    await resolveCompletedTask('dep-B', 'ws-1');
+
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:unblocked',
+      { taskId: 'task-sdk', resolvedDependency: 'dep-B' }
+    );
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'task-sdk', workspaceId: 'ws-1' }),
+      expect.objectContaining({ id: 'ws-1', name: 'buildd' })
+    );
   });
 
   it('does NOT fire TASK_UNBLOCKED when a dep fails (only completed deps unblock)', async () => {

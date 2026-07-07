@@ -1,9 +1,10 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, missionNotes } from '@buildd/core/db/schema';
+import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
+import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -290,21 +291,30 @@ async function maybeCreateAggregationTask(
 /**
  * Check if completing a task unblocks any tasks that depend on it via `dependsOn`.
  * For each dependent task, verify all its dependencies are in terminal state,
- * then fire a TASK_UNBLOCKED Pusher event.
+ * then fire a TASK_UNBLOCKED Pusher event and dispatch the task so runners are woken up.
  */
 async function checkDependsOnResolved(
   completedTaskId: string
 ): Promise<void> {
-  // Find all tasks where dependsOn contains the completed task ID
+  // Find all PENDING tasks where dependsOn contains the completed task ID.
+  // Only pending tasks can be woken — completed/failed/cancelled ones are inert.
   const dependentTasks = await db
     .select({
       id: tasks.id,
       dependsOn: tasks.dependsOn,
       workspaceId: tasks.workspaceId,
+      title: tasks.title,
+      description: tasks.description,
+      mode: tasks.mode,
+      priority: tasks.priority,
+      missionId: tasks.missionId,
     })
     .from(tasks)
     .where(
-      sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([completedTaskId])}::jsonb`
+      and(
+        sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([completedTaskId])}::jsonb`,
+        eq(tasks.status, 'pending'),
+      )
     );
 
   if (dependentTasks.length === 0) return;
@@ -329,6 +339,7 @@ async function checkDependsOnResolved(
   const statusMap = new Map(depTasks.map((t) => [t.id, t.status]));
 
   // Check each dependent task to see if all its dependencies are resolved
+  const unblockedTasks: typeof dependentTasks = [];
   for (const task of dependentTasks) {
     const deps = task.dependsOn as string[] | null;
     if (!deps || deps.length === 0) continue;
@@ -347,7 +358,47 @@ async function checkDependsOnResolved(
           resolvedDependency: completedTaskId,
         }
       );
+      unblockedTasks.push(task);
     }
+  }
+
+  if (unblockedTasks.length === 0) return;
+
+  // Wake runners for each newly unblocked task via the full dispatch chain
+  // (Pusher TASK_ASSIGNED + webhook + GitHub Actions).
+  // Batch-fetch workspace info to avoid N+1 queries.
+  const uniqueWorkspaceIds = [...new Set(unblockedTasks.map((t) => t.workspaceId))];
+  const workspaceRecords = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      repo: workspaces.repo,
+      webhookConfig: workspaces.webhookConfig,
+      githubInstallationId: workspaces.githubInstallationId,
+      githubRepoId: workspaces.githubRepoId,
+    })
+    .from(workspaces)
+    .where(inArray(workspaces.id, uniqueWorkspaceIds));
+
+  const workspaceMap = new Map(workspaceRecords.map((w) => [w.id, w]));
+
+  for (const task of unblockedTasks) {
+    const workspace = workspaceMap.get(task.workspaceId);
+    if (!workspace) continue;
+    dispatchUnblockedTask(
+      {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        workspaceId: task.workspaceId,
+        mode: task.mode ?? undefined,
+        priority: task.priority ?? undefined,
+        missionId: task.missionId,
+      },
+      workspace
+    ).catch((err) =>
+      console.error(`[task-dependencies] dispatchUnblockedTask failed for task ${task.id}:`, err)
+    );
   }
 }
 

@@ -77,7 +77,7 @@ archived` (lifecycle is stored; *health* is derived from task state via
 `deriveMissionHealth`, not stored). Notable fields:
 - **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — all mission tasks push to one
   shared branch tracked by a single PR.
-- `scheduleId` — link to a `task_schedule` for recurring missions.
+- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. When the mission status transitions to `completed` or `archived`, its linked schedule is automatically deleted. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. This ensures heartbeat schedules cannot outlive the mission that owns them.
 - `parentMissionId` — sub-missions.
 - `requiresReview` — human review gate before merge.
 - `defaultOutputRequirement`, `maxConcurrentTasks`, `contextArtifactIds`.

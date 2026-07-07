@@ -125,6 +125,46 @@ export async function dispatchNewTask(
   }
 }
 
+/**
+ * Wake runners for a task whose dependsOn list just became fully resolved.
+ * Runs the same dispatch chain as dispatchNewTask but skips TASK_CREATED —
+ * the task already exists in the dashboard and re-emitting that event is noisy.
+ */
+export async function dispatchUnblockedTask(
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  workspace: {
+    id?: string;
+    name?: string;
+    repo?: string | null;
+    webhookConfig?: WorkspaceWebhookConfig | null;
+    githubInstallationId?: string | null;
+    githubRepoId?: string | null;
+  }
+): Promise<void> {
+  const taskPayload = buildTaskPayload(task, workspace);
+
+  // Check webhook dispatch
+  let dispatched = false;
+  if (workspace?.webhookConfig) {
+    const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
+    dispatched = await dispatchToWebhook(webhookConfig, task);
+  }
+
+  // Try GitHub Actions dispatch
+  if (!dispatched) {
+    tryGitHubActionsDispatch(workspace, task).catch(() => {});
+  }
+
+  // Broadcast TASK_ASSIGNED so any connected local worker can claim.
+  if (!dispatched) {
+    await triggerEvent(
+      channels.workspace(task.workspaceId),
+      events.TASK_ASSIGNED,
+      { task: taskPayload, targetLocalUiUrl: null }
+    );
+  }
+}
+
 /** Build minimal task payload for Pusher events (10KB limit) */
 export function buildTaskPayload(
   task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },

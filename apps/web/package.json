@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.126.0",
+  "version": "0.126.1",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -27,7 +27,7 @@
     "@upstash/redis": "^1.36.2",
     "@vercel/otel": "^2.1.1",
     "croner": "^10.0.1",
-    "drizzle-orm": "^0.30.0",
+    "drizzle-orm": "^0.45.2",
     "jose": "^6.2.0",
     "next": "^16.1.6",
     "next-auth": "^5.0.0-beta.30",
