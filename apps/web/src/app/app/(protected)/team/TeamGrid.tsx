@@ -99,10 +99,10 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
       <div className="flex items-center gap-3 mb-3">
         <RoleAvatar name={role.name} color={role.color} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <span className="text-[15px] font-semibold text-text-primary truncate">{role.name}</span>
             {role.model && (
-              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+              <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
                 {role.model}
               </span>
             )}
@@ -176,14 +176,14 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
         </span>
       )}
       {role.model && (
-        <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+        <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
           {role.model}
         </span>
       )}
       {role.stats && role.stats.total > 0 ? (
-        <span className="text-[11px] text-text-muted">{role.stats.total} tasks</span>
+        <span className="hidden sm:inline text-[11px] text-text-muted">{role.stats.total} tasks</span>
       ) : (
-        <span className="text-[11px] text-text-muted font-mono">{role.slug}</span>
+        <span className="hidden sm:inline text-[11px] text-text-muted font-mono">{role.slug}</span>
       )}
     </Link>
   );
