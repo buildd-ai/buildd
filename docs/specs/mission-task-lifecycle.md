@@ -37,6 +37,11 @@ an enum) to allow extension without migrations.
   `workers.prUrl` is set.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
+- A task with `roleSlug = null` is claimable by any runner with access to the
+  workspace — this is the normal case for dashboard-created tasks. Routing via
+  `roleSlug` is primarily used by MCP `create_task`, orchestrator agents, and
+  schedules. `context.skillSlugs` (JSON field) carries advisory skill hints to
+  the executing agent but does NOT restrict claim routing.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a task with `dependsOn: [taskA]` and `taskA.status = 'pending'`
@@ -116,8 +121,15 @@ stored — it is derived on read from the state of associated tasks via
 - Health is computed from deliverable tasks only (`isDeliverableTask` filters out
   `kind = 'coordination'`, `mode = 'planning'`, and housekeeping titles).
 - A paused mission MUST NOT spawn new tasks from its schedule while paused.
+- A mission's `activeHoursStart/End/Timezone` fields restrict when its heartbeat
+  schedule fires. When set, the cron skips firing outside the active window.
+  `activeHours` gates firing cadence only — it does NOT change mission status.
+  A `completed` or `paused` mission with `activeHours` set MUST NOT treat the
+  active-hours window as a resume signal.
 - `missions.workingBranch` and `primaryPrNumber` track the shared branch for
   all tasks under the mission; they are generated lazily on first task creation.
+  For workspace-less missions (`workspaceId = null`), these fields are always
+  null (no repo, no PRs).
 
 **Acceptance criteria**:
 - AC-8: GIVEN a mission with all tasks `completed` WHEN health is derived THEN
@@ -126,6 +138,10 @@ stored — it is derived on read from the state of associated tasks via
   THEN that task is excluded from the deliverable count.
 - AC-10: GIVEN `missions.status = 'paused'` WHEN the cron schedule fires THEN
   no new task is created for that mission.
+- AC-10b: GIVEN an `active` mission with `activeHoursStart/End` set and the
+  current time is outside the configured window WHEN the heartbeat fires THEN
+  no new task is created. The mission remains `active` — `activeHours` is a
+  firing gate, not a status transition.
 - AC-11: GIVEN a mission with `requiresReview = true` WHEN a task PR is created
   THEN auto-merge is suppressed and human review is required before merging.
 
@@ -135,6 +151,60 @@ stored — it is derived on read from the state of associated tasks via
 - Mission API: `apps/web/src/app/api/missions/route.ts`,
   `apps/web/src/app/api/missions/[id]/route.ts`
 - Schema: `packages/core/db/schema.ts` — `missions` table
+
+---
+
+## Mission Dormancy Pattern (long-horizon missions)
+
+For missions with a defined active season (e.g., annual tax prep Jan–Mar,
+quarterly review), the recommended pattern is:
+
+- Keep `status = 'active'` year-round — do NOT use `paused` for seasonal gaps.
+- Set `activeHoursStart/End/Timezone` to a narrow window (e.g., 9–10 AM
+  Chicago) so the heartbeat fires infrequently and does not spam task creation.
+- Write heartbeat logic that checks the current date against the mission's
+  documented season window before spawning tasks. When outside the season, the
+  heartbeat should log a status note and return without creating tasks.
+
+**Contrast with `paused`**: Use `paused` for human-suspended missions awaiting
+explicit manual resume. Use `active + restrictive activeHours + self-suppressing
+heartbeat` for missions that auto-manage their own seasonal cadence. Mixing the
+two (pausing a seasonal mission to prevent off-season tasks) is valid but means
+the heartbeat must be manually re-enabled each season.
+
+**Schema gap**: There is no `resumeAt timestamp` field for formal hibernation
+with a scheduled wake date ("pause until 2027-01-15"). The workaround is
+heartbeat self-suppression. A `missions.resumeAt` column is a candidate future
+addition for missions that need hard-scheduled wake-up semantics.
+
+---
+
+## Workspace-less Missions
+
+Missions with `workspaceId = null` are valid. They are used for:
+- **Personal-agent missions**: financial tasks, email triage, annual-cycle
+  planning with no code deliverables.
+- **Cross-workspace coordination**: an organizer mission that dispatches tasks
+  to multiple workspaces, each task carrying an explicit `workspaceId`.
+
+**Invariants**:
+- `workingBranch` and `primaryPrUrl` are always null for workspace-less
+  missions (no repo, no PRs). Do not treat null values for these fields as an
+  error or health failure.
+- A mission with `workspaceId = null` and zero deliverable tasks MUST return a
+  "no tasks" health signal. This is expected — workspace-less missions may have
+  no code deliverables by design.
+- Task creation from a workspace-less mission MUST supply an explicit
+  `workspaceId` on each created task. There is no automatic inference from the
+  mission to the task. If the heartbeat or organizer omits `workspaceId` on a
+  task, that task's `workspaceId` is driven by whichever workspace the executing
+  runner claims from.
+
+**Acceptance criteria**:
+- AC-14: GIVEN a workspace-less mission with no tasks WHEN health is derived
+  THEN the result is "no tasks" (not "healthy" and not an error).
+- AC-15: GIVEN a workspace-less mission WHEN its detail page loads THEN
+  `workingBranch` and `primaryPrUrl` display as absent (not as broken links).
 
 ---
 
