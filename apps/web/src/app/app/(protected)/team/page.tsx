@@ -269,7 +269,7 @@ export default async function TeamPage() {
   const idleRoles = allRoles.filter(r => !r.currentTask);
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
+    <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
         <TeamGrid
           activeRoles={JSON.parse(JSON.stringify(activeRoles))}
