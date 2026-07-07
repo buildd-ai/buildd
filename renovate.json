@@ -1,11 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "schedule": ["before 9am on weekdays"],
+  "schedule": ["before 9am every weekday"],
   "timezone": "America/New_York",
   "packageRules": [
     {
-      "matchPackagePrefixes": ["@anthropic-ai/"],
+      "matchPackageNames": ["@anthropic-ai/{/,}**"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "Anthropic AI SDK",
       "automerge": true,
@@ -13,7 +13,7 @@
       "platformAutomerge": true
     },
     {
-      "matchPackagePrefixes": ["@anthropic-ai/"],
+      "matchPackageNames": ["@anthropic-ai/{/,}**"],
       "matchUpdateTypes": ["major"],
       "groupName": "Anthropic AI SDK (major)",
       "automerge": false
