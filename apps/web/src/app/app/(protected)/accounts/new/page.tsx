@@ -257,7 +257,6 @@ export default function NewAccountPage() {
                       onChange={setAuthType}
                       options={[
                         { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
-                        { value: 'oauth', label: 'OAuth - Uses CLAUDE_CODE_OAUTH_TOKEN (seat-based)' },
                       ]}
                     />
                   </div>
