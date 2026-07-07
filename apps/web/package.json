@@ -27,7 +27,7 @@
     "@upstash/redis": "^1.36.2",
     "@vercel/otel": "^2.1.1",
     "croner": "^10.0.1",
-    "drizzle-orm": "^0.30.0",
+    "drizzle-orm": "0.30.10",
     "jose": "^6.2.0",
     "next": "^16.1.6",
     "next-auth": "^5.0.0-beta.30",

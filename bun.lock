@@ -51,7 +51,7 @@
         "@upstash/redis": "^1.36.2",
         "@vercel/otel": "^2.1.1",
         "croner": "^10.0.1",
-        "drizzle-orm": "^0.30.0",
+        "drizzle-orm": "0.30.10",
         "jose": "^6.2.0",
         "next": "^16.1.6",
         "next-auth": "^5.0.0-beta.30",
@@ -82,7 +82,7 @@
         "@neondatabase/serverless": "^0.9.0",
         "@openai/codex-sdk": "^0.44.0",
         "dotenv": "^16.4.5",
-        "drizzle-orm": "^0.30.0",
+        "drizzle-orm": "0.30.10",
         "zod": "^4.3.6",
       },
       "devDependencies": {
