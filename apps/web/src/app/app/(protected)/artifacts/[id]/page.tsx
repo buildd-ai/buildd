@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import MarkdownContent from '@/components/MarkdownContent';
 import AiFeedback from '@/components/AiFeedback';
+import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,17 +89,29 @@ export default async function ArtifactDetailPage({
 
         {/* Header */}
         <div className="mb-6">
-          <div className="flex items-center gap-3 mb-2">
-            <span className={`px-2.5 py-0.5 text-[11px] font-mono uppercase tracking-wider rounded ${style.bg} ${style.text}`}>
-              {style.label}
-            </span>
-            <span className="text-sm text-text-muted">
-              {new Date(artifact.createdAt).toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-              })}
-            </span>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="flex items-center gap-3">
+              <span className={`px-2.5 py-0.5 text-[11px] font-mono uppercase tracking-wider rounded ${style.bg} ${style.text}`}>
+                {style.label}
+              </span>
+              <span className="text-sm text-text-muted">
+                {new Date(artifact.createdAt).toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </span>
+            </div>
+            <Link
+              href={buildCreateTaskUrl({ id: artifact.id, title: artifact.title, content: artifact.content })}
+              data-testid="create-task-from-artifact"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors whitespace-nowrap"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Create Task
+            </Link>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">
             {artifact.title || 'Untitled'}

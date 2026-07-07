@@ -203,6 +203,20 @@ the route tree is authoritative.)
 - **Roles/Skills:** `roles`; skill CRUD under `workspaces/[id]/skills`.
 - **Secrets:** `secrets`.
 - **Artifacts:** `artifacts`, `artifacts/[id]`, `artifacts/upload-url`, `share/[token]`.
+
+### Artifact UI contracts
+
+The artifact detail page (`/app/artifacts/[id]`) and artifact list cards (`/app/artifacts`,
+`/app/workspaces/[id]/artifacts`) **MUST** expose a create-task action on all supported
+viewports, including mobile. The action links to `/app/tasks/new` pre-filled with:
+- `title` — `Implement: <artifact title>`
+- `description` — excerpt referencing the artifact title and content (≤500 chars of content)
+- `artifactId` — for the source badge shown on the task form
+- `artifactTitle` — display name of the artifact
+
+The `/app/tasks/new` form reads these params and shows an "From artifact:" reference badge
+when `artifactId` + `artifactTitle` are present. This contract is tested in
+`apps/web/src/components/artifact-helpers.test.ts` (`buildCreateTaskUrl` suite).
 - **GitHub:** `github/{install,callback,installations,installations/[id]/repos,pr,webhook}`.
 - **MCP:** `mcp` (HTTP dispatch), `mcp/registry`.
 - **Cron:** `cron/{schedules,codex-token-refresh,routing-calibration,feedback-digest}`.
