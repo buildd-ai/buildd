@@ -210,14 +210,15 @@ export async function PATCH(
       }
       updateData.status = status;
 
-      // Auto-disable heartbeat schedule when mission leaves active state
-      if (status !== 'active' && existing.scheduleId) {
+      if ((status === 'completed' || status === 'archived') && existing.scheduleId) {
+        // Heartbeat schedules are owned by their mission — delete when mission is done
+        await db.delete(taskSchedules).where(eq(taskSchedules.id, existing.scheduleId));
+        updateData.scheduleId = null;
+      } else if (status === 'paused' && existing.scheduleId) {
         await db.update(taskSchedules)
           .set({ enabled: false, updatedAt: new Date() })
           .where(eq(taskSchedules.id, existing.scheduleId));
-      }
-      // Re-enable schedule when mission is reactivated
-      if (status === 'active' && existing.scheduleId) {
+      } else if (status === 'active' && existing.scheduleId) {
         await db.update(taskSchedules)
           .set({ enabled: true, updatedAt: new Date() })
           .where(eq(taskSchedules.id, existing.scheduleId));
