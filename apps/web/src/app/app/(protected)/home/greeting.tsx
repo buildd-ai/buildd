@@ -19,14 +19,14 @@ export function Greeting({ firstName }: { firstName: string }) {
   if (!greeting) {
     // Render invisible placeholder to prevent layout shift
     return (
-      <h1 className="text-[32px] md:text-[30px] font-light italic text-text-primary leading-tight">
+      <h1 className="text-[28px] font-semibold text-text-primary leading-tight">
         &nbsp;
       </h1>
     );
   }
 
   return (
-    <h1 className="text-[32px] md:text-[30px] font-light italic text-text-primary leading-tight">
+    <h1 className="text-[28px] font-semibold text-text-primary leading-tight">
       {greeting}, {firstName}
     </h1>
   );

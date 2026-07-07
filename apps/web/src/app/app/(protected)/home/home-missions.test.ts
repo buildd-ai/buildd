@@ -34,7 +34,7 @@ type HomeMission = {
 // Mirror of the fixed Home page filter logic (no 1440-min gate)
 function getVisibleMissions(missions: HomeMission[]): HomeMission[] {
   const activeMissions = missions.filter(
-    (m) => m.group === 'running' || m.group === 'attention',
+    (m) => m.group === 'running' || m.group === 'attention' || m.group === 'review',
   );
   const scheduledMissions = missions
     .filter((m) => m.group === 'scheduled')
@@ -110,7 +110,7 @@ describe('deriveMissionHealth', () => {
     expect(healthToGroup(h, 100)).toBe('completed');
   });
 
-  it('idle mission at 100% progress goes to attention, not completed', () => {
+  it('idle mission at 100% progress goes to review; below 100% to attention', () => {
     const h = deriveMissionHealth({
       status: 'active',
       activeAgents: 0,
@@ -119,8 +119,11 @@ describe('deriveMissionHealth', () => {
       nextRunAt: null,
     });
     expect(h).toBe('idle');
-    // Regression: idle missions were incorrectly bucketed as 'completed' when progress===100
-    expect(healthToGroup(h, 100)).toBe('attention');
+    // Regression (v0.124): idle missions must never bucket as 'completed' —
+    // they'd silently disappear from Home. Done-but-unarchived missions get
+    // their own 'review' group ("Awaiting review"); anything unfinished is
+    // genuine 'attention'.
+    expect(healthToGroup(h, 100)).toBe('review');
     expect(healthToGroup(h, 50)).toBe('attention');
     expect(healthToGroup(h, 0)).toBe('attention');
   });
@@ -293,12 +296,12 @@ describe('Archived missions should not appear as active', () => {
     // The fix: the DB query for Home excludes status='archived' so this code path is never reached.
   });
 
-  it('archived idle mission with any progress goes to attention (DB filter excludes these)', () => {
-    // After #1048: healthToGroup('idle', progress) always returns 'attention'.
+  it('archived idle mission at 100% maps to review (DB filter excludes these)', () => {
+    // healthToGroup('idle', 100) returns 'review' ("Awaiting review").
     // Archived missions are excluded at the DB level, so this code path is unreachable on Home.
     const h = deriveMissionHealth({ status: 'archived', activeAgents: 0, cronExpression: null, lastRunAt: null, nextRunAt: null });
     const group = healthToGroup(h, 100);
-    expect(group).toBe('attention');
+    expect(group).toBe('review');
   });
 
   it('archived missions are invisible after DB filter + getVisibleMissions', () => {

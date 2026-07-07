@@ -12,6 +12,8 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { value: 'sonnet', label: 'Claude Sonnet' },
   { value: 'opus', label: 'Claude Opus' },
   { value: 'haiku', label: 'Claude Haiku' },
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { value: 'claude-fable-5', label: 'Claude Fable 5' },
 ];
 
 export interface WorkspaceOption {

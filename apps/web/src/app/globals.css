@@ -273,6 +273,7 @@ select {
   .mission-card-running { border-left-color: var(--status-success); }
   .mission-card-scheduled { border-left-color: var(--status-info); }
   .mission-card-attention { border-left-color: var(--status-warning); }
+  .mission-card-review { border-left-color: var(--status-success); }
   .mission-card-completed { border-left-color: var(--text-muted); }
 
   /* Compact completed cards */

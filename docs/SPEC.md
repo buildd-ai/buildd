@@ -203,6 +203,20 @@ the route tree is authoritative.)
 - **Roles/Skills:** `roles`; skill CRUD under `workspaces/[id]/skills`.
 - **Secrets:** `secrets`.
 - **Artifacts:** `artifacts`, `artifacts/[id]`, `artifacts/upload-url`, `share/[token]`.
+
+### Artifact UI contracts
+
+The artifact detail page (`/app/artifacts/[id]`) and artifact list cards (`/app/artifacts`,
+`/app/workspaces/[id]/artifacts`) **MUST** expose a create-task action on all supported
+viewports, including mobile. The action links to `/app/tasks/new` pre-filled with:
+- `title` — `Implement: <artifact title>`
+- `description` — excerpt referencing the artifact title and content (≤500 chars of content)
+- `artifactId` — for the source badge shown on the task form
+- `artifactTitle` — display name of the artifact
+
+The `/app/tasks/new` form reads these params and shows an "From artifact:" reference badge
+when `artifactId` + `artifactTitle` are present. This contract is tested in
+`apps/web/src/components/artifact-helpers.test.ts` (`buildCreateTaskUrl` suite).
 - **GitHub:** `github/{install,callback,installations,installations/[id]/repos,pr,webhook}`.
 - **MCP:** `mcp` (HTTP dispatch), `mcp/registry`.
 - **Cron:** `cron/{schedules,codex-token-refresh,routing-calibration,feedback-digest}`.
@@ -281,7 +295,32 @@ brutalist UI.
 
 ---
 
-## 10. Spec maintenance (spec-driven development)
+## 10. Activity feed (mobile UX contracts)
+
+The Activity tab (`/app/tasks`, `TaskGrid.tsx`) is the primary task-navigation surface on mobile. The following behaviours are **testable contracts**:
+
+### Default grouping
+- **Contract:** The default `groupBy` on first load (no stored preference) is `none` — a flat, recency-sorted list. `Group: None` is the first option in the dropdown to reinforce this as the default.
+- **Rationale:** Grouping by mission degenerates to a single "No mission" bucket when tasks are ad-hoc; the flat list avoids the extra toggle and exposes tasks directly.
+
+### Auto-flatten rule
+- **Contract:** When `groupBy === 'mission'` **and** one mission group contains **>75%** of the filtered (non-waiting-input) tasks, `effectiveGroupBy` resolves to `'none'` — the list renders flat regardless of the stored preference.
+- **Testable:** Given 3 active tasks all with `missionId = null` (one "No mission" group = 100% > 75%), the task list must render flat with no group header, even if `groupBy` state equals `'mission'`.
+
+### Persisted preferences
+- **Contract:** The user's chosen `filter` (All / Active / Completed / Failed) and `groupBy` are persisted to `localStorage` under key `buildd-activity-prefs` and restored on next load.
+- **Scope:** Persistence is skipped when TaskGrid is rendered in mission-scoped mode (`missionFilter` prop set).
+
+### Recency access path
+- **Contract:** The most recently updated active task is reachable in **≤ 2 taps** from anywhere in the app — (1) tap the Activity nav item → (2) task is immediately visible in the flat recency list (if Active filter was last used) or visible in the "Running now" strip (mobile only).
+- **Running now strip:** When the current filter is not `active`, the top of the Activity page shows a horizontal-scrollable strip (mobile-only, `sm:hidden`) of up to 5 most recently updated non-completed tasks as direct task links.
+
+### Multi-line task titles on mobile
+- **Contract:** Task title spans inside mobile cards use `line-clamp-2` (not `truncate`) — titles may wrap to a second line before being cut. This ensures enough context to distinguish similar task names.
+
+---
+
+## 11. Spec maintenance (spec-driven development)
 
 This file is the input; docs/site are outputs. To keep it from rotting:
 1. **Schema/route changes** that alter the domain model update §2/§4 in the same PR.

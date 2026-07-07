@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
+import type { SkillModel } from '@buildd/shared';
 
 const BUILDD_MCP = {
   type: 'http',
@@ -28,7 +29,7 @@ interface DefaultRole {
   description: string;
   content: string;
   color: string;
-  model: 'inherit' | 'sonnet' | 'opus' | 'haiku';
+  model: SkillModel;
   isRole: true;
   allowedTools: string[];
   canDelegateTo: string[];

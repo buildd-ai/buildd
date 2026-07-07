@@ -10,6 +10,28 @@ export interface ArtifactPreviewInput {
   metadata: Record<string, unknown>;
 }
 
+export interface ArtifactTaskUrlInput {
+  id: string;
+  title: string | null;
+  content: string | null;
+}
+
+/**
+ * Build the URL for creating a task pre-filled from an artifact.
+ * Links to /app/tasks/new with title, description, artifactId, and artifactTitle params.
+ */
+export function buildCreateTaskUrl(artifact: ArtifactTaskUrlInput): string {
+  const title = encodeURIComponent(`Implement: ${artifact.title || 'Untitled'}`);
+  const artifactTitle = encodeURIComponent(artifact.title || 'Untitled');
+  const preview = artifact.content
+    ? artifact.content.slice(0, 500) + (artifact.content.length > 500 ? '...' : '')
+    : '';
+  const description = encodeURIComponent(
+    `Based on artifact "${artifact.title || 'Untitled'}":\n\n${preview}`
+  );
+  return `/app/tasks/new?title=${title}&artifactId=${artifact.id}&artifactTitle=${artifactTitle}&description=${description}`;
+}
+
 /**
  * Generate a preview string for an artifact.
  * - Link artifacts: return URL from metadata

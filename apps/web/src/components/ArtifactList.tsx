@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
-import { getArtifactPreview } from '@/components/artifact-helpers';
+import { getArtifactPreview, buildCreateTaskUrl } from '@/components/artifact-helpers';
 
 interface ArtifactItem {
   id: string;
@@ -174,7 +174,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                 </div>
               )}
 
-              {/* Footer: task + date + share */}
+              {/* Footer: task + date + actions */}
               <div className="flex items-center justify-between mt-auto pt-3 border-t border-border-default/50">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {artifact.taskId && (
@@ -192,28 +192,44 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                   </span>
                 </div>
 
-                {artifact.shareToken && (
-                  <button
-                    onClick={(e) => { e.preventDefault(); copyShareLink(artifact); }}
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary flex-shrink-0 transition-colors"
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {/* Create task from this artifact */}
+                  <Link
+                    href={buildCreateTaskUrl(artifact)}
+                    onClick={(e) => e.stopPropagation()}
+                    title="Create task from this artifact"
+                    data-testid="create-task-from-artifact"
+                    className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
                   >
-                    {isCopied ? (
-                      <>
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                        Copied
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                        </svg>
-                        Share
-                      </>
-                    )}
-                  </button>
-                )}
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Task
+                  </Link>
+
+                  {artifact.shareToken && (
+                    <button
+                      onClick={(e) => { e.preventDefault(); copyShareLink(artifact); }}
+                      className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
+                    >
+                      {isCopied ? (
+                        <>
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                          </svg>
+                          Share
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
             </Link>
           );

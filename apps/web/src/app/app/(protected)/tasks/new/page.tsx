@@ -65,8 +65,12 @@ export default function NewTaskPage() {
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [taskTargetBranch, setTaskTargetBranch] = useState('');
 
+  // Artifact pre-fill from URL params
+  const artifactId = searchParams.get('artifactId');
+  const artifactTitle = searchParams.get('artifactTitle');
+
   // Title state (controlled for legibility hint)
-  const [titleValue, setTitleValue] = useState('');
+  const [titleValue, setTitleValue] = useState(() => searchParams.get('title') || '');
 
   // Category state
   const [selectedCategory, setSelectedCategory] = useState<TaskCategoryValue | null>(null);
@@ -77,8 +81,9 @@ export default function NewTaskPage() {
   const [showProjectSuggestions, setShowProjectSuggestions] = useState(false);
 
   // Description state (expandable)
-  const [showDescription, setShowDescription] = useState(false);
-  const [descriptionValue, setDescriptionValue] = useState('');
+  const initialDescription = searchParams.get('description') || '';
+  const [showDescription, setShowDescription] = useState(!!initialDescription);
+  const [descriptionValue, setDescriptionValue] = useState(initialDescription);
 
   // Workflow state
   const [workflowType, setWorkflowType] = useState<WorkflowType>('single');
@@ -414,6 +419,18 @@ export default function NewTaskPage() {
         </nav>
         <h1 className="text-2xl font-bold mb-1">New task</h1>
         <p className="text-sm text-text-secondary mb-6">Describe what you want done. The system handles the rest.</p>
+
+        {/* Artifact reference badge — shown when navigating from an artifact */}
+        {artifactId && artifactTitle && (
+          <div className="flex items-center gap-2 px-3 py-2.5 mb-6 rounded-md bg-primary/8 border border-primary/15">
+            <svg className="w-3.5 h-3.5 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-1.242-7.244l-4.5-4.5a4.5 4.5 0 00-6.364 6.364L4.34 8.798" />
+            </svg>
+            <span className="text-[13px] text-text-secondary truncate">
+              From artifact: <span className="text-text-primary font-medium">{artifactTitle}</span>
+            </span>
+          </div>
+        )}
 
         {workspaces.length === 0 && !loadingWorkspaces ? (
           <div className="border border-dashed border-border-default rounded-lg p-8 text-center">

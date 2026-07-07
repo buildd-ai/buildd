@@ -21,13 +21,13 @@ export default function UserAvatarMenu({ userInitial, direction = 'up' }: UserAv
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className={`w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-xs font-semibold text-accent-text border border-border-default cursor-pointer hover:border-border-strong transition-colors ${direction === 'up' ? 'mt-2' : ''}`}
+        className={`w-8 h-8 bg-accent-soft flex items-center justify-center text-xs font-semibold text-accent-text border border-border-default cursor-pointer hover:border-border-strong transition-colors ${direction === 'up' ? 'mt-2' : ''}`}
       >
         {userInitial}
       </button>
 
       {open && (
-        <div className={`absolute w-36 bg-card border border-border-strong rounded-lg shadow-lg overflow-hidden z-50 ${
+        <div className={`absolute w-36 bg-card border border-border-strong shadow-[var(--card-shadow)] overflow-hidden z-50 ${
           direction === 'up' ? 'bottom-full left-0 mb-2' : 'top-full right-0 mt-2'
         }`}>
           <Link

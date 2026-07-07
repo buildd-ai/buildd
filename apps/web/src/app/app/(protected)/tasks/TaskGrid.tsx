@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
@@ -141,10 +141,10 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
       <div className="sm:hidden px-3 py-2 hover:bg-surface-2/50 transition-colors">
         <div className="border-2 border-border-strong shadow-md px-3 py-2">
           {/* Line 1: status dot + title + status badge */}
-          <div className="flex items-center gap-2 min-w-0 mb-1">
-            {dotEl}
-            {isStandalone && <StandaloneIcon />}
-            <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
+          <div className="flex items-start gap-2 min-w-0 mb-1">
+            <span className="mt-[3px] shrink-0">{dotEl}</span>
+            {isStandalone && <span className="mt-[3px] shrink-0"><StandaloneIcon /></span>}
+            <span className={`text-[14px] line-clamp-2 min-w-0 flex-1 leading-snug ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
               {task.title}
             </span>
             {badgeEl}
@@ -243,10 +243,43 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
-  const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'mission');
+  // Default to flat/recency view; persist user preference per device
+  const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'none');
   const [search, setSearch] = useState('');
   // Empty = all collapsed by default. Toggling adds a group to expandedGroups to open it.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // Load persisted filter + groupBy from localStorage on mount
+  useEffect(() => {
+    if (missionFilter) return; // don't persist when scoped to a mission
+    try {
+      const stored = localStorage.getItem('buildd-activity-prefs');
+      if (stored) {
+        const prefs = JSON.parse(stored) as { filter?: FilterStatus; groupBy?: GroupBy };
+        if (prefs.filter) setFilter(prefs.filter);
+        if (prefs.groupBy) setGroupBy(prefs.groupBy);
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const updateFilter = useCallback((f: FilterStatus) => {
+    setFilter(f);
+    if (missionFilter) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
+      localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, filter: f }));
+    } catch {}
+  }, [missionFilter]);
+
+  const updateGroupBy = useCallback((g: GroupBy) => {
+    setGroupBy(g);
+    if (missionFilter) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
+      localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, groupBy: g }));
+    } catch {}
+  }, [missionFilter]);
 
   // Counts from unfiltered tasks
   const allCount = visibleTasks.length;
@@ -277,8 +310,29 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   const needsInputTasks = useMemo(() => filtered.filter(t => t.status === 'waiting_input'), [filtered]);
   const nonWaitingTasks = useMemo(() => filtered.filter(t => t.status !== 'waiting_input'), [filtered]);
 
+  // Auto-flatten: when groupBy=mission but one group holds >75% of tasks, switch to flat recency list.
+  // This prevents the degenerate "No mission" single-bucket scenario from hiding all tasks behind a toggle.
+  const effectiveGroupBy = useMemo((): GroupBy => {
+    if (groupBy !== 'mission' || nonWaitingTasks.length === 0) return groupBy;
+    const groupCounts = new Map<string | null, number>();
+    for (const t of nonWaitingTasks) {
+      groupCounts.set(t.missionId, (groupCounts.get(t.missionId) ?? 0) + 1);
+    }
+    const maxCount = Math.max(...groupCounts.values());
+    return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
+  }, [groupBy, nonWaitingTasks]);
+
+  // Mobile recent strip: top 5 non-completed tasks by recency, always visible regardless of filter
+  const mobileRecentTasks = useMemo(() => {
+    if (missionFilter) return [];
+    return [...visibleTasks]
+      .filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status))
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .slice(0, 5);
+  }, [visibleTasks, missionFilter]);
+
   const missionGroups = useMemo((): MissionGroup[] => {
-    if (groupBy !== 'mission') return [];
+    if (effectiveGroupBy !== 'mission') return [];
     const map = new Map<string | null, GridTask[]>();
     for (const t of nonWaitingTasks) {
       const existing = map.get(t.missionId) || [];
@@ -317,10 +371,10 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
       return bLatest - aLatest;
     });
     return groups;
-  }, [nonWaitingTasks, groupBy]);
+  }, [nonWaitingTasks, effectiveGroupBy]);
 
   const statusGroups = useMemo((): StatusGroup[] => {
-    if (groupBy !== 'status') return [];
+    if (effectiveGroupBy !== 'status') return [];
     const order: { key: string; label: string }[] = [
       { key: 'in_progress', label: 'Running' },
       { key: 'assigned', label: 'Assigned' },
@@ -334,10 +388,10 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
         tasks: sortByRecency(nonWaitingTasks.filter(t => t.status === key)),
       }))
       .filter(g => g.tasks.length > 0);
-  }, [nonWaitingTasks, groupBy]);
+  }, [nonWaitingTasks, effectiveGroupBy]);
 
   const workspaceGroups = useMemo((): MissionGroup[] => {
-    if (groupBy !== 'workspace') return [];
+    if (effectiveGroupBy !== 'workspace') return [];
     const map = new Map<string, GridTask[]>();
     for (const t of nonWaitingTasks) {
       const existing = map.get(t.workspaceName) || [];
@@ -354,12 +408,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
       return bLatest - aLatest;
     });
     return groups;
-  }, [nonWaitingTasks, groupBy]);
+  }, [nonWaitingTasks, effectiveGroupBy]);
 
   const flatSorted = useMemo(() => {
-    if (groupBy !== 'none') return [];
+    if (effectiveGroupBy !== 'none') return [];
     return sortByRecency(nonWaitingTasks);
-  }, [nonWaitingTasks, groupBy]);
+  }, [nonWaitingTasks, effectiveGroupBy]);
 
   const toggleGroup = (groupId: string) => {
     setExpandedGroups(prev => {
@@ -464,7 +518,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             {statusFilters.map((f) => (
               <button
                 key={f.key}
-                onClick={() => setFilter(f.key)}
+                onClick={() => updateFilter(f.key)}
                 className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
                   filter === f.key
                     ? 'bg-text-primary text-surface-1'
@@ -495,16 +549,52 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           {/* Group by dropdown */}
           <Select
             value={groupBy}
-            onChange={(v) => setGroupBy(v as GroupBy)}
+            onChange={(v) => updateGroupBy(v as GroupBy)}
             options={[
+              { value: 'none', label: 'Group: None' },
               { value: 'mission', label: 'Group: Mission' },
               { value: 'workspace', label: 'Group: Workspace' },
               { value: 'status', label: 'Group: Status' },
-              { value: 'none', label: 'Group: None' },
             ]}
             size="sm"
           />
         </div>
+
+        {/* Mobile recent-tasks strip: always visible on mobile, regardless of filter/grouping.
+            Gives a one-tap path to the most recently active tasks without navigating filters. */}
+        {!missionFilter && mobileRecentTasks.length > 0 && filter !== 'active' && (
+          <div className="sm:hidden px-4 mb-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">Running now</span>
+              <button
+                onClick={() => updateFilter('active')}
+                className="text-[12px] text-accent-text hover:underline"
+              >
+                All active →
+              </button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 snap-x">
+              {mobileRecentTasks.map(task => {
+                const dot = getStatusDot(task.status);
+                return (
+                  <Link
+                    key={task.id}
+                    href={`/app/tasks/${task.id}`}
+                    className="flex-shrink-0 snap-start border border-border-strong bg-surface-2/50 px-3 py-2 w-[180px]"
+                  >
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
+                      <span className="text-[11px] text-text-muted">{timeAgo(task.updatedAt)}</span>
+                    </div>
+                    <div className="text-[13px] text-text-primary line-clamp-2 leading-snug">
+                      {task.title}
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Task list */}
         <div className="border-t border-border-default">
@@ -527,9 +617,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {/* Mobile card */}
                     <div className="sm:hidden px-3 py-2 hover:bg-status-warning/12 transition-colors">
                       <div className="border-2 border-border-strong shadow-md px-3 py-2">
-                        <div className="flex items-center gap-2 min-w-0 mb-1">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
-                          <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
+                        <div className="flex items-start gap-2 min-w-0 mb-1">
+                          <span className={`w-2 h-2 rounded-full shrink-0 mt-[3px] ${dot.color}`} />
+                          <span className="text-[14px] text-text-primary line-clamp-2 min-w-0 flex-1 leading-snug">{task.title}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
@@ -565,7 +655,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           )}
 
           {/* Grouped by Mission */}
-          {groupBy === 'mission' && missionGroups.map((group) => {
+          {effectiveGroupBy === 'mission' && missionGroups.map((group) => {
             const groupId = group.id || '__no_mission__';
             const isExpanded = expandedGroups.has(groupId);
             const isNoMission = group.id === null;
@@ -619,7 +709,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           })}
 
           {/* Grouped by Status */}
-          {groupBy === 'status' && statusGroups.map((group) => {
+          {effectiveGroupBy === 'status' && statusGroups.map((group) => {
             const groupId = `status_${group.label}`;
             const isExpanded = expandedGroups.has(groupId);
 
@@ -645,7 +735,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           })}
 
           {/* Grouped by Workspace */}
-          {groupBy === 'workspace' && workspaceGroups.map((group) => {
+          {effectiveGroupBy === 'workspace' && workspaceGroups.map((group) => {
             const groupId = `ws_${group.id}`;
             const isExpanded = expandedGroups.has(groupId);
 
@@ -671,7 +761,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           })}
 
           {/* Flat list (no grouping) */}
-          {groupBy === 'none' && flatSorted.map((task) => (
+          {effectiveGroupBy === 'none' && flatSorted.map((task) => (
             <TaskRow key={task.id} task={task} isStandalone={!task.missionId} />
           ))}
 

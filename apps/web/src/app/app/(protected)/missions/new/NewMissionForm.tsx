@@ -529,11 +529,10 @@ export default function NewMissionForm({
           </button>
         </div>
 
-        {/* Known-gap affordance: individual task creation not available on mobile */}
         <p className="mt-8 text-xs text-text-muted text-center border-t border-border-default pt-4">
-          Creating individual tasks requires the{' '}
-          <Link href="/app" className="underline hover:text-text-secondary">desktop dashboard</Link>
-          {' '}or API.
+          To create an individual task, use the{' '}
+          <Link href="/app/tasks/new" className="underline hover:text-text-secondary">New Task</Link>
+          {' '}form.
         </p>
       </div>
     </main>

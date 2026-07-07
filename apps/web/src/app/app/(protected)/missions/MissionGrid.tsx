@@ -70,7 +70,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
   const grouped = useMemo(() => {
     const groups: Record<MissionGroup, MissionItem[]> = {
-      running: [], attention: [], scheduled: [], completed: [],
+      running: [], attention: [], review: [], scheduled: [], completed: [],
     };
     for (const m of missions) {
       groups[healthToGroup(m.health, m.progress)].push(m);
@@ -147,7 +147,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
         // Sub-group this workspace's missions by health group
         const subGroups: Record<MissionGroup, MissionItem[]> = {
-          running: [], attention: [], scheduled: [], completed: [],
+          running: [], attention: [], review: [], scheduled: [], completed: [],
         };
         for (const m of bucket.missions) {
           subGroups[healthToGroup(m.health, m.progress)].push(m);
@@ -351,12 +351,12 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
         )}
 
         {mission.totalTasks > 0 && (
-          <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] mb-2.5 overflow-hidden">
+          <div className="h-[3px] bg-[rgba(255,245,230,0.06)] mb-2.5 overflow-hidden">
             <div
-              className="h-full rounded-full transition-all duration-500"
+              className="h-full transition-all duration-500"
               style={{
                 width: `${mission.progress}%`,
-                background: 'linear-gradient(90deg, var(--status-success), #7ad4aa)',
+                background: 'var(--accent)',
               }}
             />
           </div>

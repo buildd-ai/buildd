@@ -11,6 +11,8 @@ const MODEL_OPTIONS = [
   { value: 'opus', label: 'Claude Opus 4' },
   { value: 'sonnet', label: 'Claude Sonnet 4' },
   { value: 'haiku', label: 'Claude Haiku 4.5' },
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { value: 'claude-fable-5', label: 'Claude Fable 5' },
 ] as const;
 
 const AVAILABLE_TOOLS = [

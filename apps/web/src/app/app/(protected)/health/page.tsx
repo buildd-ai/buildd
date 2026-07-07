@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, secrets, tasks, workspaceSkills } from '@buildd/core/db/schema';
+import { watchedProjects, watcherEvents, workspaces, tasks, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -16,10 +16,7 @@ export interface WatchedProjectRow {
   workspaceName: string;
   repo: string;
   enabled: boolean;
-  vercelProjectId: string | null;
-  vercelTokenSecretId: string | null;
   inFlightWindowMin: number;
-  prodGraceMin: number;
   roleSlug: string;
   pushoverApp: 'tasks' | 'alerts';
   releasePrFilter: { base?: string; label?: string; titlePrefix?: string };
@@ -32,13 +29,23 @@ export interface WatchedProjectRow {
 export interface WorkspaceOption {
   id: string;
   name: string;
-  teamId: string;
 }
 
-export interface VercelTokenOption {
+export interface ScheduleRow {
   id: string;
-  teamId: string;
-  label: string | null;
+  workspaceId: string;
+  workspaceName: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  enabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  totalRuns: number;
+  taskTitle: string;
+  missionTitle: string | null;
 }
 
 export interface UsageStats {
@@ -93,8 +100,8 @@ export default async function HealthPage({
     ? [wsFilter]
     : teamWorkspaceIds;
 
-  // Parallel fetches: watched projects, vercel tokens, runners, usage
-  const [rows, vercelTokens, runners, usageStats] = await Promise.all([
+  // Parallel fetches: watched projects, runners, usage, schedules
+  const [rows, runners, usageStats, scheduleRows] = await Promise.all([
     // Watched projects
     db
       .select()
@@ -102,16 +109,8 @@ export default async function HealthPage({
       .where(inArray(watchedProjects.workspaceId, scopedWsIds))
       .orderBy(desc(watchedProjects.createdAt)),
 
-    // Vercel tokens for the active team
-    db
-      .select({ id: secrets.id, teamId: secrets.teamId, label: secrets.label })
-      .from(secrets)
-      .where(and(eq(secrets.teamId, activeTeamId), eq(secrets.purpose, 'vercel_token')))
-      .then((rows: any[]) => rows.map((s: any): VercelTokenOption => ({ id: s.id, teamId: s.teamId, label: s.label })))
-      .catch(() => [] as VercelTokenOption[]),
-
-    // Runner heartbeats scoped to team (or workspace)
-    getRunnerHeartbeats(activeTeamId, wsFilter && teamWorkspaceIds.includes(wsFilter) ? wsFilter : null)
+    // Runner heartbeats relevant to the scoped workspaces
+    getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
 
     // Usage stats (last 30 days)
@@ -176,6 +175,26 @@ export default async function HealthPage({
           })),
       };
     })().catch(() => null),
+
+    // Schedules across the scoped workspaces, with mission linkage
+    (async () => {
+      const schedules = await db
+        .select()
+        .from(taskSchedules)
+        .where(inArray(taskSchedules.workspaceId, scopedWsIds));
+      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null })[];
+
+      const linkedMissions = await db
+        .select({ scheduleId: missions.scheduleId, title: missions.title })
+        .from(missions)
+        .where(inArray(missions.scheduleId, schedules.map((s: any) => s.id as string)));
+      const missionBySchedule = new Map(
+        (linkedMissions as any[])
+          .filter((m: any) => m.scheduleId)
+          .map((m: any) => [m.scheduleId as string, m.title as string] as const),
+      );
+      return (schedules as any[]).map((s: any) => ({ ...s, missionTitle: missionBySchedule.get(s.id) ?? null }));
+    })().catch(() => [] as any[]),
   ]);
 
   // Attach recent events to watched project rows
@@ -205,10 +224,7 @@ export default async function HealthPage({
     workspaceName: wsById.get(r.workspaceId) ?? '(unknown)',
     repo: r.repo,
     enabled: r.enabled,
-    vercelProjectId: r.vercelProjectId,
-    vercelTokenSecretId: r.vercelTokenSecretId,
     inFlightWindowMin: r.inFlightWindowMin,
-    prodGraceMin: r.prodGraceMin,
     roleSlug: r.roleSlug,
     pushoverApp: r.pushoverApp,
     releasePrFilter: r.releasePrFilter ?? {},
@@ -218,22 +234,40 @@ export default async function HealthPage({
     recentEvents: eventsByProject.get(r.id) ?? [],
   }));
 
+  const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
+    .map((s: any) => ({
+      id: s.id,
+      workspaceId: s.workspaceId,
+      workspaceName: wsById.get(s.workspaceId) ?? '(unknown)',
+      name: s.name,
+      cronExpression: s.cronExpression,
+      timezone: s.timezone,
+      enabled: s.enabled,
+      nextRunAt: s.nextRunAt ? s.nextRunAt.toISOString() : null,
+      lastRunAt: s.lastRunAt ? s.lastRunAt.toISOString() : null,
+      lastError: s.lastError,
+      consecutiveFailures: s.consecutiveFailures,
+      totalRuns: s.totalRuns,
+      taskTitle: s.taskTemplate?.title ?? '',
+      missionTitle: s.missionTitle,
+    }))
+    .sort((a: ScheduleRow, b: ScheduleRow) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return (a.nextRunAt ?? '9999') < (b.nextRunAt ?? '9999') ? -1 : 1;
+    });
+
   const workspaceOptions: WorkspaceOption[] = (teamWorkspaceRows as any[]).map((w: any) => ({
     id: w.id as string,
     name: w.name as string,
-    teamId: w.teamId as string,
   }));
-
-  const hasGlobalVercelToken = Boolean(process.env.VERCEL_API_TOKEN);
 
   return (
     <HealthClient
       initialRows={serialized}
       workspaces={workspaceOptions}
-      vercelTokens={vercelTokens}
-      hasGlobalVercelToken={hasGlobalVercelToken}
       runners={runners}
       usageStats={usageStats}
+      schedules={serializedSchedules}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
     />
