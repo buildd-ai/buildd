@@ -23,6 +23,30 @@ describe('priceForModel', () => {
   it('defaults unknown models to sonnet pricing', () => {
     expect(priceForModel('some-future-model').input).toBe(3);
   });
+
+  it('prices sonnet-5 at intro rate ($2/$10) before Sep 1 2026', () => {
+    const before = new Date('2026-08-31T23:59:59Z');
+    expect(priceForModel('claude-sonnet-5', before).input).toBe(2);
+    expect(priceForModel('claude-sonnet-5', before).output).toBe(10);
+    expect(priceForModel('claude-sonnet-5-20251019', before).input).toBe(2);
+  });
+
+  it('prices sonnet-5 at standard rate ($3/$15) from Sep 1 2026', () => {
+    const after = new Date('2026-09-01T00:00:00Z');
+    expect(priceForModel('claude-sonnet-5', after).input).toBe(3);
+    expect(priceForModel('claude-sonnet-5', after).output).toBe(15);
+    expect(priceForModel('claude-sonnet-5-20251019', after).input).toBe(3);
+  });
+
+  it('sonnet-5 cache pricing scales with input price', () => {
+    const intro = priceForModel('claude-sonnet-5', new Date('2026-08-01T00:00:00Z'));
+    expect(intro.cacheRead).toBeCloseTo(0.2, 6);
+    expect(intro.cacheWrite).toBeCloseTo(2.5, 6);
+
+    const standard = priceForModel('claude-sonnet-5', new Date('2026-09-01T00:00:00Z'));
+    expect(standard.cacheRead).toBeCloseTo(0.3, 6);
+    expect(standard.cacheWrite).toBeCloseTo(3.75, 6);
+  });
 });
 
 describe('estimateCostUsd', () => {

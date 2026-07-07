@@ -28,10 +28,26 @@ const TIER_PRICES: Record<'opus' | 'sonnet' | 'haiku', TokenPrice> = {
   haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 };
 
-/** Resolve list pricing for a model ID (e.g. "claude-opus-4-8"). Defaults to sonnet. */
-export function priceForModel(modelId: string): TokenPrice {
+// Sonnet 5 intro pricing: $2/$10 per MTok through Aug 31 2026; standard $3/$15 from Sep 1 2026.
+const SONNET_5_INTRO_CUTOFF = new Date('2026-09-01T00:00:00Z');
+const SONNET_5_INTRO: TokenPrice = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+const SONNET_5_STANDARD: TokenPrice = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+
+function sonnet5Price(atDate: Date): TokenPrice {
+  return atDate < SONNET_5_INTRO_CUTOFF ? SONNET_5_INTRO : SONNET_5_STANDARD;
+}
+
+/**
+ * Resolve list pricing for a model ID (e.g. "claude-opus-4-8"). Defaults to sonnet.
+ *
+ * @param atDate - Reference date for date-based tiers (defaults to now). Pass a
+ *   fixed date in tests to make assertions deterministic.
+ */
+export function priceForModel(modelId: string, atDate: Date = new Date()): TokenPrice {
   const id = modelId.toLowerCase();
   if (id.includes('opus')) return TIER_PRICES.opus;
+  // sonnet-5 has its own intro/standard date-gated pricing (checked before generic 'sonnet')
+  if (id.includes('sonnet-5')) return sonnet5Price(atDate);
   if (id.includes('haiku')) return TIER_PRICES.haiku;
   return TIER_PRICES.sonnet;
 }
