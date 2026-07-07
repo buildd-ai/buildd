@@ -8,6 +8,8 @@ interface Props {
   idleRoles: RoleWithActivity[];
   workspaceIds: string[];
   teamId: string | null;
+  /** Total active workers in scope — includes workers whose tasks have no role attribution */
+  totalActiveWorkerCount: number;
 }
 
 function RoleAvatar({ name, color, size = 40 }: { name: string; color: string; size?: number }) {
@@ -27,19 +29,20 @@ function RoleAvatar({ name, color, size = 40 }: { name: string; color: string; s
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, count }: { status: string; count?: number }) {
+  const countLabel = count && count > 1 ? ` · ${count}` : '';
   if (status === 'waiting_input') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-status-warning/10 text-status-warning">
         <span className="w-1.5 h-1.5 rounded-full bg-status-warning" />
-        Needs input
+        Needs input{countLabel}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-status-success/10 text-status-success">
       <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
-      Running
+      Running{countLabel}
     </span>
   );
 }
@@ -108,7 +111,7 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
             <span className="text-[12px] text-text-muted truncate">{role.description || role.slug}</span>
           </div>
         </div>
-        {role.currentTask && <StatusBadge status={role.currentTask.workerStatus} />}
+        {role.currentTask && <StatusBadge status={role.currentTask.workerStatus} count={role.activeWorkerCount} />}
       </div>
 
       {/* Scope + overrides */}
@@ -186,9 +189,11 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
   );
 }
 
-export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId }: Props) {
+export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalActiveWorkerCount }: Props) {
   const totalRoles = activeRoles.length + idleRoles.length;
   const firstWsId = workspaceIds[0];
+  // Workers active in scope but not attributed to any configured role
+  const unattributedWorkerCount = totalActiveWorkerCount - activeRoles.reduce((sum, r) => sum + r.activeWorkerCount, 0);
 
   return (
     <div>
@@ -196,13 +201,20 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId }: Props
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <h1 className="text-3xl font-bold text-text-primary">The Team</h1>
-          {activeRoles.length > 0 && (
+          {totalActiveWorkerCount > 0 ? (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-status-success/10 text-status-success">
-              {activeRoles.length} active
-              {idleRoles.length > 0 && (
+              <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
+              {totalActiveWorkerCount} running
+              {idleRoles.length > 0 && activeRoles.length > 0 && (
                 <span className="text-text-muted ml-0.5">&middot; {idleRoles.length} idle</span>
               )}
             </span>
+          ) : (
+            totalRoles > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-surface-3 text-text-muted">
+                Idle
+              </span>
+            )
           )}
         </div>
         {/* New Role — creates a team-level role by default */}
@@ -250,7 +262,13 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId }: Props
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-[13px] font-semibold text-text-muted">Idle</span>
-                <span className="text-[12px] text-text-muted">No active tasks</span>
+                {unattributedWorkerCount > 0 ? (
+                  <span className="text-[12px] text-text-muted">
+                    {unattributedWorkerCount} worker{unattributedWorkerCount !== 1 ? 's' : ''} running without role attribution
+                  </span>
+                ) : totalActiveWorkerCount === 0 ? (
+                  <span className="text-[12px] text-text-muted">No active tasks</span>
+                ) : null}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {idleRoles.map((role) => (
