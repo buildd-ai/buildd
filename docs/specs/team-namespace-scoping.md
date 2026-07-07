@@ -252,3 +252,45 @@ leave Home cross-team.
 
 **Out of scope**: Command palette / global search accelerator (deferred; not
 required for the mobile-first model).
+
+---
+
+## Activity count consistency ✅
+
+**Capability statement**: Any count or status badge derived from active workers
+MUST be computed from the same query semantics and the same scope as every other
+surface showing worker activity for that scope. Contradictory concurrent states
+across tabs/views are a defect.
+
+**Invariants**:
+- The active-worker count shown on any surface (Team header, Activity tab, Home
+  "Right Now") for a given team/workspace scope MUST derive from the same filter:
+  workers with `status IN ('running', 'starting', 'waiting_input')` in
+  `workspaceId IN <scope>`.
+- Role attribution (mapping a running worker to a named role via `task.roleSlug`
+  or `task.context.skillSlugs`) is a supplementary display hint — it MUST NOT
+  affect the *total* active count shown in the Team view header.
+- If workers are running but none are attributed to a configured role, the Team
+  header MUST still show an "active" state (not "Idle") and indicate the unattributed
+  worker count so the user can investigate.
+
+**Acceptance criteria**:
+- AC-1: GIVEN N workers running in workspace W, WHEN the Team tab and Activity tab
+  are viewed at the same moment, THEN both surfaces show N as the active count for
+  workspace W.
+- AC-2: GIVEN a running worker whose task has `roleSlug = NULL` and no
+  `skillSlugs` in context, WHEN the Team page loads, THEN the Team header shows
+  the worker as active (not idle), even though no role card claims attribution.
+- AC-3: GIVEN 2 Builder workers running simultaneously, WHEN the Team page loads,
+  THEN the Builder card shows "Running · 2" (or equivalent), not "Running".
+- AC-4 (error): GIVEN zero active workers, WHEN the Team page loads, THEN the
+  header shows "Idle" — NOT a count of 0.
+
+**Code surface**:
+- `apps/web/src/app/app/(protected)/team/page.tsx` — `totalActiveWorkerCount` is
+  derived from `activeWorkers.length` (all workers in scope), separate from role
+  attribution logic.
+- `apps/web/src/app/app/(protected)/team/TeamGrid.tsx` — header badge uses
+  `totalActiveWorkerCount`; unattributed workers surfaced in idle section label.
+- Test: `apps/web/src/app/app/(protected)/team/page.test.ts` — covers the
+  unattributed-worker case (AC-2).

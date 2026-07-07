@@ -54,6 +54,8 @@ export interface RoleWithActivity {
     prUrl?: string;
     missionTitle?: string;
   } | null;
+  /** Count of workers currently active for this role (0 = idle) */
+  activeWorkerCount: number;
 }
 
 export default async function TeamPage() {
@@ -143,15 +145,21 @@ export default async function TeamPage() {
     },
   });
 
-  // Map workers to roles by roleSlug or context.skillSlugs
+  // Map workers to roles by roleSlug or context.skillSlugs.
+  // Track count per role so multiple concurrent workers are represented.
+  // Workers whose tasks have neither roleSlug nor skillSlugs are unattributed
+  // but still count toward totalActiveWorkerCount so the header stays honest.
   const roleActivity: Record<string, {
-    id: string;
-    title: string;
-    workspaceName: string;
-    workerStatus: string;
-    startedAt: string;
-    prUrl?: string;
-    missionTitle?: string;
+    count: number;
+    task: {
+      id: string;
+      title: string;
+      workspaceName: string;
+      workerStatus: string;
+      startedAt: string;
+      prUrl?: string;
+      missionTitle?: string;
+    };
   }> = {};
 
   for (const w of activeWorkers) {
@@ -163,17 +171,25 @@ export default async function TeamPage() {
     for (const slug of slugs) {
       if (!roleActivity[slug]) {
         roleActivity[slug] = {
-          id: task.id,
-          title: task.title,
-          workspaceName: task.workspace?.name || 'Unknown',
-          workerStatus: w.status,
-          startedAt: w.startedAt ? timeAgo(w.startedAt) : '',
-          prUrl: (w as any).prUrl || undefined,
-          missionTitle: task.mission?.title || undefined,
+          count: 0,
+          task: {
+            id: task.id,
+            title: task.title,
+            workspaceName: task.workspace?.name || 'Unknown',
+            workerStatus: w.status,
+            startedAt: w.startedAt ? timeAgo(w.startedAt) : '',
+            prUrl: (w as any).prUrl || undefined,
+            missionTitle: task.mission?.title || undefined,
+          },
         };
       }
+      roleActivity[slug].count++;
     }
   }
+
+  // Total active workers in scope — used by the header so it matches Activity
+  // tab semantics (which counts workers regardless of role attribution).
+  const totalActiveWorkerCount = activeWorkers.length;
 
   // Separate team defaults and workspace overrides
   const teamDefaults = allSkillsRaw.filter(s => s.workspaceId === null);
@@ -194,6 +210,7 @@ export default async function TeamPage() {
 
   const teamDefaultRoles: RoleWithActivity[] = teamDefaults.map(skill => {
     const overrides = overridesBySlug.get(skill.slug) || [];
+    const activity = roleActivity[skill.slug];
     return {
       id: skill.id,
       teamId: skill.teamId,
@@ -211,7 +228,8 @@ export default async function TeamPage() {
       enabled: skill.enabled,
       isRole: skill.isRole,
       stats: roleStats[skill.slug] || null,
-      currentTask: roleActivity[skill.slug] || null,
+      currentTask: activity?.task || null,
+      activeWorkerCount: activity?.count || 0,
     };
   });
 
@@ -221,6 +239,7 @@ export default async function TeamPage() {
     .reduce((acc, skill) => {
       // Dedup by slug (workspace override wins, same as before)
       if (!acc.find(r => r.slug === skill.slug)) {
+        const activity = roleActivity[skill.slug];
         acc.push({
           id: skill.id,
           teamId: skill.teamId,
@@ -238,7 +257,8 @@ export default async function TeamPage() {
           enabled: skill.enabled,
           isRole: skill.isRole,
           stats: roleStats[skill.slug] || null,
-          currentTask: roleActivity[skill.slug] || null,
+          currentTask: activity?.task || null,
+          activeWorkerCount: activity?.count || 0,
         });
       }
       return acc;
@@ -256,6 +276,7 @@ export default async function TeamPage() {
           idleRoles={JSON.parse(JSON.stringify(idleRoles))}
           workspaceIds={wsIds}
           teamId={teamIds[0] || null}
+          totalActiveWorkerCount={totalActiveWorkerCount}
         />
       </div>
     </main>
