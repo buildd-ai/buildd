@@ -23,7 +23,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
   // Single team - show as plain text
   if (teams.length <= 1) {
     return (
-      <span className="text-sm text-text-secondary">
+      <span className="text-sm text-text-secondary truncate max-w-[140px]">
         {currentTeam.name}
       </span>
     );
@@ -36,7 +36,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 text-sm text-text-secondary hover:text-text-primary px-2 py-1 rounded-md hover:bg-surface-3 transition-colors"
       >
-        <span>{currentTeam.name}</span>
+        <span className="truncate max-w-[140px]">{currentTeam.name}</span>
         <svg
           className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
           fill="none"
