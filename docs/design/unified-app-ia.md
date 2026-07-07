@@ -115,7 +115,7 @@ Switching teams (header selector) clears the workspace filter and reloads.
 | **Home** | `/app/home` | Mixed (workers/tasks/schedules by workspaceIds; missions by teamIds) | Team-primary | Change workers/tasks/schedules/roles queries to `teamId`; add WS filter to narrow |
 | **Activity** | `/app/tasks` | All team workspaces, no filter | Team-primary + WS filter | Add WorkspaceFilter; pass `workspaceId` param to TaskGrid |
 | **Missions** | `/app/missions` | Team-scoped ✅ (reference implementation) | Team-primary + WS filter (add filter for drill-down) | Add WorkspaceFilter; filter missions by workspaceId when set |
-| **Health** | `/app/health` | Mixed (watched projects by workspaceIds; Vercel tokens by teamId); WS filter exists ✅ | Team-primary; promote existing WS filter to canonical shared component | Extract WS filter → shared component; add Runners + Usage (from §B.2) |
+| **Health** | `/app/health` | Watched projects by workspaceIds; WS filter exists ✅ (Vercel status removed from UI — backend retained) | Team-primary; WS filter already promoted to canonical shared component ✅ | Done: Runners + Usage (30d) + Schedules added; Vercel status stripped (#1066) |
 
 #### Home — fetch changes
 
@@ -176,10 +176,28 @@ which `WorkspaceFilter` is extracted. Two additions from §B.2 below:
 - Runners list moved here from `/app/settings`
 - Usage (30d) card added here
 
+**Current state (shipped in v0.126.0):** Health renders four sections —
+Runners, Usage (30d), Schedules, and Watched Projects. The Vercel
+config/status UI was removed (#1066); backend columns and health-watcher
+prod-check code are retained so the feature can be re-enabled via UI later.
+
+**Mobile / desktop parity rule:** Health page sections MUST be identical
+across all viewports. Desktop (sidebar rail) and mobile (bottom tab nav)
+both route to the same `HealthClient` component — there is no separate
+mobile path. No section may be conditionally rendered for a specific
+breakpoint. Treat any viewport-only section as a regression equal to the
+artifact→task action mobile regression (task 1940b072).
+
 Acceptance criteria:
 - AC-1: Health shows watched projects for all team workspaces by default.
 - AC-2: WorkspaceFilter (shared component) narrows watched projects.
 - AC-3: Runners list visible on Health; Usage (30d) visible on Health.
+- AC-4: All four sections (Runners, Usage, Schedules, Watched Projects) render
+  identically on desktop and mobile; no Vercel section appears on either
+  viewport. Data-testid anchors (`health-section-runners`,
+  `health-section-usage`, `health-section-schedules`,
+  `health-section-watched-projects`) must be present on each `<section>`
+  element for E2E verification.
 
 ### B.2 Settings 3-surface split
 
