@@ -235,16 +235,16 @@ export function HealthClient({
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 sm:py-6 pb-24">
+    <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
+      <div className="mb-6">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">Project Health</h1>
-          <p className="text-sm text-text-tertiary">
-            Watcher fires a task + Pushover when CI breaks on release PRs.
-          </p>
+          <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
         </div>
-        <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+        <p className="text-sm text-text-tertiary mt-1">
+          Watcher fires a task + Pushover when CI breaks on release PRs.
+        </p>
       </div>
 
       {/* Runners */}
