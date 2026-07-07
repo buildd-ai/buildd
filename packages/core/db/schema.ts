@@ -17,7 +17,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -916,7 +916,7 @@ export const workspaceSkills = pgTable('workspace_skills', {
   origin: text('origin').default('manual').notNull().$type<'scan' | 'manual'>(),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(), // referenceFiles, version, author
   // Role config
-  model: text('model').$type<'sonnet' | 'opus' | 'haiku' | 'inherit'>().notNull().default('inherit'),
+  model: text('model').$type<SkillModel>().notNull().default('inherit'),
   // Default agent backend for tasks routed to this role (a hint — an explicit task.backend wins).
   // null = no preference → falls back to 'claude'. Model selection stays independent: when this is
   // 'codex', the Claude-only `model` field above is ignored. See docs/credentials-architecture.md.

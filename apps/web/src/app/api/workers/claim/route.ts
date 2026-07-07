@@ -424,7 +424,7 @@ export async function POST(req: NextRequest) {
   const uniqueRoleSlugs = [...new Set(
     filteredTasks.map(t => (t as any).roleSlug as string | null).filter(Boolean) as string[],
   )];
-  const roleFloorMap = new Map<string, Tier | 'inherit'>();
+  const roleFloorMap = new Map<string, string>();
   if (uniqueRoleSlugs.length > 0) {
     const taskTeamIds = [...new Set(
       filteredTasks.map(t => (t as any).workspace?.teamId as string | undefined).filter(Boolean) as string[],
@@ -450,7 +450,7 @@ export async function POST(req: NextRequest) {
     for (const r of wsRoles) {
       // Prefer the most-specific (workspace-scoped) entry if both exist.
       if (!roleFloorMap.has(r.slug) || r.workspaceId) {
-        roleFloorMap.set(r.slug, r.model as Tier | 'inherit');
+        roleFloorMap.set(r.slug, r.model ?? 'inherit');
       }
     }
   }
@@ -639,11 +639,14 @@ export async function POST(req: NextRequest) {
     // injected into task.context.model so worker-runner picks it up.
     const roleSlug = (task as any).roleSlug as string | null;
     const explicit = (taskContext?.model as string | undefined) || null;
+    const TIER_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
+    const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
+    const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
     const routingDecision = resolveEffectiveModel({
-      explicitModel: explicit,
+      explicitModel: explicit ?? (roleIsFullId ? roleModel : null),
       kind: (task as any).kind || null,
       complexity: (task as any).complexity || null,
-      roleFloor: roleSlug ? roleFloorMap.get(roleSlug) || null : null,
+      roleFloor: roleIsFullId ? null : (roleModel as Tier | 'inherit' | null),
       dailyBudgetPct,
       recentClaimCount,
       priority: task.priority ?? 0,
@@ -887,7 +890,7 @@ export async function POST(req: NextRequest) {
           description: ws.description || undefined,
           content: ws.content,
           ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-          model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+          model: (ws.model ?? 'inherit') as string,
           allowedTools: (ws.allowedTools as string[]) || [],
           canDelegateTo: (ws.canDelegateTo as string[]) || [],
           background: ws.background ?? false,
@@ -915,7 +918,7 @@ export async function POST(req: NextRequest) {
             description: ws.description || undefined,
             content: ws.content,
             ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-            model: ws.model as 'sonnet' | 'opus' | 'haiku' | 'inherit',
+            model: (ws.model ?? 'inherit') as string,
             allowedTools: (ws.allowedTools as string[]) || [],
             canDelegateTo: (ws.canDelegateTo as string[]) || [],
             background: ws.background ?? false,
