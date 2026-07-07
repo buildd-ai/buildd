@@ -192,6 +192,9 @@ export interface LocalWorker {
   lastAssistantMessage?: string;
   // Set after the first loop-guard nudge is injected so we don't double-send
   loopNudgeSent?: boolean;
+  // Current prompt UUID (SDK v0.3.196 BaseHookInput.prompt_id) — correlates hook events
+  // with SDK-emitted OTel spans at prompt grain (attribute: prompt.id).
+  currentPromptId?: string;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;
@@ -306,6 +309,23 @@ export interface WorkspaceGitConfig {
   // Worktree isolation for subagents (SDK v0.2.49+)
   // When enabled, skill-as-subagent definitions include `isolation: 'worktree'`
   useWorktreeIsolation?: boolean;
+
+  // Sandbox configuration for worker isolation (SDK v0.2.44+)
+  sandbox?: {
+    enabled?: boolean;
+    autoAllowBashIfSandboxed?: boolean;
+    network?: {
+      allowedDomains?: string[];
+      allowLocalBinding?: boolean;
+    };
+    excludedCommands?: string[];
+    // Credential-read blocking for sandboxed commands (SDK v0.3.187)
+    // Prevents sandboxed bash commands from reading sensitive credential files or env vars.
+    credentials?: {
+      files?: Array<{ path: string; mode: 'deny' }>;
+      environment?: Array<{ name: string; mode: 'deny' | 'mask'; injectHosts?: string[] }>;
+    };
+  };
 
   // Auto-merge PRs via GitHub's auto-merge feature
   autoMergePR?: boolean;

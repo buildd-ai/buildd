@@ -185,6 +185,12 @@ export interface WorkspaceGitConfig {
       allowLocalBinding?: boolean;
     };
     excludedCommands?: string[];
+    // Credential-read blocking for sandboxed commands (SDK v0.3.187)
+    // Prevents sandboxed bash commands from reading sensitive credential files or env vars.
+    credentials?: {
+      files?: Array<{ path: string; mode: 'deny' }>;
+      environment?: Array<{ name: string; mode: 'deny' | 'mask'; injectHosts?: string[] }>;
+    };
   };
 
   // SDK debug logging (SDK v0.2.44+)
