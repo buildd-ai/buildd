@@ -29,7 +29,7 @@ jobs:
       WORKSPACE_ID: 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
