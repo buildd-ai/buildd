@@ -87,7 +87,7 @@ jobs:
           bun .claude/skills/spec-sync/scripts/spec-drift.ts "$SPEC_WORKSPACE_ID" 5 --evidence > evidence.txt || true
 
       - name: Upload evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: spec-sync-evidence, path: evidence.txt }
 
       - name: Cleanup Neon branch
