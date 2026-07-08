@@ -263,7 +263,7 @@ jobs:
       # --- Post PR comment + create report-only check run ---
       - name: Post results
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           QA_OUTPUT: /tmp/qa
           SCREENSHOTS_URL: ${{ steps.screenshots.outputs.artifact-url }}
