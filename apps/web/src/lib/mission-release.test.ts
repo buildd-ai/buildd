@@ -1,13 +1,10 @@
 process.env.NODE_ENV = 'test';
 
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll, spyOn } from 'bun:test';
 
 // ── Leaf mocks (behavior varies per test) ─────────────────────────────────────
 
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null) as any);
-const mockExecuteRelease = mock(() =>
-  Promise.resolve({ status: 'completed', message: 'done' }) as any
-);
 
 // db.select({ count: count() }).from(tasks).where(...) → Promise<[{count}]>
 const mockSelectWhere = mock(() => Promise.resolve([{ count: 0 }]) as any);
@@ -75,13 +72,18 @@ mock.module('@/lib/github', () => ({
   githubApi: mock(() => Promise.resolve(null) as any),
 }));
 
-mock.module('@/lib/release-executor', () => ({
-  executeRelease: mockExecuteRelease,
-}));
-
 // ── Import module under test ───────────────────────────────────────────────────
 
 import { fireMissionReleaseIfComplete } from './mission-release';
+
+// Spy on executeRelease instead of mock.module()'ing '@/lib/release-executor' —
+// mock.module() replaces the module in the global registry for the whole test
+// run, which poisons release-executor.test.ts (it imports the same module via
+// './release-executor' and would get this mock instead of the real
+// implementation). spyOn + mockRestore() properly unwinds after this file.
+import * as releaseExecutorModule from './release-executor';
+const mockExecuteRelease = spyOn(releaseExecutorModule, 'executeRelease');
+afterAll(() => mockExecuteRelease.mockRestore());
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
