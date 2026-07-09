@@ -253,7 +253,7 @@ jobs:
       - name: Upload screenshots
         id: screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: visual-qa-screenshots-pr${{ github.event.pull_request.number || github.run_number }}-run${{ github.run_number }}
           path: /tmp/qa/screenshots/
