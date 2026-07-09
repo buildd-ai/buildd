@@ -61,7 +61,7 @@ function ScopeBadge({ scopeLabel, workspaceId }: { scopeLabel: string; workspace
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
           </svg>
-          {scopeLabel}
+          <span className="hidden sm:inline">{scopeLabel}</span>
         </>
       ) : (
         <>
@@ -69,7 +69,7 @@ function ScopeBadge({ scopeLabel, workspaceId }: { scopeLabel: string; workspace
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             <polyline points="9,22 9,12 15,12 15,22" />
           </svg>
-          {scopeLabel}
+          <span className="hidden sm:inline">{scopeLabel}</span>
         </>
       )}
     </span>
@@ -176,7 +176,7 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
         </span>
       )}
       {role.model && (
-        <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
+        <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-3 text-text-muted shrink-0">
           {role.model}
         </span>
       )}

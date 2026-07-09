@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix all 5 seed bugs at 390px viewport (#1105)
+- Truncate long team names in TeamSwitcher header (#1094)
 - Activity feed NULLS-FIRST ordering + archived missions filling limit (re-fix)
 - Migration 0061 made idempotent to unblock prod deploys (#1062)
 - Home screen hides archived missions and caps activity feed at 50; NULLS-FIRST ordering (#1048)

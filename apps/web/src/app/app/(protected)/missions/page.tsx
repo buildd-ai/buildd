@@ -198,7 +198,7 @@ export default async function MissionsPage({
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-baseline gap-3">
+        <div className="flex items-baseline gap-3 min-w-0">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
           <span className="text-xs text-text-secondary font-light">
             {activeCount} active

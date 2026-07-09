@@ -20,7 +20,7 @@ jobs:
       github.event.workflow_run.head_branch == 'dev' &&
       !contains(github.event.workflow_run.head_commit.message, 'autofix:')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: dev
           fetch-depth: 0
