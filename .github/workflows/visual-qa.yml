@@ -43,7 +43,7 @@ jobs:
       QA_MANIFEST: apps/web/src/qa/visual-qa-routes.json
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:

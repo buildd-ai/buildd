@@ -42,7 +42,7 @@ jobs:
       NEON_PARENT_BRANCH_ID: ${{ secrets.NEON_PARENT_BRANCH_ID }}
     steps:
       - name: Checkout buildd
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Create Neon branch
         id: neon
