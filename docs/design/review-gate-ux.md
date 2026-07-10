@@ -367,7 +367,8 @@ implementation by grepping for any skip-list or cooldown set in `apps/runner/`.
 | Internal state | User-visible label | Context |
 |---|---|---|
 | `pending` (no gate) | "Pending" | Waiting for a runner |
-| `pending` (gate present) | **"Blocked"** | Derived from dependency check; not stored |
+| `pending` (gate — PR blocker) | **"Blocked · waiting on: PR #N merge"** | Activity list + sidebar; cause chip taps to PR (§8.3) |
+| `pending` (gate — task blocker) | **"Blocked · waiting on: {task title}"** | Activity list + sidebar; cause chip taps to task (§8.3) |
 | `assigned` / `in_progress` | "Queued" | Claimed, not yet running |
 | `running` | "Running" | Agent actively working |
 | `waiting_input` | "Needs Input" | Agent waiting for human response |
@@ -388,6 +389,9 @@ implementation by grepping for any skip-list or cooldown set in `apps/runner/`.
 | Mission gate chip | `Awaiting your review — PR #N  ·  Merge to continue` |
 | Notification (Pushover/web) | `PR #N ready for review — {N} tasks waiting on merge` |
 | Activity feed pill | `Unmerged` |
+| Activity list blocked row (PR blocker) | `waiting on: PR #N merge` |
+| Activity list blocked row (task blocker) | `waiting on: {blocking task title}` |
+| Activity list blocked-group disclosure | `▶ N waiting on dependencies` |
 
 ---
 
@@ -402,6 +406,115 @@ implementation by grepping for any skip-list or cooldown set in `apps/runner/`.
 - **Auto-merge of gating PRs**: the platform does NOT auto-merge review gates. Auto-merge (§G4 of
   `worker-pr-automerge.md`) applies to non-gate PRs. Gates require explicit human approval because
   they checkpoint cross-phase work.
+
+---
+
+## 8. Activity List — Status Semantics + Ordering
+
+> **Addendum 2026-07-10** — field observation (mobile Activity tab, 21:58 ET): dependency-blocked
+> tasks rendered with no status chip and no cause text, visually identical to ready tasks. The two
+> Running tasks sorted to the bottom of the list. The list read as "nothing happening" while two
+> tasks were executing and five sat gated. This section closes that gap.
+
+### 8.1 Status chip on every Activity row
+
+Every Activity list row must carry a **`<StatusChip>`** (see §8.4). A row with no chip is a
+rendering bug. The chip labels and styles extend the table in §6 — no parallel copy.
+
+| Chip label | Internal state | Visual treatment |
+|---|---|---|
+| **Running** | `running` | Green · active pulse |
+| **Needs Input** | `waiting_input` | Amber · attention pulse |
+| **Queued** | `assigned` / `in_progress` | Blue · neutral |
+| **Blocked** | `pending` (gate present) | Muted / de-emphasized (see below) |
+| **Done** | `completed` (no open PR) | Muted green |
+| **Done · PR open** | `completed` (unmerged PR) | Yellow pill (§1.2) |
+| **Failed** | `failed` | Red |
+| **Cancelled** | `cancelled` | Muted grey |
+
+**Blocked rows** are visually de-emphasized relative to actionable rows:
+- Reduced contrast or muted background token — not the standard row appearance
+- Secondary cause line beneath the task title:
+  - `waiting on: PR #N merge` — when the upstream task has an unmerged PR
+  - `waiting on: {blocking task title}` — when the upstream task is not yet complete
+- The cause text is a tappable link (§8.3), not decorative text
+
+### 8.2 Sort order
+
+Activity list rows sort in this fixed priority order:
+
+```
+Priority  Group
+────────  ────────────────────────────────────────────────────────────
+  1       Running + Needs Input        (live work — always on top)
+  2       Needs-your-action            (review gates: completed task, unmerged PR + dependents)
+  3       Queued-ready                 (claimed, about to run)
+  4       Blocked                      (waiting on dependency; grouped, may be collapsed)
+  5       Completed + Failed           (inert — last, or behind a 'Show completed' filter)
+```
+
+**Invariant**: live work (`running`, `waiting_input`) never renders below inert rows. A list with
+one `running` and ten `completed` tasks always shows `running` first.
+
+**Blocked group collapse**: when ≥3 blocked tasks are present, the group collapses by default to a
+single disclosure row:
+
+```
+  ▶  5 waiting on dependencies
+```
+
+Tapping expands the individual blocked rows inline. When ≤2 blocked tasks are present the group
+is always expanded.
+
+**Within-group tie-breaking**: within each priority group, sort by `createdAt DESC` (newest first).
+
+### 8.3 Dependency affordance
+
+The `waiting on: {…}` cause text on a blocked row is a **tappable link**, not a `<span>`.
+
+| Blocker type | Tap destination |
+|---|---|
+| Upstream task not yet complete | `/app/tasks/{blockingTaskId}` — task detail page |
+| Upstream task with unmerged PR | `worker.prUrl` — GitHub PR, opens in new tab |
+
+If the row itself is already tappable (navigates to the blocked task's detail page), the cause chip
+is a **nested interactive element** that stops event propagation and navigates to the blocker instead.
+
+### 8.4 Shared `<StatusChip>` component
+
+Status chip rendering must live in **one shared component** reused across every surface. No
+per-surface rendering logic is permitted outside this component.
+
+**Surfaces that must use `<StatusChip>`**:
+- Activity list rows (this section)
+- Mission Timeline task nodes (§3)
+- Sidebar task list entries
+- Home page task cards / "Right Now" section
+- Task detail page header status label
+
+**Component interface**:
+
+```typescript
+// apps/web/src/components/StatusChip.tsx
+type StatusChipProps = {
+  status: TaskStatus;
+  blockingGate?: {
+    taskId?: string;
+    prUrl?: string;
+    prNumber?: number;
+    taskTitle: string;
+  } | null;
+  unmergedPr?: { prUrl: string; prNumber: number } | null;
+  size?: 'sm' | 'md';     // default: 'md'
+  interactive?: boolean;  // true → cause text renders as a tappable link
+};
+```
+
+All display decisions — label copy, colour token, de-emphasis, cause text, link target — live
+inside `<StatusChip>`. Callers pass data; they do not compute display state.
+
+`<StatusChip>` references §6 as its source of truth for labels and copy. Adding a new display
+state means updating §6 and the component implementation together, not forking a third table.
 
 ---
 
@@ -420,13 +533,16 @@ Each is independently shippable in the order listed.
 | BT-6 | **Review gate notification** | `apps/web/src/lib/task-dependencies.ts`, `apps/web/src/lib/pusher.ts`, `apps/web/src/lib/notify.ts` | §4. Add `REVIEW_GATE_OPENED` event; call `notifyTeam()` on gate open. |
 | BT-7 | **Merge endpoint `POST /api/prs/[prNumber]/merge`** | `apps/web/src/app/api/prs/[prNumber]/merge/route.ts` | §5.1. Requires `mergePullRequest()` + branch delete + BT-1. |
 | BT-8 | **`mergedBy` column migration** | `packages/core/db/schema.ts` | §5.1. `bun db:generate` + commit migration. |
-| BT-9 | **Mission view gate chip** | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` | §3. Requires BT-2 or inline gate detection. |
+| BT-9 | **Mission view gate chip** | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` | §3. Uses `<StatusChip>` from BT-11. Requires BT-2 and BT-11. |
 | BT-10 | **Webhook: call `checkDependsOnResolved` on PR merge unconditionally** | `apps/web/src/app/api/github/webhook/route.ts` | §5.4. Ensures external merges also unblock dependents. Requires BT-1. |
+| BT-11 | **Build shared `<StatusChip>` component** | `apps/web/src/components/StatusChip.tsx` | §8.4. Props: `status`, `blockingGate`, `unmergedPr`, `size`, `interactive`. All label/colour/cause-text logic lives here; no per-surface logic in callers. Requires BT-2. |
+| BT-12 | **Activity list: apply status chips + sort order** | Activity list component(s) in `apps/web/src/app/` | §8.1–8.3. Render `<StatusChip>` on every row; apply sort from §8.2; add blocked-group collapse disclosure; wire cause-chip tap navigation. Requires BT-11. |
 
-**Order recommendation**: BT-1 → BT-2 → BT-3 + BT-5 (parallel) → BT-4 → BT-6 → BT-7 → BT-8 → BT-9 → BT-10.
+**Order recommendation**: BT-1 → BT-2 → { BT-3, BT-5, BT-11 } (parallel) → { BT-4, BT-12 } (parallel, after BT-11) → BT-6 → BT-7 → BT-8 → { BT-9, BT-10 } (parallel).
 
 BT-1 is the highest-leverage fix: it eliminates the silent busy-wait and is a pure correctness patch
-with no UI changes.
+with no UI changes. BT-11 is the prerequisite for consistent chip rendering across all surfaces
+(BT-12, BT-9) and should be shipped before any surface-specific list work.
 
 ---
 
