@@ -255,6 +255,7 @@ export default async function HealthPage({
       totalRuns: s.totalRuns,
       taskTitle: s.taskTemplate?.title ?? '',
       missionTitle: s.missionTitle,
+      isHeartbeat: !!s.isHeartbeat,
     }))
     .sort((a: ScheduleRow, b: ScheduleRow) => {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
