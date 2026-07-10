@@ -183,6 +183,8 @@ describe('POST /api/workers/claim', () => {
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no claimable/sibling tasks
+    mockTasksFindMany.mockResolvedValue([]);
     // Default: no open workspaces
     mockWorkspacesFindMany.mockResolvedValue([]);
     // Default: no secrets
