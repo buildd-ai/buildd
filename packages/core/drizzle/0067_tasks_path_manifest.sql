@@ -1,1 +1,1 @@
-ALTER TABLE "tasks" ADD COLUMN "path_manifest" jsonb;
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "path_manifest" jsonb;
