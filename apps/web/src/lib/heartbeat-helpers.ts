@@ -16,7 +16,7 @@ export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: 
 - [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
 - [ ] If no workspace/repo exists: create one with manage_workspaces, then create coding tasks
 - [ ] Retry any failed tasks with failureContext
-- [ ] Check PR merge status — create integration task if conflicts exist
+- [ ] Check PR merge status — if a PR has merge conflicts, retry the ORIGINATING task (create_task with parentTaskId=<original task id>, failureContext='PR #N has merge conflicts with main — rebase onto main and resolve, continue on the same branch') — do NOT create a separate integration task
 - [ ] Do NOT report OK if the mission has not made forward progress since last heartbeat
 - [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput`;
 
@@ -231,7 +231,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
       reason: `${prCount} PR(s) created by tasks`,
       actions: [
         'Check PR merge status',
-        'Create integration task if merge conflicts exist',
+        'If PR has conflicts: retry the originating task (create_task with parentTaskId=<id>, failureContext describing conflict) — do NOT create a separate integration task',
         'If all PRs merged, create next batch of tasks from the plan or summarize completion',
       ],
     };

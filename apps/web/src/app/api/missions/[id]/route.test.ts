@@ -406,6 +406,33 @@ describe('PATCH /api/missions/[id]', () => {
     expect(deletedTables).toContain('taskSchedules');
   });
 
+  it('removes heartbeat flag from schedule context when isHeartbeat=false', async () => {
+    // Regression: disabling heartbeat should remove the flag so MCP get no longer reports "Heartbeat: enabled"
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Monitor',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({
+      cronExpression: '0 * * * *',
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check stuff' } },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ isHeartbeat: false }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedScheduleData).not.toBeNull();
+    // heartbeat flag must be absent from the updated context
+    expect(updatedScheduleData.taskTemplate.context.heartbeat).toBeUndefined();
+  });
+
   it('disables (not deletes) schedule when mission is paused', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',

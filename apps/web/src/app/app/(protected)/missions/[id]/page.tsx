@@ -171,6 +171,11 @@ export default async function MissionDetailPage({
   const heartbeatOverdue = isHeartbeat && mission.schedule?.nextRunAt && scheduleCron
     ? checkOverdue(mission.schedule.nextRunAt, scheduleCron)
     : false;
+
+  const scheduleNextRunAt = (mission.schedule as any)?.nextRunAt as string | null | undefined;
+  const scheduleNextMs = scheduleNextRunAt ? new Date(scheduleNextRunAt).getTime() : null;
+  const scheduleOverdue = mission.status === 'active' && scheduleNextMs != null && scheduleNextMs < Date.now();
+  const scheduleOverdueMinutes = scheduleOverdue && scheduleNextMs != null ? Math.floor((Date.now() - scheduleNextMs) / 60000) : 0;
   const heartbeatTasks = isHeartbeat
     ? (mission.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
     : [];
@@ -651,14 +656,18 @@ export default async function MissionDetailPage({
             })}
 
             {/* Next evaluation indicator — hidden for completed missions */}
-            {scheduleCron && (mission.schedule as any)?.nextRunAt && mission.status !== 'completed' && (
+            {scheduleCron && mission.status !== 'completed' && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
                   <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
                 </div>
-                <span className="text-[12px] text-text-muted italic pl-2">
-                  Next evaluation {timeAgo((mission.schedule as any).nextRunAt)}
-                </span>
+                {mission.status === 'paused' ? (
+                  <span className="text-[12px] text-text-muted italic pl-2">Monitoring paused</span>
+                ) : scheduleOverdue ? (
+                  <span className="text-[12px] text-status-warning italic pl-2">Overdue by {scheduleOverdueMinutes}m</span>
+                ) : scheduleNextRunAt ? (
+                  <span className="text-[12px] text-text-muted italic pl-2">Next evaluation {timeAgo(scheduleNextRunAt)}</span>
+                ) : null}
               </div>
             )}
           </div>
