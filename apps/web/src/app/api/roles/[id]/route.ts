@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
-import { eq, or, and, isNull, inArray } from 'drizzle-orm';
+import { eq, or, and, isNull, inArray, ne } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
@@ -100,6 +100,47 @@ export async function PATCH(
     if (repoUrl !== undefined) updates.repoUrl = repoUrl;
     if (enabled !== undefined) updates.enabled = enabled;
     if (defaultBackend !== undefined) updates.defaultBackend = normalizeBackend(defaultBackend);
+
+    // Scope change: workspaceId = null (promote to team-level) or UUID (demote to workspace-scoped)
+    if ('workspaceId' in body) {
+      const newWorkspaceId = body.workspaceId as string | null;
+      if (newWorkspaceId === null) {
+        // Promoting to team-level: ensure no other team-level role with same slug
+        const conflict = await db.query.workspaceSkills.findFirst({
+          where: and(
+            eq(workspaceSkills.teamId, existing.teamId),
+            eq(workspaceSkills.slug, existing.slug),
+            isNull(workspaceSkills.workspaceId),
+            ne(workspaceSkills.id, id),
+          ),
+        });
+        if (conflict) {
+          return NextResponse.json(
+            { error: `A team-level role with slug "${existing.slug}" already exists` },
+            { status: 409 }
+          );
+        }
+      } else {
+        // Demoting to workspace-scoped: verify workspace access + no slug conflict
+        if (!wsIds.includes(newWorkspaceId)) {
+          return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        }
+        const conflict = await db.query.workspaceSkills.findFirst({
+          where: and(
+            eq(workspaceSkills.workspaceId, newWorkspaceId),
+            eq(workspaceSkills.slug, existing.slug),
+            ne(workspaceSkills.id, id),
+          ),
+        });
+        if (conflict) {
+          return NextResponse.json(
+            { error: `A role with slug "${existing.slug}" already exists in this workspace` },
+            { status: 409 }
+          );
+        }
+      }
+      updates.workspaceId = newWorkspaceId;
+    }
 
     const [updated] = await db
       .update(workspaceSkills)

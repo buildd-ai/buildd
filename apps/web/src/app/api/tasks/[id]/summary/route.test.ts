@@ -1,0 +1,242 @@
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { NextRequest } from 'next/server';
+
+const mockGetCurrentUser = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
+const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+
+mock.module('@/lib/auth-helpers', () => ({
+  getCurrentUser: mockGetCurrentUser,
+}));
+
+mock.module('@/lib/team-access', () => ({
+  verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+}));
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      tasks: { findFirst: mockTasksFindFirst },
+      workers: { findMany: mockWorkersFindMany },
+    },
+  },
+}));
+
+mock.module('drizzle-orm', () => ({
+  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  tasks: { id: 'id' },
+  workers: { taskId: 'taskId', createdAt: 'createdAt' },
+}));
+
+import { GET } from './route';
+
+function createRequest(taskId: string): NextRequest {
+  return new NextRequest(`http://localhost:3000/api/tasks/${taskId}/summary`, {
+    method: 'GET',
+  });
+}
+
+async function callGET(taskId: string) {
+  return GET(createRequest(taskId), { params: Promise.resolve({ id: taskId }) });
+}
+
+describe('GET /api/tasks/[id]/summary', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+  });
+
+  it('returns 401 when not authenticated', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+
+    const res = await callGET('b5814ed6-4808-499c-8eff-16e567f86576');
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 404 when task does not exist', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    const res = await callGET('b5814ed6-4808-499c-8eff-16e567f86576');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when user does not have workspace access', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'b5814ed6-4808-499c-8eff-16e567f86576',
+      title: 'feat: connectors DB schema + migration',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: 'builder',
+      createdAt: new Date().toISOString(),
+      missionId: '5b390753-1488-4e10-95f7-67b027eae1da',
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const res = await callGET('b5814ed6-4808-499c-8eff-16e567f86576');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns task summary for a running task (regression: must not 404)', async () => {
+    // Real task + worker IDs from production incident 2026-07-09
+    const taskId = 'b5814ed6-4808-499c-8eff-16e567f86576';
+    const workerId = 'c6a00c1a-161a-40fb-b13c-dee1670fea99';
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: taskId,
+      title: 'feat: connectors DB schema + migration',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: 'builder',
+      createdAt: new Date().toISOString(),
+      missionId: '5b390753-1488-4e10-95f7-67b027eae1da',
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: workerId,
+      status: 'running',
+      currentAction: 'Creating migration file',
+      turns: 3,
+      prUrl: null,
+      prNumber: null,
+      commitCount: 2,
+      filesChanged: 3,
+      costUsd: 0.012,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      waitingFor: null,
+      branch: 'buildd/b5814ed6-feat-connectors-db-schema',
+    }]);
+
+    const res = await callGET(taskId);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.id).toBe(taskId);
+    expect(data.status).toBe('running');
+    expect(data.worker?.id).toBe(workerId);
+    expect(data.worker?.status).toBe('running');
+    // Summary must return task ID, not worker ID — the historical 404 cause
+    expect(data.id).not.toBe(workerId);
+  });
+
+  it('returns task summary for a completed task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-done',
+      title: 'Completed task',
+      status: 'completed',
+      description: 'A finished task',
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: { summary: 'All done.', nextSuggestion: 'Consider X.' },
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-1',
+      status: 'completed',
+      currentAction: null,
+      turns: 10,
+      prUrl: 'https://github.com/org/repo/pull/42',
+      prNumber: 42,
+      commitCount: 5,
+      filesChanged: 8,
+      costUsd: 0.05,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      waitingFor: null,
+      branch: 'buildd/task-done',
+    }]);
+
+    const res = await callGET('task-done');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.status).toBe('completed');
+    expect(data.result?.summary).toBe('All done.');
+    expect(data.worker?.prUrl).toBe('https://github.com/org/repo/pull/42');
+  });
+
+  it('returns task summary for a pending task with no worker', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-pending',
+      title: 'Pending task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('task-pending');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.status).toBe('pending');
+    expect(data.worker).toBeNull();
+    expect(data.result).toBeNull();
+  });
+
+  it('surfaces waiting_input status when worker is blocked', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-waiting',
+      title: 'Waiting task',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-waiting',
+      status: 'waiting_input',
+      currentAction: null,
+      turns: 5,
+      prUrl: null,
+      prNumber: null,
+      commitCount: 0,
+      filesChanged: 0,
+      costUsd: 0.01,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      waitingFor: { type: 'text', prompt: 'Which approach do you prefer?' },
+      branch: 'buildd/task-waiting',
+    }]);
+
+    const res = await callGET('task-waiting');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    // Derived status: task is "running" but worker is "waiting_input"
+    expect(data.status).toBe('waiting_input');
+    expect(data.worker?.waitingFor?.prompt).toBe('Which approach do you prefer?');
+  });
+});

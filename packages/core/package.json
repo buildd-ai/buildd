@@ -1,10 +1,10 @@
 {
   "name": "@buildd/core",
-  "version": "0.126.0",
+  "version": "0.128.0",
   "type": "module",
   "scripts": {
-    "db:generate": "drizzle-kit generate:pg",
-    "db:push": "drizzle-kit push:pg",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
     "db:migrate": "bun run db/migrate.ts",
     "db:studio": "drizzle-kit studio"
   },
@@ -32,20 +32,21 @@
     "./knowledge-store": "./knowledge-store/index.ts",
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
-    "./knowledge-store/types": "./knowledge-store/types.ts"
+    "./knowledge-store/types": "./knowledge-store/types.ts",
+    "./path-overlap": "./path-overlap.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.201",
     "@buildd/shared": "workspace:*",
-    "@neondatabase/serverless": "^0.9.0",
-    "@openai/codex-sdk": "^0.44.0",
-    "dotenv": "^16.4.5",
-    "drizzle-orm": "0.30.10",
+    "@neondatabase/serverless": "^1.0.0",
+    "@openai/codex-sdk": "^0.144.0",
+    "dotenv": "^17.0.0",
+    "drizzle-orm": "^0.45.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "drizzle-kit": "^0.20.0",
+    "drizzle-kit": "^0.31.0",
     "typescript": "^5.4.0"
   }
 }

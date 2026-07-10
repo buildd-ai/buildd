@@ -178,7 +178,13 @@ export function HealthClient({
   };
 
   const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
+  const overdueHeartbeatCount = useMemo(() => {
+    const now = Date.now();
+    return schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length;
+  }, [schedules]);
   const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
+  const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);
+  const [showPausedSchedules, setShowPausedSchedules] = useState(false);
 
   const toggleSchedule = async (s: ScheduleRow) => {
     setScheduleBusyId(s.id);
@@ -190,6 +196,24 @@ export function HealthClient({
         body: JSON.stringify({ enabled: !s.enabled }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Update failed');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Request failed');
+    } finally {
+      setScheduleBusyId(null);
+    }
+  };
+
+  const confirmDeleteSchedule = async () => {
+    if (!scheduleToDelete) return;
+    setScheduleBusyId(scheduleToDelete.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${scheduleToDelete.workspaceId}/schedules/${scheduleToDelete.id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      setScheduleToDelete(null);
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Request failed');
@@ -215,7 +239,7 @@ export function HealthClient({
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 sm:py-6 pb-24">
+    <div className="max-w-2xl mx-auto px-4 pt-14 sm:pt-6 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -320,8 +344,24 @@ export function HealthClient({
             </div>
           )}
 
-          <div className="card divide-y divide-border-default">
-            {schedules.map((s) => {
+          {overdueHeartbeatCount > 0 && (
+            <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
+              <div className="font-medium text-status-warning">
+                {overdueHeartbeatCount} overdue heartbeat{overdueHeartbeatCount > 1 ? 's' : ''}
+              </div>
+              <p className="text-text-secondary mt-1">
+                {overdueHeartbeatCount === 1
+                  ? 'A heartbeat schedule missed its last run — the cron may have stalled or the run errored before advancing nextRunAt. Check the schedule below.'
+                  : `${overdueHeartbeatCount} heartbeat schedules missed their last run — the cron may have stalled. Check schedules below.`}
+              </p>
+            </div>
+          )}
+
+          {(() => {
+            const activeSchedules = schedules.filter(s => s.enabled);
+            const pausedSchedules = schedules.filter(s => !s.enabled);
+
+            const renderRow = (s: ScheduleRow) => {
               const isDupe = duplicateScheduleIds.has(s.id);
               return (
                 <div key={s.id} className={`px-4 py-3 ${isDupe ? 'bg-status-warning/5' : ''}`}>
@@ -353,21 +393,109 @@ export function HealthClient({
                         <p className="text-xs text-status-error mt-1 truncate">⚠ {s.lastError}</p>
                       )}
                     </div>
-                    <button
-                      onClick={() => toggleSchedule(s)}
-                      disabled={scheduleBusyId === s.id}
-                      className={`shrink-0 text-xs px-3 h-8 rounded-lg border font-medium disabled:opacity-50 ${
-                        s.enabled ? 'text-text-secondary' : 'text-status-success border-status-success/40'
-                      }`}
-                    >
-                      {scheduleBusyId === s.id ? '…' : s.enabled ? 'Pause' : 'Resume'}
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => toggleSchedule(s)}
+                        disabled={scheduleBusyId === s.id}
+                        className={`text-xs px-3 h-8 rounded-lg border font-medium disabled:opacity-50 ${
+                          s.enabled ? 'text-text-secondary' : 'text-status-success border-status-success/40'
+                        }`}
+                      >
+                        {scheduleBusyId === s.id ? '…' : s.enabled ? 'Pause' : 'Resume'}
+                      </button>
+                      <button
+                        data-testid="schedule-delete-btn"
+                        onClick={() => setScheduleToDelete(s)}
+                        disabled={scheduleBusyId === s.id}
+                        className="h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 disabled:opacity-50 transition-colors"
+                        title="Delete schedule"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
-            })}
-          </div>
+            };
+
+            return (
+              <>
+                {activeSchedules.length > 0 && (
+                  <div className="card divide-y divide-border-default mb-2">
+                    {activeSchedules.map(renderRow)}
+                  </div>
+                )}
+
+                {pausedSchedules.length > 0 && (
+                  <div>
+                    <button
+                      onClick={() => setShowPausedSchedules(p => !p)}
+                      className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
+                    >
+                      <svg
+                        className={`w-3 h-3 transition-transform ${showPausedSchedules ? 'rotate-90' : ''}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      {pausedSchedules.length} paused {pausedSchedules.length === 1 ? 'schedule' : 'schedules'}
+                    </button>
+                    {showPausedSchedules && (
+                      <div className="card divide-y divide-border-default opacity-75">
+                        {pausedSchedules.map(renderRow)}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeSchedules.length === 0 && pausedSchedules.length === 0 && null}
+              </>
+            );
+          })()}
         </section>
+      )}
+
+      {/* Delete schedule confirm modal */}
+      {scheduleToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
+          onClick={() => setScheduleToDelete(null)}
+        >
+          <div
+            data-testid="schedule-delete-confirm"
+            className="w-full sm:max-w-sm sm:rounded-xl rounded-t-2xl bg-surface-elevated p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
+            <p className="text-sm text-text-secondary mb-4">
+              This is permanent and cannot be undone.
+            </p>
+            <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
+              <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
+              <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
+              <p className="text-xs text-text-muted">
+                {scheduleToDelete.totalRuns} runs · last {timeAgo(scheduleToDelete.lastRunAt)}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setScheduleToDelete(null)}
+                className="flex-1 h-11 rounded-lg border border-border-default text-sm font-medium text-text-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteSchedule}
+                disabled={scheduleBusyId === scheduleToDelete.id}
+                className="flex-1 h-11 rounded-lg bg-status-error text-white text-sm font-medium disabled:opacity-50"
+              >
+                {scheduleBusyId === scheduleToDelete.id ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Watched Projects */}

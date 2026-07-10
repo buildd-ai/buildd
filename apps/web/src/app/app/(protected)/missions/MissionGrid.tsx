@@ -330,7 +330,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
                 style={{ backgroundColor: mission.role.color }}
               />
             )}
-            <span className="text-[15px] font-medium text-text-primary leading-tight truncate">
+            <span className="text-[15px] font-medium text-text-primary leading-tight line-clamp-2">
               {mission.title}
             </span>
             <span className={`health-pill ${healthDisplay.colorClass}`}>
