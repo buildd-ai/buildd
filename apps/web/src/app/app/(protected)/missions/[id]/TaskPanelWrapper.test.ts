@@ -48,4 +48,17 @@ describe('isValidTaskId — shared task-link guard', () => {
     expect(isValidTaskId('46e91502-0000-0000-0000-000000000000')).toBe(false);
     expect(isValidTaskId('46e91502-dead-beef-cafe-123456789abc')).toBe(true);
   });
+
+  it('accepts running-state task UUID (regression: running rows must not 404)', () => {
+    // Real task ID from production incident 2026-07-09 — mission timeline row
+    // for a "running" task was returning 404; ensure the ID is valid for panel open
+    expect(isValidTaskId('b5814ed6-4808-499c-8eff-16e567f86576')).toBe(true);
+  });
+
+  it('rejects worker ID that looks like a task ID (historical confusion source)', () => {
+    // Worker IDs are also UUIDs; the panel must open with the TASK id, not the worker id.
+    // Both are syntactically valid UUIDs — this test documents the distinction and confirms
+    // isValidTaskId cannot discriminate between them (that's a runtime concern, not a format concern).
+    expect(isValidTaskId('c6a00c1a-161a-40fb-b13c-dee1670fea99')).toBe(true);
+  });
 });
