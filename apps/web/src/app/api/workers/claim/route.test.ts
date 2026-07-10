@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -32,6 +32,8 @@ const mockAccountsUpdate = mock(() => ({
 }));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
+const mockConnectorsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockConnectorWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockDbSelect = mock(() => ({
@@ -71,6 +73,8 @@ mock.module('@buildd/core/db', () => ({
         findMany: mockWorkspaceSkillsFindMany,
         findFirst: mockWorkspaceSkillsFindFirst,
       },
+      connectors: { findMany: mockConnectorsFindMany },
+      connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -113,6 +117,8 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
+  connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName' },
+  connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -174,6 +180,8 @@ describe('POST /api/workers/claim', () => {
     mockHeartbeatsFindFirst.mockReset();
     mockSecretsFindMany.mockReset();
     mockSecretsProviderGet.mockReset();
+    mockConnectorsFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockReset();
     mockGetCodexCredential.mockReset();
     mockHasCodexCredential.mockReset();
     mockGetCodexCredential.mockResolvedValue(null);
@@ -196,6 +204,9 @@ describe('POST /api/workers/claim', () => {
     // Default: no role overrides
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    // Default: no connectors
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
     // Default: zero recent claims (router spike-detection input)
     mockDbSelect.mockReturnValue({
       from: mock(() => ({
@@ -2094,6 +2105,128 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
+  });
+
+  // --- MCP connector injection tests ---
+
+  describe('mcpConnectors injection', () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+
+    function setupConnectorClaim() {
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 5,
+        type: 'user',
+        authType: 'api',
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      }]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      mockSecretsFindMany.mockResolvedValue([]); // no main team secrets
+    }
+
+    afterEach(() => {
+      if (origKey !== undefined) {
+        process.env.ENCRYPTION_KEY = origKey;
+      } else {
+        delete process.env.ENCRYPTION_KEY;
+      }
+    });
+
+    it('injects connector with authMode=none when workspace row is enabled', async () => {
+      setupConnectorClaim();
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'my-mcp', url: 'https://mcp.example.com' },
+      ]);
+    });
+
+    it('skips connector when workspace row has enabled=false', async () => {
+      setupConnectorClaim();
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: false },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    it('skips oauth connector when token is expired', async () => {
+      setupConnectorClaim();
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-oauth', teamId: 'team-1', name: 'oauth-mcp', url: 'https://oauth.example.com', authMode: 'oauth', headerName: null },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-oauth', workspaceId: 'ws-1', enabled: true },
+      ]);
+      // Connector credential secret with expired tokenExpiresAt
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([
+          { id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(Date.now() - 60_000) },
+        ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      // Expired token → connector silently skipped
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    it('injects header auth connector with decrypted header value', async () => {
+      setupConnectorClaim();
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-hdr', teamId: 'team-1', name: 'header-mcp', url: 'https://header.example.com', authMode: 'header', headerName: 'X-API-Key' },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-hdr', workspaceId: 'ws-1', enabled: true },
+      ]);
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([
+          { id: 'cs-2', label: 'conn-hdr', tokenExpiresAt: null },
+        ]);
+      mockSecretsProviderGet.mockResolvedValue('secret-header-value');
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'header-mcp', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
+      ]);
+    });
   });
 
   it('does not gate claims when workspace.projects[] is empty (single-repo workspace)', async () => {
