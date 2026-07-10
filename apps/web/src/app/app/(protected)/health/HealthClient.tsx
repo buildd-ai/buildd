@@ -239,20 +239,20 @@ export function HealthClient({
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 pt-14 sm:pt-6 pb-24">
+    <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
+      <div className="mb-6">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">Project Health</h1>
-          <p className="text-sm text-text-tertiary">
-            Watcher fires a task + Pushover when CI breaks on release PRs.
-          </p>
+          <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
         </div>
-        <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+        <p className="text-sm text-text-tertiary mt-1">
+          Watcher fires a task + Pushover when CI breaks on release PRs.
+        </p>
       </div>
 
       {/* Runners */}
-      <section className="mb-6">
+      <section data-testid="health-section-runners" className="mb-6">
         <h2 className="section-label mb-3">Runners</h2>
         <div className="card">
           {runners.length === 0 ? (
@@ -293,7 +293,7 @@ export function HealthClient({
 
       {/* Usage (30d) */}
       {usageStats && usageStats.total > 0 && (
-        <section className="mb-6">
+        <section data-testid="health-section-usage" className="mb-6">
           <h2 className="section-label mb-3">Usage (30d)</h2>
           <div className="card p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -331,7 +331,7 @@ export function HealthClient({
 
       {/* Schedules */}
       {schedules.length > 0 && (
-        <section className="mb-6">
+        <section data-testid="health-section-schedules" className="mb-6">
           <h2 className="section-label mb-3">Schedules</h2>
 
           {duplicateScheduleIds.size > 0 && (
@@ -499,7 +499,7 @@ export function HealthClient({
       )}
 
       {/* Watched Projects */}
-      <section>
+      <section data-testid="health-section-watched-projects">
         <h2 className="section-label mb-3">Watched Projects</h2>
 
         {initialRows.length === 0 ? (

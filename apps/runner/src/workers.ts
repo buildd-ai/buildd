@@ -1103,38 +1103,50 @@ export class WorkerManager {
     this.pendingPermissionRequests.delete(workerId);
     const worker = this.workers.get(workerId);
 
-    if (decision === 'allow') {
-      pending.resolve({
-        hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
-          decision: {
-            behavior: 'allow',
-            updatedInput: pending.toolInput,
-          },
-        },
-      });
-    } else if (decision === 'allow_always') {
-      // Pass back the SDK's suggested permission updates so the session remembers
-      pending.resolve({
-        hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
-          decision: {
-            behavior: 'allow',
-            updatedInput: pending.toolInput,
-            updatedPermissions: pending.suggestions,
-          },
-        },
-      });
+    if (pending.resolvePayloadType === 'canUseTool') {
+      // canUseTool callback path: resolve with PermissionResult (not hookSpecificOutput)
+      if (decision === 'allow') {
+        pending.resolve({ behavior: 'allow' });
+      } else if (decision === 'allow_always') {
+        pending.resolve({ behavior: 'allow', updatedPermissions: pending.suggestions });
+      } else {
+        pending.resolve({ behavior: 'deny', message: 'Denied by user via runner' });
+      }
     } else {
-      pending.resolve({
-        hookSpecificOutput: {
-          hookEventName: 'PermissionRequest',
-          decision: {
-            behavior: 'deny',
-            message: 'Denied by user via runner',
+      // PermissionRequest hook path: resolve with hookSpecificOutput
+      if (decision === 'allow') {
+        pending.resolve({
+          hookSpecificOutput: {
+            hookEventName: 'PermissionRequest',
+            decision: {
+              behavior: 'allow',
+              updatedInput: pending.toolInput,
+            },
           },
-        },
-      });
+        });
+      } else if (decision === 'allow_always') {
+        // Pass back the SDK's suggested permission updates so the session remembers
+        pending.resolve({
+          hookSpecificOutput: {
+            hookEventName: 'PermissionRequest',
+            decision: {
+              behavior: 'allow',
+              updatedInput: pending.toolInput,
+              updatedPermissions: pending.suggestions,
+            },
+          },
+        });
+      } else {
+        pending.resolve({
+          hookSpecificOutput: {
+            hookEventName: 'PermissionRequest',
+            decision: {
+              behavior: 'deny',
+              message: 'Denied by user via runner',
+            },
+          },
+        });
+      }
     }
 
     // Clear waiting state
@@ -1708,6 +1720,11 @@ export class WorkerManager {
         Stop: [{ hooks: [this.hookFactory.createStopHook(worker)] }],
         ConfigChange: [{ hooks: [this.hookFactory.createConfigChangeHook(worker, gitConfig?.blockConfigChanges ?? false)] }],
       };
+
+      // canUseTool: forward background agent permission prompts to the user instead of
+      // auto-denying (SDK v0.3.186). agentID and requestId (v0.3.199) identify the
+      // specific subagent and request for multi-agent routing.
+      queryOptions.canUseTool = this.hookFactory.createCanUseToolCallback(worker, bypassPermissions);
 
       // Phase 2A — Codex role/skills/context via AGENTS.md.
       //

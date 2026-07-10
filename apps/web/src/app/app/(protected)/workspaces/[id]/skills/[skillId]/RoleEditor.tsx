@@ -300,7 +300,7 @@ function McpRegistryBrowser({ onInstall, installedNames }: {
   const [results, setResults] = useState<RegistryServer[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) {
