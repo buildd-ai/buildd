@@ -463,6 +463,13 @@
       "when": 1783390775601,
       "tag": "0065_crazy_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1783645491632,
+      "tag": "0066_natural_speed",
+      "breakpoints": true
     }
   ]
 }

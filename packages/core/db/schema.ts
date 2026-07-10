@@ -16,6 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
+export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
 
@@ -999,7 +1000,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -1144,6 +1145,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   missions: many(missions),
   invitations: many(teamInvitations),
   workspaceSkills: many(workspaceSkills),
+  connectors: many(connectors),
 }));
 
 export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
@@ -1201,6 +1203,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   missions: many(missions),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
+  connectorWorkspaces: many(connectorWorkspaces),
 }));
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
@@ -1281,6 +1284,7 @@ export const secretsRelations = relations(secrets, ({ one }) => ({
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
 }));
+
 
 // Per-team notification preferences (config, not a credential — the channel
 // itself lives in `secrets` as purpose 'pushover' / 'notify_webhook').
@@ -1417,3 +1421,58 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   expiresIdx: index('oauth_refresh_tokens_expires_at_idx').on(t.expiresAt),
   userWorkspaceIdx: index('oauth_refresh_tokens_user_workspace_idx').on(t.userId, t.workspaceId),
 }));
+
+// ── MCP Connectors ────────────────────────────────────────────────────────────
+// Team-scoped connector registry for generic MCP servers (HTTP+SSE or streamable HTTP).
+// Each connector holds the server URL + auth config; per-workspace enablement lives in
+// connectorWorkspaces. Discovered AS metadata and DCR results are cached in
+// discoveredMetadata to avoid re-running discovery on every auth flow.
+
+export const connectors = pgTable('connectors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  authMode: connectorAuthModeEnum('auth_mode').notNull().default('none'),
+  // For authMode='header': the HTTP header name (e.g. 'Authorization', 'X-API-Key').
+  // The header value is stored as a secret (purpose='mcp_connector_credential').
+  headerName: text('header_name'),
+  // Cached AS metadata + DCR result — avoids re-running OAuth discovery on every auth.
+  discoveredMetadata: jsonb('discovered_metadata').$type<Record<string, unknown>>(),
+  // OAuth client credentials (authMode='oauth')
+  clientId: text('client_id'),
+  encryptedClientSecret: text('encrypted_client_secret'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('connectors_team_idx').on(t.teamId),
+  teamNameIdx: uniqueIndex('connectors_team_name_idx').on(t.teamId, t.name),
+}));
+
+// Per-workspace connector enablement. A connector defined at team level must be
+// explicitly enabled for each workspace that should mount it. This gives teams
+// fine-grained control without duplicating the connector config.
+export const connectorWorkspaces = pgTable('connector_workspaces', {
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  enabled: boolean('enabled').default(true).notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.connectorId, t.workspaceId] }),
+  workspaceIdx: index('connector_workspaces_workspace_idx').on(t.workspaceId),
+}));
+
+export const connectorsRelations = relations(connectors, ({ one, many }) => ({
+  team: one(teams, { fields: [connectors.teamId], references: [teams.id] }),
+  connectorWorkspaces: many(connectorWorkspaces),
+}));
+
+export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ one }) => ({
+  connector: one(connectors, { fields: [connectorWorkspaces.connectorId], references: [connectors.id] }),
+  workspace: one(workspaces, { fields: [connectorWorkspaces.workspaceId], references: [workspaces.id] }),
+}));
+
+// TypeScript types for new tables
+export type Connector = typeof connectors.$inferSelect;
+export type NewConnector = typeof connectors.$inferInsert;
+export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
+export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
