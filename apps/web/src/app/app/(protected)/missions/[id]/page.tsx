@@ -532,79 +532,89 @@ export default async function MissionDetailPage({
 
                           return (
                             <div key={task.id} className="animate-timeline-enter" style={{ animationDelay: `${ti * 60}ms` }}>
-                              <button
-                                type="button"
-                                data-task-id={task.id}
-                                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors group text-left ${
-                                  isRunning
-                                    ? 'bg-status-info/5 border border-status-info/20'
-                                    : 'hover:bg-card-hover cursor-pointer'
-                                }`}
-                              >
-                                {/* Branch line + role dot */}
-                                <span className="flex items-center gap-1.5 shrink-0 w-5">
-                                  <span className="w-2 h-px bg-border-default" />
-                                  <span
-                                    className="w-2 h-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: roleColor }}
-                                  />
-                                </span>
-
-                                <span className={`flex-1 text-[13px] truncate transition-colors min-w-0 ${
-                                  isDone ? 'text-text-secondary' : 'text-text-primary group-hover:text-accent-text'
-                                }`}>
-                                  {task.title}
-                                </span>
-
-                                {/* Right-side metadata: role (hidden on mobile), PR, status */}
-                                <span className="flex items-center gap-1.5 shrink-0 ml-auto">
-                                  {role && (
+                              {/* Clickable row — Link overlay so all statuses (including running)
+                                  navigate to /app/tasks/{taskId}. TaskPanelWrapper intercepts
+                                  the click post-hydration via data-task-id and opens the slide
+                                  panel instead; the Link is the pre-hydration / mobile fallback. */}
+                              <div className="relative group">
+                                <Link
+                                  href={`/app/tasks/${task.id}`}
+                                  data-task-id={task.id}
+                                  className={`absolute inset-0 rounded-md transition-colors cursor-pointer ${
+                                    isRunning
+                                      ? 'bg-status-info/5 border border-status-info/20'
+                                      : 'hover:bg-card-hover'
+                                  }`}
+                                  aria-label={task.title}
+                                />
+                                {/* pointer-events-none so taps fall through to the Link above;
+                                    ExternalLink (PR) restores pointer-events for its own clicks */}
+                                <div className="relative pointer-events-none w-full flex items-center gap-2.5 px-2 py-1.5 text-left">
+                                  {/* Branch line + role dot */}
+                                  <span className="flex items-center gap-1.5 shrink-0 w-5">
+                                    <span className="w-2 h-px bg-border-default" />
                                     <span
-                                      className="hidden sm:inline text-[11px] font-medium"
-                                      style={{ color: roleColor }}
-                                    >
-                                      {role.name}
-                                    </span>
-                                  )}
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: roleColor }}
+                                    />
+                                  </span>
 
-                                  {latestWorker?.prUrl && (
-                                    <ExternalLink
-                                      href={latestWorker.prUrl}
-                                      className="text-[12px] md:text-[11px] text-accent-text hover:underline"
-                                    >
-                                      PR #{latestWorker.prNumber}
-                                    </ExternalLink>
-                                  )}
+                                  <span className={`flex-1 text-[13px] truncate transition-colors min-w-0 ${
+                                    isDone ? 'text-text-secondary' : 'text-text-primary group-hover:text-accent-text'
+                                  }`}>
+                                    {task.title}
+                                  </span>
 
-                                  {isRunning && (
-                                    <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
-                                      <span className="text-[12px] md:text-[11px] text-status-info truncate">
-                                        {latestWorker?.currentAction || 'Running'}
+                                  {/* Right-side metadata: role (hidden on mobile), PR, status */}
+                                  <span className="flex items-center gap-1.5 shrink-0 ml-auto">
+                                    {role && (
+                                      <span
+                                        className="hidden sm:inline text-[11px] font-medium"
+                                        style={{ color: roleColor }}
+                                      >
+                                        {role.name}
                                       </span>
-                                    </span>
-                                  )}
+                                    )}
 
-                                  {isDone && (
-                                    <span className="text-[13px] text-status-success">&#10003;</span>
-                                  )}
+                                    {latestWorker?.prUrl && (
+                                      <ExternalLink
+                                        href={latestWorker.prUrl}
+                                        className="pointer-events-auto relative z-10 text-[12px] md:text-[11px] text-accent-text hover:underline"
+                                      >
+                                        PR #{latestWorker.prNumber}
+                                      </ExternalLink>
+                                    )}
 
-                                  {isFailed && (
-                                    <span
-                                      className="text-[12px] md:text-[11px] text-status-error"
-                                      title={latestWorker?.prUrl ? 'PR was closed or superseded' : undefined}
-                                    >
-                                      {latestWorker?.prUrl ? 'PR closed' : 'Failed'}
-                                    </span>
-                                  )}
+                                    {isRunning && (
+                                      <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
+                                        <span className="text-[12px] md:text-[11px] text-status-info truncate">
+                                          {latestWorker?.currentAction || 'Running'}
+                                        </span>
+                                      </span>
+                                    )}
 
-                                  {!isRunning && !isDone && !isFailed && (
-                                    <span className="text-[12px] md:text-[11px] text-text-muted">
-                                      {timeAgo(task.createdAt)}
-                                    </span>
-                                  )}
-                                </span>
-                              </button>
+                                    {isDone && (
+                                      <span className="text-[13px] text-status-success">&#10003;</span>
+                                    )}
+
+                                    {isFailed && (
+                                      <span
+                                        className="text-[12px] md:text-[11px] text-status-error"
+                                        title={latestWorker?.prUrl ? 'PR was closed or superseded' : undefined}
+                                      >
+                                        {latestWorker?.prUrl ? 'PR closed' : 'Failed'}
+                                      </span>
+                                    )}
+
+                                    {!isRunning && !isDone && !isFailed && (
+                                      <span className="text-[12px] md:text-[11px] text-text-muted">
+                                        {timeAgo(task.createdAt)}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              </div>
 
                               {waitingWorker && waitingFor && (
                                 <div className="pl-7 pb-1">
