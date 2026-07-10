@@ -594,6 +594,10 @@ export const tasks = pgTable('tasks', {
   release: text('release').default('inherit').$type<'true' | 'false' | 'inherit'>(),
   // Release sequence outcome — populated after the release sequence runs (or is skipped).
   releaseResult: jsonb('release_result').$type<ReleaseResult | null>(),
+  // Declared files/globs this task expects to create or modify.
+  // Used by the orchestrator to add dependsOn edges between tasks that touch the same paths,
+  // and by the claim-time guard to defer a task whose paths overlap an open PR.
+  pathManifest: jsonb('path_manifest').$type<string[] | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
