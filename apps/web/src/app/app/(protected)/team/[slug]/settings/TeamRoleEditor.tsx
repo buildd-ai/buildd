@@ -496,6 +496,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             <div className="flex items-center gap-2 text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
+              <span className="text-[11px] text-text-muted">Applies to</span>
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
                 All workspaces
               </span>
