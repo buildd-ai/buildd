@@ -11,6 +11,7 @@ import VercelSection from './VercelSection';
 import RunnerTokensSection from './RunnerTokensSection';
 import AgentBackendsSection from './AgentBackendsSection';
 import NotificationsSection from './NotificationsSection';
+import ConnectorsSection from './ConnectorsSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,6 +85,9 @@ export default async function SettingsPage() {
 
         {/* Vercel */}
         <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
+
+        {/* Connectors */}
+        <ConnectorsSection workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))} />
 
         {/* Runner Tokens */}
         <RunnerTokensSection
