@@ -541,10 +541,10 @@ export async function POST(req: NextRequest) {
     if (openPrWorkers.length > 0) {
       const prTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
       const prTasks = prTaskIds.length > 0
-        ? await db.query.tasks.findMany({
+        ? (await db.query.tasks.findMany({
             where: inArray(tasks.id, prTaskIds),
             columns: { id: true, pathManifest: true },
-          })
+          })) ?? []
         : [];
       const prTaskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
 
@@ -844,10 +844,10 @@ export async function POST(req: NextRequest) {
         // Fetch task titles and manifests for PR context
         const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
         const prTasks = prTaskIds.length > 0
-          ? await db.query.tasks.findMany({
+          ? (await db.query.tasks.findMany({
               where: inArray(tasks.id, prTaskIds),
               columns: { id: true, title: true, pathManifest: true },
-            })
+            })) ?? []
           : [];
         const taskTitleMap = new Map(prTasks.map(t => [t.id, t.title]));
         const taskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
@@ -873,7 +873,7 @@ export async function POST(req: NextRequest) {
       // Inject sibling task manifests so agents can check whether a file they're about
       // to create is already owned by a pending/active sibling task.
       // (Agent doctrine: never re-implement another task's declared deliverable.)
-      const siblingManifestTasks = await db.query.tasks.findMany({
+      const siblingManifestTasks = (await db.query.tasks.findMany({
         where: and(
           inArray(tasks.workspaceId, workspaceIds),
           inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
@@ -881,7 +881,7 @@ export async function POST(req: NextRequest) {
           not(inArray(tasks.id, claimedWorkers.map(cw => cw.taskId))),
         ),
         columns: { id: true, title: true, pathManifest: true, workspaceId: true },
-      });
+      })) ?? [];
 
       if (siblingManifestTasks.length > 0) {
         for (const cw of claimedWorkers) {
