@@ -2,6 +2,7 @@
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useCallback } from 'react';
+import { displayWorkspaceName } from '@buildd/shared';
 
 export interface WorkspaceFilterProps {
   workspaces: { id: string; name: string }[];
@@ -53,7 +54,7 @@ export function WorkspaceFilter({ workspaces, selectedId }: WorkspaceFilterProps
       <option value="">All workspaces</option>
       {workspaces.map((ws) => (
         <option key={ws.id} value={ws.id}>
-          {ws.name}
+          {displayWorkspaceName(ws.name)}
         </option>
       ))}
     </select>

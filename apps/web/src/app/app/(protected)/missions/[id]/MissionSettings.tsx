@@ -41,6 +41,10 @@ export default function MissionSettings({
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
 
+  const nextRunAtMs = schedule?.nextRunAt ? new Date(schedule.nextRunAt).getTime() : null;
+  const isNextOverdue = status === 'active' && nextRunAtMs != null && nextRunAtMs < Date.now();
+  const overdueMinutes = isNextOverdue && nextRunAtMs != null ? Math.floor((Date.now() - nextRunAtMs) / 60000) : 0;
+
   async function patchMission(body: Record<string, unknown>) {
     try {
       const res = await fetch(`/api/missions/${missionId}`, {
@@ -178,7 +182,9 @@ export default function MissionSettings({
                     <span>Last: {timeAgo(schedule.lastRunAt)}</span>
                   )}
                   {schedule?.nextRunAt && (
-                    <span>&middot; Next: {timeAgo(schedule.nextRunAt)}</span>
+                    isNextOverdue
+                      ? <span className="text-status-warning">&middot; Overdue by {overdueMinutes}m</span>
+                      : <span>&middot; Next: {timeAgo(schedule.nextRunAt)}</span>
                   )}
                 </span>
               )}

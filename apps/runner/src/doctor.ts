@@ -9,8 +9,18 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import {
+  parseWorktreeList,
+  isBuilddTaskBranch,
+  shouldRemoveWorktree,
+  classifyOwner,
+  candidateRepoRoots,
+  STALE_WORKTREE_IDLE_MS,
+  type WorktreeOwnerRecord,
+} from './worktree-utils';
 
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
+const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
@@ -125,59 +135,170 @@ function checkDiskUsage(): CheckResult {
   }
 }
 
-function checkStaleWorktrees(): CheckResult {
-  const projectDir = join(BUILDD_DIR, '..', 'project');
-  if (!existsSync(projectDir)) {
-    // Not in a workspace environment
-    return { name: 'stale-worktrees', status: 'ok', message: 'No project directory (non-workspace environment)' };
-  }
+// ─── Worktree sweep (git-authoritative) ──────────────────────────────────────
+//
+// The runner leaks per-task worktrees under many locations — the buildd
+// self-repo (`~/.buildd`), role checkouts (`~/.buildd/roles/*`), and workspace
+// repos (`~/project/*`). The old sweep hard-coded `~/project/*/.buildd-worktrees`
+// and so was blind to the builder-role worktrees that actually accumulated.
+//
+// Instead we enumerate worktrees authoritatively with `git worktree list
+// --porcelain` from every main repo we can find — this reports every worktree
+// regardless of where it physically lives — and gate removal on safety rules
+// (see shouldRemoveWorktree): never touch a live worker's tree, only force-
+// remove terminal tasks whose branch is pushed, and reclaim true orphans.
 
-  let totalStale = 0;
-  let totalSizeMB = 0;
-  const staleDetails: string[] = [];
+interface RemovableWorktree {
+  repoDir: string; // main repo to run git from
+  path: string;
+  branch: string;
+  ageMs: number;
+  reason: string;
+}
 
+/** Read a directory, returning [] on any error. */
+function safeReaddir(dir: string): string[] {
   try {
-    const repos = readdirSync(projectDir).filter(d => {
-      const wtDir = join(projectDir, d, '.buildd-worktrees');
-      return existsSync(wtDir);
-    });
-
-    for (const repo of repos) {
-      const wtDir = join(projectDir, repo, '.buildd-worktrees');
-      try {
-        const entries = readdirSync(wtDir);
-        for (const entry of entries) {
-          const entryPath = join(wtDir, entry);
-          try {
-            const stat = statSync(entryPath);
-            if (!stat.isDirectory()) continue;
-            // Check if worktree has been idle for > 1 hour
-            const ageMs = Date.now() - stat.mtimeMs;
-            if (ageMs > 60 * 60 * 1000) {
-              totalStale++;
-              // Estimate size
-              try {
-                const du = execSync(`du -sm "${entryPath}" 2>/dev/null | cut -f1`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
-                totalSizeMB += parseInt(du) || 0;
-              } catch { /* skip */ }
-              staleDetails.push(`${repo}/${entry} (${Math.round(ageMs / 3600000)}h old)`);
-            }
-          } catch { /* skip */ }
-        }
-      } catch { /* skip */ }
-    }
-  } catch { /* skip */ }
-
-  if (totalStale > 0) {
-    return {
-      name: 'stale-worktrees',
-      status: totalSizeMB > 500 ? 'error' : 'warn',
-      message: `${totalStale} stale worktree(s) using ~${totalSizeMB}MB`,
-      detail: staleDetails.join('\n'),
-      fixable: true,
-    };
+    return readdirSync(dir);
+  } catch {
+    return [];
   }
-  return { name: 'stale-worktrees', status: 'ok', message: 'No stale worktrees' };
+}
+
+/** Discover candidate "main" git repos whose worktrees we should sweep. */
+function discoverMainRepos(): string[] {
+  return candidateRepoRoots({
+    builddDir: BUILDD_DIR,
+    projectDir: join(BUILDD_DIR, '..', 'project'),
+    isGitRepo: (dir: string) => existsSync(join(dir, '.git')),
+    listDir: safeReaddir,
+    joinPath: join,
+  });
+}
+
+/**
+ * Load persisted worker records (BUILDD_DIR/workers/*.json), dropping any older
+ * than the store's 24h TTL — those are exactly the records that would be gone
+ * on restart, so their worktrees are treated as unowned orphans.
+ */
+function loadOwnerRecords(): WorktreeOwnerRecord[] {
+  const dir = join(BUILDD_DIR, 'workers');
+  const now = Date.now();
+  const out: WorktreeOwnerRecord[] = [];
+  for (const f of safeReaddir(dir)) {
+    if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
+    try {
+      const data = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
+      if (data._savedAt && now - data._savedAt > WORKER_STORE_TTL_MS) continue;
+      out.push({
+        status: data.status,
+        worktreePath: data.worktreePath,
+        branch: data.branch,
+        lastActivity: data.lastActivity,
+      });
+    } catch { /* skip malformed */ }
+  }
+  return out;
+}
+
+/** Has this branch been pushed to origin (no unpushed commits)? */
+function isBranchPushed(repoDir: string, branch: string): boolean {
+  const opts = { cwd: repoDir, encoding: 'utf-8' as const, timeout: 5000, stdio: 'pipe' as const };
+  try {
+    execSync(`git rev-parse --verify --quiet "refs/remotes/origin/${branch}"`, opts);
+  } catch {
+    return false; // no remote branch → not pushed
+  }
+  try {
+    const unpushed = execSync(`git rev-list --count "origin/${branch}..${branch}"`, opts).trim();
+    return parseInt(unpushed, 10) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enumerate leftover buildd task worktrees across all discovered repos and
+ * return those that pass the safety gates for removal. Shared by the check
+ * (report) and the fix (remove) so they can never disagree.
+ */
+function findRemovableWorktrees(): RemovableWorktree[] {
+  const repos = discoverMainRepos();
+  const records = loadOwnerRecords();
+  const seen = new Set<string>();
+  const result: RemovableWorktree[] = [];
+
+  for (const repoDir of repos) {
+    let porcelain = '';
+    try {
+      porcelain = execSync('git worktree list --porcelain', {
+        cwd: repoDir, encoding: 'utf-8', timeout: 10000, stdio: 'pipe',
+      });
+    } catch { continue; }
+
+    for (const wt of parseWorktreeList(porcelain)) {
+      if (wt.path === repoDir || seen.has(wt.path)) continue; // skip main worktree + dupes
+      if (!isBuilddTaskBranch(wt.branch)) continue;
+      seen.add(wt.path);
+
+      let ageMs: number;
+      try {
+        ageMs = Date.now() - statSync(wt.path).mtimeMs;
+      } catch {
+        ageMs = Infinity; // dir gone but ref lingers → prunable
+      }
+
+      const owner = classifyOwner(records, wt.path, wt.branch!);
+      const branchPushed = owner === 'orphan' ? true : isBranchPushed(repoDir, wt.branch!);
+      const decision = shouldRemoveWorktree({
+        idleMs: ageMs,
+        idleThresholdMs: STALE_WORKTREE_IDLE_MS,
+        owner,
+        branchPushed,
+      });
+      if (decision.remove) {
+        result.push({ repoDir, path: wt.path, branch: wt.branch!, ageMs, reason: decision.reason });
+      }
+    }
+  }
+  return result;
+}
+
+function dirSizeMB(path: string): number {
+  try {
+    const du = execSync(`du -sm "${path}" 2>/dev/null | cut -f1`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
+    return parseInt(du) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function checkStaleWorktrees(): CheckResult {
+  let removable: RemovableWorktree[];
+  try {
+    removable = findRemovableWorktrees();
+  } catch {
+    return { name: 'stale-worktrees', status: 'ok', message: 'Worktree scan failed (non-fatal)' };
+  }
+
+  if (removable.length === 0) {
+    return { name: 'stale-worktrees', status: 'ok', message: 'No stale worktrees' };
+  }
+
+  let totalSizeMB = 0;
+  const staleDetails = removable.map(w => {
+    totalSizeMB += dirSizeMB(w.path);
+    const age = w.ageMs === Infinity ? 'missing' : `${Math.round(w.ageMs / 3600000)}h`;
+    return `${w.path} (${age}, ${w.reason})`;
+  });
+
+  return {
+    name: 'stale-worktrees',
+    status: totalSizeMB > 500 ? 'error' : 'warn',
+    message: `${removable.length} stale worktree(s) using ~${totalSizeMB}MB`,
+    detail: staleDetails.join('\n'),
+    fixable: true,
+  };
 }
 
 function checkScreenSession(): CheckResult {
@@ -337,64 +458,38 @@ function fixBunInstall(): FixResult {
   }
 }
 
-function fixStaleWorktrees(): FixResult {
-  const projectDir = join(BUILDD_DIR, '..', 'project');
-  if (!existsSync(projectDir)) {
-    return { check: 'stale-worktrees', success: true, message: 'No project directory' };
+export function fixStaleWorktrees(): FixResult {
+  let removable: RemovableWorktree[];
+  try {
+    removable = findRemovableWorktrees();
+  } catch {
+    return { check: 'stale-worktrees', success: true, message: 'Worktree scan failed (non-fatal)' };
   }
 
   let cleaned = 0;
   let freedMB = 0;
 
-  try {
-    const repos = readdirSync(projectDir).filter(d => {
-      const wtDir = join(projectDir, d, '.buildd-worktrees');
-      return existsSync(wtDir);
-    });
-
-    for (const repo of repos) {
-      const repoDir = join(projectDir, repo);
-      const wtDir = join(repoDir, '.buildd-worktrees');
+  for (const w of removable) {
+    freedMB += dirSizeMB(w.path);
+    // Remove via git (also drops the .git/worktrees/ admin ref), fallback to rm -rf.
+    try {
+      execSync(`git worktree remove --force "${w.path}" 2>/dev/null`, {
+        cwd: w.repoDir, encoding: 'utf-8', timeout: 10000, stdio: 'pipe',
+      });
+    } catch {
       try {
-        const entries = readdirSync(wtDir);
-        for (const entry of entries) {
-          const entryPath = join(wtDir, entry);
-          try {
-            const stat = statSync(entryPath);
-            if (!stat.isDirectory()) continue;
-            const ageMs = Date.now() - stat.mtimeMs;
-            if (ageMs > 60 * 60 * 1000) {
-              // Get size before removing
-              try {
-                const du = execSync(`du -sm "${entryPath}" 2>/dev/null | cut -f1`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
-                freedMB += parseInt(du) || 0;
-              } catch { /* skip */ }
-
-              // Remove via git worktree remove, fallback to rm -rf
-              try {
-                execSync(`git worktree remove --force "${entryPath}" 2>/dev/null`, {
-                  cwd: repoDir, encoding: 'utf-8', timeout: 10000, stdio: 'pipe',
-                });
-              } catch {
-                execSync(`rm -rf "${entryPath}"`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
-              }
-              cleaned++;
-            }
-          } catch { /* skip entry */ }
-        }
-      } catch { /* skip repo */ }
-    }
-  } catch { /* skip */ }
-
-  // Also prune orphaned worktree refs
-  try {
-    const repos = readdirSync(projectDir).filter(d => existsSync(join(projectDir, d, '.git')));
-    for (const repo of repos) {
-      try {
-        execSync('git worktree prune', { cwd: join(projectDir, repo), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+        execSync(`rm -rf "${w.path}"`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
       } catch { /* skip */ }
     }
-  } catch { /* skip */ }
+    cleaned++;
+  }
+
+  // Prune dangling worktree refs (covers rm -rf fallback + externally deleted dirs).
+  for (const repoDir of discoverMainRepos()) {
+    try {
+      execSync('git worktree prune', { cwd: repoDir, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+    } catch { /* skip */ }
+  }
 
   return {
     check: 'stale-worktrees',

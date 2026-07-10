@@ -80,6 +80,7 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/health') return 'Health';
   if (pathname === '/app/artifacts') return 'Artifacts';
   if (pathname === '/app/you') return 'Account';
-  if (pathname === '/app/settings') return 'Connections';
+  if (pathname === '/app/settings') return 'Settings';
+  if (pathname === '/app/connections') return 'Connections';
   return null;
 }

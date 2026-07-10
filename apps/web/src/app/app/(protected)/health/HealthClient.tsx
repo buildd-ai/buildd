@@ -178,6 +178,10 @@ export function HealthClient({
   };
 
   const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
+  const overdueHeartbeatCount = useMemo(() => {
+    const now = Date.now();
+    return schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length;
+  }, [schedules]);
   const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);
   const [showPausedSchedules, setShowPausedSchedules] = useState(false);
@@ -235,7 +239,7 @@ export function HealthClient({
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 sm:py-6 pb-24">
+    <div className="max-w-2xl mx-auto px-4 pt-14 sm:pt-6 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -336,6 +340,19 @@ export function HealthClient({
               <p className="text-text-secondary mt-1">
                 {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
                 workspace — they fire simultaneously. Pause the stale copy below.
+              </p>
+            </div>
+          )}
+
+          {overdueHeartbeatCount > 0 && (
+            <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
+              <div className="font-medium text-status-warning">
+                {overdueHeartbeatCount} overdue heartbeat{overdueHeartbeatCount > 1 ? 's' : ''}
+              </div>
+              <p className="text-text-secondary mt-1">
+                {overdueHeartbeatCount === 1
+                  ? 'A heartbeat schedule missed its last run — the cron may have stalled or the run errored before advancing nextRunAt. Check the schedule below.'
+                  : `${overdueHeartbeatCount} heartbeat schedules missed their last run — the cron may have stalled. Check schedules below.`}
               </p>
             </div>
           )}

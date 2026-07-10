@@ -21,7 +21,6 @@ interface Workspace {
 
 const DEFAULTS = {
   type: 'user',
-  authType: 'api',
   level: 'worker',
   maxConcurrentWorkers: 5,
 };
@@ -36,7 +35,6 @@ export default function NewAccountPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [accountType, setAccountType] = useState(DEFAULTS.type);
-  const [authType, setAuthType] = useState(DEFAULTS.authType);
   const [tokenLevel, setTokenLevel] = useState(DEFAULTS.level);
 
   // When trigger is selected, force sensible defaults
@@ -44,7 +42,6 @@ export default function NewAccountPage() {
     setTokenLevel(level);
     if (level === 'trigger') {
       setAccountType('service');
-      setAuthType('api');
     }
   }
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULTS.maxConcurrentWorkers.toString());
@@ -52,7 +49,6 @@ export default function NewAccountPage() {
 
   const hasNonDefaults =
     accountType !== DEFAULTS.type ||
-    authType !== DEFAULTS.authType ||
     tokenLevel !== DEFAULTS.level ||
     parseInt(maxConcurrent) !== DEFAULTS.maxConcurrentWorkers;
 
@@ -98,7 +94,6 @@ export default function NewAccountPage() {
     const data: Record<string, unknown> = {
       name: formData.get('name') as string,
       type: accountType,
-      authType,
       level: tokenLevel,
       maxConcurrentWorkers: parseInt(maxConcurrent) || DEFAULTS.maxConcurrentWorkers,
     };
@@ -243,22 +238,6 @@ export default function NewAccountPage() {
                     <p className="text-xs text-text-secondary mt-1">
                       Affects task routing with runnerPreference
                     </p>
-                  </div>
-                )}
-
-                {tokenLevel !== 'trigger' && (
-                  <div>
-                    <label htmlFor="authType" className="block text-sm font-medium mb-2">
-                      Auth Type
-                    </label>
-                    <Select
-                      id="authType"
-                      value={authType}
-                      onChange={setAuthType}
-                      options={[
-                        { value: 'api', label: 'API - Uses ANTHROPIC_API_KEY (pay-per-token)' },
-                      ]}
-                    />
                   </div>
                 )}
 

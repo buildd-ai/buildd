@@ -759,7 +759,7 @@ export default async function HomePage({
                       <div className="flex items-center justify-between pt-1">
                         <Link
                           href="/app/missions"
-                          className="text-xs text-text-muted hover:text-text-secondary"
+                          className="text-xs text-text-muted hover:text-text-secondary min-w-0 truncate"
                         >
                           {hiddenCount > 0
                             ? `+${hiddenCount} more (${completedCount} completed, ${scheduledCount} scheduled) →`
@@ -767,7 +767,7 @@ export default async function HomePage({
                         </Link>
                         <Link
                           href="/app/missions/new"
-                          className="text-xs text-text-muted hover:text-primary"
+                          className="text-xs text-text-muted hover:text-primary shrink-0 pl-2"
                         >
                           + New Mission
                         </Link>
