@@ -91,6 +91,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ args, type: 'or' }),
   not: (value: any) => ({ value, type: 'not' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
     { raw: (s: string) => ({ raw: s, type: 'sql' }) },
@@ -104,8 +105,8 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend' },
-  workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
+  workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId' },
@@ -182,6 +183,8 @@ describe('POST /api/workers/claim', () => {
 
     // Default: no stale workers
     mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no claimable/sibling tasks
+    mockTasksFindMany.mockResolvedValue([]);
     // Default: no open workspaces
     mockWorkspacesFindMany.mockResolvedValue([]);
     // Default: no secrets
@@ -2137,6 +2140,134 @@ describe('POST /api/workers/claim', () => {
 
     expect(res.status).toBe(200);
     const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+  });
+});
+
+describe('path-overlap claim guard', () => {
+  function apiAccount() {
+    return {
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user' as const,
+      authType: 'api' as const,
+    };
+  }
+
+  function taskWithManifest(pathManifest: string[]) {
+    return {
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Build mcp-oauth',
+      backend: 'claude',
+      dependsOn: [],
+      pathManifest,
+      requiredCapabilities: [],
+      context: {},
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    };
+  }
+
+  function setupForClaim() {
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+  }
+
+  it('defers a task when its pathManifest overlaps an open PR from another task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    // 1st workers.findMany → active workers (empty)
+    // 2nd workers.findMany → open PR pre-fetch: a worker with an open PR
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch
+        { workspaceId: 'ws-1', taskId: 'pr-task-1', prNumber: 1126, prUrl: 'https://github.com/org/repo/pull/1126', status: 'running' },
+      ]);
+
+    // 1st tasks.findMany → claimable tasks (has pathManifest)
+    // 2nd tasks.findMany → PR task manifests (same file → overlap)
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'pr-task-1', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Task is deferred — no workers claimed
+    expect(data.workers).toHaveLength(0);
+  });
+
+  it('claims a task when its pathManifest does NOT overlap any open PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    // 1st workers.findMany → active workers (empty)
+    // 2nd workers.findMany → open PR pre-fetch: a PR for a DIFFERENT file
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch
+        { workspaceId: 'ws-1', taskId: 'pr-task-2', prNumber: 1127, prUrl: 'https://github.com/org/repo/pull/1127', status: 'running' },
+      ]);
+
+    // 1st tasks.findMany → claimable tasks
+    // 2nd tasks.findMany → PR task manifests (different file — no overlap)
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'pr-task-2', pathManifest: ['packages/core/db/schema.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Task is claimed — manifests don't overlap
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('claims a task with no pathManifest even when other PRs are open', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch
+        { workspaceId: 'ws-1', taskId: 'pr-task-3', prNumber: 1128, prUrl: 'url', status: 'running' },
+      ]);
+
+    // Task has NO pathManifest
+    const taskNoManifest = {
+      ...taskWithManifest([]),
+      pathManifest: null,
+    };
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskNoManifest])
+      .mockResolvedValueOnce([{ id: 'pr-task-3', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // No manifest → guard is a no-op → task is claimed
     expect(data.workers).toHaveLength(1);
   });
 });

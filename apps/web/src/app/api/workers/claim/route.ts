@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams } from '@buildd/core/db/schema';
-import { eq, and, or, not, isNull, sql, inArray, lt, gte } from 'drizzle-orm';
+import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -15,6 +15,7 @@ import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, get
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
+import { findBlockingPr } from '@buildd/core/path-overlap';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -518,9 +519,63 @@ export async function POST(req: NextRequest) {
     return false;
   };
 
+  // Pre-fetch tasks with open PRs per workspace, keyed by workspaceId.
+  // Used by the path-overlap claim guard below. Fetched once outside the loop
+  // so we don't repeat the query for every candidate task.
+  const openPrTasksByWorkspace = new Map<string, Array<{
+    pathManifest: string[] | null;
+    prNumber: number | null;
+    prUrl: string | null;
+  }>>();
+  const openPrWorkspaceIds = [...new Set(filteredTasks.map(t => t.workspaceId))];
+  if (openPrWorkspaceIds.length > 0) {
+    const openPrWorkers = await db.query.workers.findMany({
+      where: and(
+        inArray(workers.workspaceId, openPrWorkspaceIds),
+        not(isNull(workers.prUrl)),
+        isNull(workers.mergedAt),
+        inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
+      ),
+      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true },
+    });
+    if (openPrWorkers.length > 0) {
+      const prTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
+      const prTasks = prTaskIds.length > 0
+        ? (await db.query.tasks.findMany({
+            where: inArray(tasks.id, prTaskIds),
+            columns: { id: true, pathManifest: true },
+          })) ?? []
+        : [];
+      const prTaskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
+
+      for (const w of openPrWorkers) {
+        const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
+        const entry = { pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
+        const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
+        list.push(entry);
+        openPrTasksByWorkspace.set(w.workspaceId, list);
+      }
+    }
+  }
+
   for (const task of filteredTasks) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
+
+    // Path-overlap backstop: if this task declares a pathManifest and any open PR
+    // in the same workspace comes from a task with an overlapping manifest, defer
+    // this claim. Prevents two tasks from editing the same file in parallel when
+    // the orchestrator forgot to serialize them with dependsOn edges.
+    // (Regression guard for the PRs #1126/#1129 incident.)
+    const taskManifest = (task as any).pathManifest as string[] | null;
+    if (taskManifest?.length) {
+      const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
+      const blocking = findBlockingPr(taskManifest, openPrTasks);
+      if (blocking) {
+        console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
+        continue;
+      }
+    }
 
     // Per-repo concurrency cap (repo-backed workspaces only — repo-less ones are not
     // serialized). Each task is worktree-isolated, so the cap only bounds how many
@@ -786,21 +841,23 @@ export async function POST(req: NextRequest) {
       });
 
       if (openPRWorkers.length > 0) {
-        // Fetch task titles for PR context
+        // Fetch task titles and manifests for PR context
         const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
         const prTasks = prTaskIds.length > 0
-          ? await db.query.tasks.findMany({
+          ? (await db.query.tasks.findMany({
               where: inArray(tasks.id, prTaskIds),
-              columns: { id: true, title: true },
-            })
+              columns: { id: true, title: true, pathManifest: true },
+            })) ?? []
           : [];
         const taskTitleMap = new Map(prTasks.map(t => [t.id, t.title]));
+        const taskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
 
         const openPRs = openPRWorkers.map(w => ({
           branch: w.branch,
           prUrl: w.prUrl,
           prNumber: w.prNumber,
           taskTitle: w.taskId ? taskTitleMap.get(w.taskId) || null : null,
+          pathManifest: w.taskId ? (taskManifestMap.get(w.taskId) ?? null) : null,
           workspaceId: w.workspaceId,
         }));
 
@@ -809,6 +866,31 @@ export async function POST(req: NextRequest) {
           const wsOpenPRs = openPRs.filter(pr => pr.workspaceId === task?.workspaceId);
           if (wsOpenPRs.length > 0) {
             (cw as any).openPRs = wsOpenPRs;
+          }
+        }
+      }
+
+      // Inject sibling task manifests so agents can check whether a file they're about
+      // to create is already owned by a pending/active sibling task.
+      // (Agent doctrine: never re-implement another task's declared deliverable.)
+      const siblingManifestTasks = (await db.query.tasks.findMany({
+        where: and(
+          inArray(tasks.workspaceId, workspaceIds),
+          inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+          isNotNull(tasks.pathManifest),
+          not(inArray(tasks.id, claimedWorkers.map(cw => cw.taskId))),
+        ),
+        columns: { id: true, title: true, pathManifest: true, workspaceId: true },
+      })) ?? [];
+
+      if (siblingManifestTasks.length > 0) {
+        for (const cw of claimedWorkers) {
+          const task = filteredTasks.find(t => t.id === cw.taskId);
+          const siblings = siblingManifestTasks
+            .filter(s => s.workspaceId === task?.workspaceId)
+            .map(s => ({ id: s.id, title: s.title, pathManifest: s.pathManifest as string[] }));
+          if (siblings.length > 0) {
+            (cw as any).siblingTaskManifests = siblings;
           }
         }
       }

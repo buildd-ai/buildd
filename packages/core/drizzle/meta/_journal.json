@@ -470,6 +470,13 @@
       "when": 1783645491632,
       "tag": "0066_natural_speed",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1752192000000,
+      "tag": "0067_tasks_path_manifest",
+      "breakpoints": true
     }
   ]
 }

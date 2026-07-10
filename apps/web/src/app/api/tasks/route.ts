@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { desc, eq, and, or, inArray, notInArray, gte } from 'drizzle-orm';
+import { desc, eq, and, or, inArray, notInArray, gte, isNotNull } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -12,6 +12,7 @@ import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-ac
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
+import { pathsOverlap } from '@buildd/core/path-overlap';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -178,6 +179,9 @@ export async function POST(req: NextRequest) {
       backend: rawBackend,
       // Whether this task requires human review before auto-merge
       requiresReview: rawRequiresReview,
+      // Declared file paths/globs this task expects to create or modify.
+      // Used to auto-add dependsOn edges between tasks that touch the same files.
+      pathManifest: rawPathManifest,
     } = body;
 
     if (!title) {
@@ -229,6 +233,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Validate and normalize pathManifest
+    const pathManifest: string[] | null =
+      Array.isArray(rawPathManifest) && rawPathManifest.every((p: unknown) => typeof p === 'string')
+        ? rawPathManifest
+        : null;
+
     // Validate dependsOn references exist in the same workspace
     if (Array.isArray(dependsOn) && dependsOn.length > 0) {
       const depTasks = await db.query.tasks.findMany({
@@ -242,6 +252,31 @@ export async function POST(req: NextRequest) {
           { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
           { status: 400 }
         );
+      }
+    }
+
+    // Auto-add dependsOn edges for path-overlap serialization.
+    // If this task declares a pathManifest and other active/pending tasks in the
+    // same workspace also declare manifests that share paths, we must run them
+    // sequentially to prevent conflicting PRs (regression: PRs #1126/#1129).
+    let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
+    if (pathManifest && pathManifest.length > 0) {
+      const existingDepsSet = new Set(resolvedDependsOn);
+      const inFlightTasks = await db.query.tasks.findMany({
+        where: and(
+          eq(tasks.workspaceId, workspaceId),
+          inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+          isNotNull(tasks.pathManifest),
+        ),
+        columns: { id: true, pathManifest: true },
+      });
+      for (const t of inFlightTasks) {
+        if (!t.pathManifest?.length) continue;
+        if (existingDepsSet.has(t.id)) continue;
+        if (pathsOverlap(pathManifest, t.pathManifest as string[])) {
+          resolvedDependsOn.push(t.id);
+          existingDepsSet.add(t.id);
+        }
       }
     }
 
@@ -384,8 +419,9 @@ export async function POST(req: NextRequest) {
         ...(outputRequirement ? { outputRequirement } : {}),
         ...(outputSchema ? { outputSchema } : {}),
         ...(missionId ? { missionId } : {}),
-        ...(Array.isArray(dependsOn) && dependsOn.length > 0 ? { dependsOn } : {}),
+        ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
+        ...(pathManifest ? { pathManifest } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
