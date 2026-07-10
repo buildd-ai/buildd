@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorWorkspaces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -1222,6 +1222,107 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       // Non-fatal: worker can still use local credentials
       console.warn('Failed to decrypt server-managed secrets:', err);
+    }
+  }
+
+  // Inject active MCP connectors — separate block so connector injection is not
+  // gated on workspace secrets being present (the secrets loop has an early continue
+  // when workerSecrets.length === 0, which would skip connectors for workspaces
+  // that only use auth-none connectors or have no MCP credentials yet).
+  if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
+    try {
+      const connectorProvider = getSecretsProvider();
+
+      for (const cw of claimedWorkers) {
+        const task = cw.task as any;
+        const workspaceTeamId = task?.workspace?.teamId;
+        if (!workspaceTeamId) continue;
+
+        const teamConnectors = await db.query.connectors.findMany({
+          where: eq(connectors.teamId, workspaceTeamId),
+        });
+
+        if (teamConnectors.length === 0) continue;
+
+        const cwRows = await db.query.connectorWorkspaces.findMany({
+          where: and(
+            eq(connectorWorkspaces.workspaceId, task.workspaceId),
+            inArray(connectorWorkspaces.connectorId, teamConnectors.map(c => c.id)),
+          ),
+        });
+        const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
+
+        const activeConnectors = teamConnectors.filter(c => {
+          const wsEnabled = cwMap.get(c.id);
+          return wsEnabled === true || wsEnabled === undefined;
+        });
+
+        if (activeConnectors.length === 0) continue;
+
+        const authConnectorIds = activeConnectors
+          .filter(c => c.authMode === 'header' || c.authMode === 'oauth')
+          .map(c => c.id);
+
+        const connectorSecretMap = new Map<string, { id: string; tokenExpiresAt: Date | null }>();
+        if (authConnectorIds.length > 0) {
+          const connectorSecretRows = await db.query.secrets.findMany({
+            where: and(
+              eq(secrets.teamId, workspaceTeamId),
+              eq(secrets.purpose, 'mcp_connector_credential'),
+              inArray(secrets.label, authConnectorIds),
+            ),
+            columns: { id: true, label: true, tokenExpiresAt: true },
+          });
+          for (const s of connectorSecretRows) {
+            if (s.label) connectorSecretMap.set(s.label, { id: s.id, tokenExpiresAt: s.tokenExpiresAt ?? null });
+          }
+        }
+
+        const mcpConnectors: Array<{ name: string; url: string; headers?: Record<string, string> }> = [];
+
+        for (const connector of activeConnectors) {
+          if (connector.authMode === 'none') {
+            mcpConnectors.push({ name: connector.name, url: connector.url });
+          } else {
+            const secretInfo = connectorSecretMap.get(connector.id);
+            if (!secretInfo) continue;
+
+            if (connector.authMode === 'oauth' && secretInfo.tokenExpiresAt && new Date(secretInfo.tokenExpiresAt) < now) {
+              continue; // silently skip expired OAuth tokens
+            }
+
+            const decryptedValue = await connectorProvider.get(secretInfo.id);
+            if (!decryptedValue) continue;
+
+            if (connector.authMode === 'header') {
+              mcpConnectors.push({
+                name: connector.name,
+                url: connector.url,
+                headers: { [connector.headerName!]: decryptedValue },
+              });
+            } else if (connector.authMode === 'oauth') {
+              try {
+                const tokenBlob = JSON.parse(decryptedValue) as Record<string, unknown>;
+                const accessToken = tokenBlob.access_token as string | undefined;
+                if (!accessToken) continue;
+                mcpConnectors.push({
+                  name: connector.name,
+                  url: connector.url,
+                  headers: { Authorization: `Bearer ${accessToken}` },
+                });
+              } catch {
+                // Malformed JSON blob — skip
+              }
+            }
+          }
+        }
+
+        if (mcpConnectors.length > 0) {
+          (cw as any).mcpConnectors = mcpConnectors;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to inject MCP connector configs:', err);
     }
   }
 
