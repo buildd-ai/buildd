@@ -1,8 +1,8 @@
 // Cron endpoint: GET /api/cron/codex-token-refresh
 //
-// Proactively refreshes Codex OAuth tokens that are expiring within 1 hour.
-// OpenAI rotates the refresh token on each use — refreshCodexCredential always
-// persists the new refresh token to prevent silent logouts.
+// Proactively refreshes two credential types:
+//   1. Codex OAuth tokens expiring within 1 hour (OpenAI rotates refresh token on each use)
+//   2. MCP connector OAuth tokens expiring within 10 minutes (standard OAuth 2.1 refresh)
 //
 // Auth: Bearer token matching CRON_SECRET env var.
 // Recommended schedule: every 4 hours.
@@ -10,8 +10,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
-import { and, eq, lt, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
+import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 
 export const maxDuration = 60;
 
@@ -28,8 +29,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Find Codex credentials expiring within 1 hour
-  const expiringSoon = await db.query.secrets.findMany({
+  // ── Codex credentials expiring within 1 hour ────────────────────────────────
+  const expiringCodex = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'codex_credential'),
       lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
@@ -37,29 +38,74 @@ export async function GET(req: NextRequest) {
     columns: { id: true },
   });
 
-  const results: Record<string, string> = {};
-  let refreshed = 0;
-  let locked = 0;
-  let errors = 0;
-  let noCredential = 0;
+  const codexResults: Record<string, string> = {};
+  let codexRefreshed = 0;
+  let codexLocked = 0;
+  let codexErrors = 0;
+  let codexNoCredential = 0;
 
-  for (const cred of expiringSoon) {
+  for (const cred of expiringCodex) {
     const outcome = await refreshCodexCredential(cred.id);
-    results[cred.id] = outcome;
-    if (outcome === 'refreshed') refreshed++;
-    else if (outcome === 'locked') locked++;
-    else if (outcome === 'error') errors++;
-    else if (outcome === 'no_credential') noCredential++;
+    codexResults[cred.id] = outcome;
+    if (outcome === 'refreshed') codexRefreshed++;
+    else if (outcome === 'locked') codexLocked++;
+    else if (outcome === 'error') codexErrors++;
+    else if (outcome === 'no_credential') codexNoCredential++;
   }
 
-  console.log(`[Cron] Codex token refresh: checked=${expiringSoon.length} refreshed=${refreshed} locked=${locked} errors=${errors}`);
+  console.log(
+    `[Cron] Codex token refresh: checked=${expiringCodex.length} refreshed=${codexRefreshed} locked=${codexLocked} errors=${codexErrors}`,
+  );
+
+  // ── MCP connector credentials expiring within 10 minutes ───────────────────
+  // Only query rows that have a tokenExpiresAt — header-auth secrets never set it.
+  const expiringMcp = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.purpose, 'mcp_connector_credential'),
+      isNotNull(secrets.tokenExpiresAt),
+      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '10 minutes'`),
+    ),
+    columns: { id: true },
+  });
+
+  const mcpResults: Record<string, string> = {};
+  let mcpRefreshed = 0;
+  let mcpLocked = 0;
+  let mcpErrors = 0;
+  let mcpExpired = 0;
+  let mcpSkipped = 0;
+
+  for (const cred of expiringMcp) {
+    const outcome = await refreshMcpConnectorCredential(cred.id);
+    mcpResults[cred.id] = outcome;
+    if (outcome === 'refreshed') mcpRefreshed++;
+    else if (outcome === 'locked') mcpLocked++;
+    else if (outcome === 'error') mcpErrors++;
+    else if (outcome === 'expired') mcpExpired++;
+    else if (outcome === 'skipped') mcpSkipped++;
+  }
+
+  console.log(
+    `[Cron] MCP connector refresh: checked=${expiringMcp.length} refreshed=${mcpRefreshed} locked=${mcpLocked} errors=${mcpErrors} expired=${mcpExpired} skipped=${mcpSkipped}`,
+  );
 
   return NextResponse.json({
-    checked: expiringSoon.length,
-    refreshed,
-    locked,
-    errors,
-    noCredential,
-    secrets: results,
+    codex: {
+      checked: expiringCodex.length,
+      refreshed: codexRefreshed,
+      locked: codexLocked,
+      errors: codexErrors,
+      noCredential: codexNoCredential,
+      secrets: codexResults,
+    },
+    mcp: {
+      checked: expiringMcp.length,
+      refreshed: mcpRefreshed,
+      locked: mcpLocked,
+      errors: mcpErrors,
+      expired: mcpExpired,
+      skipped: mcpSkipped,
+      secrets: mcpResults,
+    },
   });
 }

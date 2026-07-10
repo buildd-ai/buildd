@@ -117,6 +117,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 
 // Mock schema

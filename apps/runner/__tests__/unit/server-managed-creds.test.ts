@@ -102,7 +102,12 @@ mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }))
 // tests and a source of CI timeout flakiness.
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [], mcpServers: [] }),
-  checkMcpPreFlight: async () => ({}),
+  // Must match the real (synchronous) signature: checkMcpPreFlight returns
+  // { missing, warnings }. This mock leaks into workers.ts for later-loading
+  // test files (Bun mock.module cache poisoning), and an async/empty stub made
+  // `const { warnings } = checkMcpPreFlight(...)` yield undefined there,
+  // crashing the WorkerManager state-transition tests.
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
 }));
 
 const { WorkerManager, teamKeyOf } = await import('../../src/workers');

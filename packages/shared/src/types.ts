@@ -368,6 +368,8 @@ export interface Task {
   missionId: string | null;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn: string[];
+  // Declared files/globs this task expects to create or modify
+  pathManifest?: string[] | null;
   result: TaskResult | null;
   backend?: AgentBackend;
   requiresReview?: boolean;
@@ -665,6 +667,8 @@ export interface CreateTaskInput {
   missionId?: string;
   // Workflow DAG: task IDs that must complete before this task is claimable
   dependsOn?: string[];
+  // Declared files/globs this task expects to create or modify
+  pathManifest?: string[];
   // Agent backend that executes this task
   backend?: AgentBackend;
 }
@@ -740,7 +744,8 @@ export type ClaimDiagnosticReason =
   | 'repo_busy'
   | 'budget_exhausted'
   | 'budget_exhausted_partial'
-  | 'context_paused';
+  | 'context_paused'
+  | 'path_overlap_blocked';
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
@@ -749,6 +754,8 @@ export interface ClaimDiagnostics {
   activeWorkers?: number;
   maxConcurrent?: number;
   availableSlots?: number;
+  /** Populated when reason=path_overlap_blocked: the PR that conflicts with this task's pathManifest */
+  blockedByPr?: { prNumber: number | null; prUrl: string | null };
 }
 
 export interface ClaimTasksResponse {
