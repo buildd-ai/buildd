@@ -11,7 +11,7 @@
  *   7. Token audience validation
  */
 
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { SignJWT, jwtVerify } from 'jose';
 import { getJwtSecret } from '@/lib/oauth/config';
 
@@ -196,7 +196,8 @@ export async function registerClient(
 
 /** Generate a PKCE code_verifier (32 random bytes, base64url, no padding). */
 export function generateCodeVerifier(): string {
-  return randomBytes(32).toString('base64url');
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+  return Buffer.from(bytes).toString('base64url');
 }
 
 /** Derive code_challenge (S256) from a code_verifier. */
