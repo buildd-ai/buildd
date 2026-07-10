@@ -33,9 +33,12 @@ interface McpServerConfig {
   url?: string;
 }
 
+type Scope = 'team' | 'workspace';
+
 interface Skill {
   id: string;
   slug: string;
+  teamId: string;
   name: string;
   description: string | null;
   content: string;
@@ -435,6 +438,9 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [newEnvKey, setNewEnvKey] = useState('');
   const [newEnvValue, setNewEnvValue] = useState('');
 
+  // Scope (applies-to) state — workspace-scoped roles always start as 'workspace'
+  const [scope, setScope] = useState<Scope>('workspace');
+
   const toggleTool = (tool: string) => {
     setAllowedTools(prev =>
       prev.includes(tool) ? prev.filter(t => t !== tool) : [...prev, tool]
@@ -470,30 +476,50 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          description: description || null,
-          content,
-          model,
-          defaultBackend,
-          allowedTools,
-          canDelegateTo,
-          background,
-          maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
-          color,
-          mcpServers,
-          requiredEnvVars: envVars,
-          isRole,
-          repoUrl: repoUrl || null,
-        }),
-      });
+      const payload = {
+        name,
+        description: description || null,
+        content,
+        model,
+        defaultBackend,
+        allowedTools,
+        canDelegateTo,
+        background,
+        maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
+        color,
+        mcpServers,
+        requiredEnvVars: envVars,
+        isRole,
+        repoUrl: repoUrl || null,
+      };
+
+      let res: Response;
+      if (scope === 'team') {
+        // Promoting to team-level: use /api/roles/[id] with workspaceId: null
+        res = await fetch(`/api/roles/${skill.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, workspaceId: null }),
+        });
+      } else {
+        res = await fetch(`/api/workspaces/${workspaceId}/skills/${skill.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || 'Failed to save');
       }
+
+      // If promoted to team-level, redirect to team role settings
+      if (scope === 'team') {
+        router.push(`/app/team/${skill.slug}/settings`);
+        return;
+      }
+
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -563,6 +589,49 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             {error}
           </div>
         )}
+
+        {/* Applies to */}
+        <div className="border border-border-default rounded-lg p-4 mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm font-medium text-text-secondary">Applies to</span>
+          </div>
+          <div className="flex rounded-md border border-border-default overflow-hidden w-fit">
+            <button
+              type="button"
+              onClick={() => setScope('workspace')}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                scope === 'workspace'
+                  ? 'bg-surface-3 text-text-primary'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              One workspace
+            </button>
+            <button
+              type="button"
+              onClick={() => setScope('team')}
+              className={`px-4 py-2 text-sm font-medium border-l border-border-default transition-colors ${
+                scope === 'team'
+                  ? 'bg-surface-3 text-text-primary'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              All workspaces in team
+            </button>
+          </div>
+
+          {scope === 'workspace' && (
+            <p className="text-xs text-text-muted mt-2">
+              This role is scoped to <span className="font-medium text-text-primary">{workspaceName}</span>.
+            </p>
+          )}
+
+          {scope === 'team' && (
+            <p className="text-xs text-text-muted mt-2">
+              Saving will promote this role to team-level, making it the default for all workspaces.
+            </p>
+          )}
+        </div>
 
         {/* Two-column form */}
         <div className="flex flex-col md:flex-row gap-8">

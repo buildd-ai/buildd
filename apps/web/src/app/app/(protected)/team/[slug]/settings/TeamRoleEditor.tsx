@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 
+type Scope = 'team' | 'workspace';
+
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
   { value: 'opus', label: 'Claude Opus 4' },
@@ -338,6 +340,10 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   const [maxTurns, setMaxTurns] = useState<string>(role.maxTurns?.toString() || '');
   const [color, setColor] = useState(role.color);
 
+  // Scope (applies-to) state — team-level roles always start as 'team'
+  const [scope, setScope] = useState<Scope>('team');
+  const [targetWorkspaceId, setTargetWorkspaceId] = useState<string>(userWorkspaces[0]?.id || '');
+
   // Add override state
   const [showAddOverride, setShowAddOverride] = useState(false);
   const [addOverrideWsId, setAddOverrideWsId] = useState(userWorkspaces[0]?.id || '');
@@ -359,26 +365,40 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     setSaving(true);
     setError(null);
     try {
+      const body: Record<string, unknown> = {
+        name,
+        description: description || null,
+        content,
+        model,
+        defaultBackend,
+        allowedTools,
+        canDelegateTo,
+        background,
+        maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
+        color,
+      };
+
+      // Include scope change if applicable
+      if (scope === 'workspace' && targetWorkspaceId) {
+        body.workspaceId = targetWorkspaceId;
+      }
+
       const res = await fetch(`/api/roles/${role.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          description: description || null,
-          content,
-          model,
-          defaultBackend,
-          allowedTools,
-          canDelegateTo,
-          background,
-          maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
-          color,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || 'Failed to save');
       }
+
+      // If scope changed to workspace, redirect to workspace skills editor
+      if (scope === 'workspace' && targetWorkspaceId) {
+        router.push(`/app/workspaces/${targetWorkspaceId}/skills/${role.id}`);
+        return;
+      }
+
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -495,6 +515,64 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             {error}
           </div>
         )}
+
+        {/* Applies to */}
+        <div className="border border-border-default rounded-lg p-4 mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm font-medium text-text-secondary">Applies to</span>
+          </div>
+          <div className="flex rounded-md border border-border-default overflow-hidden w-fit">
+            <button
+              type="button"
+              onClick={() => setScope('team')}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                scope === 'team'
+                  ? 'bg-surface-3 text-text-primary'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              All workspaces in team
+            </button>
+            {userWorkspaces.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setScope('workspace')}
+                className={`px-4 py-2 text-sm font-medium border-l border-border-default transition-colors ${
+                  scope === 'workspace'
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                One workspace
+              </button>
+            )}
+          </div>
+
+          {scope === 'team' && (
+            <p className="text-xs text-text-muted mt-2">
+              This role is the default for all workspaces in your team. Individual workspaces can add overrides.
+            </p>
+          )}
+
+          {scope === 'workspace' && userWorkspaces.length > 0 && (
+            <div className="mt-3">
+              <Select
+                value={targetWorkspaceId}
+                onChange={setTargetWorkspaceId}
+                options={userWorkspaces.map(w => ({ value: w.id, label: w.name }))}
+                size="sm"
+              />
+              <p className="text-xs text-text-muted mt-1">
+                Saving will move this role to the selected workspace.
+                {overrideList.length > 0 && (
+                  <span className="text-status-warning ml-1">
+                    {overrideList.length} workspace override{overrideList.length !== 1 ? 's' : ''} will become standalone roles.
+                  </span>
+                )}
+              </p>
+            </div>
+          )}
+        </div>
 
         {/* Two-column form */}
         <div className="flex flex-col md:flex-row gap-8 mb-10">

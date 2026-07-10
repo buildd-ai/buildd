@@ -174,9 +174,17 @@ workspace and MAY carry a schedule.
   and no redirect occurs.
 - AC-4 (UI gap): The workspace picker is hidden under "Advanced options" and is
   optional, so a mission can be created with no workspace and therefore no repo
-  to act on. WHEN a team has ≥1 workspace, THEN mission creation SHOULD surface
-  the workspace target prominently (not buried) so the mission has a repo.
+  to act on. WHEN a team has ≥1 workspace AND the mission description implies
+  code delivery, THEN mission creation SHOULD surface the workspace target
+  prominently (not buried) so the mission has a repo.
   *(See `NewMissionForm.tsx` — `WorkspaceDropdown` lives behind `showAdvanced`.)*
+- AC-4b (documented behavior): A workspace-less mission (`workspaceId = null`)
+  is intentionally valid for personal-agent missions (e.g., finance tracking,
+  email triage, annual-cycle planning). For these missions:
+  - `workingBranch` and `primaryPrUrl` are always null — expected, not broken.
+  - Health shows "no tasks" when all activity is coordination-only — expected.
+  - Each task the mission creates MUST carry an explicit `workspaceId`; there
+    is no automatic inference from the mission to its tasks.
 
 **Code surface**:
 - UI: `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx`

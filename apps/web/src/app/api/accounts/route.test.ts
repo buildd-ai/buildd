@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -45,8 +45,9 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: {},
 }));
 
+const mockSetOAuthToken = mock(() => Promise.resolve());
 mock.module('@buildd/core/secrets', () => ({
-  setOAuthToken: mock(() => Promise.resolve()),
+  setOAuthToken: mockSetOAuthToken,
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -98,6 +99,7 @@ describe('POST /api/accounts', () => {
     mockAccountsInsert.mockReset();
     mockGetUserTeamIds.mockReset();
     mockGetUserDefaultTeamId.mockReset();
+    mockSetOAuthToken.mockReset();
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockGetUserDefaultTeamId.mockResolvedValue('team-1');
     process.env.NODE_ENV = 'production';
@@ -157,7 +159,7 @@ describe('POST /api/accounts', () => {
     expect(data.apiKey).toBeDefined();
   });
 
-  it('does not write plaintext oauthToken to accounts table even if provided', async () => {
+  it('does not write oauthToken to accounts table or secrets when provided', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 
     let capturedValues: any;
@@ -178,6 +180,9 @@ describe('POST /api/accounts', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(200);
+    // oauthToken must not be written to the accounts column
     expect(capturedValues?.oauthToken).toBeUndefined();
+    // setOAuthToken must not be called — credentials belong in Agent Backends, not here
+    expect((mockSetOAuthToken as Mock<any>).mock.calls.length).toBe(0);
   });
 });
