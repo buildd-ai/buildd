@@ -20,6 +20,9 @@ const mockReportOps = mock(() => Promise.resolve());
 let taskSchedulesUpdateCalls: any[] = [];
 let tasksInsertValues: any = null;
 let mockSelectCount = 0;
+// When set, the task insert throws it — lets tests drive the per-schedule
+// failure catch block (transient DB error path).
+let insertError: Error | null = null;
 
 const makeUpdateChain = (calls: any[]) => ({
   set: mock((vals: any) => {
@@ -51,6 +54,7 @@ mock.module('@buildd/core/db', () => ({
     insert: mock((_table: any) => ({
       values: mock((vals: any) => {
         tasksInsertValues = vals;
+        if (insertError) throw insertError;
         return {
           returning: mock(() => [{ id: 'task-1', ...vals }]),
         };
@@ -174,6 +178,7 @@ describe('GET /api/cron/schedules', () => {
     taskSchedulesUpdateCalls = [];
     tasksInsertValues = null;
     mockSelectCount = 0;
+    insertError = null;
 
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -252,6 +257,77 @@ describe('GET /api/cron/schedules', () => {
     );
     expect(updateCall).toBeDefined();
     expect(updateCall.set.consecutiveFailures).toBe(1);
+  });
+
+  // --- Alert-noise suppression on transient DB failures ---
+
+  // Reproduces how the neon-http Drizzle driver throws: a useless outer
+  // "Failed query: <SQL>" message with the real NeonDbError on .cause.
+  function makeNeonError(): Error {
+    const cause = Object.assign(
+      new Error('insert or update on table "tasks" violates foreign key constraint'),
+      { code: '23503', constraint: 'tasks_workspace_id_workspaces_id_fk', detail: 'Key (workspace_id)=(x) is not present in table "workspaces".' },
+    );
+    const outer = new Error('Failed query: insert into "tasks" (...) values ($1, $2, ...) returning "id"');
+    (outer as { cause?: unknown }).cause = cause;
+    return outer;
+  }
+
+  it('does NOT page on a single transient failure, but records the diagnosable cause', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1', consecutiveFailures: 0 });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertError = makeNeonError();
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.errors).toBe(1);
+
+    // No ops page for a lone failure — it self-recovers next tick.
+    const opsCall = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'cron-schedules');
+    expect(opsCall).toBeUndefined();
+
+    // lastError must carry the neon cause (SQLSTATE/constraint), not the giant SQL dump.
+    const updateCall = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1);
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.lastError).toContain('(23503)');
+    expect(updateCall.set.lastError).toContain('violates foreign key constraint');
+    expect(updateCall.set.lastError).not.toContain('Failed query');
+  });
+
+  it('escalates to an error page once failures are sustained (>= threshold)', async () => {
+    // Already failed twice; this tick makes it 3 consecutive → page.
+    const schedule = makeSchedule({ workspaceId: 'ws-1', consecutiveFailures: 2 });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertError = makeNeonError();
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+
+    const opsCall = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'cron-schedules');
+    expect(opsCall).toBeTruthy();
+    expect(opsCall[0].severity).toBe('error');
+    expect(opsCall[0].detail).toContain('3 consecutive failures');
+    expect(opsCall[0].detail).toContain('(23503)');
+  });
+
+  it('pages (and pauses) when the schedule hits its pauseAfterFailures cap even below the threshold', async () => {
+    // pauseAfterFailures=2, one prior failure → this tick is failure #2:
+    // below ALERT_ESCALATION_THRESHOLD (3) but it triggers a pause, which is
+    // worth paging on.
+    const schedule = makeSchedule({ workspaceId: 'ws-1', consecutiveFailures: 1, pauseAfterFailures: 2 });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertError = makeNeonError();
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+
+    const opsCall = mockReportOps.mock.calls.find((c: any[]) => c[0]?.source === 'cron-schedules');
+    expect(opsCall).toBeTruthy();
+    expect(opsCall[0].severity).toBe('error');
+
+    const updateCall = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 2);
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.enabled).toBe(false);
   });
 
   it('should pass triggerSource cron to buildMissionContext for mission-linked schedules', async () => {

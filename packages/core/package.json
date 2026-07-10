@@ -22,6 +22,7 @@
     "./task-classifier": "./task-classifier.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./report-ops": "./report-ops.ts",
+    "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
     "./secrets": "./secrets/index.ts",
     "./file-reservations": "./file-reservations.ts",
