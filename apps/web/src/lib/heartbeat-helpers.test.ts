@@ -90,6 +90,12 @@ describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
   it('warns against false OK reporting', () => {
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('Do NOT report OK if the mission has not made forward progress');
   });
+
+  it('instructs to retry originating task for PR conflicts — not create an integration task', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('parentTaskId');
+    // Must not instruct to CREATE an integration task (negation context is fine)
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain('create integration task if conflicts exist');
+  });
 });
 
 describe('HEARTBEAT_CRON_PRESETS', () => {
@@ -236,6 +242,18 @@ describe('detectMissionPhase', () => {
     }));
     // Active builder takes precedence
     expect(result.phase).toBe('building');
+  });
+
+  it('reviewing phase advises retrying originating task for conflicts, not creating integration task', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [{ roleSlug: 'builder', result: { prUrl: 'https://github.com/...' } }],
+      prCount: 1,
+    }));
+    expect(result.phase).toBe('reviewing');
+    // Must NOT instruct to create a separate integration task
+    expect(result.actions.some(a => /^create integration task/i.test(a.trim()))).toBe(false);
+    // Must suggest retry of originating task
+    expect(result.actions.some(a => a.includes('parentTaskId') || a.includes('originating task'))).toBe(true);
   });
 
   it('detects plan artifacts by key pattern', () => {

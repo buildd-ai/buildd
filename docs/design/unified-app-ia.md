@@ -1,6 +1,6 @@
 # Unified App IA + Scoping Model (SPEC)
 
-> **Status: pending Max approval.** This is the gating deliverable for the
+> **Status: Phase 1 (Roles schema) and Phase 2 (Settings split) shipped. Phase 3-6 substantially complete. Open gaps: §C.5 Role editor scope control, Release Management UI (§D.4 / release-management-ui.md).** This is the gating deliverable for the
 > app-wide IA implementation mission. Agents implementing any task from
 > §F below MUST read this doc before starting. Do not re-derive from
 > first principles.
@@ -113,6 +113,8 @@ Switching teams (header selector) clears the workspace filter and reloads.
 | Surface | Route | Current scoping | Target scoping | Fetch delta |
 |---|---|---|---|---|
 | **Home** | `/app/home` | Mixed (workers/tasks/schedules by workspaceIds; missions by teamIds) | Team-primary | Change workers/tasks/schedules/roles queries to `teamId`; add WS filter to narrow |
+
+> **Hibernating missions**: Missions with no task activity in the past N days display in a visually muted state (`mission-card-hibernating`). They appear in their health group but with reduced visual weight. This state is not triggered by a mission field — it is derived client-side from task activity recency. The spec does not prescribe a specific N threshold; the current implementation uses the activity window.
 | **Activity** | `/app/tasks` | All team workspaces, no filter | Team-primary + WS filter | Add WorkspaceFilter; pass `workspaceId` param to TaskGrid |
 | **Missions** | `/app/missions` | Team-scoped ✅ (reference implementation) | Team-primary + WS filter (add filter for drill-down) | Add WorkspaceFilter; filter missions by workspaceId when set |
 | **Health** | `/app/health` | Watched projects by workspaceIds; WS filter exists ✅ (Vercel status removed from UI — backend retained) | Team-primary; WS filter already promoted to canonical shared component ✅ | Done: Runners + Usage (30d) + Schedules added; Vercel status stripped (#1066) |
@@ -303,6 +305,8 @@ LIMIT 1
 
 Precedence: workspace override (`workspaceId = W`) > team default
 (`workspaceId IS NULL`). This exactly mirrors the credential resolver.
+
+> **Unassigned tasks** (`tasks.roleSlug IS NULL`): The role resolution query is not invoked for tasks without a roleSlug. These tasks are not claimed by role-filtered workers. Role-centric views (Team page, role pills on Home) should show an "Unassigned" count separately. Approximately 54% of tasks in production have no roleSlug — this is a known usage pattern, not an error.
 
 ### C.3 Runtime materialization impact
 
@@ -509,7 +513,7 @@ can place them:
 
 | Surface | Current state | Recommended placement |
 |---|---|---|
-| **Release management** | MCP/API only; no dashboard | `/app/workspaces/[id]/releases` (workspace tab) or a Health section; not a primary nav item |
+| **Release management** | MCP/API only; no dashboard UI shipped yet. Design spec exists at `docs/design/release-management-ui.md` (proposed, pending approval). | `/app/workspaces/[id]/releases` (workspace tab) or a Health section; not a primary nav item |
 | **Cost/usage (first-class)** | Only in Settings scroll (30d aggregate) | `/app/health` (basic aggregate); per-task token data in task detail; no dedicated surface this cycle |
 | **In-app PR review** | Links to GitHub only | Defer; `/app/tasks/[id]` PR section is sufficient for now |
 

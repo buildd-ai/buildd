@@ -77,10 +77,24 @@ archived` (lifecycle is stored; *health* is derived from task state via
 `deriveMissionHealth`, not stored). Notable fields:
 - **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — all mission tasks push to one
   shared branch tracked by a single PR.
-- `scheduleId` — link to a `task_schedule` for recurring missions.
+- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. When the mission status transitions to `completed` or `archived`, its linked schedule is automatically deleted. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. This ensures heartbeat schedules cannot outlive the mission that owns them.
 - `parentMissionId` — sub-missions.
 - `requiresReview` — human review gate before merge.
 - `defaultOutputRequirement`, `maxConcurrentTasks`, `contextArtifactIds`.
+- **`activeHoursStart` / `activeHoursEnd` / `activeHoursTimezone`** — restrict
+  the window in which the mission's heartbeat schedule fires (0–23 hour range,
+  IANA timezone string). When set, the cron skips firing outside the window.
+  Used to implement calendar-seasonal dormancy (e.g., annual-cycle missions that
+  are active Jan–Mar only): the mission stays `status = 'active'` year-round
+  while the heartbeat self-suppresses outside the season. See the dormancy
+  pattern in `docs/specs/mission-task-lifecycle.md`.
+- **`workspaceId`** (nullable) — a mission with `workspaceId = null` is valid.
+  Used for personal-agent missions (financial tasks, email triage) and
+  cross-workspace coordination. `workingBranch` and `primaryPrNumber` are
+  inapplicable for workspace-less missions (always null). Task creation from a
+  workspace-less mission requires the organizer or heartbeat agent to supply an
+  explicit `workspaceId` on each created task — there is no automatic inference.
+  See `docs/specs/mission-task-lifecycle.md` for workspace-less mission invariants.
 
 ### Task
 A concrete unit of work. `status` defaults `pending` (lifecycle:
@@ -89,7 +103,16 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
 - **`outputRequirement`**: `pr_required | artifact_required | none | auto` — enforced
   on completion. `outputSchema` drives SDK structured output.
 - **`runnerPreference`** (`any | user | service | action`) + `requiredCapabilities` +
-  **`roleSlug`** — claim-time routing constraints.
+  **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
+  set, only runners that advertise this skill in `availableSkills` can claim the
+  task; when null, any runner with workspace access can claim it. **Null is the
+  normal case for dashboard-created tasks** — approximately 54% of tasks in
+  production have `roleSlug = null`. The dashboard's `/skill` typeahead stores
+  the chosen skill in `context.skillSlugs` (advisory JSON field on the task)
+  rather than in `roleSlug`. `context.skillSlugs` tells the executing agent
+  which skill prompt to load but does NOT restrict which runner can claim the
+  task. `roleSlug`-based routing is primarily used by MCP `create_task` with
+  an explicit `roleSlug`, the organizer agent, and schedules.
 - **`backend`** (`claude | codex`, enum, default `claude`) — which agent runs it.
 - **`dependsOn`** (task IDs) — workflow DAG; task isn't claimable until deps complete.
 - **`missionId`**, `parentTaskId`, `category`, `project`, `priority`.

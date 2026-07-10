@@ -191,6 +191,7 @@ function SuggestionBanner({
 function ScheduleRow({
   item,
   onToggle,
+  onDelete,
   onApproveSuggestion,
   onDismissSuggestion,
   toggling,
@@ -198,6 +199,7 @@ function ScheduleRow({
 }: {
   item: UnifiedScheduleItem;
   onToggle: (item: UnifiedScheduleItem) => void;
+  onDelete: (item: UnifiedScheduleItem) => void;
   onApproveSuggestion: (item: UnifiedScheduleItem) => void;
   onDismissSuggestion: (item: UnifiedScheduleItem) => void;
   toggling: boolean;
@@ -217,7 +219,7 @@ function ScheduleRow({
         </div>
 
         {/* Main content — click to navigate */}
-        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3">
+        <Link href={item.href} className="flex-1 min-w-0 flex items-center gap-3 min-w-0">
           {/* Name + type badge */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -264,6 +266,20 @@ function ScheduleRow({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         </Link>
+
+        {/* Delete — only for direct workspace schedules (not mission-owned) */}
+        {item.apiType === 'taskSchedule' && (
+          <button
+            data-testid="schedule-delete-btn"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(item); }}
+            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+            title="Delete schedule"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {item.pendingSuggestion && (
@@ -292,6 +308,8 @@ export default function SchedulesUnified({
   const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
   const [toggling, setToggling] = useState<Set<string>>(new Set());
   const [suggestionLoading, setSuggestionLoading] = useState<Set<string>>(new Set());
+  const [itemToDelete, setItemToDelete] = useState<UnifiedScheduleItem | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     return items.filter(item => {
@@ -349,6 +367,26 @@ export default function SchedulesUnified({
         next.delete(item.id);
         return next;
       });
+    }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!itemToDelete || itemToDelete.apiType !== 'taskSchedule' || !itemToDelete.apiWorkspaceId) return;
+    setDeleting(itemToDelete.id);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${itemToDelete.apiWorkspaceId}/schedules/${itemToDelete.apiId}`,
+        { method: 'DELETE' },
+      );
+      if (res.ok) {
+        setItems(prev => prev.filter(i => i.id !== itemToDelete.id));
+        setItemToDelete(null);
+        startTransition(() => router.refresh());
+      }
+    } catch {
+      // Silent failure
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -536,6 +574,7 @@ export default function SchedulesUnified({
               key={`${item.apiType}-${item.id}`}
               item={item}
               onToggle={handleToggle}
+              onDelete={setItemToDelete}
               onApproveSuggestion={(i) => handleSuggestionAction(i, 'approve')}
               onDismissSuggestion={(i) => handleSuggestionAction(i, 'dismiss')}
               toggling={toggling.has(item.id)}
@@ -578,6 +617,49 @@ export default function SchedulesUnified({
           </div>
         </div>
       </div>
+
+      {/* Delete confirm modal — workspace schedules only */}
+      {itemToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
+          onClick={() => setItemToDelete(null)}
+        >
+          <div
+            data-testid="schedule-delete-confirm"
+            className="w-full sm:max-w-sm sm:rounded-xl rounded-t-2xl bg-surface-elevated p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
+            <p className="text-sm text-text-secondary mb-4">This is permanent and cannot be undone.</p>
+            <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
+              <p className="text-sm font-medium text-text-primary truncate">{itemToDelete.name}</p>
+              <code className="text-[10px] text-text-muted font-mono block">{itemToDelete.cronExpression}</code>
+              <p className="text-xs text-text-muted">
+                {itemToDelete.totalRuns > 0
+                  ? `${itemToDelete.totalRuns} run${itemToDelete.totalRuns !== 1 ? 's' : ''}`
+                  : 'never run'
+                }
+                {itemToDelete.lastRunAt ? ` · last ${timeAgo(itemToDelete.lastRunAt)}` : ''}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setItemToDelete(null)}
+                className="flex-1 h-11 rounded-lg border border-border-default text-sm font-medium text-text-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleting === itemToDelete.id}
+                className="flex-1 h-11 rounded-lg bg-status-error text-white text-sm font-medium disabled:opacity-50"
+              >
+                {deleting === itemToDelete.id ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

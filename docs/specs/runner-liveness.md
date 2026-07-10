@@ -10,8 +10,16 @@ systematic — without ever blocking the normal claim path.
 ## Runner Heartbeat Protocol
 
 **Invariants**:
-- Runners MUST call `POST /api/workers/heartbeat` with `localUiUrl` every
-  ~30 seconds while alive.
+- Runners MUST call `POST /api/workers/heartbeat` with `localUiUrl` on each
+  `BUILDD_RUNNER_POLL_MIN`-minute cycle (default **60 minutes**; configured via
+  the same env var on both the runner host and server). The exported constant is
+  `RUNNER_HEARTBEAT_INTERVAL_MS` from `packages/shared/src/runner-liveness.ts`.
+  To change the interval, update `BUILDD_RUNNER_POLL_MIN` on both runner and
+  server so liveness thresholds scale together.
+- **Note:** Pusher delivers realtime task notifications to runners. The heartbeat
+  interval is NOT a polling frequency for new tasks — Pusher handles task
+  delivery. The heartbeat exists solely to register the runner as alive and to
+  maintain the liveness window used by stale-detection.
 - Each `(accountId, localUiUrl)` pair has at most one `worker_heartbeats` row;
   the upsert on conflict refreshes `lastHeartbeatAt`.
 - The server issues a `viewerToken` on the first registration for that

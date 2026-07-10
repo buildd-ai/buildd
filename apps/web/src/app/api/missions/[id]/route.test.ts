@@ -28,6 +28,7 @@ const mockMissionsUpdate = mock(() => ({
 
 let insertedScheduleValues: any = null;
 let updatedScheduleData: any = null;
+let deletedTables: string[] = [];
 const mockScheduleFindFirst = mock(() => null as any);
 const mockScheduleUpdate = mock(() => ({
   set: mock((data: any) => {
@@ -74,8 +75,11 @@ mock.module('@buildd/core/db', () => ({
         };
       }),
     }),
-    delete: () => ({
-      where: mock(() => ({})),
+    delete: (table: any) => ({
+      where: (cond: any) => {
+        deletedTables.push(typeof table === 'string' ? table : 'taskSchedules');
+        return {};
+      },
     }),
   },
 }));
@@ -112,6 +116,7 @@ describe('PATCH /api/missions/[id]', () => {
     updatedSetData = null;
     insertedScheduleValues = null;
     updatedScheduleData = null;
+    deletedTables = [];
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -355,5 +360,99 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Invalid status');
+  });
+
+  it('auto-deletes schedule when mission is completed', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('completed');
+    expect(updatedSetData.scheduleId).toBeNull();
+    expect(deletedTables).toContain('taskSchedules');
+  });
+
+  it('auto-deletes schedule when mission is archived', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('archived');
+    expect(updatedSetData.scheduleId).toBeNull();
+    expect(deletedTables).toContain('taskSchedules');
+  });
+
+  it('removes heartbeat flag from schedule context when isHeartbeat=false', async () => {
+    // Regression: disabling heartbeat should remove the flag so MCP get no longer reports "Heartbeat: enabled"
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Monitor',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({
+      cronExpression: '0 * * * *',
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check stuff' } },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ isHeartbeat: false }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedScheduleData).not.toBeNull();
+    // heartbeat flag must be absent from the updated context
+    expect(updatedScheduleData.taskTemplate.context.heartbeat).toBeUndefined();
+  });
+
+  it('disables (not deletes) schedule when mission is paused', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'paused' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('paused');
+    expect(updatedSetData.scheduleId).toBeUndefined();
+    expect(updatedScheduleData?.enabled).toBe(false);
+    expect(deletedTables).not.toContain('taskSchedules');
   });
 });
