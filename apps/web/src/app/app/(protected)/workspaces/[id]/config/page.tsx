@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
 import { TeamTransferSection } from './TeamTransferSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
+import ReleaseSection from './ReleaseSection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
@@ -34,6 +35,7 @@ export default async function WorkspaceConfigPage({
             teamId: true,
             gitConfig: true,
             configStatus: true,
+            releaseConfig: true,
         },
     });
 
@@ -84,6 +86,13 @@ export default async function WorkspaceConfigPage({
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
+                />
+
+                <ReleaseSection
+                    workspaceId={workspace.id}
+                    teamId={workspace.teamId}
+                    initialReleaseConfig={workspace.releaseConfig as WorkspaceReleaseConfig | null}
+                    hasRepo={Boolean(workspace.repo)}
                 />
             </div>
         </main>
