@@ -2073,7 +2073,8 @@ export async function handleBuilddAction(
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
           const schedCtx = data.schedule?.taskTemplate?.context;
-          const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: enabled${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
+          const heartbeatRunning = schedCtx?.heartbeat && data.schedule?.enabled !== false && data.status !== 'paused';
+          const heartbeatInfo = schedCtx?.heartbeat ? `\nHeartbeat: ${heartbeatRunning ? 'enabled' : 'paused'}${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}` : '';
           const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
           const depInfo = data.dependsOnMissionId ? `\nDependency: ${data.dependsOnMissionId} (gate: ${data.gateCondition})${data.blocked ? ` — BLOCKED: ${data.blockedReason}` : ' — unblocked'}` : '';
           return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${heartbeatInfo}${concurrentInfo}${depInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);

@@ -46,6 +46,7 @@ export interface ScheduleRow {
   totalRuns: number;
   taskTitle: string;
   missionTitle: string | null;
+  isHeartbeat: boolean;
 }
 
 export interface UsageStats {
@@ -193,7 +194,11 @@ export default async function HealthPage({
           .filter((m: any) => m.scheduleId)
           .map((m: any) => [m.scheduleId as string, m.title as string] as const),
       );
-      return (schedules as any[]).map((s: any) => ({ ...s, missionTitle: missionBySchedule.get(s.id) ?? null }));
+      return (schedules as any[]).map((s: any) => ({
+        ...s,
+        missionTitle: missionBySchedule.get(s.id) ?? null,
+        isHeartbeat: !!(s.taskTemplate?.context?.heartbeat),
+      }));
     })().catch(() => [] as any[]),
   ]);
 
