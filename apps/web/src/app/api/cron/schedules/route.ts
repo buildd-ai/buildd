@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
+import { describeError } from '@buildd/core/describe-error';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, computeStaggerOffset, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -17,6 +18,13 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
+
+// A single schedule failure is usually a transient neon HTTP blip that
+// self-recovers on the next tick — paging a human on it is a false alarm.
+// Only escalate to a notifying ops alert once failures are sustained (this
+// many in a row) or the schedule is being auto-paused. Below the threshold we
+// still record lastError + logs, but stay silent.
+const ALERT_ESCALATION_THRESHOLD = 3;
 
 /**
  * Extract a value from a JSON object using simple dot-notation path.
@@ -631,24 +639,38 @@ export async function GET(req: NextRequest) {
         created++;
       } catch (error) {
         errors++;
+        // Drizzle's neon-http driver buries the real DB error (SQLSTATE,
+        // constraint, detail) in error.cause and exposes only a generic
+        // "Failed query: <SQL>" as .message — describeError surfaces the cause
+        // so the stored lastError and any ops alert are actually diagnosable.
+        const reason = describeError(error);
         console.error(`Schedule ${schedule.id} error:`, error);
-        void reportOps({
-          source: 'cron-schedules',
-          severity: 'error',
-          message: 'schedule processing failed',
-          detail: `schedule ${schedule.id}: ${error instanceof Error ? error.message : String(error)}`,
-          dedupeKey: `cron-schedules:${schedule.id}`,
-        });
 
         // Increment consecutive failures
         const newFailures = schedule.consecutiveFailures + 1;
         const shouldPause = schedule.pauseAfterFailures > 0 && newFailures >= schedule.pauseAfterFailures;
 
+        // Only page once the failure is sustained (or the schedule is being
+        // auto-paused). A lone transient failure self-recovers next tick, so
+        // alerting on it just pages a human on noise. Note: we must NOT emit a
+        // lower-severity reportOps below the threshold either — reportOps
+        // dedupes per key for ~1h regardless of severity, so an early warning
+        // would swallow the dedup slot the escalated error needs.
+        if (shouldPause || newFailures >= ALERT_ESCALATION_THRESHOLD) {
+          void reportOps({
+            source: 'cron-schedules',
+            severity: 'error',
+            message: 'schedule processing failed',
+            detail: `schedule ${schedule.id} (${newFailures} consecutive failures): ${reason}`,
+            dedupeKey: `cron-schedules:${schedule.id}`,
+          });
+        }
+
         await db
           .update(taskSchedules)
           .set({
             consecutiveFailures: newFailures,
-            lastError: error instanceof Error ? error.message : 'Unknown error',
+            lastError: reason,
             enabled: shouldPause ? false : schedule.enabled,
             // Still advance nextRunAt so we don't retry immediately
             nextRunAt: (() => {

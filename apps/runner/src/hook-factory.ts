@@ -20,6 +20,7 @@ export interface HookFactoryContext {
     resolve: (result: any) => void;
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
+    resolvePayloadType?: 'hook' | 'canUseTool';
   }>;
 }
 
@@ -36,6 +37,12 @@ export class HookFactory {
   createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
+
+      // Track prompt_id for OTEL trace correlation (SDK v0.3.196)
+      const promptId = (input as any).prompt_id as string | undefined;
+      if (promptId && promptId !== worker.currentPromptId) {
+        worker.currentPromptId = promptId;
+      }
 
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
@@ -293,6 +300,106 @@ export class HookFactory {
           resolve,
           toolInput,
           suggestions: permissionSuggestions || [],
+          resolvePayloadType: 'hook',
+        });
+      });
+    };
+  }
+
+  // Create a canUseTool callback for programmatic permission decisions (SDK v0.3.186+).
+  // Background agents now forward permission prompts to canUseTool instead of auto-denying.
+  // Main agent calls are allowed immediately (hooks handle the actual decisions).
+  // Background subagent calls (agentID present) are routed to the user via waitingFor.
+  // agentID and requestId (v0.3.199) uniquely identify the request for multi-agent routing.
+  createCanUseToolCallback(worker: LocalWorker, bypassPermissions: boolean): (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: {
+      signal: AbortSignal;
+      suggestions?: unknown[];
+      agentID?: string;
+      requestId: string;
+      toolUseID: string;
+      title?: string;
+      description?: string;
+      [key: string]: unknown;
+    },
+  ) => Promise<{ behavior: 'allow'; updatedPermissions?: unknown[] } | { behavior: 'deny'; message: string }> {
+    return async (toolName, input, options) => {
+      const { agentID, requestId, title, suggestions } = options;
+
+      // Main agent path (no agentID): allow — hooks run next and make the real decision
+      if (!agentID) {
+        return { behavior: 'allow' as const };
+      }
+
+      // Background subagent path: route to user for approval
+      // If another permission request is already pending, deny to avoid deadlock
+      if (this.ctx.pendingPermissionRequests.has(worker.id)) {
+        console.log(`[Worker ${worker.id}] canUseTool: denied ${toolName} from agent ${agentID} (request ${requestId}) — another request already pending`);
+        return { behavior: 'deny' as const, message: 'Permission denied: another request is already pending' };
+      }
+
+      const prompt = title || `Permission required for ${toolName} (subagent: ${agentID})`;
+
+      // Build human-readable labels for each suggestion (reuse PermissionRequest logic)
+      const permissionSuggestions: import('./types').PermissionSuggestion[] = ((suggestions as any[]) || []).map((s: any) => {
+        let label = '';
+        if (s.type === 'addRules' || s.type === 'replaceRules') {
+          const rules = (s.rules as Array<{ toolName: string; ruleContent?: string }>)?.map(
+            r => r.ruleContent ? `${r.toolName}: ${r.ruleContent}` : r.toolName,
+          ) || [];
+          label = `Allow ${rules.join(', ')}`;
+        } else if (s.type === 'setMode') {
+          label = `Switch to ${s.mode} mode`;
+        } else if (s.type === 'addDirectories') {
+          label = `Allow access to ${(s.directories as string[])?.join(', ') || 'directories'}`;
+        } else {
+          label = `${s.type}`;
+        }
+        return { type: s.type, label, raw: s };
+      });
+
+      // Set worker to waiting state
+      worker.status = 'waiting';
+      worker.waitingFor = {
+        type: 'permission',
+        prompt,
+        toolName,
+        toolInput: input,
+        permissionSuggestions,
+        options: [
+          { label: 'Allow once', description: 'Allow this tool call' },
+          ...(permissionSuggestions.length > 0 ? [{ label: 'Always allow', description: 'Apply suggested permission rules for the session' }] : []),
+          { label: 'Deny', description: 'Block this tool call' },
+        ],
+      };
+      worker.currentAction = `Permission: ${toolName} (agent: ${agentID})`;
+      worker.hasNewActivity = true;
+      worker.lastActivity = Date.now();
+      this.ctx.addMilestone(worker, { type: 'status', label: `canUseTool: ${toolName} (agent: ${agentID})`, ts: Date.now() });
+      console.log(`[Worker ${worker.id}] canUseTool: ${toolName} from agent ${agentID} (request ${requestId})`);
+
+      // Sync to server and persist
+      this.ctx.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: {
+          type: 'permission',
+          prompt,
+          options: worker.waitingFor.options?.map(o => typeof o === 'string' ? o : o.label),
+        },
+      }).catch(() => {});
+      storeSaveWorker(worker);
+      this.ctx.emit({ type: 'worker_update', worker });
+
+      // Block until user resolves the permission decision
+      return new Promise<{ behavior: 'allow'; updatedPermissions?: unknown[] } | { behavior: 'deny'; message: string }>((resolve) => {
+        this.ctx.pendingPermissionRequests.set(worker.id, {
+          resolve,
+          toolInput: input,
+          suggestions: suggestions || [],
+          resolvePayloadType: 'canUseTool',
         });
       });
     };
@@ -376,6 +483,12 @@ export class HookFactory {
     return async (input) => {
       if ((input as any).hook_event_name !== 'Stop') return {};
 
+      // Track prompt_id for OTEL trace correlation (SDK v0.3.196)
+      const promptId = (input as any).prompt_id as string | undefined;
+      if (promptId && promptId !== worker.currentPromptId) {
+        worker.currentPromptId = promptId;
+      }
+
       const lastMessage = (input as any).last_assistant_message as string | undefined;
       if (lastMessage) {
         worker.lastAssistantMessage = lastMessage;
@@ -418,6 +531,12 @@ export class HookFactory {
   createNotificationHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'Notification') return {};
+
+      // Track prompt_id for OTEL trace correlation (SDK v0.3.196)
+      const promptId = (input as any).prompt_id as string | undefined;
+      if (promptId && promptId !== worker.currentPromptId) {
+        worker.currentPromptId = promptId;
+      }
 
       const message = (input as any).message as string;
       const title = (input as any).title as string | undefined;
