@@ -5,7 +5,19 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { cleanupWorktree } from './git-operations';
+import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
 import { sessionLog } from './session-logger';
+
+/**
+ * Resolve the main-repo path that owns a worktree by trimming at the
+ * `.buildd-worktrees/` marker. Worktrees live at
+ * `<repoPath>/.buildd-worktrees/<safeBranch>`.
+ */
+function repoPathFromWorktree(worktreePath: string): string {
+  const marker = join('.buildd-worktrees', '');
+  const idx = worktreePath.indexOf(marker);
+  return idx > 0 ? worktreePath.substring(0, idx) : worktreePath;
+}
 
 /**
  * Check if a branch name indicates an ephemeral e2e test worktree.
@@ -269,6 +281,27 @@ export class WorkerSync {
     const RETENTION_MS = 10 * 60 * 1000;
     const now = Date.now();
     for (const [id, worker] of this.ctx.workers.entries()) {
+      // Abandoned `waiting` workers are NEVER evicted from memory/disk (kept for
+      // history + possible resume), so their worktree would otherwise leak
+      // forever. Reclaim the worktree (only) once the worker has been idle past
+      // the 24h TTL; the worker record itself is preserved. Clearing
+      // worktreePath prevents re-attempting removal on later cycles.
+      if (worker.status === 'waiting') {
+        if (
+          now - worker.lastActivity >= WAITING_WORKTREE_TTL_MS &&
+          worker.worktreePath &&
+          existsSync(worker.worktreePath)
+        ) {
+          const repoPath = repoPathFromWorktree(worker.worktreePath);
+          cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+            console.error(`[Worker ${id}] Waiting worktree TTL cleanup failed:`, err);
+          });
+          sessionLog(id, 'info', 'waiting_worktree_reclaimed', `Reclaimed worktree of abandoned waiting worker after ${Math.round(WAITING_WORKTREE_TTL_MS / 3600000)}h TTL`);
+          worker.worktreePath = undefined;
+        }
+        continue; // never evict waiting workers from memory
+      }
+
       // Fast eviction for: E2E test workers, and workers that failed within 30s (e.g., quota errors)
       const sessionDuration = worker.completedAt ? worker.completedAt - (worker.startedAt || worker.completedAt) : Infinity;
       const isQuickFailure = worker.status === 'error' && sessionDuration < 30_000;
@@ -279,11 +312,7 @@ export class WorkerSync {
       ) {
         // Clean up worktree if it still exists (completed workers keep worktree for resume)
         if (worker.worktreePath && existsSync(worker.worktreePath)) {
-          const worktreeMarker = join('.buildd-worktrees', '');
-          const worktreeIdx = worker.worktreePath.indexOf(worktreeMarker);
-          const repoPath = worktreeIdx > 0
-            ? worker.worktreePath.substring(0, worktreeIdx)
-            : worker.worktreePath;
+          const repoPath = repoPathFromWorktree(worker.worktreePath);
           cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
             console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
           });
