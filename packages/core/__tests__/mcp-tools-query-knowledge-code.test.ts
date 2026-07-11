@@ -1,24 +1,21 @@
 /**
- * query_knowledge code/docs corpus → spec-sync namespace
+ * query_knowledge code/docs corpus → per-workspace namespace
  *
- * The spec-sync pipeline indexes the repo under SPEC_SYNC_NAMESPACE:code and
- * SPEC_SYNC_NAMESPACE:docs. These are the same namespaces spec_compare reads.
- * query_knowledge must redirect code/docs lookups there instead of the
- * workspace-scoped {workspaceId}:code/docs namespaces (which are empty).
+ * Each workspace's code is indexed into {workspaceId}:code and {workspaceId}:docs
+ * by the per-workspace ingestion pipeline. query_knowledge must route code/docs
+ * lookups to the caller's workspace, not a shared global namespace.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { handleMemoryAction } from '../mcp-tools';
 import type { KnowledgeStore, QueryResult } from '../knowledge-store/types';
 
 /** Mirrors buildNamespace without importing pg-vector-store (avoids drizzle-orm). */
 const ns = (id: string, corpus: string) => `${id}:${corpus}`;
 
-const SPEC_NS = 'aaaa0000-0000-0000-0000-000000000000';
 const WS_ID   = 'bbbb0000-0000-0000-0000-000000000000';
 const TEAM_ID  = 'cccc0000-0000-0000-0000-000000000000';
-const DEFAULT_SPEC_NS = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 
-function makeQueryRecorder(): KnowledgeStore & { queriedNamespaces: string[] } {
+function makeQueryRecorder(returnEmpty = false): KnowledgeStore & { queriedNamespaces: string[] } {
   const queriedNamespaces: string[] = [];
   const fakeChunk = (namespace: string): QueryResult => ({
     id: 'src/lib/auth.ts#1',
@@ -36,7 +33,7 @@ function makeQueryRecorder(): KnowledgeStore & { queriedNamespaces: string[] } {
     queriedNamespaces,
     async query(namespace: string): Promise<QueryResult[]> {
       queriedNamespaces.push(namespace);
-      return [fakeChunk(namespace)];
+      return returnEmpty ? [] : [fakeChunk(namespace)];
     },
     async upsert() {},
     async delete() {},
@@ -56,35 +53,19 @@ function memCtx(store: KnowledgeStore) {
 // Minimal no-op MemoryClient (query_knowledge does not call the memory service)
 const nullMemClient = {} as any;
 
-const savedEnv = process.env.SPEC_SYNC_NAMESPACE;
-
-describe('query_knowledge code/docs → spec-sync namespace', () => {
-  beforeAll(() => {
-    process.env.SPEC_SYNC_NAMESPACE = SPEC_NS;
-  });
-
-  afterAll(() => {
-    if (savedEnv !== undefined) {
-      process.env.SPEC_SYNC_NAMESPACE = savedEnv;
-    } else {
-      delete process.env.SPEC_SYNC_NAMESPACE;
-    }
-  });
-
-  it('code corpus targets the spec-sync namespace, not the workspace namespace', async () => {
+describe('query_knowledge code/docs → per-workspace namespace', () => {
+  it('code corpus targets the workspace namespace, not a global namespace', async () => {
     const store = makeQueryRecorder();
     await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'authenticateApiKey', corpus: 'code' }, memCtx(store));
     expect(store.queriedNamespaces).toHaveLength(1);
-    expect(store.queriedNamespaces[0]).toBe(ns(SPEC_NS, 'code'));
-    expect(store.queriedNamespaces[0]).not.toContain(WS_ID);
+    expect(store.queriedNamespaces[0]).toBe(ns(WS_ID, 'code'));
   });
 
-  it('docs corpus targets the spec-sync namespace, not the workspace namespace', async () => {
+  it('docs corpus targets the workspace namespace, not a global namespace', async () => {
     const store = makeQueryRecorder();
     await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'release workflow', corpus: 'docs' }, memCtx(store));
     expect(store.queriedNamespaces).toHaveLength(1);
-    expect(store.queriedNamespaces[0]).toBe(ns(SPEC_NS, 'docs'));
-    expect(store.queriedNamespaces[0]).not.toContain(WS_ID);
+    expect(store.queriedNamespaces[0]).toBe(ns(WS_ID, 'docs'));
   });
 
   it('memory corpus still uses team-scoped namespace', async () => {
@@ -101,7 +82,7 @@ describe('query_knowledge code/docs → spec-sync namespace', () => {
     expect(store.queriedNamespaces[0]).toBe(ns(WS_ID, 'task'));
   });
 
-  it('code query returns results with sourceUrl from spec-sync index', async () => {
+  it('code query returns results with sourceUrl from workspace index', async () => {
     const store = makeQueryRecorder();
     const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'authenticateApiKey', corpus: 'code' }, memCtx(store));
     expect(res.isError).toBeFalsy();
@@ -110,16 +91,21 @@ describe('query_knowledge code/docs → spec-sync namespace', () => {
     expect(out).toContain('/src/lib/auth.ts');
   });
 
-  it('falls back to the hardcoded default when SPEC_SYNC_NAMESPACE is unset', async () => {
-    const prev = process.env.SPEC_SYNC_NAMESPACE;
-    delete process.env.SPEC_SYNC_NAMESPACE;
-    try {
-      const store = makeQueryRecorder();
-      await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'auth', corpus: 'code' }, memCtx(store));
-      expect(store.queriedNamespaces[0]).toBe(ns(DEFAULT_SPEC_NS, 'code'));
-    } finally {
-      if (prev !== undefined) process.env.SPEC_SYNC_NAMESPACE = prev;
-      else process.env.SPEC_SYNC_NAMESPACE = SPEC_NS; // restore for subsequent tests
-    }
+  it('empty code namespace returns a message about running ingestion', async () => {
+    const store = makeQueryRecorder(true);
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'auth', corpus: 'code' }, memCtx(store));
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text;
+    expect(out.toLowerCase()).toContain('no code index');
+    expect(out.toLowerCase()).toContain('ingestion');
+  });
+
+  it('empty docs namespace returns a message about running ingestion', async () => {
+    const store = makeQueryRecorder(true);
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'api reference', corpus: 'docs' }, memCtx(store));
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text;
+    expect(out.toLowerCase()).toContain('no docs index');
+    expect(out.toLowerCase()).toContain('ingestion');
   });
 });

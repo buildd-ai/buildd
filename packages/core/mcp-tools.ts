@@ -168,7 +168,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId} as the namespace base; corpus=task uses {workspaceId}; corpus=code/docs uses the SPEC_SYNC_NAMESPACE — these are intentionally different IDs.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -2557,11 +2557,6 @@ import {
   renderPlanText,
 } from './knowledge-store/cards';
 
-// Default spec-sync namespace. Used by both spec_compare (admin dev tool) and
-// query_knowledge(corpus:code|docs) which reads from the same index.
-// Override via the SPEC_SYNC_NAMESPACE env var on any deployment.
-const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
-
 /**
  * Resolve the KnowledgeStore namespace for a corpus.
  *
@@ -2574,9 +2569,9 @@ const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
  *     d2cb1c29 is the teamId; 57ffc0e4 is the workspaceId. Reads and writes both
  *     use teamId, so they are consistent.
  *
- *   corpus=code|docs → {SPEC_SYNC_NAMESPACE}:code|docs
- *     Indexed by the spec-sync ingestion pipeline into a single shared namespace.
- *     Override via SPEC_SYNC_NAMESPACE env var; defaults to SPEC_SYNC_NS_DEFAULT.
+ *   corpus=code|docs → {workspaceId}:code|docs
+ *     Indexed per-workspace by the ingestion pipeline (ingest-knowledge.ts).
+ *     Run with WORKSPACE_ID=<id> to populate; empty until ingested.
  *
  *   corpus=task|artifact|pr|plan|session → {workspaceId}:{corpus}
  *     Work-product corpora are workspace-scoped (auto-indexed by mirrorWorkProduct).
@@ -2780,16 +2775,7 @@ export async function handleMemoryAction(
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
 
-      // code/docs are indexed by the spec-sync pipeline into its own namespace —
-      // the workspace-scoped {workspaceId}:code/docs namespaces are empty.
-      // Point these corpora at the same index that spec_compare reads.
-      let ns: string | null;
-      if (corpus === 'code' || corpus === 'docs') {
-        const specSyncId = process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
-        ns = buildNamespace(specSyncId, corpus);
-      } else {
-        ns = knowledgeNamespace(ctx, corpus);
-      }
+      const ns = knowledgeNamespace(ctx, corpus);
 
       if (!ns) {
         throw new Error(corpus === 'memory'
@@ -2805,6 +2791,9 @@ export async function handleMemoryAction(
       });
 
       if (results.length === 0) {
+        if (corpus === 'code' || corpus === 'docs') {
+          return text(`No ${corpus} index for this workspace (namespace: ${ns}) — run ingestion first: WORKSPACE_ID=${ctx.workspaceId} bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
+        }
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
