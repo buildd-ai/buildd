@@ -116,18 +116,16 @@ export async function POST(
             inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle'])
           ));
 
-        // Notify each worker's channel about the failure
+        // Notify each worker's channel about the failure (thin payload)
         for (const w of activeWorkers) {
           await triggerEvent(
             channels.worker(w.id),
             events.WORKER_FAILED,
             {
-              worker: {
-                ...w,
-                status: 'failed',
-                error: 'Task was reassigned',
-                completedAt: new Date(),
-              },
+              workerId: w.id,
+              taskId: w.taskId,
+              status: 'failed',
+              error: 'Task was reassigned',
             }
           );
         }

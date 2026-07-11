@@ -705,6 +705,7 @@ export default async function TaskDetailPage({
                 waitingFor: activeWorker.waitingFor as any,
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
+                updatedAt: activeWorker.updatedAt?.toISOString() || null,
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
                 resultMeta: activeWorker.resultMeta as any,
               }}
