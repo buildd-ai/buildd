@@ -57,22 +57,26 @@ export default function MissionAutoRefresh({
     };
 
     // Worker progress — filter by taskId matching a mission task
-    const handleWorkerProgress = (data: { worker?: { taskId?: string } }) => {
-      if (data.worker?.taskId && stableTaskIds.has(data.worker.taskId)) {
+    // Accepts thin events {taskId} and legacy {worker:{taskId}}
+    const handleWorkerProgress = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+      const taskId = data.taskId ?? data.worker?.taskId;
+      if (taskId && stableTaskIds.has(taskId)) {
         doRefresh();
       }
     };
 
     // Worker completed
-    const handleWorkerCompleted = (data: { worker?: { taskId?: string } }) => {
-      if (data.worker?.taskId && stableTaskIds.has(data.worker.taskId)) {
+    const handleWorkerCompleted = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+      const taskId = data.taskId ?? data.worker?.taskId;
+      if (taskId && stableTaskIds.has(taskId)) {
         doRefresh();
       }
     };
 
     // Worker failed
-    const handleWorkerFailed = (data: { worker?: { taskId?: string } }) => {
-      if (data.worker?.taskId && stableTaskIds.has(data.worker.taskId)) {
+    const handleWorkerFailed = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+      const taskId = data.taskId ?? data.worker?.taskId;
+      if (taskId && stableTaskIds.has(taskId)) {
         doRefresh();
       }
     };

@@ -953,31 +953,33 @@ export async function PATCH(
     status === 'completed' &&
     body.structuredOutput?.status === 'ok';
 
-  // Trigger realtime events
+  // Trigger realtime events.
+  // Thin-event pattern: send only identifiers + status, never the full worker
+  // row. The full row can exceed Pusher's 10 KB limit (instructionHistory,
+  // mcpCalls, milestones). Clients that need fresh row data call router.refresh()
+  // or re-fetch; clients that only need status use the fields below.
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
 
-  const pusherPayload: Record<string, unknown> = { worker: updated };
+  const pusherPayload: Record<string, unknown> = {
+    workerId: id,
+    taskId: worker.taskId,
+    status: updated.status,
+    updatedAt: updated.updatedAt,
+  };
   if (taskProgress && Array.isArray(taskProgress) && taskProgress.length > 0) {
+    // taskProgress is transient (not persisted) — must travel via Pusher
     pusherPayload.taskProgress = taskProgress;
   }
   if (isHeartbeatOk) {
     pusherPayload.heartbeatOk = true;
   }
 
-  await triggerEvent(
-    channels.worker(id),
-    eventName,
-    pusherPayload
-  );
+  await triggerEvent(channels.worker(id), eventName, pusherPayload);
 
   if (worker.workspaceId) {
-    await triggerEvent(
-      channels.workspace(worker.workspaceId),
-      eventName,
-      pusherPayload
-    );
+    await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.

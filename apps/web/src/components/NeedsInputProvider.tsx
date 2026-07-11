@@ -74,17 +74,19 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
 
     const channelNames = workspaceIds.map(id => `${CHANNEL_PREFIX}workspace-${id}`);
 
-    const handleWorkerUpdate = (data: { worker: { taskId: string | null; status: string } }) => {
-      const { worker } = data;
-      if (!worker.taskId) return;
+    // Accepts thin events {taskId, status} and legacy {worker:{taskId, status}}
+    const handleWorkerUpdate = (data: { taskId?: string | null; status?: string; worker?: { taskId?: string | null; status?: string } }) => {
+      const taskId = data.taskId ?? data.worker?.taskId;
+      const workerStatus = data.status ?? data.worker?.status;
+      if (!taskId) return;
 
-      if (worker.status === 'waiting_input') {
+      if (workerStatus === 'waiting_input') {
         // Refetch to get full task details
         fetchWaitingTasks();
       } else {
         // Worker is no longer waiting - remove from list
         setTasks(prev => {
-          const filtered = prev.filter(t => t.id !== worker.taskId);
+          const filtered = prev.filter(t => t.id !== taskId);
           prevTaskIdsRef.current = new Set(filtered.map(t => t.id));
           return filtered;
         });
