@@ -130,12 +130,23 @@ export async function resolveCompletedTask(
     }
   }
 
+  // Event-driven mission completion: when a non-planning execution task in a mission
+  // reaches terminal state, fire the dormancy check so the mission can auto-complete
+  // without waiting for the next heartbeat. The debounce in maybeRetriggerMission
+  // prevents duplicate evaluations from concurrent task completions.
+  if (completedTaskFull?.missionId && completedTaskFull.mode !== 'planning') {
+    maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
+      console.error(`[mission-loop] execution task completion retrigger failed:`, err)
+    );
+  }
+
   // Check if any tasks have this task in their dependsOn list
   // For failed tasks: cascade failure to dependent tasks
   // For completed tasks: check if deps are now unblocked
   if (completedTaskFull?.status === 'failed') {
     await cascadeDependencyFailure(completedTaskId);
-  } else {
+  } else if (completedTaskFull?.status !== 'cancelled') {
+    // Don't unblock dependents for cancelled tasks — cascading cancellation would be too aggressive
     await checkDependsOnResolved(completedTaskId);
   }
 }
@@ -156,7 +167,7 @@ async function checkChildrenCompleted(
   if (children.length === 0) return;
 
   const allDone = children.every(
-    (c) => c.status === 'completed' || c.status === 'failed'
+    (c) => c.status === 'completed' || c.status === 'failed' || c.status === 'cancelled'
   );
 
   if (allDone) {
@@ -248,7 +259,7 @@ async function maybeCreateAggregationTask(
     result: c.result ?? null,
   }));
 
-  // Skip aggregation when all children failed — nothing to synthesize
+  // Skip aggregation when all children failed or cancelled — nothing to synthesize
   const hasCompletedChild = childSummaries.some(c => c.status === 'completed');
   if (!hasCompletedChild) {
     if (parent.missionId) {

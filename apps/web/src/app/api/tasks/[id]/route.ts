@@ -5,6 +5,7 @@ import { and, eq, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 // GET /api/tasks/[id] - Get a single task.
 // Query params:
@@ -182,14 +183,15 @@ export async function PATCH(
     }
 
     if (status !== undefined) {
-      const allowedStatuses = ['pending', 'completed', 'failed'];
+      const allowedStatuses = ['pending', 'completed', 'failed', 'cancelled'];
       if (!allowedStatuses.includes(status)) {
         return NextResponse.json(
           { error: `Invalid status. Allowed: ${allowedStatuses.join(', ')}` },
           { status: 400 }
         );
       }
-      // Only allow completing/failing tasks that don't have active workers
+      // Only block completed/failed on active workers — cancelled bypasses this so owners
+      // can kill duplicate or stuck tasks regardless of worker state.
       if (status === 'completed' || status === 'failed') {
         const activeWorker = await db.query.workers.findFirst({
           where: and(
@@ -219,6 +221,14 @@ export async function PATCH(
       .set(updateData)
       .where(eq(tasks.id, id))
       .returning();
+
+    // When a task is cancelled, fire the mission dormancy check so missions with all
+    // deliverables in terminal state auto-complete without waiting for the next heartbeat.
+    if (status === 'cancelled' && updated?.missionId) {
+      resolveCompletedTask(id, updated.workspaceId).catch((err) =>
+        console.error('[task-patch] cancel dormancy check failed:', err)
+      );
+    }
 
     return NextResponse.json(updated);
   } catch (error) {
@@ -271,8 +281,8 @@ export async function DELETE(
     const force = req.nextUrl.searchParams.get('force') === 'true';
 
     if (!force) {
-      // Only allow deleting pending, assigned, failed, or completed tasks (not actively running)
-      if (!['pending', 'assigned', 'failed', 'completed'].includes(task.status)) {
+      // Only allow deleting pending, assigned, failed, completed, or cancelled tasks (not actively running)
+      if (!['pending', 'assigned', 'failed', 'completed', 'cancelled'].includes(task.status)) {
         return NextResponse.json(
           { error: `Cannot delete ${task.status} tasks. Wait for completion or use reassign.` },
           { status: 400 }

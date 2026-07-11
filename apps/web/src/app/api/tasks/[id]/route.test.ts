@@ -672,6 +672,61 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(capturedSetData.expiresAt).toBeNull();
   });
 
+  it('allows setting status to cancelled', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const updatedTask = { ...mockTask, status: 'cancelled' };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { status: 'cancelled' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.status).toBe('cancelled');
+    // cancelled should NOT check for active workers (mockWorkersFindMany not called)
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown status values', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { status: 'invalid_status' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toContain('Invalid status');
+  });
+
   it('allows API key auth to update task', async () => {
     const mockTask = {
       id: 'task-123',
