@@ -125,11 +125,11 @@ export async function PATCH(
           eq(secrets.label, body.connectorId),
           eq(secrets.purpose, 'mcp_connector_credential'),
         ));
-      triggerEvent(
+      void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_AUTH_EXPIRED,
         { workerId: id, connectorId: body.connectorId, connectorName: connectorRow.name },
-      ).catch(() => {});
+      );
     }
   }
 

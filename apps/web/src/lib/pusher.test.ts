@@ -3,10 +3,13 @@ import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:tes
 const mockTrigger = mock(() => Promise.resolve());
 
 // Mock the pusher npm package so pusher.ts can be imported without real credentials.
-// The actual mock client is injected via _setPusherClientForTesting in beforeEach,
-// so we don't rely on mock.module intercepting static imports (Bun version-sensitive).
+// Belt-and-suspenders for Bun version differences:
+//   - trigger=mockTrigger on MockPusher covers when mock.module intercepts static imports
+//   - _setPusherClientForTesting in beforeEach covers when it doesn't
 mock.module('pusher', () => ({
-  default: class MockPusher {},
+  default: class MockPusher {
+    trigger = mockTrigger;
+  },
 }));
 
 // Set up env vars so getPusher() doesn't short-circuit on missing config
@@ -20,10 +23,11 @@ const { triggerEvent, _setPusherClientForTesting } = await import('./pusher');
 const mockPusherClient = { trigger: mockTrigger } as any;
 
 beforeEach(() => {
-  // Directly inject the mock client — avoids relying on mock.module intercepting
-  // the static `import Pusher from 'pusher'` inside pusher.ts.
-  _setPusherClientForTesting(mockPusherClient);
+  // Reset first, then inject — ensures mockPusherClient.trigger always points
+  // to the current (reset) mockTrigger, regardless of Bun version behavior.
   mockTrigger.mockReset();
+  mockTrigger.mockImplementation(() => Promise.resolve());
+  _setPusherClientForTesting(mockPusherClient);
 });
 
 afterAll(() => {
