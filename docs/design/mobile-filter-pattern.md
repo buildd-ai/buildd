@@ -97,3 +97,51 @@ On **desktop**: search is always a visible fixed-width input inline with the fil
 | Team (`/app/team`) | TODO | Lower priority; simpler filter surface |
 
 See task `5ee76654` for the mobile header layout spec being applied to Missions. Filter rows begin below the page header per that spec.
+
+---
+
+## Custom Dropdown Contract — WorkspaceFilter
+
+**Rule: Never use native form controls for primary navigation or filter surfaces.**
+
+Native `<select>` elements are OS-rendered and cannot carry brand tokens. All workspace/team filter selectors must use the custom `WorkspaceFilter` component.
+
+### Dropdown anatomy
+
+```
+┌─────────────────────────────┐  ← 2px border-strong, hard shadow (no blur)
+│ All workspaces          ✓   │  ← options list, mono font, checkmark on current
+│ acme/api                    │
+│ acme/frontend               │
+├─────────────────────────────┤  ← 1px divider (border-default)
+│ + New workspace             │  ← pinned actions footer (accent color)
+└─────────────────────────────┘
+```
+
+- **Trigger**: `height: 2rem`, 2px `border-strong` border, `bg-surface-2`, mono text, chevron icon
+- **Options list**: `role="listbox"`, each option is `role="option"` with `aria-selected`; checkmark (accent color) on the currently active selection
+- **Pinned footer**: Separated by `border-default` divider; contains action links (e.g. "+ New workspace" → `/app/workspaces/new`). Footer links are not options — they are not focusable via Arrow keys.
+- **Keyboard**: Arrow keys navigate options; Enter/Space selects; Escape closes and returns focus to trigger
+- **Shadow**: `shadow-md` (hard 4px offset, no blur) on the panel when open
+
+### Mobile presentation rule
+
+On viewports `< 640px` the dropdown opens as a **bottom sheet**:
+- Full-viewport-width panel slides up from the bottom edge
+- Black/60 backdrop closes on tap
+- Drag handle visual cue at top of sheet
+- Options have `py-3.5` tap targets (min 44px height)
+- Safe-area padding at bottom for notch phones
+
+On desktop the panel anchors directly below (or above, if space is constrained) the trigger, right-aligned, minimum 180px wide.
+
+### Where this component is used
+
+`WorkspaceFilter` is the single shared component for all workspace-scoping dropdowns. Do not create per-page forks. Current surfaces:
+
+| Surface | File |
+|---------|------|
+| Home | `apps/web/src/app/app/(protected)/home/page.tsx` |
+| Missions | `apps/web/src/app/app/(protected)/missions/page.tsx` |
+| Activity | `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` |
+| Health | `apps/web/src/app/app/(protected)/health/HealthClient.tsx` |
