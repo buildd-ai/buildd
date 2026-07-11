@@ -667,7 +667,7 @@ export default async function MissionDetailPage({
                   <span className={`w-3 h-3 rounded-full border-2 shrink-0 ${isManualMode ? 'border-amber-500/40 bg-transparent' : 'border-border-default bg-transparent'}`} />
                 </div>
                 {isManualMode ? (
-                  <span className="text-[12px] text-amber-600 italic pl-2">Monitoring active · Next: {timeAgo(scheduleNextRunAt)} · Orchestrator idle (manual)</span>
+                  <span className="text-[12px] text-amber-600 italic pl-2">Monitoring active{scheduleNextRunAt ? ` · Next: ${timeAgo(scheduleNextRunAt)}` : ''} · Orchestrator idle (manual)</span>
                 ) : mission.status === 'paused' ? (
                   <span className="text-[12px] text-text-muted italic pl-2">Monitoring paused</span>
                 ) : scheduleOverdue ? (
