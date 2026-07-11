@@ -2471,16 +2471,22 @@ export async function handleBuilddAction(
       if (level !== 'admin') throw new Error('send_agent_message requires an admin-level token');
       if (!params.taskId || !params.message) throw new Error('taskId and message are required');
 
-      // Fetch task with active worker info
-      const task = await api(`/api/tasks/${params.taskId}`);
-      const workerId = task.activeWorker?.id;
+      // Fetch task with workers so we can find the live worker by worker.status,
+      // not task.status. task.status stays 'assigned' the entire time a worker is
+      // running — it only transitions to 'completed'/'failed' on terminal status —
+      // so checking task.status causes false-negatives for tasks that are actively
+      // being worked on.
+      const task = await api(`/api/tasks/${params.taskId}?include=workers`);
+      const allWorkers: any[] = Array.isArray(task.workers) ? task.workers : [];
+      const activeWorker = allWorkers.find(
+        (w) => w.status !== 'completed' && w.status !== 'failed',
+      );
+      const workerId = activeWorker?.id;
 
       if (!workerId) {
-        const hint = task.status === 'completed' || task.status === 'failed'
-          ? `Task is already ${task.status} — no active worker to message.`
-          : task.status === 'pending'
+        const hint = allWorkers.length === 0
           ? 'Task is still pending — not yet claimed by a worker.'
-          : 'No active worker found for this task.';
+          : 'No active worker found for this task (all workers are in a terminal state).';
         throw new Error(`Cannot send message: ${hint} (task status: ${task.status})`);
       }
 
