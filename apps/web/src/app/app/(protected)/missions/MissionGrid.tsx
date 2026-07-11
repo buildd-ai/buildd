@@ -70,7 +70,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
   const grouped = useMemo(() => {
     const groups: Record<MissionGroup, MissionItem[]> = {
-      running: [], attention: [], review: [], scheduled: [], completed: [],
+      running: [], attention: [], review: [], scheduled: [], paused: [], completed: [],
     };
     for (const m of missions) {
       groups[healthToGroup(m.health, m.progress)].push(m);
@@ -81,7 +81,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
   const counts: Record<FilterTab, number> = useMemo(() => ({
     all: missions.length,
-    active: grouped.running.length + grouped.attention.length,
+    active: grouped.running.length + grouped.attention.length + grouped.review.length,
     scheduled: grouped.scheduled.length,
     completed: grouped.completed.length,
   }), [missions.length, grouped]);
@@ -147,7 +147,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
         // Sub-group this workspace's missions by health group
         const subGroups: Record<MissionGroup, MissionItem[]> = {
-          running: [], attention: [], review: [], scheduled: [], completed: [],
+          running: [], attention: [], review: [], scheduled: [], paused: [], completed: [],
         };
         for (const m of bucket.missions) {
           subGroups[healthToGroup(m.health, m.progress)].push(m);
@@ -166,12 +166,13 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
         const hasContent = GROUP_ORDER.some(g => subGroups[g].length > 0);
         if (!hasContent) return null;
 
-        // Compact bucket: workspace has no active/scheduled missions and no recent completions
+        // Compact bucket: workspace has no active/scheduled/paused missions and no recent completions
         // — de-emphasise it so active workspaces aren't buried
         const isAllOldCompleted = multiWorkspace
           && subGroups.running.length === 0
           && subGroups.attention.length === 0
           && subGroups.scheduled.length === 0
+          && subGroups.paused.length === 0
           && recentCompleted.length === 0
           && oldCompleted.length > 0;
 
@@ -226,6 +227,25 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
 
               const section = SECTION_DISPLAY[groupKey];
               const isCompact = groupKey === 'completed';
+
+              // Paused: compact cards, all items always visible (no progressive disclosure)
+              if (groupKey === 'paused') {
+                return (
+                  <div key={groupKey} className="space-y-2">
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="section-label-missions" style={{ color: section.color }}>
+                        {section.label}
+                      </span>
+                      <span className="text-[10px] text-text-muted font-mono">{items.length}</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {items.map(mission => (
+                        <CompactMissionCard key={mission.id} mission={mission} group={groupKey} />
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
 
               if (isCompact) {
                 // When the whole bucket is expanded from compact mode, show all completed
