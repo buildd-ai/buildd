@@ -136,6 +136,22 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
+  it('skips retrigger when orchestrationMode is manual', async () => {
+    missionFindFirstResult = {
+      id: 'm1',
+      status: 'active',
+      scheduleId: null,
+      updatedAt: new Date(Date.now() - 30_000),
+      orchestrationMode: 'manual',
+      dependsOnMissionId: null,
+      gateCondition: 'merged',
+      dependencyMetAt: null,
+    };
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('skipped');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
   it('skips retrigger for heartbeat missions (no missionComplete)', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
