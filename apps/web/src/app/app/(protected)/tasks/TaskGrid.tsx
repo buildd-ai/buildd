@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import LocalTime from './LocalTime';
 
 interface GridTask {
   id: string;
@@ -110,9 +111,6 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
 
-  const resetShort = task.budgetResetsAt
-    ? ` · ~${new Date(task.budgetResetsAt).toISOString().slice(11, 16)}`
-    : '';
 
   const dotEl = (
     <span
@@ -129,7 +127,7 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
       title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
     >
-      ⏸ Paused{resetShort}
+      ⏸ Paused{task.budgetResetsAt && <LocalTime iso={task.budgetResetsAt} prefix=" · ~" />}
     </span>
   ) : (
     <StatusBadge status={task.status} />

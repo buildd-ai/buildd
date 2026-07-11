@@ -808,6 +808,22 @@ export async function POST(req: NextRequest) {
   }
 
   if (claimedWorkers.length === 0) {
+    // When the account's OAuth budget is exhausted, every non-tenant Claude task
+    // above was skipped by the budget gate (and none could fail over to Codex).
+    // That is NOT lock contention — returning a bare `race_lost` here hid the
+    // real cause and, critically, omitted `budgetResetsAt`, so the runner had no
+    // idea budget was blocking it or when it would clear. It then sat on its
+    // hourly fallback poll instead of resuming at reset time. (Root cause of the
+    // 2026-07-11 "work not picked up after budget is back" stall: 10 pending
+    // Claude tasks idle for the full 5h window + up to another hour.)
+    // Surface the reset time so the runner can schedule a resume poll for it.
+    if (accountBudgetExhausted) {
+      return NextResponse.json({
+        workers: [],
+        budgetResetsAt: account.budgetResetsAt,
+        diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+      });
+    }
     return NextResponse.json({
       workers: [],
       diagnostics: {

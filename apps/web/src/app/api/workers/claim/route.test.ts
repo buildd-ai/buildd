@@ -583,6 +583,12 @@ describe('POST /api/workers/claim', () => {
       const data = await res.json();
       expect(res.status).toBe(200);
       expect(data.workers.length).toBe(0);
+      // Regression (2026-07-11): when every pending task is budget-blocked and
+      // can't fail over, the response must surface budgetResetsAt + a budget
+      // reason — NOT a bare race_lost — so the runner can schedule a resume poll
+      // at reset time instead of stalling on its hourly fallback.
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.budgetResetsAt).toBeTruthy();
     });
 
     it('does not start a second Codex worker when the workspace already has one active', async () => {
