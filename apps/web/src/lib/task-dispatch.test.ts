@@ -1,4 +1,11 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
+
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+  channels: { worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}`, workspace: (id: string) => `workspace-${id}`, mission: (id: string) => `mission-${id}` },
+  events: {},
+}));
+
 import { buildTaskPayload } from './task-dispatch';
 
 describe('buildTaskPayload', () => {
