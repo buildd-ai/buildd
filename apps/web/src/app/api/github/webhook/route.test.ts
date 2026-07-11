@@ -182,6 +182,10 @@ mock.module('@/lib/pusher', () => ({
     MISSION_NOTE_POSTED: 'mission:note_posted',
   },
 }));
+mock.module('@/lib/work-tracker', () => ({
+  maybePostWorkTrackerNote: mock(() => Promise.resolve()),
+  postLinearCompletionComment: mock(() => Promise.resolve()),
+}));
 
 // Import handler AFTER mocks
 import { POST } from './route';

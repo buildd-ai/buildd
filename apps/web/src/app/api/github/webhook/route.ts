@@ -12,6 +12,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { postLinearCompletionComment } from '@/lib/work-tracker';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -411,6 +412,9 @@ async function handlePullRequestEvent(event: {
     if (!pr.draft && event.installation && action !== 'synchronize') {
       await maybeAutoMergeNoCiPr(event.installation.id, repository.full_name, pr);
     }
+
+    // Work-tracker: transition linked issue to "In Review" when PR is opened
+    maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
     return;
   }
 
@@ -453,6 +457,9 @@ async function handlePullRequestEvent(event: {
       .set({ status: 'completed', updatedAt: new Date() })
       .where(eq(tasks.id, worker.task.id));
     console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+
+    // Work-tracker: post completion comment and transition issue to "Done"
+    maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
 
     // PR merged: unblock any missions waiting on this mission's PRs to merge
     if (worker.task.missionId) {
@@ -1094,4 +1101,39 @@ async function handleReleasePrCiFailure(
       console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
     }
   }
+}
+
+// Work-tracker helper: if the PR belongs to a task with externalIssueId set and the
+// workspace has a workTracker connector, post a completion comment and transition state.
+async function maybePostWorkTrackerIssueUpdate(
+  prNumber: number,
+  prUrl: string,
+  merged: boolean,
+): Promise<void> {
+  const worker = await db.query.workers.findFirst({
+    where: eq(workers.prNumber, prNumber),
+    with: { task: true },
+  });
+  if (!worker?.task?.externalIssueId) return;
+
+  const task = worker.task;
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, task.workspaceId),
+    columns: { workTrackerConfig: true, teamId: true },
+  });
+  if (!ws?.workTrackerConfig) return;
+
+  const { connectorId, provider } = ws.workTrackerConfig;
+  if (provider !== 'linear') {
+    // Only Linear is supported in this phase
+    return;
+  }
+
+  await postLinearCompletionComment({
+    externalIssueId: task.externalIssueId!,
+    connectorId,
+    teamId: ws.teamId,
+    prUrl,
+    merged,
+  });
 }

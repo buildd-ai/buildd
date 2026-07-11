@@ -727,4 +727,62 @@ describe('WorkerManager — lifecycle', () => {
       expect(sessions.size).toBe(0);
     });
   });
+
+  // Regression (2026-07-11): after an OAuth budget reset the server re-queues
+  // held tasks with `task:updated` (no realtime nudge), so the runner must wake
+  // itself at reset time rather than waiting for its hourly fallback poll.
+  describe('scheduleBudgetResume()', () => {
+    // Capture the timer scheduled by scheduleBudgetResume without waiting real time.
+    function withCapturedTimeout<T>(fn: () => T): { result: T; cb: (() => void) | null; delay: number | null } {
+      const orig = globalThis.setTimeout;
+      let cb: (() => void) | null = null;
+      let delay: number | null = null;
+      (globalThis as any).setTimeout = (fn2: () => void, d: number) => {
+        cb = fn2;
+        delay = d;
+        return { unref() {} } as any;
+      };
+      try {
+        const result = fn();
+        return { result, cb, delay };
+      } finally {
+        globalThis.setTimeout = orig;
+      }
+    }
+
+    test('schedules a resume poll for a near-future reset and it re-polls when fired', () => {
+      manager = new WorkerManager(makeConfig());
+      const resetsAt = new Date(Date.now() + 60_000).toISOString(); // 1 min out
+      const { cb, delay } = withCapturedTimeout(() =>
+        (manager as any).scheduleBudgetResume(resetsAt),
+      );
+
+      // ~60s + the 5s post-reset buffer.
+      expect(delay).toBeGreaterThan(60_000);
+      expect(cb).not.toBeNull();
+
+      // Firing the timer must trigger a fresh claim (the held tasks get picked up).
+      mockClaimTask.mockClear();
+      mockClaimTask.mockImplementation(async () => ({ workers: [] }));
+      cb!();
+      expect(mockClaimTask).toHaveBeenCalledTimes(1);
+    });
+
+    test('does not schedule for an implausibly far reset (guard) — falls back to hourly poll', () => {
+      manager = new WorkerManager(makeConfig());
+      const farReset = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(); // 12h out
+      const { cb } = withCapturedTimeout(() =>
+        (manager as any).scheduleBudgetResume(farReset),
+      );
+      expect(cb).toBeNull();
+    });
+
+    test('ignores an unparseable reset timestamp', () => {
+      manager = new WorkerManager(makeConfig());
+      const { cb } = withCapturedTimeout(() =>
+        (manager as any).scheduleBudgetResume('not-a-date'),
+      );
+      expect(cb).toBeNull();
+    });
+  });
 });
