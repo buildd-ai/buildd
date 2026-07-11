@@ -110,14 +110,14 @@ export async function POST(
       await triggerEvent(
         channels.worker(id),
         events.WORKER_PROGRESS,
-        { worker, artifact: { ...updated, shareUrl } }
+        { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: worker.updatedAt }
       );
 
       if (worker.workspaceId) {
         await triggerEvent(
           channels.workspace(worker.workspaceId),
           'worker:artifact',
-          { worker, artifact: { ...updated, shareUrl } }
+          { workerId: id, taskId: worker.taskId }
         );
       }
 
@@ -149,18 +149,18 @@ export async function POST(
 
   const shareUrl = `${baseUrl}/share/${shareToken}`;
 
-  // Trigger realtime events
+  // Trigger realtime events (thin payloads — no full worker row)
   await triggerEvent(
     channels.worker(id),
     events.WORKER_PROGRESS,
-    { worker, artifact: { ...artifact, shareUrl } }
+    { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: worker.updatedAt }
   );
 
   if (worker.workspaceId) {
     await triggerEvent(
       channels.workspace(worker.workspaceId),
       'worker:artifact',
-      { worker, artifact: { ...artifact, shareUrl } }
+      { workerId: id, taskId: worker.taskId }
     );
   }
 

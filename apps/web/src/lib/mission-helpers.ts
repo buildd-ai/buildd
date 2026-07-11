@@ -1,6 +1,6 @@
 export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle';
 
-export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'completed';
+export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'paused' | 'completed';
 export type FilterTab = 'all' | 'active' | 'scheduled' | 'completed';
 
 export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: string }> = {
@@ -8,6 +8,7 @@ export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: strin
   attention: { label: 'NEEDS ATTENTION', color: 'var(--status-warning)' },
   review:    { label: 'AWAITING REVIEW', color: 'var(--status-success)' },
   scheduled: { label: 'SCHEDULED',       color: 'var(--status-info)' },
+  paused:    { label: 'PAUSED',          color: 'var(--text-muted)' },
   completed: { label: 'COMPLETED',       color: 'var(--text-muted)' },
 };
 
@@ -16,10 +17,11 @@ export const GROUP_ACCENT_CLASS: Record<MissionGroup, string> = {
   attention: 'mission-card-attention',
   review:    'mission-card-review',
   scheduled: 'mission-card-scheduled',
+  paused:    'mission-card-paused',
   completed: 'mission-card-completed',
 };
 
-export const GROUP_ORDER: MissionGroup[] = ['running', 'attention', 'review', 'scheduled', 'completed'];
+export const GROUP_ORDER: MissionGroup[] = ['running', 'attention', 'review', 'scheduled', 'paused', 'completed'];
 
 export const FILTER_TO_GROUPS: Record<FilterTab, MissionGroup[] | null> = {
   all: null,
@@ -33,8 +35,8 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     case 'active': return 'running';
     case 'stalled': return 'attention';
     case 'on-schedule': return 'scheduled';
-    case 'shipped':
-    case 'paused': return 'completed';
+    case 'paused': return 'paused';
+    case 'shipped': return 'completed';
     // Done-but-unarchived (100%) missions await user review; a cron archives
     // them after 24h of quiet (lib/mission-archive.ts). Anything short of
     // 100% with no agents running is genuinely stuck → attention.

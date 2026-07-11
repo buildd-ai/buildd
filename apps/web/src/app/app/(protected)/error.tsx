@@ -21,6 +21,11 @@ export default function ProtectedError({
         <p className="text-sm text-text-secondary mb-4">
           An unexpected error occurred. Please try again.
         </p>
+        {error.digest && (
+          <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded">
+            {error.digest}
+          </p>
+        )}
         <div className="flex items-center justify-center gap-3">
           <button
             onClick={reset}

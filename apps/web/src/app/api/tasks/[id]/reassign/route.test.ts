@@ -362,14 +362,17 @@ describe('POST /api/tasks/[id]/reassign', () => {
     const request = createMockRequest({ searchParams: { force: 'true' } });
     await callHandler(request, 'task-123');
 
-    // Verify WORKER_FAILED was called with correct data
+    // Verify WORKER_FAILED was called with thin event payload (no full worker row)
     const workerFailedCalls = mockTriggerEvent.mock.calls.filter(
       (call: any[]) => call[1] === 'worker:failed'
     );
     expect(workerFailedCalls.length).toBe(1);
     expect(workerFailedCalls[0][0]).toBe('worker-worker-1');
-    expect(workerFailedCalls[0][2].worker.status).toBe('failed');
-    expect(workerFailedCalls[0][2].worker.error).toBe('Task was reassigned');
+    expect(workerFailedCalls[0][2].workerId).toBe('worker-1');
+    expect(workerFailedCalls[0][2].status).toBe('failed');
+    expect(workerFailedCalls[0][2].error).toBe('Task was reassigned');
+    // Must not carry the full worker row (413 risk)
+    expect(workerFailedCalls[0][2].worker).toBeUndefined();
   });
 
   it('returns reassigned:false for completed task', async () => {

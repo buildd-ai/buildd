@@ -359,6 +359,14 @@ export interface ReleaseResult {
   releasePrUrl?: string;
 }
 
+// Work tracker connector configuration — links a workspace to an external issue tracker
+// via a connected MCP connector (e.g. Linear). provider is a detection hint for UI
+// labeling, auto-derived from the connector URL (e.g. 'linear.app' → 'linear').
+export interface WorkspaceWorkTrackerConfig {
+  connectorId: string;
+  provider: string;
+}
+
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
 export interface WorkspaceWebhookConfig {
   // Webhook endpoint URL (e.g., http://localhost:18789/hooks/agent)
@@ -482,6 +490,9 @@ export const workspaces = pgTable('workspaces', {
   // Release configuration — controls whether tasks can trigger a prod deploy
   releaseConfig: jsonb('release_config').$type<WorkspaceReleaseConfig>(),
 
+  // Work tracker integration — links a connector as the external issue tracker (e.g. Linear)
+  workTrackerConfig: jsonb('work_tracker_config').$type<WorkspaceWorkTrackerConfig>(),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -531,6 +542,9 @@ export const missions = pgTable('missions', {
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
   releasedAt: timestamp('released_at', { withTimezone: true }),
+  // External issue tracker link (e.g. Linear project) — set via /link-linear or API
+  externalIssueId: text('external_issue_id'),
+  externalIssueUrl: text('external_issue_url'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -548,6 +562,9 @@ export const tasks = pgTable('tasks', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   externalId: text('external_id'),
   externalUrl: text('external_url'),
+  // External issue tracker link (e.g. Linear issue) — set by agent or webhook integration
+  externalIssueId: text('external_issue_id'),
+  externalIssueUrl: text('external_issue_url'),
   title: text('title').notNull(),
   description: text('description'),
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
@@ -804,6 +821,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
+  lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
   pendingSuggestion: jsonb('pending_suggestion').$type<{
     cronExpression?: string;
     enabled?: boolean;

@@ -53,11 +53,18 @@ interface WorkspaceOption {
   name: string;
 }
 
+interface DelegateOption {
+  slug: string;
+  name: string;
+  /** Workspace name for workspace-scoped roles; undefined for team-level roles */
+  workspaceName?: string;
+}
+
 interface Props {
   role: Role;
   overrides: Role[];
   workspaces: WorkspaceOption[];
-  delegateOptions: { slug: string; name: string }[];
+  delegateOptions: DelegateOption[];
 }
 
 /** Fields that can be individually overridden per workspace */
@@ -629,23 +636,34 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               <div>
                 <label className="block text-sm font-medium text-text-primary mb-2">Can Delegate To</label>
                 <div className="flex flex-wrap gap-2">
-                  {delegateOptions.map(opt => {
-                    const active = canDelegateTo.includes(opt.slug);
-                    return (
-                      <button
-                        key={opt.slug}
-                        type="button"
-                        onClick={() => toggleDelegate(opt.slug)}
-                        className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
-                          active
-                            ? 'bg-text-primary border-text-primary text-surface-1'
-                            : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
-                        }`}
-                      >
-                        {opt.name}
-                      </button>
-                    );
-                  })}
+                  {(() => {
+                    // Detect duplicate names so we can qualify them with workspace context
+                    const nameCount = new Map<string, number>();
+                    for (const opt of delegateOptions) {
+                      nameCount.set(opt.name, (nameCount.get(opt.name) ?? 0) + 1);
+                    }
+                    return delegateOptions.map(opt => {
+                      const active = canDelegateTo.includes(opt.slug);
+                      const isAmbiguous = (nameCount.get(opt.name) ?? 0) > 1;
+                      const label = isAmbiguous && opt.workspaceName
+                        ? `${opt.workspaceName}/${opt.name}`
+                        : opt.name;
+                      return (
+                        <button
+                          key={opt.slug}
+                          type="button"
+                          onClick={() => toggleDelegate(opt.slug)}
+                          className={`px-3 py-1 text-[12px] font-medium border-2 transition-colors ${
+                            active
+                              ? 'bg-text-primary border-text-primary text-surface-1'
+                              : 'bg-transparent border-border-strong text-text-secondary hover:text-text-primary'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             )}

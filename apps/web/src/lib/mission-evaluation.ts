@@ -95,6 +95,7 @@ export async function buildEvaluationContext(missionId: string): Promise<{
 
   const completed = taskSummary.filter(t => t.status === 'completed');
   const failed = taskSummary.filter(t => t.status === 'failed');
+  const cancelled = taskSummary.filter(t => t.status === 'cancelled');
   const pending = taskSummary.filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status));
 
   // Build evaluation prompt
@@ -110,6 +111,7 @@ export async function buildEvaluationContext(missionId: string): Promise<{
   descParts.push(`- Total tasks: ${taskSummary.length}`);
   descParts.push(`- Completed: ${completed.length}`);
   descParts.push(`- Failed: ${failed.length}`);
+  descParts.push(`- Cancelled: ${cancelled.length} (excluded from progress — these were killed as duplicates or unwanted)`);
   descParts.push(`- In progress / pending: ${pending.length}`);
 
   if (completed.length > 0) {
@@ -129,6 +131,14 @@ export async function buildEvaluationContext(missionId: string): Promise<{
     }
   }
 
+  if (cancelled.length > 0) {
+    descParts.push(`\n### Cancelled Tasks (excluded from completion assessment)`);
+    descParts.push(`These were killed as duplicates or unwanted — do NOT treat them as failed work:`);
+    for (const t of cancelled) {
+      descParts.push(`- **${t.title}**`);
+    }
+  }
+
   if (pending.length > 0) {
     descParts.push(`\n### Still In Progress`);
     for (const t of pending) {
@@ -139,11 +149,12 @@ export async function buildEvaluationContext(missionId: string): Promise<{
   descParts.push(`\n### Evaluation Instructions`);
   descParts.push(`1. Compare the original mission goal against the completed work above.`);
   descParts.push(`2. For each task, assign a disposition: completed, skipped (with reason), failed (with reason), or still_needed.`);
-  descParts.push(`3. Determine if the mission goal has been substantially achieved.`);
-  descParts.push(`4. If tasks are still in progress or pending, the mission is likely NOT complete.`);
-  descParts.push(`5. If critical tasks failed and were not retried, the mission is likely NOT complete.`);
-  descParts.push(`6. Be conservative: when in doubt, verdict should be "incomplete". A running mission can always be completed later, but a prematurely completed mission stops monitoring.`);
-  descParts.push(`7. Respond ONLY with the structured output — no sub-tasks, no tool calls.`);
+  descParts.push(`3. Cancelled tasks are duplicates or intentionally killed — treat them as skipped, not failed.`);
+  descParts.push(`4. Determine if the mission goal has been substantially achieved.`);
+  descParts.push(`5. If tasks are still in progress or pending, the mission is likely NOT complete.`);
+  descParts.push(`6. If critical tasks failed and were not retried, the mission is likely NOT complete.`);
+  descParts.push(`7. Be conservative: when in doubt, verdict should be "incomplete". A running mission can always be completed later, but a prematurely completed mission stops monitoring.`);
+  descParts.push(`8. Respond ONLY with the structured output — no sub-tasks, no tool calls.`);
 
   const contextData: Record<string, unknown> = {
     missionId: mission.id,

@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import LocalTime from './LocalTime';
 
 interface GridTask {
   id: string;
@@ -110,9 +111,6 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
 
-  const resetShort = task.budgetResetsAt
-    ? ` · ~${new Date(task.budgetResetsAt).toISOString().slice(11, 16)}`
-    : '';
 
   const dotEl = (
     <span
@@ -129,7 +127,7 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
       title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
     >
-      ⏸ Paused{resetShort}
+      ⏸ Paused{task.budgetResetsAt && <LocalTime iso={task.budgetResetsAt} prefix=" · ~" />}
     </span>
   ) : (
     <StatusBadge status={task.status} />
@@ -246,8 +244,26 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   // Default to flat/recency view; persist user preference per device
   const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'none');
   const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   // Empty = all collapsed by default. Toggling adds a group to expandedGroups to open it.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // Focus search input when mobile search opens
+  useEffect(() => {
+    if (searchOpen && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [searchOpen]);
+
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) {
+      setSearch('');
+      setSearchOpen(false);
+    } else {
+      setSearchOpen(true);
+    }
+  }, [searchOpen]);
 
   // Load persisted filter + groupBy from localStorage on mount
   useEffect(() => {
@@ -488,76 +504,171 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           )}
         </div>
 
-        {/* Content type segmented filter: All / Missions / Tasks */}
-        {!missionFilter && (
-          <div className="flex items-center gap-1 px-4 mb-3">
-            {([
-              { key: 'all' as ContentFilter, label: 'All' },
-              { key: 'missions' as ContentFilter, label: 'Missions' },
-              { key: 'tasks' as ContentFilter, label: 'Tasks' },
-            ]).map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setContentFilter(key)}
-                className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
-                  contentFilter === key
-                    ? 'bg-surface-3 text-text-primary'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+        {/* Mobile filter UI: combined chip row + utility row (search icon + group) */}
+        <div className="sm:hidden">
+          {/* Row 1: Combined scrollable chip row — type chips | status chips */}
+          {!missionFilter && (
+            <div
+              className="flex items-center gap-1.5 px-4 mb-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
+              {/* Type chips */}
+              {([
+                { key: 'all' as ContentFilter, label: 'All' },
+                { key: 'missions' as ContentFilter, label: 'Missions' },
+                { key: 'tasks' as ContentFilter, label: 'Tasks' },
+              ]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setContentFilter(key)}
+                  className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                    contentFilter === key
+                      ? 'bg-surface-3 text-text-primary'
+                      : 'text-text-muted'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+              {/* Visual divider */}
+              <span className="shrink-0 w-px h-4 bg-border-default mx-0.5" />
+              {/* Status chips — tap active chip to deselect (returns to all) */}
+              {statusFilters.filter(f => f.key !== 'all').map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => updateFilter(filter === f.key ? 'all' : f.key)}
+                  className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                    filter === f.key
+                      ? 'bg-text-primary text-surface-1'
+                      : f.count === 0
+                        ? 'text-text-muted/50'
+                        : 'text-text-desc'
+                  }`}
+                >
+                  {f.label}
+                  {f.count > 0 && (
+                    <span className={`ml-1 text-[11px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
+                      {f.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Row 2: Utility row — search icon + group dropdown */}
+          <div className="flex items-center gap-2 px-4 mb-3">
+            <button
+              onClick={toggleSearch}
+              aria-label={searchOpen ? 'Close search' : 'Search tasks'}
+              className={`p-1.5 rounded-md transition-colors ${
+                searchOpen
+                  ? 'bg-surface-3 text-text-primary'
+                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+              }`}
+            >
+              {searchOpen ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              )}
+            </button>
+            <div className="flex-1" />
+            <Select
+              value={groupBy}
+              onChange={(v) => updateGroupBy(v as GroupBy)}
+              options={[
+                { value: 'none', label: 'Group: None' },
+                { value: 'mission', label: 'Group: Mission' },
+                { value: 'workspace', label: 'Group: Workspace' },
+                { value: 'status', label: 'Group: Status' },
+              ]}
+              size="sm"
+            />
           </div>
-        )}
+          {/* Row 2.5: Expanded search input (conditional) */}
+          {searchOpen && (
+            <div className="px-4 mb-3">
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search tasks..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
+              />
+            </div>
+          )}
+        </div>
 
-        {/* Filter + search bar */}
-        <div className="flex items-center gap-2 px-4 mb-4 flex-wrap">
-          {/* Status tabs */}
-          <div className="flex gap-1">
-            {statusFilters.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => updateFilter(f.key)}
-                className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
-                  filter === f.key
-                    ? 'bg-text-primary text-surface-1'
-                    : 'text-text-desc hover:text-text-primary hover:bg-surface-2'
-                }`}
-              >
-                {f.label}
-                {f.count > 0 && (
-                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
-                    {f.count}
-                  </span>
-                )}
-              </button>
-            ))}
+        {/* Desktop filter UI (unchanged) */}
+        <div className="hidden sm:block">
+          {/* Content type segmented filter: All / Missions / Tasks */}
+          {!missionFilter && (
+            <div className="flex items-center gap-1 px-4 mb-3">
+              {([
+                { key: 'all' as ContentFilter, label: 'All' },
+                { key: 'missions' as ContentFilter, label: 'Missions' },
+                { key: 'tasks' as ContentFilter, label: 'Tasks' },
+              ]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setContentFilter(key)}
+                  className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
+                    contentFilter === key
+                      ? 'bg-surface-3 text-text-primary'
+                      : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Filter + search + group bar */}
+          <div className="flex items-center gap-2 px-4 mb-4 flex-wrap">
+            <div className="flex gap-1">
+              {statusFilters.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => updateFilter(f.key)}
+                  className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
+                    filter === f.key
+                      ? 'bg-text-primary text-surface-1'
+                      : 'text-text-desc hover:text-text-primary hover:bg-surface-2'
+                  }`}
+                >
+                  {f.label}
+                  {f.count > 0 && (
+                    <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
+                      {f.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1" />
+            <input
+              type="text"
+              placeholder="Search tasks..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
+            />
+            <Select
+              value={groupBy}
+              onChange={(v) => updateGroupBy(v as GroupBy)}
+              options={[
+                { value: 'none', label: 'Group: None' },
+                { value: 'mission', label: 'Group: Mission' },
+                { value: 'workspace', label: 'Group: Workspace' },
+                { value: 'status', label: 'Group: Status' },
+              ]}
+              size="sm"
+            />
           </div>
-
-          <div className="flex-1" />
-
-          {/* Search */}
-          <input
-            type="text"
-            placeholder="Search tasks..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-[160px] sm:w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
-          />
-
-          {/* Group by dropdown */}
-          <Select
-            value={groupBy}
-            onChange={(v) => updateGroupBy(v as GroupBy)}
-            options={[
-              { value: 'none', label: 'Group: None' },
-              { value: 'mission', label: 'Group: Mission' },
-              { value: 'workspace', label: 'Group: Workspace' },
-              { value: 'status', label: 'Group: Status' },
-            ]}
-            size="sm"
-          />
         </div>
 
         {/* Mobile recent-tasks strip: always visible on mobile, regardless of filter/grouping.

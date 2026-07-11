@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats';
@@ -178,9 +178,14 @@ export function HealthClient({
   };
 
   const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
-  const overdueHeartbeatCount = useMemo(() => {
+  // useState(0) ensures SSR and initial hydration agree on 0; useEffect computes
+  // the real count client-side to avoid a hydration mismatch from Date.now() differences.
+  const [overdueHeartbeatCount, setOverdueHeartbeatCount] = useState(0);
+  useEffect(() => {
     const now = Date.now();
-    return schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length;
+    setOverdueHeartbeatCount(
+      schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length,
+    );
   }, [schedules]);
   const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);

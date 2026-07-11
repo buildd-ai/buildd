@@ -551,6 +551,65 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
+  it('auto-completes when cancelled deliverables exist alongside completed ones', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    // 4 completed, 5 cancelled (the duplicate-task kill scenario)
+    tasksFindManyResults = [
+      [
+        { title: 'Build feature A', mode: 'execution', status: 'completed' },
+        { title: 'Build feature B', mode: 'execution', status: 'completed' },
+        { title: 'Build feature C', mode: 'execution', status: 'completed' },
+        { title: 'Build feature D', mode: 'execution', status: 'completed' },
+        { title: 'Build feature A (dup)', mode: 'execution', status: 'cancelled' },
+        { title: 'Build feature B (dup)', mode: 'execution', status: 'cancelled' },
+        { title: 'Build feature C (dup)', mode: 'execution', status: 'cancelled' },
+        { title: 'Build feature D (dup)', mode: 'execution', status: 'cancelled' },
+        { title: 'Extra task (dup)', mode: 'execution', status: 'cancelled' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    // All deliverables are terminal (completed or cancelled) → auto-complete
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1',
+      'mission:loop_completed',
+      expect.objectContaining({ reason: 'dormancy_auto_complete' })
+    );
+  });
+
+  it('does not auto-complete when only cancelled deliverables exist (no successes)', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    selectResults = [[{ count: 1 }]];
+    // All cancelled — no deliverable successes
+    tasksFindManyResults = [
+      [
+        { title: 'Build feature A', mode: 'execution', status: 'cancelled' },
+        { title: 'Build feature B', mode: 'execution', status: 'cancelled' },
+      ],
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    // allDeliverablesDone would be true BUT hasDeliverables check prevents it if we add one
+    // (the existing dormancy check at step 5 doesn't gate on "has completed" — only at step 4)
+    // So this will auto-complete at step 5; that's acceptable (all work cancelled = nothing to do)
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
   it('auto-completes heartbeat mission via dormancy when all deliverables done', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {

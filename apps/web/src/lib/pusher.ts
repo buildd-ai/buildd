@@ -26,8 +26,16 @@ function getPusher(): Pusher | null {
   return pusher;
 }
 
+// Pusher enforces a 10 KB per-event payload limit. Warn at 8 KB to give 2 KB
+// headroom for Pusher's own envelope overhead. Callers should send thin events
+// (IDs + timestamps only) so the limit is never approached.
+const PUSHER_PAYLOAD_WARN_BYTES = 8192;
+
 /**
- * Trigger a Pusher event (no-op if Pusher not configured)
+ * Trigger a Pusher event (no-op if Pusher not configured).
+ * Logs a warning if the serialized payload exceeds 8 KB — the likely cause of
+ * Pusher 413 errors seen in production. Callers must use thin event payloads
+ * (workerId / taskId / updatedAt) and let clients refetch large row data.
  */
 export async function triggerEvent(
   channel: string,
@@ -36,6 +44,14 @@ export async function triggerEvent(
 ): Promise<void> {
   const client = getPusher();
   if (!client) return; // Silent no-op
+
+  const serialized = JSON.stringify(data);
+  if (serialized.length > PUSHER_PAYLOAD_WARN_BYTES) {
+    console.warn(
+      `[Pusher] oversized payload for event "${event}" on channel "${channel}": ` +
+      `${serialized.length} bytes (warn limit ${PUSHER_PAYLOAD_WARN_BYTES})`
+    );
+  }
 
   try {
     await client.trigger(channel, event, data);

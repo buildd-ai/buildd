@@ -571,9 +571,19 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           </div>
           <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-text-primary">{name}</h1>
-            <p className="text-[13px] text-text-muted">
-              {skill.slug} &middot; Created {createdDate}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap text-[13px] text-text-muted mt-0.5">
+              <span className="font-mono text-xs">{skill.slug}</span>
+              <span>&middot;</span>
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                  <polyline points="9,22 9,12 15,12 15,22" />
+                </svg>
+                {workspaceName}
+              </span>
+              <span>&middot;</span>
+              <span>Created {createdDate}</span>
+            </div>
           </div>
           <button
             onClick={handleSave}
