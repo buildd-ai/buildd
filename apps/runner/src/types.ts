@@ -171,6 +171,9 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // Active MCP connector configs injected at claim time (not persisted to disk)
+  // Used for SDK injection and 401 detection
+  mcpConnectors?: Array<{ id: string; name: string; url: string; headers?: Record<string, string> }>;
   // Server-managed API key (delivered inline during claim, injected into subprocess env)
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)

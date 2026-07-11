@@ -884,7 +884,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; mcpConnectors?: Array<{ id: string; name: string; url: string; headers?: Record<string, string> }>; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -999,6 +999,11 @@ export class WorkerManager {
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
+    }
+    if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
+      // Keep full config (headers included) — mcpConnectors is not in PERSISTED_FIELDS so it never hits disk
+      worker.mcpConnectors = claimedWorker.mcpConnectors;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s)`);
     }
     if (claimedWorker.codexCredential) {
       worker.codexCredential = claimedWorker.codexCredential;
@@ -1702,6 +1707,19 @@ export class WorkerManager {
           },
         },
       };
+
+      // Attach injected MCP connectors from claim response
+      if (worker.mcpConnectors && worker.mcpConnectors.length > 0) {
+        for (const connector of worker.mcpConnectors) {
+          const serverKey = connector.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+          queryOptions.mcpServers[serverKey] = {
+            type: 'http',
+            url: connector.url,
+            ...(connector.headers ? { headers: connector.headers } : {}),
+          };
+        }
+        console.log(`[Worker ${worker.id}] Attached ${worker.mcpConnectors.length} MCP connector(s) to agent config`);
+      }
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
@@ -2772,6 +2790,32 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.pendingErrorTraces.push(...traces);
             for (const t of traces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
+            }
+          }
+
+          // 401 detection: if an MCP connector tool returns an error with 401/unauthorized,
+          // signal the API to mark the secret expired and abort the session.
+          if (block.is_error === true && worker.mcpConnectors && worker.mcpConnectors.length > 0) {
+            const is401 = /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i.test(text);
+            if (is401 && source && source.startsWith('mcp__')) {
+              const serverKey = source.split('__')[1];
+              const connector = worker.mcpConnectors.find(c =>
+                c.name.toLowerCase().replace(/[^a-z0-9_]/g, '_') === serverKey
+              );
+              if (connector) {
+                console.log(`[Worker ${worker.id}] 401 from connector "${connector.name}" (${connector.id}) — signaling API and aborting`);
+                worker.error = `connector_auth_expired:${connector.id}`;
+                this.buildd.updateWorker(worker.id, {
+                  event: 'connector_auth_expired',
+                  connectorId: connector.id,
+                  connectorUrl: connector.url,
+                  status: 'waiting_input',
+                }).catch((err: unknown) => {
+                  console.warn(`[Worker ${worker.id}] connector_auth_expired sync failed:`, err);
+                });
+                const session = this.sessions.get(worker.id);
+                if (session) session.abortController.abort();
+              }
             }
           }
         }

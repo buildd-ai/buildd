@@ -163,6 +163,10 @@ export class BuilddClient {
     summary?: string;
     // Budget exhaustion signal
     budgetExhausted?: boolean;
+    // Structured mid-task event (e.g. connector_auth_expired)
+    event?: string;
+    connectorId?: string;
+    connectorUrl?: string;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {

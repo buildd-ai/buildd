@@ -1278,11 +1278,11 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        const mcpConnectors: Array<{ name: string; url: string; headers?: Record<string, string> }> = [];
+        const mcpConnectors: Array<{ id: string; name: string; url: string; headers?: Record<string, string> }> = [];
 
         for (const connector of activeConnectors) {
           if (connector.authMode === 'none') {
-            mcpConnectors.push({ name: connector.name, url: connector.url });
+            mcpConnectors.push({ id: connector.id, name: connector.name, url: connector.url });
           } else {
             const secretInfo = connectorSecretMap.get(connector.id);
             if (!secretInfo) continue;
@@ -1296,6 +1296,7 @@ export async function POST(req: NextRequest) {
 
             if (connector.authMode === 'header') {
               mcpConnectors.push({
+                id: connector.id,
                 name: connector.name,
                 url: connector.url,
                 headers: { [connector.headerName!]: decryptedValue },
@@ -1306,6 +1307,7 @@ export async function POST(req: NextRequest) {
                 const accessToken = tokenBlob.access_token as string | undefined;
                 if (!accessToken) continue;
                 mcpConnectors.push({
+                  id: connector.id,
                   name: connector.name,
                   url: connector.url,
                   headers: { Authorization: `Bearer ${accessToken}` },

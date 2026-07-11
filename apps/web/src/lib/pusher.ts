@@ -102,4 +102,6 @@ export const events = {
   TASK_RETRY_CAP: 'task:retry_cap',
   // Mission feed events
   MISSION_NOTE_POSTED: 'mission:note_posted',
+  // MCP connector auth expired mid-task
+  WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
 } as const;

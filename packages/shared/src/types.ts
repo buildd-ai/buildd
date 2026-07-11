@@ -773,7 +773,7 @@ export interface ClaimTasksResponse {
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers) */
-    mcpConnectors?: Array<{ name: string; url: string; headers?: Record<string, string> }>;
+    mcpConnectors?: Array<{ id: string; name: string; url: string; headers?: Record<string, string> }>;
     /** Decrypted Codex credential (only present for backend=codex tasks) */
     codexCredential?: {
       credentialType: 'oauth' | 'api_key';

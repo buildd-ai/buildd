@@ -22,6 +22,12 @@ const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
 const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
+const mockConnectorsFindFirst = mock(() => Promise.resolve(null));
+const mockSecretsUpdate = mock(() => ({
+  set: mock(() => ({
+    where: mock(() => Promise.resolve()),
+  })),
+}));
 
 // Explicit `db.select(...)` (added to dodge the RQB "missing FROM-clause" bug)
 // is used for the task-row fetches in the handler. The chain is fully thenable
@@ -56,6 +62,7 @@ mock.module('@/lib/pusher', () => ({
     WORKER_PROGRESS: 'worker:progress',
     WORKER_COMPLETED: 'worker:completed',
     WORKER_FAILED: 'worker:failed',
+    WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
   },
 }));
 
@@ -68,11 +75,13 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
+      connectors: { findFirst: mockConnectorsFindFirst },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts') return mockAccountsUpdate();
       if (table === 'teams') return mockTeamsUpdate();
+      if (table === 'secrets') return mockSecretsUpdate();
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockTenantBudgetsInsert(),
@@ -115,6 +124,9 @@ mock.module('@buildd/core/db/schema', () => ({
   teams: 'teams',
   tenantBudgets: { tenantId: 'tenantId', teamId: 'teamId' },
   missionNotes: 'missionNotes',
+  connectors: 'connectors',
+  secrets: 'secrets',
+  workerErrorTraces: 'workerErrorTraces',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -282,6 +294,8 @@ describe('PATCH /api/workers/[id]', () => {
     mockUpsertAutoArtifact.mockReset();
     mockFormatStructuredOutput.mockReset();
     mockTeamsFindFirst.mockReset();
+    mockConnectorsFindFirst.mockReset();
+    mockSecretsUpdate.mockReset();
 
     // Defaults
     mockUpsertAutoArtifact.mockResolvedValue(undefined);
@@ -311,6 +325,14 @@ describe('PATCH /api/workers/[id]', () => {
         where: mock(() => Promise.resolve()),
       })),
     });
+
+    mockSecretsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+
+    mockConnectorsFindFirst.mockResolvedValue(null);
   });
 
   it('returns 401 when no API key', async () => {
@@ -2407,6 +2429,104 @@ describe('PATCH /api/workers/[id]', () => {
       // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
       expect(typeof callArgs.totalTurns).toBe('number');
       expect(callArgs.totalTurns).toBe(7);
+    });
+  });
+
+  describe('connector_auth_expired event', () => {
+    const baseWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+    });
+
+    it('marks the connector secret as expired when connector is found', async () => {
+      const mockSetFn = mock(() => ({ where: mock(() => Promise.resolve()) }));
+      mockSecretsUpdate.mockReturnValue({ set: mockSetFn });
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretsUpdate).toHaveBeenCalled();
+      expect(mockSetFn).toHaveBeenCalledWith(
+        expect.objectContaining({ lastVerificationError: 'mid_task_401' })
+      );
+    });
+
+    it('emits WORKER_CONNECTOR_AUTH_EXPIRED Pusher event with correct shape', async () => {
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const calls = mockTriggerEvent.mock.calls;
+      const connectorAuthCall = calls.find((c: any[]) => c[1] === 'worker:connector-auth-expired');
+      expect(connectorAuthCall).toBeTruthy();
+      expect(connectorAuthCall[0]).toBe('workspace-ws-1');
+      expect(connectorAuthCall[2]).toMatchObject({
+        workerId: 'worker-1',
+        connectorId: 'conn-1',
+        connectorName: 'GitHub',
+      });
+    });
+
+    it('skips secret update and Pusher event when connector is not found', async () => {
+      mockConnectorsFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-unknown',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
+      const calls = mockTriggerEvent.mock.calls;
+      const connectorAuthCall = calls.find((c: any[]) => c[1] === 'worker:connector-auth-expired');
+      expect(connectorAuthCall).toBeUndefined();
+    });
+
+    it('ignores event field when connectorId is missing', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { event: 'connector_auth_expired', status: 'waiting_input' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockConnectorsFindFirst).not.toHaveBeenCalled();
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
     });
   });
 });
