@@ -6,6 +6,7 @@ const STATUS_LABELS: Record<string, string> = {
   waiting_input: 'Needs Input',
   completed: 'Completed',
   failed: 'Failed',
+  cancelled: 'Cancelled',
   idle: 'Idle',
 };
 
@@ -18,6 +19,7 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
   completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
   failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
+  cancelled:              { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-muted line-through' },
   idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
 };
 
