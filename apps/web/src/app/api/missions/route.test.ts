@@ -58,6 +58,11 @@ mock.module('@/lib/mission-run', () => ({
   runMission: mockRunMission,
 }));
 
+mock.module('@/lib/work-tracker', () => ({
+  maybePostWorkTrackerNote: mock(() => Promise.resolve()),
+  postLinearCompletionComment: mock(() => Promise.resolve()),
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
