@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, spyOn, mock } from 'bun:test';
 
 const mockTrigger = mock(() => Promise.resolve());
 
+// Mock the pusher npm package — handles envs where the package isn't installed
+// and serves as a fallback for Bun versions where mock.module intercepts
+// transitive imports (the package import inside pusher.ts).
 mock.module('pusher', () => ({
   default: class MockPusher {
     trigger = mockTrigger;
@@ -14,11 +17,17 @@ process.env.PUSHER_KEY = 'test-key';
 process.env.PUSHER_SECRET = 'test-secret';
 process.env.PUSHER_CLUSTER = 'test-cluster';
 
-const { triggerEvent } = await import('./pusher');
+const { triggerEvent, _resetPusher } = await import('./pusher');
+
+// Pre-built mock client — injected via _resetPusher so tests don't rely on
+// mock.module intercepting the pusher import inside pusher.ts (which broke in
+// Bun 1.3.14 when the real package is installed and tests run together).
+const mockPusherClient = { trigger: mockTrigger } as any;
 
 describe('triggerEvent — payload size guard', () => {
   beforeEach(() => {
     mockTrigger.mockReset();
+    _resetPusher(mockPusherClient);
   });
 
   it('sends small payloads without a warning', async () => {
