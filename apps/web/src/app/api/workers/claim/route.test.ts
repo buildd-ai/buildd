@@ -2161,7 +2161,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'my-mcp', url: 'https://mcp.example.com' },
+        { id: 'conn-1', name: 'my-mcp', url: 'https://mcp.example.com' },
       ]);
     });
 
@@ -2224,7 +2224,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'header-mcp', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
+        { id: 'conn-hdr', name: 'header-mcp', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
       ]);
     });
   });

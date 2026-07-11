@@ -3,6 +3,11 @@ import Pusher from 'pusher';
 // Server-side Pusher client (optional)
 let pusher: Pusher | null = null;
 
+// Inject a test double in unit tests — avoids relying on mock.module with static imports.
+export function _setPusherClientForTesting(client: Pusher | null): void {
+  pusher = client;
+}
+
 function getPusher(): Pusher | null {
   if (pusher) return pusher;
 

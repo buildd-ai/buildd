@@ -1,26 +1,36 @@
-import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:test';
 
 const mockTrigger = mock(() => Promise.resolve());
 
+// Mock the pusher npm package so pusher.ts can be imported without real credentials.
+// The actual mock client is injected via _setPusherClientForTesting in beforeEach,
+// so we don't rely on mock.module intercepting static imports (Bun version-sensitive).
 mock.module('pusher', () => ({
-  default: class MockPusher {
-    trigger = mockTrigger;
-  },
+  default: class MockPusher {},
 }));
 
-// Set up required Pusher env vars before importing
+// Set up env vars so getPusher() doesn't short-circuit on missing config
 process.env.PUSHER_APP_ID = 'test-app-id';
 process.env.PUSHER_KEY = 'test-key';
 process.env.PUSHER_SECRET = 'test-secret';
 process.env.PUSHER_CLUSTER = 'test-cluster';
 
-const { triggerEvent } = await import('./pusher');
+const { triggerEvent, _setPusherClientForTesting } = await import('./pusher');
+
+const mockPusherClient = { trigger: mockTrigger } as any;
+
+beforeEach(() => {
+  // Directly inject the mock client — avoids relying on mock.module intercepting
+  // the static `import Pusher from 'pusher'` inside pusher.ts.
+  _setPusherClientForTesting(mockPusherClient);
+  mockTrigger.mockReset();
+});
+
+afterAll(() => {
+  _setPusherClientForTesting(null);
+});
 
 describe('triggerEvent — payload size guard', () => {
-  beforeEach(() => {
-    mockTrigger.mockReset();
-  });
-
   it('sends small payloads without a warning', async () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     const smallPayload = { workerId: 'w1', taskId: 't1', status: 'running', updatedAt: new Date() };
