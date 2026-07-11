@@ -1,0 +1,1 @@
+ALTER TABLE "task_schedules" ADD COLUMN "last_overdue_alert_at" timestamp with time zone;
