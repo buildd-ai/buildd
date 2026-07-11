@@ -13,6 +13,7 @@ import {
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
 } from '@/lib/heartbeat-helpers';
 import { wouldCreateCycle } from '@/lib/mission-dependency';
+import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -294,6 +295,11 @@ export async function POST(req: NextRequest) {
             : `Heartbeat enabled`;
         })()
       : null;
+
+    // Non-blocking: post a work-tracker suggestion note if the workspace has one configured
+    if (workspaceId) {
+      maybePostWorkTrackerNote(mission.id, workspaceId).catch(() => {});
+    }
 
     return NextResponse.json(
       { ...mission, organizerTask, ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}) },

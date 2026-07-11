@@ -63,9 +63,11 @@ export default function TaskAutoRefresh({
       }
     };
 
-    // When a worker reports progress, completes, or fails on this task
-    const handleWorkerEvent = (data: { worker: { taskId: string } }) => {
-      if (data.worker?.taskId === taskId) {
+    // When a worker reports progress, completes, or fails on this task.
+    // Accepts both thin events {taskId, workerId} and legacy {worker:{taskId}}.
+    const handleWorkerEvent = (data: { taskId?: string; worker?: { taskId?: string } }) => {
+      const eventTaskId = data.taskId ?? data.worker?.taskId;
+      if (eventTaskId === taskId) {
         doRefresh();
       }
     };

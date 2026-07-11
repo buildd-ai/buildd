@@ -108,7 +108,8 @@ export default async function HealthPage({
       .select()
       .from(watchedProjects)
       .where(inArray(watchedProjects.workspaceId, scopedWsIds))
-      .orderBy(desc(watchedProjects.createdAt)),
+      .orderBy(desc(watchedProjects.createdAt))
+      .catch(() => [] as any[]),
 
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
@@ -211,6 +212,7 @@ export default async function HealthPage({
         .where(inArray(watcherEvents.projectId, projectIds))
         .orderBy(desc(watcherEvents.firedAt))
         .limit(50)
+        .catch(() => [] as any[])
     : [];
   const eventsByProject = new Map<string, { kind: string; firedAt: string; taskId: string | null }[]>();
   for (const e of events) {

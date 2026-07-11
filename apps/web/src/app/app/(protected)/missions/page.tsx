@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { deriveMissionHealth } from '@/lib/mission-helpers';
+import { deriveMissionHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { MissionGrid } from './MissionGrid';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
@@ -191,18 +191,23 @@ export default async function MissionsPage({
     };
   });
 
+  const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
-    (m) => m.health === 'active' || m.health === 'on-schedule'
+    (m) => activeGroups.includes(healthToGroup(m.health, m.progress))
   ).length;
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+        {/* Row 1: title + active count */}
         <div className="flex items-baseline gap-3 min-w-0">
           <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
           <span className="text-xs text-text-secondary font-light">
             {activeCount} active
           </span>
+        </div>
+        {/* Row 2 on mobile / right side on desktop: seats chip + workspace filter + new button */}
+        <div className="flex items-center gap-2 flex-wrap">
           {maxSeats > 0 && (
             <span
               className={`text-[11px] font-mono px-2 py-0.5 rounded-full ${
@@ -215,8 +220,6 @@ export default async function MissionsPage({
               Seats: {activeSeats}/{maxSeats}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
           <WorkspaceFilter
             workspaces={teamWorkspaces}
             selectedId={wsFilter ?? null}

@@ -1,5 +1,5 @@
 {
-  "id": "b2e4c1d0-8f3a-4e7b-9c5d-6a1f2e3d4b5c",
+  "id": "4210a8a6-6fbe-434b-92dc-a52aa33657b1",
   "prevId": "0d135b1a-128e-482f-a706-3f425106fae0",
   "version": "7",
   "dialect": "postgresql",
@@ -2316,13 +2316,6 @@
           "notNull": true,
           "default": false
         },
-        "orchestration_mode": {
-          "name": "orchestration_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'auto'"
-        },
         "released_at": {
           "name": "released_at",
           "type": "timestamp with time zone",
@@ -3524,6 +3517,12 @@
         "last_heartbeat_state_hash": {
           "name": "last_heartbeat_state_hash",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_overdue_alert_at": {
+          "name": "last_overdue_alert_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

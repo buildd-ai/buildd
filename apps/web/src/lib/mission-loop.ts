@@ -146,7 +146,7 @@ export async function maybeRetriggerMission(
       !t.title.startsWith('Mission:')
     );
     const allDone = workTasks.length > 0 && workTasks.every(t =>
-      t.status === 'completed' || t.status === 'failed'
+      t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
     );
     const hasDeliverables = workTasks.some(t => t.status === 'completed');
 
@@ -206,7 +206,7 @@ export async function maybeRetriggerMission(
 
   const deliverableTasks = allMissionTasksForDormancy.filter(isDeliverableTask);
   const allDeliverablesDone = deliverableTasks.length > 0 && deliverableTasks.every(
-    t => t.status === 'completed' || t.status === 'failed'
+    t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
   );
 
   if (allDeliverablesDone) {

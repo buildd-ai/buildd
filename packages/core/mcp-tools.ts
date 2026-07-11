@@ -116,7 +116,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed — only for tasks without active workers) }',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) }',
     create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -168,7 +168,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
     delete: '{ id (required) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search the codebase, corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId} as the namespace base; corpus=task uses {workspaceId}; corpus=code/docs uses the SPEC_SYNC_NAMESPACE — these are intentionally different IDs.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -2569,11 +2569,6 @@ import {
   renderPlanText,
 } from './knowledge-store/cards';
 
-// Default spec-sync namespace. Used by both spec_compare (admin dev tool) and
-// query_knowledge(corpus:code|docs) which reads from the same index.
-// Override via the SPEC_SYNC_NAMESPACE env var on any deployment.
-const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
-
 /**
  * Resolve the KnowledgeStore namespace for a corpus.
  *
@@ -2586,9 +2581,9 @@ const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
  *     d2cb1c29 is the teamId; 57ffc0e4 is the workspaceId. Reads and writes both
  *     use teamId, so they are consistent.
  *
- *   corpus=code|docs → {SPEC_SYNC_NAMESPACE}:code|docs
- *     Indexed by the spec-sync ingestion pipeline into a single shared namespace.
- *     Override via SPEC_SYNC_NAMESPACE env var; defaults to SPEC_SYNC_NS_DEFAULT.
+ *   corpus=code|docs → {workspaceId}:code|docs
+ *     Indexed per-workspace by the ingestion pipeline (ingest-knowledge.ts).
+ *     Run with WORKSPACE_ID=<id> to populate; empty until ingested.
  *
  *   corpus=task|artifact|pr|plan|session → {workspaceId}:{corpus}
  *     Work-product corpora are workspace-scoped (auto-indexed by mirrorWorkProduct).
@@ -2792,16 +2787,7 @@ export async function handleMemoryAction(
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
 
-      // code/docs are indexed by the spec-sync pipeline into its own namespace —
-      // the workspace-scoped {workspaceId}:code/docs namespaces are empty.
-      // Point these corpora at the same index that spec_compare reads.
-      let ns: string | null;
-      if (corpus === 'code' || corpus === 'docs') {
-        const specSyncId = process.env.SPEC_SYNC_NAMESPACE || SPEC_SYNC_NS_DEFAULT;
-        ns = buildNamespace(specSyncId, corpus);
-      } else {
-        ns = knowledgeNamespace(ctx, corpus);
-      }
+      const ns = knowledgeNamespace(ctx, corpus);
 
       if (!ns) {
         throw new Error(corpus === 'memory'
@@ -2817,6 +2803,9 @@ export async function handleMemoryAction(
       });
 
       if (results.length === 0) {
+        if (corpus === 'code' || corpus === 'docs') {
+          return text(`No ${corpus} index for this workspace (namespace: ${ns}) — run ingestion first: WORKSPACE_ID=${ctx.workspaceId} bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
+        }
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 

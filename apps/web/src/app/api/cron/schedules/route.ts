@@ -15,6 +15,8 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
+import { notify } from '@/lib/pushover';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -766,6 +768,56 @@ export async function GET(req: NextRequest) {
       healthWatcher = { error: message };
     }
 
+    // Check for heartbeat missions whose nextRunAt is still far in the past
+    // (>2x their interval) — meaning the cron hasn't fired them recently.
+    // Alert the owner so they know monitoring has stalled.
+    let overdueHeartbeatAlerts = 0;
+    try {
+      const stuckSchedules = await db.query.taskSchedules.findMany({
+        where: and(
+          eq(taskSchedules.enabled, true),
+          lt(taskSchedules.nextRunAt, now),
+        ),
+      });
+
+      for (const schedule of stuckSchedules) {
+        const ctx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
+        if (ctx?.heartbeat !== true) continue;
+        if (!schedule.nextRunAt) continue;
+        if (!isOverdue(schedule.nextRunAt, schedule.cronExpression)) continue;
+
+        const intervalMs = estimateCronIntervalMs(schedule.cronExpression);
+        if (
+          schedule.lastOverdueAlertAt &&
+          now.getTime() - new Date(schedule.lastOverdueAlertAt).getTime() < intervalMs
+        ) continue;
+
+        const linkedMission = await db.query.missions.findFirst({
+          where: eq(missions.scheduleId, schedule.id),
+          columns: { id: true, title: true },
+        });
+
+        const missionTitle = linkedMission?.title ?? schedule.name;
+        const overdueMin = Math.round((now.getTime() - new Date(schedule.nextRunAt).getTime()) / 60_000);
+
+        notify({
+          app: 'alerts',
+          title: `Heartbeat overdue: ${missionTitle}`,
+          message: `Mission heartbeat is ${overdueMin}m overdue — monitoring may have stalled`,
+          priority: 0,
+        });
+
+        await db
+          .update(taskSchedules)
+          .set({ lastOverdueAlertAt: now, updatedAt: now })
+          .where(eq(taskSchedules.id, schedule.id));
+
+        overdueHeartbeatAlerts++;
+      }
+    } catch (overdueErr) {
+      console.warn('[Cron] Overdue heartbeat check failed:', overdueErr instanceof Error ? overdueErr.message : overdueErr);
+    }
+
     // Best-effort: archive done missions quiet for >24h (the "Awaiting
     // review" group's TTL — see lib/mission-archive.ts).
     let archivedMissions: string[] | { error: string } = [];
@@ -789,6 +841,7 @@ export async function GET(req: NextRequest) {
       llmHeartbeatInvocations,
       healthWatcher,
       archivedMissions,
+      overdueHeartbeatAlerts,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);

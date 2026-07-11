@@ -69,7 +69,7 @@ export default async function TeamRoleSettingsPage({
       })
     : [];
 
-  // Build delegation options from all accessible roles
+  // Build delegation options from all accessible roles (include workspaceId for qualification)
   const allRoles = await db.query.workspaceSkills.findMany({
     where: and(
       eq(workspaceSkills.isRole, true),
@@ -79,12 +79,21 @@ export default async function TeamRoleSettingsPage({
         and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)),
       ),
     ),
-    columns: { slug: true, name: true },
+    columns: { slug: true, name: true, workspaceId: true },
   });
+  // Build a name map from workspaceList (already fetched above)
+  const wsNameMapForDelegate = new Map(workspaceList.map(w => [w.id, w.name]));
   const seenDelegateSlugs = new Set<string>();
   const delegateOptions = allRoles
     .filter(r => r.slug !== slug && !seenDelegateSlugs.has(r.slug))
-    .map(r => { seenDelegateSlugs.add(r.slug); return { slug: r.slug, name: r.name }; });
+    .map(r => {
+      seenDelegateSlugs.add(r.slug);
+      return {
+        slug: r.slug,
+        name: r.name,
+        workspaceName: r.workspaceId ? (wsNameMapForDelegate.get(r.workspaceId) ?? undefined) : undefined,
+      };
+    });
 
   return (
     <TeamRoleEditor

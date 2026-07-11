@@ -15,7 +15,7 @@ export const DEFAULT_HEARTBEAT_CRON = '*/30 * * * *';
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: are we planning, building, reviewing, or stalled?
 - [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
 - [ ] If no workspace/repo exists: create one with manage_workspaces, then create coding tasks
-- [ ] Retry any failed tasks with failureContext
+- [ ] Retry any failed tasks with failureContext (skip cancelled tasks — those were intentionally killed as duplicates or unwanted, do NOT retry them)
 - [ ] Check PR merge status — if a PR has merge conflicts, retry the ORIGINATING task (create_task with parentTaskId=<original task id>, failureContext='PR #N has merge conflicts with main — rebase onto main and resolve, continue on the same branch') — do NOT create a separate integration task
 - [ ] When creating a batch of build tasks: include a pathManifest (list of files/globs each task will create or modify) so the platform can serialize tasks that touch the same files. Example: pathManifest=["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]. The API auto-adds dependsOn edges when manifests overlap — you only need to declare the paths, not the edges.
 - [ ] NEVER re-implement a file that is already declared in a sibling task's pathManifest or described as that task's primary deliverable. If you need code owned by a pending/active sibling task, report blocked with the sibling taskId so a dependsOn edge can be added.

@@ -65,8 +65,11 @@ export async function GET(
     }
 
     const deliverableTasks = mission.tasks?.filter(isDeliverableTask) || [];
-    const totalTasks = deliverableTasks.length;
-    const completedTasks = deliverableTasks.filter(t => t.status === 'completed').length;
+    // Cancelled tasks are excluded from progress: they don't count as work to do
+    // or work done, so they don't inflate the denominator when duplicates are killed.
+    const countableTasks = deliverableTasks.filter(t => t.status !== 'cancelled');
+    const totalTasks = countableTasks.length;
+    const completedTasks = countableTasks.filter(t => t.status === 'completed').length;
     const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
     // Extract config from schedule template

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline, { collapseWorkspacePath } from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
@@ -37,6 +38,7 @@ interface Worker {
   waitingFor: { type: string; prompt: string; options?: (string | { label: string; description?: string; recommended?: boolean })[] } | null;
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
   pendingInstructions: string | null;
+  updatedAt: string | null;
   account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
@@ -64,6 +66,7 @@ interface TaskProgressEntry {
 }
 
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
+  const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
@@ -75,6 +78,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
   const [currentActionExpanded, setCurrentActionExpanded] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
 
+  // When the server component re-renders (via router.refresh()), pick up fresh
+  // worker data from the updated initialWorker prop.
+  useEffect(() => {
+    const newPrompt = initialWorker.waitingFor?.prompt ?? null;
+    if (answeredPromptRef.current && newPrompt !== answeredPromptRef.current) {
+      answeredPromptRef.current = null;
+      setAnswerSent(false);
+    }
+    setWorker(initialWorker);
+  // updatedAt changes on every PATCH — use it as the dep to avoid stale closures
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialWorker.id, initialWorker.updatedAt]);
+
   // Subscribe to real-time updates
   useEffect(() => {
     const channelName = `${CHANNEL_PREFIX}worker-${worker.id}`;
@@ -82,21 +98,19 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
     const channel = subscribeToChannel(channelName);
 
     if (channel) {
-      const handleUpdate = (data: { worker: Worker; taskProgress?: TaskProgressEntry[] }) => {
-        console.log('[RealTimeWorkerView] Received update:', data.worker?.status);
-        // Clear answerSent when the worker's prompt changes or waitingFor clears
-        const newPrompt = data.worker?.waitingFor?.prompt ?? null;
-        if (answeredPromptRef.current && newPrompt !== answeredPromptRef.current) {
-          answeredPromptRef.current = null;
-          setAnswerSent(false);
-        }
-        if (!data.worker || typeof data.worker !== 'object') return;
-        setWorker(data.worker);
+      // Thin-event handler: events now carry only {workerId, taskId, status,
+      // updatedAt, taskProgress?}. The full worker row is fetched by the server
+      // component when router.refresh() re-renders the page.
+      const handleUpdate = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
+        console.log('[RealTimeWorkerView] Received update:', data.status);
+        // taskProgress is transient (not persisted) — consume it directly from event
         if (data.taskProgress) {
           setTaskProgress(data.taskProgress);
         } else {
           setTaskProgress([]);
         }
+        // Refresh the server component so initialWorker prop gets the full fresh row
+        router.refresh();
       };
 
       channel.bind('worker:progress', handleUpdate);
