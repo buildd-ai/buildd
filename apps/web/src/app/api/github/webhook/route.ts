@@ -1059,7 +1059,7 @@ async function maybePostWorkTrackerIssueUpdate(
   }
 
   await postLinearCompletionComment({
-    externalIssueId: task.externalIssueId,
+    externalIssueId: task.externalIssueId!,
     connectorId,
     teamId: ws.teamId,
     prUrl,

@@ -9,8 +9,7 @@ import { db } from '@buildd/core/db';
 import { secrets, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { triggerEvent } from '@/lib/pusher';
-import { channels, events } from '@/lib/pusher-events';
+import { triggerEvent, channels, events } from '@/lib/pusher';
 
 const LINEAR_API = 'https://api.linear.app/graphql';
 
