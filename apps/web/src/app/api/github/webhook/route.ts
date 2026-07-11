@@ -11,6 +11,7 @@ import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
+import { triggerEvent, channels, events } from '@/lib/pusher';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -229,7 +230,31 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   const { action, check_suite, repository, installation } = event;
 
-  if (action !== 'completed' || !installation) {
+  if (!installation) {
+    return;
+  }
+
+  // CI started: mark worker PRs as ci_running so the Timeline shows live CI state.
+  if (action === 'requested' || action === 'rerequested') {
+    for (const pr of check_suite.pull_requests) {
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.prNumber, pr.number),
+        columns: { id: true, workspaceId: true, taskId: true },
+      });
+      if (worker) {
+        await db
+          .update(workers)
+          .set({ prLifecycleStatus: 'ci_running', updatedAt: new Date() })
+          .where(eq(workers.id, worker.id));
+        await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+          taskId: worker.taskId,
+        });
+      }
+    }
+    return;
+  }
+
+  if (action !== 'completed') {
     return;
   }
 
@@ -237,6 +262,22 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
+    // Mark worker PRs as ci_failed before handling retries
+    for (const pr of check_suite.pull_requests) {
+      const worker = await db.query.workers.findFirst({
+        where: eq(workers.prNumber, pr.number),
+        columns: { id: true, workspaceId: true, taskId: true },
+      });
+      if (worker) {
+        await db
+          .update(workers)
+          .set({ prLifecycleStatus: 'ci_failed', updatedAt: new Date() })
+          .where(eq(workers.id, worker.id));
+        await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+          taskId: worker.taskId,
+        });
+      }
+    }
     await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
     return;
@@ -344,22 +385,37 @@ async function handlePullRequestEvent(event: {
 }) {
   const { action, pull_request: pr, repository } = event;
 
-  // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
-  // because no check_suite event will ever fire to trigger the CI-gated path —
-  // otherwise the PR would sit open forever. Repos WITH CI are left to the
-  // check_suite handler, which waits for green.
+  // Track PR lifecycle status on open/reopen/synchronize events
   if (
     !pr.merged &&
-    !pr.draft &&
-    event.installation &&
-    (action === 'opened' || action === 'reopened' || action === 'ready_for_review')
+    (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize')
   ) {
-    await maybeAutoMergeNoCiPr(event.installation.id, repository.full_name, pr);
+    const openWorker = await db.query.workers.findFirst({
+      where: eq(workers.prNumber, pr.number),
+      columns: { id: true, workspaceId: true, taskId: true },
+    });
+    if (openWorker) {
+      await db
+        .update(workers)
+        .set({ prLifecycleStatus: 'pr_open', updatedAt: new Date() })
+        .where(eq(workers.id, openWorker.id));
+      await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
+        taskId: openWorker.taskId,
+      });
+    }
+
+    // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
+    // because no check_suite event will ever fire to trigger the CI-gated path —
+    // otherwise the PR would sit open forever. Repos WITH CI are left to the
+    // check_suite handler, which waits for green.
+    if (!pr.draft && event.installation && action !== 'synchronize') {
+      await maybeAutoMergeNoCiPr(event.installation.id, repository.full_name, pr);
+    }
     return;
   }
 
-  // Only handle merged PRs beyond this point
-  if (action !== 'closed' || !pr.merged) {
+  // Only handle closed PRs beyond this point
+  if (action !== 'closed') {
     return;
   }
 
@@ -372,15 +428,26 @@ async function handlePullRequestEvent(event: {
   });
 
   if (worker) {
-    // Stamp mergedAt regardless of task completion state so the dependsOn gate
-    // (which checks workers.mergedAt) is unblocked for downstream tasks.
-    await db
-      .update(workers)
-      .set({ mergedAt: new Date(), updatedAt: new Date() })
-      .where(eq(workers.id, worker.id));
+    if (pr.merged) {
+      // Stamp mergedAt regardless of task completion state so the dependsOn gate
+      // (which checks workers.mergedAt) is unblocked for downstream tasks.
+      await db
+        .update(workers)
+        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+        .where(eq(workers.id, worker.id));
+    } else {
+      // PR closed without merge (abandoned/superseded)
+      await db
+        .update(workers)
+        .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
+        .where(eq(workers.id, worker.id));
+    }
+    await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+      taskId: worker.taskId,
+    });
   }
 
-  if (worker?.task && worker.task.status !== 'completed') {
+  if (pr.merged && worker?.task && worker.task.status !== 'completed') {
     await db
       .update(tasks)
       .set({ status: 'completed', updatedAt: new Date() })
@@ -487,6 +554,10 @@ async function handlePullRequestEvent(event: {
   }
 
   // Strategy 2: Match by branch name pattern buildd/<taskId-prefix>-*
+  // Only auto-complete tasks on merged PRs; a closed-without-merge PR should not complete a task.
+  if (!pr.merged) {
+    return;
+  }
   const branchMatch = pr.head.ref.match(/^buildd\/([0-9a-f]{8})-/);
   if (branchMatch) {
     const taskIdPrefix = branchMatch[1];

@@ -149,6 +149,40 @@ mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
+// Pusher — no-op in tests; triggerEvent calls should be silently skipped
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+  channels: {
+    workspace: (id: string) => `workspace-${id}`,
+    task: (id: string) => `task-${id}`,
+    worker: (id: string) => `worker-${id}`,
+    mission: (id: string) => `mission-${id}`,
+  },
+  events: {
+    TASK_CREATED: 'task:created',
+    TASK_CLAIMED: 'task:claimed',
+    TASK_COMPLETED: 'task:completed',
+    TASK_FAILED: 'task:failed',
+    TASK_ASSIGNED: 'task:assigned',
+    WORKER_STARTED: 'worker:started',
+    WORKER_PROGRESS: 'worker:progress',
+    WORKER_COMPLETED: 'worker:completed',
+    WORKER_FAILED: 'worker:failed',
+    WORKER_COMMAND: 'worker:command',
+    SCHEDULE_TRIGGERED: 'schedule:triggered',
+    SCHEDULE_DEFERRED: 'schedule:deferred',
+    CHILDREN_COMPLETED: 'task:children_completed',
+    TASK_UNBLOCKED: 'task:unblocked',
+    TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
+    MISSION_CYCLE_STARTED: 'mission:cycle_started',
+    MISSION_LOOP_COMPLETED: 'mission:loop_completed',
+    MISSION_LOOP_STALLED: 'mission:loop_stalled',
+    TASK_UPDATED: 'task:updated',
+    TASK_RETRY_CAP: 'task:retry_cap',
+    MISSION_NOTE_POSTED: 'mission:note_posted',
+  },
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -1115,6 +1149,164 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       // Source-only lines (6) < limit (10) → should auto-merge
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── PR lifecycle status tracking ─────────────────────────────────────────
+  describe('PR lifecycle status', () => {
+    it('sets prLifecycleStatus=pr_open when PR is opened and worker exists', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-open',
+        workspaceId: 'ws1',
+        taskId: 'task-open',
+        prNumber: 42,
+      });
+      // Also return no CI for the no-CI auto-merge path (workspace lookup)
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const payload = {
+        action: 'opened',
+        pull_request: {
+          number: 42,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-42' },
+          html_url: 'https://github.com/test-org/test-repo/pull/42',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
+      expect(openUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-merged',
+        workspaceId: 'ws1',
+        taskId: 'task-merged',
+        prNumber: 55,
+        task: {
+          id: 'task-merged',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 55,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-55' },
+          html_url: 'https://github.com/test-org/test-repo/pull/55',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const mergeUpdate = updateCalls.find(
+        (c) => (c.setValues as any).prLifecycleStatus === 'merged' && (c.setValues as any).mergedAt instanceof Date,
+      );
+      expect(mergeUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=closed when PR is closed without merge', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-closed',
+        workspaceId: 'ws1',
+        taskId: 'task-closed',
+        prNumber: 60,
+        task: {
+          id: 'task-closed',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 60,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-60' },
+          html_url: 'https://github.com/test-org/test-repo/pull/60',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const closedUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'closed');
+      expect(closedUpdate).toBeDefined();
+      // mergedAt must NOT be set on an abandoned PR
+      expect(closedUpdate!.setValues.mergedAt).toBeUndefined();
+      // The task must NOT be auto-completed on a non-merged close
+      const taskUpdate = updateCalls.find((c) => (c.setValues as any).status === 'completed');
+      expect(taskUpdate).toBeUndefined();
+    });
+
+    it('sets prLifecycleStatus=ci_running on check_suite requested', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-ci',
+        workspaceId: 'ws1',
+        taskId: 'task-ci',
+        prNumber: 42,
+      });
+
+      const payload = {
+        action: 'requested',
+        check_suite: {
+          id: 1,
+          head_sha: 'sha-ci',
+          status: 'queued',
+          conclusion: null,
+          pull_requests: [{ number: 42, head: { sha: 'sha-ci', ref: 'buildd/fix' }, base: { sha: 'base', ref: 'dev' } }],
+        },
+        repository: { id: 100, full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('check_suite', payload));
+      expect(res.status).toBe(200);
+
+      const ciUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_running');
+      expect(ciUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=ci_failed on check_suite completed failure', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-ci-fail',
+        workspaceId: 'ws1',
+        taskId: 'task-ci-fail',
+        prNumber: 42,
+        task: { id: 'task-ci-fail', status: 'in_progress', workspaceId: 'ws1', missionId: null, title: 'Fix bug' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      // CI logs fetch
+      mockGithubApi.mockReturnValue(Promise.resolve({ workflow_runs: [] }));
+
+      const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'failure' } });
+      const res = await POST(createWebhookRequest('check_suite', payload));
+      expect(res.status).toBe(200);
+
+      const failUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
+      expect(failUpdate).toBeDefined();
     });
   });
 });
