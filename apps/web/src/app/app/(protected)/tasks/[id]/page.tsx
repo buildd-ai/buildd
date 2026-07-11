@@ -9,6 +9,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
+import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
@@ -231,9 +232,6 @@ export default async function TaskDetailPage({
   const isBudgetPaused = task.status === 'pending' && !!(task.context as any)?.budgetExhausted;
   const budgetBackendLabel = task.backend === 'codex' ? 'Codex' : 'Claude';
   const budgetResetsAtIso = (task.context as any)?.budgetResetsAt as string | undefined;
-  const budgetResetsText = budgetResetsAtIso
-    ? `Retries ~${new Date(budgetResetsAtIso).toISOString().slice(11, 16)} UTC.`
-    : 'Auto-retries when it resets.';
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
@@ -448,7 +446,10 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Paused — {budgetBackendLabel} budget/rate-limit. {budgetResetsText}
+              Paused — {budgetBackendLabel} budget/rate-limit.{' '}
+              {budgetResetsAtIso
+                ? <>Retries ~<LocalTime iso={budgetResetsAtIso} suffix="." /></>
+                : 'Auto-retries when it resets.'}
             </div>
           </div>
         )}

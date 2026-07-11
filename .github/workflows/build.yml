@@ -27,6 +27,7 @@ jobs:
         run: bun install
 
       - name: Check migrations are up to date
+        id: migration_check
         run: |
           cd packages/core
           bun db:generate
@@ -38,6 +39,24 @@ jobs:
             exit 1
           fi
           echo "Migrations are up to date"
+
+      - name: Notify on migration check failure
+        if: failure() && steps.migration_check.outcome == 'failure'
+        env:
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN_ALERT: ${{ secrets.PUSHOVER_TOKEN_ALERT }}
+        run: |
+          if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
+          PR="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="schema.ts changed without a migration file in PR #${{ github.event.pull_request.number }} (${{ github.head_ref || github.ref_name }}). Run cd packages/core && bun db:generate and commit."
+          curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
+            --form-string "user=${PUSHOVER_USER}" \
+            --form-string "title=❌ Migration gate failed" \
+            --form-string "message=${MSG}" \
+            --form-string "priority=1" \
+            --form-string "url=${PR}" \
+            --form-string "url_title=View CI run" \
+            https://api.pushover.net/1/messages.json || true
 
       - name: Type check
         run: cd apps/web && bunx tsc --noEmit
@@ -69,6 +88,51 @@ jobs:
           # Dummy values for build (not connecting to real DB)
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           AUTH_SECRET: "dummy-secret-for-build"
+
+  # Pre-promote schema drift check — runs only on release PRs (dev→main).
+  # Compares the production DB's actual column structure against the Drizzle
+  # migration snapshot. Blocks merging if manual DDL has drifted the DB.
+  # Requires DATABASE_URL_PROD (read-only introspection of information_schema).
+  schema-drift:
+    name: Schema Drift / check-prod
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run schema drift check against production DB
+        id: drift_check
+        run: bun run scripts/check-schema-drift.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+
+      - name: Notify on schema drift
+        if: failure() && steps.drift_check.outcome == 'failure'
+        env:
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN_ALERT: ${{ secrets.PUSHOVER_TOKEN_ALERT }}
+        run: |
+          if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          MSG="Production DB schema has drifted from Drizzle migrations. Release PR #${PR_NUM} is blocked. Check the CI logs and open a reconciliation PR before promoting."
+          curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
+            --form-string "user=${PUSHOVER_USER}" \
+            --form-string "title=🚨 Schema drift gate failed — release blocked" \
+            --form-string "message=${MSG}" \
+            --form-string "priority=1" \
+            --form-string "url=${PR_URL}" \
+            --form-string "url_title=View release PR" \
+            https://api.pushover.net/1/messages.json || true
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:

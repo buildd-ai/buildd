@@ -246,6 +246,9 @@ export class WorkerManager {
   private heartbeatInterval?: Timer;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
+  // One-shot timer that wakes the runner to poll the moment an exhausted OAuth
+  // budget resets, instead of waiting up to a full hour for the fallback poll.
+  private budgetResumeTimer?: Timer;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -705,6 +708,12 @@ export class WorkerManager {
         const delayMs = Math.max(0, resetMs - Date.now());
         console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
+        // Wake up to poll the instant the budget resets. Without this the runner
+        // only recovered on its hourly fallback poll (RUNNER_HEARTBEAT_INTERVAL_MS)
+        // — the budget-reset re-queue deliberately emits `task:updated`, which the
+        // Pusher subscriber ignores, so there is no realtime nudge. That left work
+        // stalled for up to an hour after the budget was back (2026-07-11 incident).
+        this.scheduleBudgetResume(budgetResetsAt);
       }
 
       if (claimed.length === 0) {
@@ -770,6 +779,43 @@ export class WorkerManager {
       }
       return [];
     }
+  }
+
+  /**
+   * Schedule a one-shot poll for the moment an exhausted OAuth budget resets.
+   *
+   * The server clears the exhaustion flag lazily on the next claim, and the
+   * budget-reset re-queue emits `task:updated` (not `task:assigned`) to avoid a
+   * realtime re-fire storm — so nothing wakes the runner at reset time. This
+   * timer closes that gap: it fires just after `budgetResetsAt`, at which point
+   * the claim clears the flag and picks up the tasks that were held.
+   *
+   * Idempotent (reschedules on each report) and self-healing: if the budget is
+   * somehow still blocked when it fires, the server returns `budgetResetsAt`
+   * again and this reschedules.
+   */
+  private scheduleBudgetResume(budgetResetsAt: string) {
+    const resetMs = new Date(budgetResetsAt).getTime();
+    if (Number.isNaN(resetMs)) return;
+    // Small buffer so we land after the reset boundary the server checks.
+    const delayMs = Math.max(0, resetMs - Date.now()) + 5_000;
+    // Guard against a bad/implausible reset time scheduling a useless far-future
+    // timer; the hourly fallback poll still covers anything beyond this.
+    const MAX_DELAY_MS = 6 * 60 * 60 * 1000;
+    if (delayMs > MAX_DELAY_MS) return;
+    if (this.budgetResumeTimer) clearTimeout(this.budgetResumeTimer);
+    this.budgetResumeTimer = setTimeout(() => {
+      this.budgetResumeTimer = undefined;
+      const active = Array.from(this.workers.values()).filter(
+        w => w.status === 'working' || w.status === 'stale'
+      ).length;
+      if (active < this.config.maxConcurrent) {
+        console.log('[WorkerManager] Budget reset reached — polling for held tasks');
+        this.claimPendingTasks().catch(() => {});
+      }
+    }, delayMs);
+    // Don't let this timer alone keep the process alive.
+    (this.budgetResumeTimer as any)?.unref?.();
   }
 
   /**
@@ -3166,6 +3212,9 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);
+    }
+    if (this.budgetResumeTimer) {
+      clearTimeout(this.budgetResumeTimer);
     }
     // Unsubscribe from all Pusher channels and disconnect
     this.pusherManager.destroy();
