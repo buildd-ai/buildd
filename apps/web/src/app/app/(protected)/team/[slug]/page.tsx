@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks, missions, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaceSkills, workers, tasks, missions, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql, count } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -95,6 +95,14 @@ export default async function RoleProfilePage({
   });
 
   if (!role) notFound();
+
+  // Resolve workspace name for scope display
+  const scopeWorkspaceName = role.workspaceId
+    ? (await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, role.workspaceId),
+        columns: { name: true },
+      }))?.name ?? null
+    : null;
 
   // Stats: completed, failed, success rate, avg duration, total cost
   const [statsResult] = await db
@@ -252,10 +260,27 @@ export default async function RoleProfilePage({
               <h1 className="text-2xl font-bold text-text-primary">{role.name}</h1>
               <StatusBadge status={overallStatus} />
             </div>
-            <div className="flex items-center gap-2 text-sm text-text-muted mt-0.5">
+            <div className="flex items-center gap-2 flex-wrap text-sm text-text-muted mt-0.5">
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
               <span>{modelLabel}</span>
+              <span>&middot;</span>
+              {scopeWorkspaceName ? (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-3 text-text-muted">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                    <polyline points="9,22 9,12 15,12 15,22" />
+                  </svg>
+                  {scopeWorkspaceName}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                  All workspaces
+                </span>
+              )}
             </div>
             {role.description && (
               <p className="text-sm text-text-secondary mt-1">{role.description}</p>
