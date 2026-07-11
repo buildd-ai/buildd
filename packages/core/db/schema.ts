@@ -804,6 +804,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
+  lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
   pendingSuggestion: jsonb('pending_suggestion').$type<{
     cronExpression?: string;
     enabled?: boolean;

@@ -16,6 +16,9 @@ const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockAccountsFindMany = mock(() => [] as any[]);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockReportOps = mock(() => Promise.resolve());
+const mockNotify = mock(() => {});
+const mockIsOverdue = mock(() => false);
+const mockEstimateCronIntervalMs = mock(() => 30 * 60 * 1000);
 
 let taskSchedulesUpdateCalls: any[] = [];
 let tasksInsertValues: any = null;
@@ -125,6 +128,15 @@ mock.module('@buildd/core/report-ops', () => ({
   reportOps: mockReportOps,
 }));
 
+mock.module('@/lib/heartbeat-helpers', () => ({
+  isOverdue: mockIsOverdue,
+  estimateCronIntervalMs: mockEstimateCronIntervalMs,
+}));
+
+mock.module('@/lib/pushover', () => ({
+  notify: mockNotify,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -173,6 +185,11 @@ describe('GET /api/cron/schedules', () => {
     mockAccountsFindMany.mockReset();
     mockWorkersFindMany.mockReset();
     mockReportOps.mockReset();
+    mockNotify.mockReset();
+    mockIsOverdue.mockReset();
+    mockIsOverdue.mockReturnValue(false);
+    mockEstimateCronIntervalMs.mockReset();
+    mockEstimateCronIntervalMs.mockReturnValue(30 * 60 * 1000);
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     taskSchedulesUpdateCalls = [];
@@ -623,5 +640,154 @@ describe('GET /api/cron/schedules', () => {
 
     // Restore mock
     (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(true);
+  });
+
+  // --- Overdue heartbeat alerts ---
+
+  function makeOverdueHeartbeatSchedule(overrides: Partial<any> = {}): any {
+    return {
+      id: 'sched-overdue',
+      workspaceId: 'ws-1',
+      name: 'Mission Heartbeat',
+      cronExpression: '*/30 * * * *',
+      enabled: true,
+      nextRunAt: new Date(Date.now() - 90 * 60 * 1000),
+      lastOverdueAlertAt: null,
+      taskTemplate: {
+        title: 'Heartbeat check',
+        mode: 'execution',
+        priority: 0,
+        context: { heartbeat: true },
+      },
+      consecutiveFailures: 0,
+      pauseAfterFailures: 5,
+      lastError: null,
+      maxConcurrentFromSchedule: 0,
+      totalRuns: 0,
+      totalChecks: 0,
+      lastTriggerValue: null,
+      oneShot: false,
+      ...overrides,
+    };
+  }
+
+  it('sends Pushover alert when a heartbeat is overdue by >2x its interval', async () => {
+    // First call: main loop finds nothing due
+    // Second call: overdue check finds the stuck heartbeat schedule
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([makeOverdueHeartbeatSchedule()]);
+
+    mockIsOverdue.mockReturnValue(true);
+    mockEstimateCronIntervalMs.mockReturnValue(30 * 60 * 1000);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'My Mission' });
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.overdueHeartbeatAlerts).toBe(1);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+      app: 'alerts',
+      title: expect.stringContaining('My Mission'),
+      message: expect.stringContaining('overdue'),
+    }));
+
+    const updateCall = taskSchedulesUpdateCalls.find(c => c.set?.lastOverdueAlertAt);
+    expect(updateCall).toBeDefined();
+    expect(updateCall.set.lastOverdueAlertAt).toBeInstanceOf(Date);
+  });
+
+  it('uses schedule name as fallback when no linked mission found', async () => {
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([makeOverdueHeartbeatSchedule({ name: 'Finance Heartbeat' })]);
+
+    mockIsOverdue.mockReturnValue(true);
+    mockMissionsFindFirst.mockResolvedValue(null); // no linked mission
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.overdueHeartbeatAlerts).toBe(1);
+    expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
+      title: expect.stringContaining('Finance Heartbeat'),
+    }));
+  });
+
+  it('does not alert when heartbeat schedule is not overdue', async () => {
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([makeOverdueHeartbeatSchedule()]);
+
+    mockIsOverdue.mockReturnValue(false); // not overdue
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.overdueHeartbeatAlerts).toBe(0);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('does not alert when non-heartbeat schedule is overdue', async () => {
+    const nonHeartbeatSchedule = makeSchedule({
+      nextRunAt: new Date(Date.now() - 90 * 60 * 1000),
+      taskTemplate: {
+        title: 'Regular Task',
+        mode: 'execution',
+        priority: 0,
+        // No heartbeat: true in context
+      },
+    });
+
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([nonHeartbeatSchedule]);
+
+    mockIsOverdue.mockReturnValue(true);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.overdueHeartbeatAlerts).toBe(0);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('suppresses duplicate alerts within the same interval (dedup)', async () => {
+    const intervalMs = 30 * 60 * 1000;
+    const recentlyAlerted = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago
+
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([makeOverdueHeartbeatSchedule({ lastOverdueAlertAt: recentlyAlerted })]);
+
+    mockIsOverdue.mockReturnValue(true);
+    mockEstimateCronIntervalMs.mockReturnValue(intervalMs); // 30 min interval; 10 min < 30 min → suppress
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.overdueHeartbeatAlerts).toBe(0);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('re-alerts after a full interval has passed since last alert', async () => {
+    const intervalMs = 30 * 60 * 1000;
+    const oldAlert = new Date(Date.now() - 35 * 60 * 1000); // 35 min ago > 30 min interval
+
+    mockTaskSchedulesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([makeOverdueHeartbeatSchedule({ lastOverdueAlertAt: oldAlert })]);
+
+    mockIsOverdue.mockReturnValue(true);
+    mockEstimateCronIntervalMs.mockReturnValue(intervalMs);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'My Mission' });
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.overdueHeartbeatAlerts).toBe(1);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
   });
 });
