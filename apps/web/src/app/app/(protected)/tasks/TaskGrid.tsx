@@ -4,12 +4,14 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import { deriveTimestampLabel, isStaleWorker } from '@/lib/task-timestamps';
 
 interface GridTask {
   id: string;
   title: string;
   status: string;
   category: string | null;
+  createdAt: string;
   updatedAt: string;
   workspaceName: string;
   prUrl: string | null;
@@ -23,6 +25,21 @@ interface GridTask {
   budgetPaused?: boolean;
   budgetBackend?: string;
   budgetResetsAt?: string | null;
+  workerStatus?: string | null;
+  workerStartedAt?: string | null;
+  workerUpdatedAt?: string | null;
+}
+
+function taskTimestamp(task: GridTask, now: number): string {
+  return deriveTimestampLabel({
+    taskStatus: task.status,
+    workerStatus: task.workerStatus,
+    taskCreatedAt: task.createdAt,
+    taskUpdatedAt: task.updatedAt,
+    workerStartedAt: task.workerStartedAt,
+    workerUpdatedAt: task.workerUpdatedAt,
+    now,
+  });
 }
 
 function timeAgo(dateStr: string): string {
@@ -106,9 +123,11 @@ function StandaloneIcon() {
   );
 }
 
-function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolean }) {
+function TaskRow({ task, isStandalone, now }: { task: GridTask; isStandalone?: boolean; now: number }) {
   const dot = getStatusDot(task.status);
   const isCompleted = task.status === 'completed';
+  const stale = isStaleWorker(task.workerStatus, task.workerUpdatedAt, now);
+  const tsLabel = taskTimestamp(task, now);
 
   const resetShort = task.budgetResetsAt
     ? ` · ~${new Date(task.budgetResetsAt).toISOString().slice(11, 16)}`
@@ -166,8 +185,9 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
               </a>
             )}
             <span className="flex-1" />
-            <span className="text-[12px] text-text-desc shrink-0">
-              {timeAgo(task.updatedAt)}
+            <span className={`text-[12px] shrink-0 ${stale ? 'text-status-warning' : 'text-text-desc'}`}>
+              {stale && <span className="mr-1" title="No agent activity for 10+ minutes">⚠</span>}
+              {tsLabel}
             </span>
           </div>
           {/* Line 3: category chip */}
@@ -208,8 +228,9 @@ function TaskRow({ task, isStandalone }: { task: GridTask; isStandalone?: boolea
             {task.missionTitle}
           </span>
         )}
-        <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right hidden md:inline">
-          {timeAgo(task.updatedAt)}
+        <span className={`text-[12px] shrink-0 text-right hidden md:inline ${stale ? 'text-status-warning' : 'text-text-desc'} ${task.workerStatus === 'running' ? 'min-w-[160px]' : 'w-[70px]'}`}>
+          {stale && <span className="mr-1" title="No agent activity for 10+ minutes">⚠</span>}
+          {tsLabel}
         </span>
       </div>
     </Link>
@@ -240,6 +261,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     if (!missionFilter) return tasks;
     return tasks.filter(t => t.missionId === missionFilter);
   }, [tasks, missionFilter]);
+
+  // Tick every 30s so running task timestamps stay fresh without a full page reload
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
@@ -697,7 +725,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   >
                     <div className="flex items-center gap-1.5 mb-1">
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
-                      <span className="text-[11px] text-text-muted">{timeAgo(task.updatedAt)}</span>
+                      <span className="text-[11px] text-text-muted">{taskTimestamp(task, now)}</span>
                     </div>
                     <div className="text-[13px] text-text-primary line-clamp-2 leading-snug">
                       {task.title}
@@ -740,7 +768,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                           </span>
                           <span className="flex-1" />
                           <span className="text-[12px] text-text-desc shrink-0">
-                            {timeAgo(task.updatedAt)}
+                            {taskTimestamp(task, now)}
                           </span>
                         </div>
                       </div>
@@ -757,8 +785,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                           {task.missionTitle}
                         </span>
                       )}
-                      <span className="text-[12px] text-text-desc shrink-0 w-[70px] text-right hidden md:inline">
-                        {timeAgo(task.updatedAt)}
+                      <span className="text-[12px] text-text-desc shrink-0 text-right hidden md:inline min-w-[160px]">
+                        {taskTimestamp(task, now)}
                       </span>
                     </div>
                   </Link>
@@ -815,7 +843,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 </button>
 
                 {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} isStandalone={isNoMission} />
+                  <TaskRow key={task.id} task={task} isStandalone={isNoMission} now={now} />
                 ))}
               </div>
             );
@@ -841,7 +869,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   </span>
                 </button>
                 {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
+                  <TaskRow key={task.id} task={task} now={now} />
                 ))}
               </div>
             );
@@ -867,7 +895,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   </span>
                 </button>
                 {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
+                  <TaskRow key={task.id} task={task} now={now} />
                 ))}
               </div>
             );
@@ -875,7 +903,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
           {/* Flat list (no grouping) */}
           {effectiveGroupBy === 'none' && flatSorted.map((task) => (
-            <TaskRow key={task.id} task={task} isStandalone={!task.missionId} />
+            <TaskRow key={task.id} task={task} isStandalone={!task.missionId} now={now} />
           ))}
 
           {/* Empty filtered state */}
