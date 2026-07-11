@@ -10,14 +10,19 @@ interface Props {
   workspaceId: string;
 }
 
-const ASSIGNMENT_TIMEOUT_MS = 8000;
+// How long the modal actively waits for a worker to claim before it stops
+// counting down. This is NOT a deadline for the task — /start only broadcasts a
+// Pusher poke and the task stays queued regardless — so on expiry we show a
+// "still queued" state, not an error. 8s was too tight for the
+// Pusher→runner→claim round-trip and made every start look like it failed.
+const ASSIGNMENT_TIMEOUT_MS = 30000;
 
 export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
-  const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed'>('idle');
+  const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued'>('idle');
   const [countdown, setCountdown] = useState(0);
   const [error, setError] = useState('');
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
@@ -50,8 +55,10 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
-      setStatus('failed');
-      setError('No worker claimed the task. Try again or select a different worker.');
+      // Not a failure: the task is still queued and will be claimed as soon as a
+      // worker is free (or on the next runner poll). Say so instead of implying
+      // it broke.
+      setStatus('queued');
       return;
     }
 
@@ -227,6 +234,35 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-md hover:bg-primary-hover transition-opacity"
                   >
                     View in Dashboard
+                  </button>
+                </div>
+              </div>
+            ) : status === 'queued' ? (
+              <div className="p-6">
+                <div className="text-center mb-4">
+                  <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <p className="text-text-primary font-medium mb-1">Still queued</p>
+                  <p className="text-sm text-text-secondary">
+                    No worker is free right now. The task stays queued and starts
+                    automatically as soon as a worker picks it up — you can close this.
+                  </p>
+                </div>
+                <div className="flex justify-center gap-2">
+                  <button
+                    onClick={handleRetry}
+                    className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
+                  >
+                    Poke workers again
+                  </button>
+                  <button
+                    onClick={handleClose}
+                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
+                  >
+                    Close
                   </button>
                 </div>
               </div>
