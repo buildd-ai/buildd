@@ -18,7 +18,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -252,6 +252,10 @@ export interface WorkspaceGitConfig {
   // Controls which type of runner (user/service/action) can claim tasks by default
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+
+  // Merge policy — supersedes autoMerge* fields when set.
+  // null / absent → fall back to legacy autoMerge* fields (backward compat).
+  mergePolicy?: MergePolicy;
 
 }
 
@@ -527,6 +531,9 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
+  // null means "use workspace default".
+  mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.

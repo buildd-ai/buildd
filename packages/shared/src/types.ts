@@ -262,6 +262,7 @@ export interface Mission {
   parentMissionId: string | null;
   createdByUserId: string | null;
   requiresReview: boolean;
+  mergePolicy?: MergePolicy | null;
   createdAt: Date;
   updatedAt: Date;
   // Relations
@@ -275,8 +276,49 @@ export interface Mission {
   completedTasks?: number;
 }
 
+// ============================================================================
+// MERGE POLICY
+// ============================================================================
+
+export type MergePolicyTier =
+  | 'auto-threshold'  // Tier 1 — CI-gated with size/path constraints
+  | 'agent-review'    // Tier 2 — agent reviewer judges before merging
+  | 'human';          // Tier 3 — explicit human gate, no auto-merge
+
+export interface MergePolicy {
+  tier: MergePolicyTier;
+
+  // Tier 1 config (all optional; defaults match existing gitConfig behavior)
+  threshold?: {
+    maxLines?: number;          // total additions+deletions; default 800
+    maxSourceLines?: number;    // non-test lines only; default = maxLines
+    denyPaths?: string[];       // block if any touched file starts with these prefixes
+  };
+
+  // Tier 2 config (required when tier = 'agent-review')
+  agentReview?: {
+    reviewerRole: string;               // slug of reviewer skill in workspace_skills
+    escalateToPaths?: string[];         // force escalate if any touched file matches
+    maxConfidenceThreshold?: number;    // 0–1; escalate if confidence < threshold (default 0.6)
+    gateCondition?: 'approve-and-merge' | 'approve-only'; // default 'approve-and-merge'
+  };
+
+  // How long a PR can sit at this tier before notifying
+  stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
+}
+
 export type MissionNoteAuthorType = 'agent' | 'user' | 'system';
-export type MissionNoteType = 'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance';
+export type MissionNoteType =
+  | 'decision'
+  | 'question'
+  | 'warning'
+  | 'suggestion'
+  | 'update'
+  | 'reply'
+  | 'guidance'
+  | 'reviewer_approved'
+  | 'reviewer_request_changes'
+  | 'reviewer_escalated';
 export type MissionNoteStatus = 'open' | 'answered' | 'dismissed';
 
 export interface MissionNote {

@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
-      status: requestedStatus, dependsOnMission, gateCondition } = body;
+      status: requestedStatus, dependsOnMission, gateCondition, mergePolicy } = body;
 
     const validStatuses = ['active', 'paused', 'completed', 'archived'];
     if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
@@ -217,6 +217,7 @@ export async function POST(req: NextRequest) {
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
+        ...(mergePolicy != null ? { mergePolicy } : {}),
       })
       .returning();
 
