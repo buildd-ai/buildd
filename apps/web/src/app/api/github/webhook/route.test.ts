@@ -149,6 +149,11 @@ mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
+mock.module('@/lib/work-tracker', () => ({
+  maybePostWorkTrackerNote: mock(() => Promise.resolve()),
+  postLinearCompletionComment: mock(() => Promise.resolve()),
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
