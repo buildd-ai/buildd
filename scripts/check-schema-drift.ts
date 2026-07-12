@@ -105,13 +105,22 @@ async function main() {
 
   const actual = await actualColumns(sql);
 
-  // Detect applied migrations count from drizzle tracking table
+  // Detect applied migrations count from drizzle's tracking table. drizzle-kit
+  // creates this in the "drizzle" schema by default (not "public") unless
+  // migrationsSchema is set in drizzle.config.ts — querying public.__drizzle_migrations
+  // always throws and silently reports 0 here, which looks identical to "no migrations
+  // ever ran" even against a long-lived production DB. Check both to avoid that false signal.
   let appliedCount = 0;
   try {
-    const applied = (await sql`SELECT COUNT(*) AS c FROM public.__drizzle_migrations`) as Array<{ c: string }>;
+    const applied = (await sql`SELECT COUNT(*) AS c FROM drizzle.__drizzle_migrations`) as Array<{ c: string }>;
     appliedCount = Number(applied[0].c);
   } catch {
-    // Table may not exist on fresh DBs — not an error
+    try {
+      const applied = (await sql`SELECT COUNT(*) AS c FROM public.__drizzle_migrations`) as Array<{ c: string }>;
+      appliedCount = Number(applied[0].c);
+    } catch {
+      // Table may not exist in either schema — not an error (e.g. fresh DB)
+    }
   }
   console.log(`Applied migrations in DB: ${appliedCount}`);
 
