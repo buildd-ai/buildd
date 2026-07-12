@@ -34,6 +34,20 @@
 --
 -- schema.ts is NOT changed by this PR — it already correctly omits all of the columns/
 -- table below; production is what needs to catch up.
+--
+-- Data-loss check (read-only introspection, 2026-07-12): `secret_refs` has 0 rows —
+-- pure no-op drop. `missions` has 56 rows; every legacy column is null/false except:
+--   - id 6b09a32e-5ebd-4e5e-83da-2e5b7e74963c ("Keep track of my personal finances,
+--     important dates and best practices for family", workspace 59b85bec-89bb-4016-
+--     986d-cbccb2da32e3, status=completed): cron_expression="* 7 * * *",
+--     default_role_slug="finance"
+--   - id 69491bba-d0ec-45eb-9483-14ab2adc9625 ("Smart email triage with AI
+--     classification", same workspace, status=completed): default_role_slug="builder"
+-- Both rows have schedule_id = NULL, so even a faithfully-replayed 0022 (which joins
+-- `objectives.schedule_id = task_schedules.id`) would not have migrated this data
+-- forward — it was already orphaned from the scheduler before either mission
+-- completed. Recorded here rather than replaying the jsonb_set migration into
+-- task_schedules, since there is no linked schedule row to migrate it into.
 
 DROP TABLE IF EXISTS "secret_refs";--> statement-breakpoint
 ALTER TABLE "missions" DROP COLUMN IF EXISTS "cron_expression";--> statement-breakpoint
