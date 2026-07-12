@@ -14,7 +14,7 @@
  * namespace gets a `full` backfill job enqueued after its first diff run.
  */
 import { db } from '@buildd/core/db';
-import { knowledgeIngestJobs, githubRepos, githubInstallations, workspaces } from '@buildd/core/db/schema';
+import { knowledgeIngestJobs, githubRepos, githubInstallations, workspaces, workers, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
@@ -143,7 +143,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   const installationId = installRows[0].installationId;
 
   // List the PR's changed files (paginated). Stop as soon as the cap is blown.
-  const prFiles: Array<{ filename: string; status: string; previous_filename?: string }> = [];
+  const prFiles: Array<{ filename: string; status: string; previous_filename?: string; patch?: string }> = [];
   for (let page = 1; ; page++) {
     const batch = await githubApi(
       installationId,
@@ -213,7 +213,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
 
   // Knowledge-store work. Dynamic import keeps this module light for route
   // tests (the store pulls in drizzle/pgvector machinery at load time).
-  const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
+  const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles, chunkPrDiff } =
     await import('@buildd/core/knowledge-store');
 
   // code/docs/spec all embed with voyage-code-3 (see getVoyageEmbedderForCorpus).
@@ -243,6 +243,46 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
     chunksUpserted += res.chunks;
   }
 
+  // PR-diff corpus (spec §3.5, A3): ingest the patch itself — per-file hunks
+  // into `pr`, source_id `pr:{n}#{path}`. The files listing above already
+  // carries `patch` per file, so no extra fetches. Files without a patch
+  // (binary/huge) and filter-rejected paths are skipped; removed files keep
+  // their deletion diff (that's real change history).
+  const prDiffFiles = prFiles
+    .filter(f => typeof f.patch === 'string' && f.patch.length > 0 && shouldIngestFile(f.filename))
+    .map(f => ({ path: f.filename, patch: f.patch, status: f.status }));
+
+  let prChunksUpserted = 0;
+  if (prDiffFiles.length > 0) {
+    // Enrich with the producing task/mission when a worker opened this PR.
+    let taskId: string | undefined;
+    let missionId: string | undefined;
+    const taskRows = await db
+      .select({ taskId: workers.taskId, missionId: tasks.missionId })
+      .from(workers)
+      .innerJoin(tasks, eq(workers.taskId, tasks.id))
+      .where(eq(workers.prUrl, `https://github.com/${job.repo}/pull/${job.prNumber}`));
+    if (taskRows[0]) {
+      taskId = taskRows[0].taskId ?? undefined;
+      missionId = taskRows[0].missionId ?? undefined;
+    }
+
+    const prChunks = chunkPrDiff(prDiffFiles, {
+      prNumber: job.prNumber,
+      sha: job.sha,
+      taskId,
+      missionId,
+      sourceTs: job.createdAt ?? new Date(),
+    });
+    if (prChunks.length > 0) {
+      // Separate store: `pr` embeds with the default voyage-4-large model
+      // (getVoyageEmbedderForCorpus policy), not the code-3 store above.
+      const prStore = new PgVectorStore(getVoyageEmbedder('voyage-4-large'));
+      await prStore.upsert(buildNamespace(job.workspaceId, 'pr'), prChunks);
+      prChunksUpserted = prChunks.length;
+    }
+  }
+
   // First-index backfill (spec §3.4): the diff alone isn't a full index —
   // enqueue a full backfill job so the whole repo gets ingested.
   let backfillEnqueued = false;
@@ -263,7 +303,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   }
 
   return {
-    stats: { filesIngested, filesSkipped: skipped, filesDeleted, chunksUpserted, totalBytes, backfillEnqueued },
+    stats: { filesIngested, filesSkipped: skipped, filesDeleted, chunksUpserted, prChunksUpserted, totalBytes, backfillEnqueued },
     changedFiles: [...toFetch, ...deletions],
   };
 }
