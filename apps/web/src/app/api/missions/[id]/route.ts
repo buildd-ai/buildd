@@ -172,7 +172,7 @@ export async function PATCH(
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
-      dependsOnMission, gateCondition, orchestrationMode } = body;
+      dependsOnMission, gateCondition, orchestrationMode, externalIssueId, externalIssueUrl } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -232,6 +232,9 @@ export async function PATCH(
       }
     }
     if (priority !== undefined) updateData.priority = priority;
+    // Link (or unlink) the mission to an external tracker project/issue.
+    if (externalIssueId !== undefined) updateData.externalIssueId = externalIssueId || null;
+    if (externalIssueUrl !== undefined) updateData.externalIssueUrl = externalIssueUrl || null;
     if (maxConcurrentTasks !== undefined) updateData.maxConcurrentTasks = maxConcurrentTasks;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
     if (backend !== undefined) {
