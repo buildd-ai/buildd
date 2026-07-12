@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
-import { buildKnowledgeContext } from './knowledge-context';
+import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -540,6 +540,10 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
   const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId);
   descParts.push(...knowledgeParts);
+
+  // Known-entities catalog (§8.4) — canonical vocabulary hint. Best-effort ''.
+  const entityCatalog = await buildEntityCatalogContext(knowledgeQuery, mission.workspaceId).catch(() => '');
+  if (entityCatalog) descParts.push(entityCatalog);
 
   // Fetch available roles for orchestrator context — query ALL team workspaces,
   // not just the mission's workspace. Missions often start in __coordination which

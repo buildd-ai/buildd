@@ -94,6 +94,12 @@ export interface QueryParams {
   useGraph?: boolean;
   /** Include superseded (is_current=false) chunks. Default false. */
   history?: boolean;
+  /**
+   * Record retrieval hits (hit_count/last_hit_at) on returned chunks — a
+   * fire-and-forget UPDATE that never blocks or fails the query. Default true;
+   * pass false for eval/assessment runs so they don't pollute hit stats.
+   */
+  trackHits?: boolean;
 }
 
 // ── KnowledgeStore interface ──────────────────────────────────────────────────

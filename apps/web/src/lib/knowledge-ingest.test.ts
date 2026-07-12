@@ -40,7 +40,7 @@ mock.module('@/lib/github', () => ({
 }));
 
 // ── Fake DB ──────────────────────────────────────────────────────────────────
-import { knowledgeIngestJobs, githubRepos, workspaces } from '@buildd/core/db/schema';
+import { knowledgeIngestJobs, githubRepos, workspaces, workers } from '@buildd/core/db/schema';
 
 type Row = Record<string, any>;
 let claimResult: Row[] = [];
@@ -48,7 +48,7 @@ let updateCalls: Array<{ table: any; set: Row }> = [];
 let insertCalls: Array<{ table: any; values: Row }> = [];
 let insertReturning: Row[] = [{ id: 'new-job-1' }];
 let selectResults: (table: any) => Row[] = () => [];
-let joinResults: Row[] = [{ installationId: 9001 }];
+let joinResults: (table: any) => Row[] = () => [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -76,7 +76,7 @@ mock.module('@buildd/core/db', () => ({
     select: (_cols: any) => ({
       from: (table: any) => ({
         innerJoin: (_t2: any, _c: any) => ({
-          where: (_c2: any) => Promise.resolve(joinResults),
+          where: (_c2: any) => Promise.resolve(joinResults(table)),
         }),
         where: (_c: any) => Promise.resolve(selectResults(table)),
       }),
@@ -85,9 +85,12 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 // ── Fake knowledge store ─────────────────────────────────────────────────────
+// chunkPrDiff stays real: it's pure and the A3 tests assert on its output shape.
+import { chunkPrDiff } from '@buildd/core/knowledge-store/pr-diff-chunker';
+
 let namespaces: string[] = [];
 let deleteBySourceCalls: Array<{ namespace: string; sourcePath?: string }> = [];
-let upsertCalls: Array<{ namespace: string; chunkCount: number }> = [];
+let upsertCalls: Array<{ namespace: string; chunkCount: number; chunks: any[] }> = [];
 
 class FakePgVectorStore {
   async listNamespaces() {
@@ -96,8 +99,8 @@ class FakePgVectorStore {
   async deleteBySource(namespace: string, selector: { sourcePath?: string }) {
     deleteBySourceCalls.push({ namespace, sourcePath: selector.sourcePath });
   }
-  async upsert(namespace: string, chunks: unknown[]) {
-    upsertCalls.push({ namespace, chunkCount: chunks.length });
+  async upsert(namespace: string, chunks: any[]) {
+    upsertCalls.push({ namespace, chunkCount: chunks.length, chunks });
   }
 }
 
@@ -105,6 +108,7 @@ mock.module('@buildd/core/knowledge-store', () => ({
   PgVectorStore: FakePgVectorStore,
   getVoyageEmbedder: () => null,
   buildNamespace: (workspaceId: string, corpus: string) => `${workspaceId}:${corpus}`,
+  chunkPrDiff,
   // Simplified stand-in for the real ingestFiles: delete-then-upsert one chunk per file.
   ingestFiles: async (store: any, workspaceId: string, corpus: string, files: Array<{ path: string; content: string }>) => {
     const ns = `${workspaceId}:${corpus}`;
@@ -143,7 +147,9 @@ function resetAll() {
   insertCalls = [];
   insertReturning = [{ id: 'new-job-1' }];
   selectResults = () => [];
-  joinResults = [{ installationId: 9001 }];
+  // Join queries dispatch on the FROM table: repo→installation lookup vs
+  // worker→task lookup (A3 metadata enrichment).
+  joinResults = (table: any) => (table === githubRepos ? [{ installationId: 9001 }] : []);
 
   namespaces = ['ws-1:code'];
   deleteBySourceCalls = [];
@@ -351,10 +357,79 @@ describe('runDiffIngestJob', () => {
   });
 
   it('marks the job as error when no installation is bound to the repo', async () => {
-    joinResults = [];
+    joinResults = () => [];
     const result = await runDiffIngestJob('job-1');
     expect((result as any).status).toBe('error');
     expect(finalUpdate()?.error).toContain('installation');
+  });
+
+  // ── A3: PR-diff corpus ─────────────────────────────────────────────────────
+
+  const SAMPLE_PATCH = [
+    '@@ -1,3 +1,4 @@',
+    ' export function login() {',
+    '+  audit("login");',
+    '   return true;',
+    ' }',
+  ].join('\n');
+
+  it('ingests per-file patch hunks into the pr corpus', async () => {
+    prFilePages = [[
+      { filename: 'src/auth.ts', status: 'modified', patch: SAMPLE_PATCH },
+    ]];
+    contentsByPath = { 'src/auth.ts': { content: 'export function login() {}' } };
+
+    const result = await runDiffIngestJob('job-1');
+    expect((result as any).status).toBe('done');
+
+    const prUpserts = upsertCalls.filter(c => c.namespace === 'ws-1:pr');
+    expect(prUpserts.length).toBe(1);
+    const chunk = prUpserts[0].chunks[0];
+    expect(chunk.id).toBe('pr:42#src/auth.ts');
+    expect(chunk.content).toContain('+  audit("login");');
+    expect(chunk.metadata).toMatchObject({ prNumber: 42, path: 'src/auth.ts', sha: 'merge-sha-1' });
+    // No path-keyed supersession in the pr corpus: history stays retrievable.
+    expect(chunk.sourcePath ?? null).toBeNull();
+
+    expect((finalUpdate()?.stats as any).prChunksUpserted).toBe(1);
+  });
+
+  it('attaches taskId/missionId to pr chunks when a worker PR matches', async () => {
+    prFilePages = [[{ filename: 'src/auth.ts', status: 'modified', patch: SAMPLE_PATCH }]];
+    contentsByPath = { 'src/auth.ts': { content: 'x' } };
+    joinResults = (table: any) => {
+      if (table === githubRepos) return [{ installationId: 9001 }];
+      if (table === workers) return [{ taskId: 'task-1', missionId: 'mission-1' }];
+      return [];
+    };
+
+    await runDiffIngestJob('job-1');
+    const chunk = upsertCalls.find(c => c.namespace === 'ws-1:pr')?.chunks[0];
+    expect(chunk.metadata).toMatchObject({ taskId: 'task-1', missionId: 'mission-1' });
+  });
+
+  it('includes removed files with patches but skips filter-rejected paths and patchless files', async () => {
+    prFilePages = [[
+      { filename: 'src/gone.ts', status: 'removed', patch: SAMPLE_PATCH },
+      { filename: 'src/auth.test.ts', status: 'modified', patch: SAMPLE_PATCH }, // filter-rejected
+      { filename: 'assets/logo.png', status: 'added' }, // binary — no patch
+    ]];
+
+    const result = await runDiffIngestJob('job-1');
+    expect((result as any).status).toBe('done');
+
+    const prChunks = upsertCalls.filter(c => c.namespace === 'ws-1:pr').flatMap(c => c.chunks);
+    expect(prChunks.map((c: any) => c.id)).toEqual(['pr:42#src/gone.ts']);
+    expect(prChunks[0].metadata.status).toBe('removed');
+  });
+
+  it('upserts no pr chunks when no file carries a patch', async () => {
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    await runDiffIngestJob('job-1');
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:pr')).toBe(false);
+    expect((finalUpdate()?.stats as any).prChunksUpserted).toBe(0);
   });
 
   it('skips individual files larger than the per-file cap without escalating', async () => {

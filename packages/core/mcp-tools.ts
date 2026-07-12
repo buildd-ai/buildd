@@ -97,7 +97,7 @@ export const adminActions = [
 
 export const allActions = [...workerActions, ...adminActions] as const;
 
-export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete', 'query_knowledge'] as const;
+export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete', 'query_knowledge', 'consolidate_knowledge'] as const;
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
@@ -169,6 +169,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
     delete: '{ id (required) }',
     query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (find_duplicates cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (archive audit marker) } — knowledge-consolidation support for the weekly consolidation task. find_duplicates surfaces near-duplicate chunk PAIRS (same namespace, embedding cosine > threshold) for YOU to judge; find_decayed surfaces old zero-hit task/artifact chunks; archive flips the listed chunks to is_current=false (audit-recoverable — nothing is deleted; superseded chunks stay queryable via history). Merge memory duplicates via save/update with supersedes (memory service is the source of truth); use archive for task-corpus losers and decayed noise.',
   };
 
   const lines = actions
@@ -2637,6 +2638,7 @@ export async function handleBuilddAction(
 import { MemoryClient } from './memory-client';
 import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
+import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
   buildPrCard,
@@ -2911,6 +2913,72 @@ export async function handleMemoryAction(
       ).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
+    }
+
+    case 'consolidate_knowledge': {
+      const validOps = ['find_duplicates', 'find_decayed', 'archive'] as const;
+      const op = params.op as (typeof validOps)[number] | undefined;
+      if (!op || !validOps.includes(op)) {
+        throw new Error(`op is required and must be one of: ${validOps.join(', ')}`);
+      }
+
+      if (op === 'archive') {
+        const corpus = params.corpus as Corpus | undefined;
+        if (!corpus) throw new Error('corpus is required for op=archive');
+        const sourceIds = params.sourceIds;
+        if (!Array.isArray(sourceIds) || sourceIds.length === 0 || !sourceIds.every(s => typeof s === 'string')) {
+          throw new Error('sourceIds (non-empty string[]) is required for op=archive');
+        }
+        const archiveNs = knowledgeNamespace(ctx, corpus);
+        if (!archiveNs) {
+          throw new Error(corpus === 'memory' ? 'teamId required to archive memory chunks' : 'workspaceId required to archive chunks');
+        }
+        const result = await archiveChunks(archiveNs, sourceIds as string[], {
+          reason: params.reason as string | undefined,
+        });
+        const idLines = result.sourceIds.map(id => `- ${id}`).join('\n');
+        return text(`Archived ${result.archived} of ${sourceIds.length} chunk(s) in ${archiveNs} (is_current=false — recoverable, nothing deleted).${idLines ? `\n${idLines}` : ''}`);
+      }
+
+      // find_duplicates / find_decayed: resolve corpora → namespaces
+      // (memory is team-scoped; everything else workspace-scoped).
+      const defaultCorpora: Corpus[] = op === 'find_duplicates' ? ['memory', 'task'] : ['task', 'artifact'];
+      const corpora = (params.corpora as Corpus[] | undefined) ?? defaultCorpora;
+      const namespaces = corpora
+        .map(c => knowledgeNamespace(ctx, c))
+        .filter((ns): ns is string => ns !== null);
+      if (namespaces.length === 0) {
+        throw new Error(`No namespace resolvable for corpora [${corpora.join(', ')}] — memory needs teamId, other corpora need workspaceId`);
+      }
+
+      if (op === 'find_duplicates') {
+        const pairs = await findNearDuplicates(namespaces, {
+          threshold: params.threshold as number | undefined,
+          limit: params.limit as number | undefined,
+        });
+        if (pairs.length === 0) {
+          return text(`No near-duplicate pairs found (namespaces: ${namespaces.join(', ')}).`);
+        }
+        const formatted = pairs.map((p, i) =>
+          `### ${i + 1}. similarity ${p.similarity.toFixed(3)} (${p.namespace})\n` +
+          `- A: ${p.sourceIdA} (hits: ${p.hitCountA}${p.sourceTsA ? `, ts: ${p.sourceTsA.toISOString()}` : ''})\n  > ${p.previewA}\n` +
+          `- B: ${p.sourceIdB} (hits: ${p.hitCountB}${p.sourceTsB ? `, ts: ${p.sourceTsB.toISOString()}` : ''})\n  > ${p.previewB}`
+        ).join('\n\n');
+        return text(`Found ${pairs.length} near-duplicate pair(s). Judge each pair before merging — merge memory survivors via save/update with supersedes; archive task-corpus losers.\n\n${formatted}`);
+      }
+
+      // op === 'find_decayed'
+      const decayed = await findDecayedUnused(namespaces, {
+        halfLifeMultiple: params.halfLifeMultiple as number | undefined,
+        limit: params.limit as number | undefined,
+      });
+      if (decayed.length === 0) {
+        return text(`No decayed unused chunks found (namespaces: ${namespaces.join(', ')}).`);
+      }
+      const decayedLines = decayed.map(d =>
+        `- ${d.sourceId} [${d.corpus}]${d.sourceTs ? ` ts: ${d.sourceTs.toISOString()}` : ''} hits: ${d.hitCount}\n  > ${d.preview}`
+      ).join('\n');
+      return text(`Found ${decayed.length} decayed zero-hit chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
     }
 
     default:

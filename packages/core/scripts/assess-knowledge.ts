@@ -74,7 +74,8 @@ async function main() {
   let mrrSum = 0;
   for (const r of rows) {
     const q = queryFromChunk(r.lexical_text || r.content);
-    const results = await store.query(ns, { text: q, topK: k });
+    // trackHits: false — assessment runs must not pollute retrieval-hit stats
+    const results = await store.query(ns, { text: q, topK: k, trackHits: false });
     const rank = results.findIndex(x => x.id === r.source_id);
     if (rank >= 0) {
       hits++;
