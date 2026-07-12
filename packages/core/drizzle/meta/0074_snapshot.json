@@ -1,6 +1,6 @@
 {
-  "id": "1fc280b3-2d7f-46c5-b05f-b5b33c28d818",
-  "prevId": "b934dfbf-174b-428e-9059-c0e849a1fa91",
+  "id": "643e7b61-9f3e-4d8d-af93-ad8fe8688ea6",
+  "prevId": "1fc280b3-2d7f-46c5-b05f-b5b33c28d818",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1654,6 +1654,19 @@
         "superseded_by": {
           "name": "superseded_by",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hit_count": {
+          "name": "hit_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_hit_at": {
+          "name": "last_hit_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         }

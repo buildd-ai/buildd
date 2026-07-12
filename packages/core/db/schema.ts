@@ -677,6 +677,9 @@ export const workers = pgTable('workers', {
   // Set by webhook when the worker's PR is merged; used by dependsOn gate to
   // distinguish "task completed before PR merged" from "PR actually landed".
   mergedAt: timestamp('merged_at', { withTimezone: true }),
+  // PR/git lifecycle state — kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
