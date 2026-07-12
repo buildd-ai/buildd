@@ -1,6 +1,6 @@
 # Workspace Knowledge Management v2 — Per-PR Ingestion, Code Graph, Semantic Supersession, Distillation
 
-**Status:** Accepted — Wave 1 implementation in flight (see §7)
+**Status:** Accepted — Wave 1 shipped (#1179, #1180, #1181); Wave 2 in flight (see §7)
 **Date:** 2026-07-12
 **Scope:** `packages/core/knowledge-store/`, GitHub webhook, runner, MCP tooling
 **Prior art:** `docs/knowledge-store.md` (implemented), `docs/design/knowledge-graph-retrieval.md` (partially implemented)
@@ -125,7 +125,7 @@ Implements §9 of `knowledge-graph-retrieval.md`, adapted to the Phase A split:
 
 Three streams are **independent at the file level** and start immediately, in parallel. The rest sequence behind them.
 
-### Wave 1 (parallel, in flight)
+### Wave 1 (shipped: A1 → #1180, B1 → #1179, C1 → #1181)
 
 | Stream | Scope | Files touched | Ships as |
 |---|---|---|---|
@@ -135,14 +135,20 @@ Three streams are **independent at the file level** and start immediately, in pa
 
 Only A1 carries a migration — no migration conflicts across the wave. B1 and C1 both touch `knowledge-store/types.ts` additively (trivial merge).
 
-### Wave 2+ (sequenced)
+### Wave 2 (parallel, in flight)
+
+| Stream | Depends on | Status |
+|---|---|---|
+| A2 runner full jobs + backfill executor + CI fallback script | A1 (jobs table) | In flight (with A3, 1 PR) |
+| A3 PR-diff corpus | A1 | In flight (with A2) |
+| B2a entity catalog injection at claim | B1 | In flight |
+| C2 consolidation plumbing + hit tracking (`hit_count`/`last_hit_at` migration) | C1 | In flight |
+
+### Wave 3 (sequenced)
 
 | Stream | Depends on |
 |---|---|
-| A2 runner full jobs + backfill executor + GH Action fallback | A1 (jobs table) |
-| A3 PR-diff corpus | A1 |
-| B2 SCIP in runner jobs + entity catalog injection at claim | A2, B1 |
-| C2 consolidation task + hit tracking (`hit_count`/`last_hit_at` migration) | C1 |
+| B2b SCIP in runner full jobs | A2, B1 |
 | D session corpus, weekly digest, health UI, CI eval | A1 for UI; others independent |
 
 Each stream is independently shippable and abandonable, consistent with the Layer 1–3 precedent.
