@@ -22,6 +22,8 @@ export type { ExtractEntityInput, SymbolInfo } from './entity-extractor';
 // NOTE: symbol-extractor.ts is deliberately NOT re-exported here — it wraps the
 // @ast-grep/napi native binary and must only be reached via dynamic import()
 // from ingest paths so serverless bundles never depend on it statically.
+export { extractFilePaths, fetchEntityCatalog, renderEntityCatalog } from './entity-catalog';
+export type { CatalogEntity, EntityCatalogParams, RenderCatalogOptions } from './entity-catalog';
 export { buildEdges, buildOutcomeOfEdge, buildAgentRelationEdges } from './edge-builder';
 export type { EdgeBuilderInput, EdgeBuilderOutput, ImportInfo } from './edge-builder';
 export {

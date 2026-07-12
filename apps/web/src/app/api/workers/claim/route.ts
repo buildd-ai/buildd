@@ -13,7 +13,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
-import { buildKnowledgeContext } from '@/lib/knowledge-context';
+import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { findBlockingPr } from '@buildd/core/path-overlap';
 
@@ -1143,6 +1143,11 @@ export async function POST(req: NextRequest) {
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
     const teamId = (task as any).workspace?.teamId;
     const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId);
+    // Known-entities catalog (§8.4): canonical entity names for the task's
+    // likely files so agents don't invent loose refs. Best-effort — returns ''
+    // on any failure; the extra .catch is belt-and-braces (claim must not 500).
+    const entityCatalog = await buildEntityCatalogContext(goal, task.workspaceId).catch(() => '');
+    if (entityCatalog) parts.push(entityCatalog);
     if (parts.length === 0) continue;
 
     const block = parts.join('\n');
