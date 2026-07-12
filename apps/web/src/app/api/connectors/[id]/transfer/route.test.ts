@@ -14,8 +14,10 @@ const mockConnectorsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => ({ role: 'owner' }) as any);
 const mockConnectorsUpdateReturning = mock(() => [] as any[]);
 
+const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const updateCalls: { table: any; set: any; where: any }[] = [];
 const deleteCalls: { table: any; where: any }[] = [];
+const insertCalls: { table: any; values: any }[] = [];
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -26,7 +28,14 @@ mock.module('@buildd/core/db', () => ({
     query: {
       connectors: { findFirst: mockConnectorsFindFirst },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      secrets: { findMany: mockSecretsFindMany },
     },
+    insert: (table: any) => ({
+      values: (values: any) => {
+        insertCalls.push({ table, values });
+        return Promise.resolve([]);
+      },
+    }),
     update: (table: any) => ({
       set: (set: any) => ({
         where: (where: any) => {
@@ -85,8 +94,11 @@ describe('POST /api/connectors/[id]/transfer', () => {
     mockConnectorsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockConnectorsUpdateReturning.mockReset();
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([]);
     updateCalls.length = 0;
     deleteCalls.length = 0;
+    insertCalls.length = 0;
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     // Actor belongs to both the owner team and the target team.
@@ -174,6 +186,44 @@ describe('POST /api/connectors/[id]/transfer', () => {
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0].table).toBe(connectorSharesTable);
     expect(deleteCalls[0].where.args).toContainEqual({ a: 'sharedWithTeamId', b: 'team-2', op: 'eq' });
+  });
+
+  // §1b follow-up: transferring an stdio connector copies (not moves) its
+  // mcp_credential env secrets to the new owner so its env still resolves at
+  // claim time, without breaking other connectors in the old team.
+  it('copies missing stdio env secrets to the new owner team', async () => {
+    const STDIO = {
+      ...CONNECTOR,
+      transport: 'stdio' as const,
+      command: 'npx',
+      args: ['-y', '@some/server'],
+      envMapping: { DATABASE_URL: 'db-url-label', API_KEY: 'api-label' },
+    };
+    mockConnectorsFindFirst.mockReset();
+    mockConnectorsFindFirst.mockResolvedValueOnce(STDIO).mockResolvedValue(null);
+    mockConnectorsUpdateReturning.mockReturnValue([{ ...STDIO, teamId: 'team-2' }]);
+    // Old team has both labels; new team already has one → only the other copies.
+    mockSecretsFindMany
+      .mockResolvedValueOnce([
+        { label: 'db-url-label', encryptedValue: 'enc-db', tokenExpiresAt: null },
+        { label: 'api-label', encryptedValue: 'enc-api', tokenExpiresAt: null },
+      ])
+      .mockResolvedValueOnce([{ label: 'api-label' }]);
+
+    const res = await POST(makeReq({ teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].table).toBe(secretsTable);
+    const inserted = insertCalls[0].values as any[];
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ teamId: 'team-2', label: 'db-url-label', encryptedValue: 'enc-db', purpose: 'mcp_credential' });
+  });
+
+  it('does not copy env secrets for http connectors', async () => {
+    const res = await POST(makeReq({ teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
   });
 
   it('returns 409 when the connector was concurrently transferred (guard row missing)', async () => {

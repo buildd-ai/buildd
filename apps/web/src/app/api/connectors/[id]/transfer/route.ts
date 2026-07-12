@@ -131,6 +131,53 @@ export async function POST(
         inArray(secrets.label, [id, `${id}:refresh`]),
       ));
 
+    // 2b. stdio connectors reference `mcp_credential` env secrets by label via
+    //     envMapping. Those are keyed on the owner team at claim time (§3), so a
+    //     transferred stdio connector would otherwise lose its env. COPY (not
+    //     move) any missing labels to the new owner — the same label may be
+    //     shared by other connectors/users in the old team, which must keep
+    //     working. Encryption uses a global key, so encryptedValue is portable.
+    if (updated.transport === 'stdio') {
+      const labels = [
+        ...new Set(Object.values((updated.envMapping as Record<string, string> | null) ?? {})),
+      ].filter(Boolean);
+      if (labels.length > 0) {
+        const [oldRows, newRows] = await Promise.all([
+          db.query.secrets.findMany({
+            where: and(
+              eq(secrets.teamId, connector.teamId),
+              eq(secrets.purpose, 'mcp_credential'),
+              inArray(secrets.label, labels),
+            ),
+            columns: { label: true, encryptedValue: true, tokenExpiresAt: true },
+          }),
+          db.query.secrets.findMany({
+            where: and(
+              eq(secrets.teamId, targetTeamId),
+              eq(secrets.purpose, 'mcp_credential'),
+              inArray(secrets.label, labels),
+            ),
+            columns: { label: true },
+          }),
+        ]);
+        const alreadyOnTarget = new Set(newRows.map(r => r.label));
+        const toCopy = oldRows.filter(r => r.label && !alreadyOnTarget.has(r.label));
+        if (toCopy.length > 0) {
+          await db.insert(secrets).values(
+            toCopy.map(r => ({
+              teamId: targetTeamId,
+              accountId: null,
+              workspaceId: null,
+              purpose: 'mcp_credential' as const,
+              label: r.label!,
+              encryptedValue: r.encryptedValue,
+              tokenExpiresAt: r.tokenExpiresAt ?? null,
+            })),
+          );
+        }
+      }
+    }
+
     // 3. The new owner's share (if any) is now implicit — drop it. Other
     //    grantees keep their shares (§1b: existing shares are preserved).
     await db.delete(connectorShares)
