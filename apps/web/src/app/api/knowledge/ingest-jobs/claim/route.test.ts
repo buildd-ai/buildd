@@ -63,8 +63,7 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
     accessibleWorkspaceIds = new Set(['ws-1']);
     queuedJobs = [];
     updateCalls = [];
-    raceLostJobIds = new Set();
-    lastClaimedId = null;
+    claimResults = [];
   });
 
   it('returns 401 without a valid API key', async () => {
@@ -90,6 +89,7 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
       { id: 'job-a', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full', sha: 'sha-1', trigger: 'backfill' },
       { id: 'job-b', workspaceId: 'ws-1', repo: 'test-org/other-repo', status: 'queued', scope: 'full', sha: null, trigger: 'manual' },
     ];
+    claimResults = [[{ id: 'job-a', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'running', scope: 'full' }]];
     const res = await POST(createRequest({ repos: ['test-org/test-repo'] }));
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -103,6 +103,7 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
     queuedJobs = [
       { id: 'job-a', workspaceId: 'ws-1', repo: 'Test-Org/Test-Repo', status: 'queued', scope: 'full' },
     ];
+    claimResults = [[{ id: 'job-a', workspaceId: 'ws-1', repo: 'Test-Org/Test-Repo', status: 'running', scope: 'full' }]];
     const res = await POST(createRequest({ repos: ['test-org/test-repo'] }));
     const data = await res.json();
     expect(data.job.id).toBe('job-a');
@@ -132,10 +133,11 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
       { id: 'job-a', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' },
       { id: 'job-b', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' },
     ];
-    raceLostJobIds = new Set(['job-a']);
+    // First claim (job-a) loses the atomic race → []; second (job-b) wins.
+    claimResults = [[], [{ id: 'job-b', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'running', scope: 'full' }]];
     const res = await POST(createRequest({ repos: ['test-org/test-repo'] }));
     const data = await res.json();
     expect(data.job.id).toBe('job-b');
-    expect(lastClaimedId).toBe('job-b');
+    expect(updateCalls.length).toBe(2);
   });
 });
