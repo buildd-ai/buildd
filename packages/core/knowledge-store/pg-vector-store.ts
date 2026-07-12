@@ -200,7 +200,7 @@ export class PgVectorStore implements KnowledgeStore {
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
-    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false } = params;
+    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false, trackHits = true } = params;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
@@ -310,7 +310,40 @@ export class PgVectorStore implements KnowledgeStore {
     // Sort by final score DESC before passing to reranker
     results.sort((a, b) => b.score - a.score);
 
-    return this._finalize(results, text, limit);
+    const finalResults = await this._finalize(results, text, limit);
+
+    // Phase C (C2): retrieval-hit tracking — fire-and-forget, never awaited,
+    // never fails the query. Skippable for eval/assessment runs.
+    if (trackHits && finalResults.length > 0) {
+      this._recordHits(db, namespace, finalResults.map(r => r.id));
+    }
+
+    return finalResults;
+  }
+
+  /**
+   * Increment hit_count / stamp last_hit_at on the chunks a query returned.
+   * Single UPDATE, deliberately not awaited by the caller — retrieval must
+   * never block or fail on hit bookkeeping (column may also predate the
+   * migration on older databases).
+   */
+  private _recordHits(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    sourceIds: string[],
+  ): void {
+    try {
+      const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
+      Promise.resolve(db.execute(sql`
+        UPDATE knowledge_chunks
+        SET hit_count = hit_count + 1,
+            last_hit_at = NOW()
+        WHERE namespace = ${namespace}
+          AND source_id IN (${inList})
+      `)).catch(() => {});
+    } catch {
+      // Hit tracking is best-effort by contract
+    }
   }
 
   /**

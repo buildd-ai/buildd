@@ -1095,6 +1095,9 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceTs: timestamp('source_ts', { withTimezone: true }),
   isCurrent: boolean('is_current').notNull().default(true),
   supersededBy: text('superseded_by'),
+  // Phase C (C2): retrieval-hit tracking — incremented fire-and-forget on query.
+  hitCount: integer('hit_count').notNull().default(0),
+  lastHitAt: timestamp('last_hit_at', { withTimezone: true }),
 }, (t) => ({
   namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),

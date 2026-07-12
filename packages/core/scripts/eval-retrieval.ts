@@ -264,7 +264,8 @@ async function main() {
 
     let results;
     try {
-      results = await store.query(ns, { text: q.query, topK: k, mode: 'hybrid' });
+      // trackHits: false — eval runs must not pollute retrieval-hit stats
+      results = await store.query(ns, { text: q.query, topK: k, mode: 'hybrid', trackHits: false });
     } catch (err: any) {
       console.warn(`  [warn] ${q.id} query failed: ${err.message}`);
       allResults.push({
@@ -349,7 +350,8 @@ async function main() {
       const q = queryFromChunk(row.lexical_text || row.content);
       let results;
       try {
-        results = await store.query(ns, { text: q, topK: k, mode: 'hybrid' });
+        // trackHits: false — eval runs must not pollute retrieval-hit stats
+        results = await store.query(ns, { text: q, topK: k, mode: 'hybrid', trackHits: false });
       } catch {
         continue;
       }
