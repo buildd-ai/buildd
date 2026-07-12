@@ -121,13 +121,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
-      status: requestedStatus, dependsOnMission, gateCondition } = body;
+      status: requestedStatus, dependsOnMission, gateCondition, orchestrationMode } = body;
 
     const validStatuses = ['active', 'paused', 'completed', 'archived'];
     if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
       return NextResponse.json({ error: `Invalid status: must be one of ${validStatuses.join(', ')}` }, { status: 400 });
     }
     const effectiveStatus: 'active' | 'paused' | 'completed' | 'archived' = requestedStatus || 'active';
+
+    const validOrchestrationModes = ['auto', 'manual'];
+    if (orchestrationMode !== undefined && !validOrchestrationModes.includes(orchestrationMode)) {
+      return NextResponse.json({ error: `Invalid orchestrationMode: must be "auto" or "manual"` }, { status: 400 });
+    }
+    const effectiveOrchestrationMode: 'auto' | 'manual' = orchestrationMode || 'auto';
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -215,6 +221,7 @@ export async function POST(req: NextRequest) {
         contextArtifactIds: contextArtifactIds || [],
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
+        orchestrationMode: effectiveOrchestrationMode,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
@@ -267,10 +274,10 @@ export async function POST(req: NextRequest) {
       mission.scheduleId = schedule.id;
     }
 
-    // Auto-start the organizer only when the mission is born active and heartbeat is not disabled.
-    // Paused-on-create and isHeartbeat=false missions must be inert — no planning task enqueued.
+    // Auto-start the organizer only when the mission is born active, heartbeat is not disabled,
+    // and orchestrationMode is 'auto'. Manual-mode missions require explicit human trigger.
     let organizerTask: { id: string } | null = null;
-    if (effectiveStatus === 'active' && isHeartbeat !== false) {
+    if (effectiveStatus === 'active' && isHeartbeat !== false && effectiveOrchestrationMode === 'auto') {
       try {
         const result = await runMission(mission.id, { manualRun: true });
         if (result.task) organizerTask = { id: result.task.id };
@@ -284,8 +291,18 @@ export async function POST(req: NextRequest) {
       maybePostWorkTrackerNote(mission.id, workspaceId).catch(() => {});
     }
 
+    // Build informative creation response
+    const nextRunInfo = mission.scheduleId
+      ? (() => {
+          // Best-effort: include nextRunAt from the schedule we just created
+          return effectiveOrchestrationMode === 'manual'
+            ? 'Schedule configured but dormant — orchestrationMode is manual'
+            : `Heartbeat enabled`;
+        })()
+      : null;
+
     return NextResponse.json(
-      { ...mission, organizerTask },
+      { ...mission, organizerTask, ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}) },
       { status: 201 }
     );
   } catch (error) {

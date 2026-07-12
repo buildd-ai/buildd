@@ -39,14 +39,19 @@ export async function maybeRetriggerMission(
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true },
+    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true },
   });
 
   if (!mission || mission.status !== 'active') {
     return { action: 'skipped' };
   }
 
-  // 1b. Dependency gate — don't retrigger if upstream hasn't cleared
+  // 1b. Manual mode gate — orchestrator never self-triggers in manual mode
+  if (mission.orchestrationMode === 'manual') {
+    return { action: 'skipped' };
+  }
+
+  // 1c. Dependency gate — don't retrigger if upstream hasn't cleared
   const blockStatus = await isMissionBlocked({
     id: mission.id,
     dependsOnMissionId: mission.dependsOnMissionId ?? null,
@@ -400,10 +405,15 @@ export async function retriggerMissionOnFailure(
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, status: true, updatedAt: true },
+    columns: { id: true, status: true, updatedAt: true, orchestrationMode: true },
   });
 
   if (!mission || mission.status !== 'active') {
+    return { action: 'skipped' };
+  }
+
+  // 1b. Manual mode gate — don't retry in manual mode; failures are owner-visible but not auto-resolved
+  if (mission.orchestrationMode === 'manual') {
     return { action: 'skipped' };
   }
 

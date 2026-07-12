@@ -1,5 +1,5 @@
 {
-  "id": "8e057144-0182-4c82-b995-44862986a63b",
+  "id": "b934dfbf-174b-428e-9059-c0e849a1fa91",
   "prevId": "4715e019-3e86-4e24-894a-b3d565560330",
   "version": "7",
   "dialect": "postgresql",
@@ -1656,19 +1656,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "hit_count": {
-          "name": "hit_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_hit_at": {
-          "name": "last_hit_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -2520,6 +2507,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "orchestration_mode": {
+          "name": "orchestration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'auto'"
         },
         "released_at": {
           "name": "released_at",
