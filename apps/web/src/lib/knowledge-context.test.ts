@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { buildKnowledgeContext, type KnowledgeQuerier } from './knowledge-context';
+import {
+  buildKnowledgeContext,
+  buildEntityCatalogContext,
+  type KnowledgeQuerier,
+  type EntityCatalogFetcher,
+} from './knowledge-context';
 import type { QueryResult } from '@buildd/core/knowledge-store';
 
 function mockStore(byNs: Record<string, Array<Partial<QueryResult>>>): KnowledgeQuerier {
@@ -57,5 +62,62 @@ describe('buildKnowledgeContext', () => {
     expect(seen).toContain('team-1:memory');
     expect(seen).toContain('ws-1:plan');
     expect(seen).toContain('ws-1:task');
+  });
+});
+
+describe('buildEntityCatalogContext', () => {
+  const entities = [
+    { kind: 'file', key: 'apps/web/src/lib/pusher.ts', canonicalName: 'pusher.ts' },
+    { kind: 'symbol', key: 'apps/web/src/lib/pusher.ts#triggerEvent', canonicalName: 'triggerEvent' },
+  ];
+
+  it('returns "" when workspaceId is missing', async () => {
+    const fetcher: EntityCatalogFetcher = async () => entities;
+    expect(await buildEntityCatalogContext('fix `a/b.ts`', null, fetcher)).toBe('');
+    expect(await buildEntityCatalogContext('fix `a/b.ts`', undefined, fetcher)).toBe('');
+  });
+
+  it('returns "" when no entities are found', async () => {
+    const fetcher: EntityCatalogFetcher = async () => [];
+    expect(await buildEntityCatalogContext('fix `a/b.ts`', 'ws-1', fetcher)).toBe('');
+  });
+
+  it('passes extracted paths to the fetcher and renders the catalog block', async () => {
+    const calls: Array<{ workspaceId: string; paths: string[] }> = [];
+    const fetcher: EntityCatalogFetcher = async (workspaceId, paths) => {
+      calls.push({ workspaceId, paths });
+      return entities;
+    };
+
+    const block = await buildEntityCatalogContext(
+      'Fix reconnect in `apps/web/src/lib/pusher.ts` after deploy',
+      'ws-1',
+      fetcher,
+    );
+
+    expect(calls).toEqual([{ workspaceId: 'ws-1', paths: ['apps/web/src/lib/pusher.ts'] }]);
+    expect(block).toContain('## Known entities');
+    expect(block).toContain('file: apps/web/src/lib/pusher.ts');
+    expect(block).toContain('symbol: triggerEvent (apps/web/src/lib/pusher.ts#triggerEvent)');
+  });
+
+  it('still fetches general vocabulary when the task text has no paths', async () => {
+    const calls: Array<string[]> = [];
+    const fetcher: EntityCatalogFetcher = async (_ws, paths) => {
+      calls.push(paths);
+      return [{ kind: 'concept', key: 'auth-flow', canonicalName: 'Auth Flow' }];
+    };
+
+    const block = await buildEntityCatalogContext('improve onboarding copy', 'ws-1', fetcher);
+
+    expect(calls).toEqual([[]]);
+    expect(block).toContain('concept: Auth Flow (auth-flow)');
+  });
+
+  it('returns "" when the fetcher throws (claim must never fail)', async () => {
+    const fetcher: EntityCatalogFetcher = async () => {
+      throw new Error('store down');
+    };
+    expect(await buildEntityCatalogContext('fix `a/b.ts`', 'ws-1', fetcher)).toBe('');
   });
 });
