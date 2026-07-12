@@ -147,7 +147,20 @@ Only A1 carries a migration — no migration conflicts across the wave. B1 and C
 
 Each stream is independently shippable and abandonable, consistent with the Layer 1–3 precedent.
 
-## 8. Open questions
+## 8. Storage decision — Postgres index, R2 blobs
+
+Knowledge lives **in the core buildd Postgres** (`knowledge_chunks` + entity/edge tables, same Neon DB as tasks/workers), not a separate store. The only external system is the memory service (source of truth for hand-written memories, mirrored in). This stays.
+
+**Why not R2 (or another store) for the index:** retrieval is a query engine — HNSW ANN + BM25 + RRF fusion + entity/edge joins per query. Object storage can't serve any of that; moving the index means adopting a vector DB, not R2. The `KnowledgeStore` interface is deliberately swappable, so that door stays open with zero call-site churn.
+
+**Where R2 (already connected) does fit — blobs, not indexes:**
+- SCIP index files from runner jobs (B2) — fetch, parse, discard; never in PG
+- Full PR diffs beyond the chunked hunks (A3) — chunk what's retrievable, R2 the raw patch, `source_url` points at it
+- Raw session transcripts behind `session`-corpus summaries (D1)
+
+**Cost reality:** the marginal row cost is the 1024-dim vector (~4 KB + ~2× HNSW overhead) — even 100k chunks is low-single-digit GB on Neon, i.e. noise. Actual spend is Voyage embedding at ingest and rerank at query, both usage-based and small at single-team scale (backfill spend control is Q2 below). Revisit a dedicated vector backend only at millions of vectors per namespace or if Neon compute becomes the bottleneck — neither is on the horizon.
+
+## 9. Open questions
 
 1. **Multi-workspace repos** — if two workspaces bind the same repo, ingest into both namespaces (duplicate embedding cost) or introduce shared repo-level namespaces with per-workspace ACL? Default: duplicate; revisit if cost shows up.
 2. **Embedding spend control** — per-team monthly embedding budget in `knowledge_ingest_jobs` accounting? Voyage cost at diff-scale is trivial, but full backfills of large repos are not. Propose a soft cap + alert, no hard block initially.
