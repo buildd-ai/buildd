@@ -17,7 +17,18 @@ import { join } from 'node:path';
  * The actionable invariant for any NEW migration is therefore: its `when` must
  * exceed the max `when` of all earlier entries. We intentionally do NOT assert
  * global strict monotonicity — a few legacy pairs (0020/21, 0032/33, 0043/44)
- * are out of order but already applied everywhere and harmless to leave.
+ * are out of order.
+ *
+ * CORRECTION (2026-07-12): the 0020/21 pair was NOT harmless. Direct read-only
+ * introspection of production during the release-#1184 schema-drift investigation
+ * confirmed 0021 (DROP TABLE secret_refs) and 0022 (DROP COLUMN ... on the
+ * objectives/missions table) were both silently skipped in production — the
+ * exact same failure mode as 0067, just leaving prod BEHIND instead of missing a
+ * new column. See 0074_reconcile_missions_secret_refs_drift.sql, which re-issues
+ * the equivalent idempotent DDL under current table names rather than editing
+ * 0021/0022 in place (unsafe: 0022 targets the pre-rename "objectives" name).
+ * 0032/33 and 0043/44 have not been independently re-verified against production
+ * — treat "harmless" for those two pairs as unconfirmed, not disproven.
  */
 describe('drizzle migration journal ordering', () => {
   const journalPath = join(import.meta.dir, '..', 'drizzle', 'meta', '_journal.json');
