@@ -17,6 +17,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
+export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
 
@@ -538,6 +539,10 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
+  // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
+  // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
+  orchestrationMode: text('orchestration_mode').default('auto').notNull().$type<'auto' | 'manual'>(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
@@ -672,6 +677,9 @@ export const workers = pgTable('workers', {
   // Set by webhook when the worker's PR is merged; used by dependsOn gate to
   // distinguish "task completed before PR merged" from "PR actually landed".
   mergedAt: timestamp('merged_at', { withTimezone: true }),
+  // PR/git lifecycle state — kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -818,7 +826,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -955,8 +963,13 @@ export const workspaceSkills = pgTable('workspace_skills', {
   background: boolean('background').notNull().default(false),
   maxTurns: integer('max_turns'), // null = unlimited
   color: text('color').notNull().default('#8A8478'), // avatar color hex
+  // @deprecated Superseded by `connectorRefs` (connectors table). Kept for back-compat during
+  // rollout; no longer read/written by new code and slated for removal in a follow-up migration.
   mcpServers: jsonb('mcp_servers').notNull().default({}).$type<Record<string, unknown> | string[]>(), // MCP server configs or legacy name array
+  // @deprecated See `mcpServers` above — migrated to connectors; do NOT remove yet.
   requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
+  // IDs of connectors (connectors table) this role mounts — role-level opt-in to team connectors.
+  connectorRefs: jsonb('connector_refs').notNull().default([]).$type<string[]>(),
   // Role-specific fields
   isRole: boolean('is_role').notNull().default(false), // distinguishes roles (Team page) from skills
   configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
@@ -1495,6 +1508,15 @@ export const connectors = pgTable('connectors', {
   name: text('name').notNull(),
   url: text('url').notNull(),
   authMode: connectorAuthModeEnum('auth_mode').notNull().default('none'),
+  // Transport: 'http' (remote MCP over HTTP/SSE — uses `url`) or 'stdio' (local
+  // process — uses `command`/`args`/`envMapping`). Default 'http' keeps existing rows unchanged.
+  transport: connectorTransportEnum('transport').notNull().default('http'),
+  // stdio transport: executable to spawn (e.g. 'npx', 'uvx'). Null for http transport.
+  command: text('command'),
+  // stdio transport: argv passed to `command` (e.g. ['-y', '@some/mcp-server']).
+  args: jsonb('args').notNull().default([]).$type<string[]>(),
+  // stdio transport: env var name → secret label mapping injected into the spawned process.
+  envMapping: jsonb('env_mapping').notNull().default({}).$type<Record<string, string>>(),
   // For authMode='header': the HTTP header name (e.g. 'Authorization', 'X-API-Key').
   // The header value is stored as a secret (purpose='mcp_connector_credential').
   headerName: text('header_name'),

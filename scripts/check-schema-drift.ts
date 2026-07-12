@@ -26,6 +26,15 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
+// neon() throws a raw stack trace on invalid URLs — validate format up front
+// so a misconfigured secret produces an actionable message instead.
+try {
+  new URL(DATABASE_URL);
+} catch {
+  console.error('ERROR: DATABASE_URL is not a valid URL — check the DATABASE_URL secret value in repo settings');
+  process.exit(1);
+}
+
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
 function latestSnapshot(): { tables: Record<string, DrizzleTable> } {
