@@ -1,8 +1,8 @@
 import { sql } from 'drizzle-orm';
-import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
+import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
 import { applyRerank } from './reranker';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
-import { applyRecencyAuthority } from './recency-authority';
+import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
 import { createHash } from 'crypto';
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
@@ -103,9 +103,10 @@ export class PgVectorStore implements KnowledgeStore {
     return this.embedder;
   }
 
-  async upsert(namespace: string, chunks: UpsertChunk[]): Promise<void> {
-    if (chunks.length === 0) return;
+  async upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult> {
+    if (chunks.length === 0) return { superseded: 0 };
 
+    let superseded = 0;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
@@ -185,7 +186,17 @@ export class PgVectorStore implements KnowledgeStore {
       if (chunk.sourcePath && sourceTs) {
         await this._markSuperseded(db, namespace, chunk.id, chunk.sourcePath, sourceTs);
       }
+
+      // Wave-1 C1: explicit supersession — the agent asserted this chunk
+      // replaces specific earlier chunks (same namespace only; self-references
+      // skipped; ids that don't match any current row are silently ignored).
+      const explicitTargets = (chunk.supersedes ?? []).filter(s => s && s !== chunk.id);
+      if (explicitTargets.length > 0) {
+        superseded += await this._markSupersededExplicit(db, namespace, chunk.id, explicitTargets);
+      }
     }
+
+    return { superseded };
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
@@ -430,6 +441,98 @@ export class PgVectorStore implements KnowledgeStore {
       `);
     } catch {
       // Degrade gracefully if the column doesn't exist yet
+    }
+  }
+
+  /**
+   * Wave-1 C1: explicit supersession — mark the listed source_ids in the SAME
+   * namespace as superseded by newSourceId. Only `is_current` rows match, so
+   * the returned count reflects rows actually flipped; unknown ids are ignored.
+   */
+  private async _markSupersededExplicit(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    newSourceId: string,
+    targetSourceIds: string[],
+  ): Promise<number> {
+    try {
+      const inList = sql.join(targetSourceIds.map(id => sql`${id}`), sql`, `);
+      const res = await db.execute(sql`
+        UPDATE knowledge_chunks
+        SET is_current = false,
+            superseded_by = ${newSourceId}
+        WHERE namespace = ${namespace}
+          AND source_id IN (${inList})
+          AND source_id != ${newSourceId}
+          AND is_current = true
+        RETURNING source_id
+      `);
+      return res.rows.length;
+    } catch {
+      // Degrade gracefully if the columns don't exist yet
+      return 0;
+    }
+  }
+
+  /**
+   * Wave-1 C1: entity-keyed supersession (deterministic).
+   *
+   * Marks other `is_current` chunks in the namespace as superseded by
+   * `newSourceId` when ALL of the following hold:
+   *  - the candidate's `chunk_entities` rows with role='defines' form a
+   *    non-empty set IDENTICAL to `entityIds` (strict exact-set match);
+   *  - the candidate's `source_ts` is strictly older than the new chunk's
+   *    (NULL counts as older, matching path-keyed supersession);
+   *  - the candidate's corpus authority is ≤ the new chunk's corpus authority
+   *    (per CORPUS_AUTHORITY).
+   *
+   * Single atomic UPDATE (no transaction — neon-http constraint). Returns the
+   * number of chunks marked; degrades gracefully to 0 on any error.
+   */
+  async markSupersededByEntities(
+    namespace: string,
+    newSourceId: string,
+    entityIds: string[],
+    opts: { corpus?: Corpus; sourceTs?: Date | null } = {},
+  ): Promise<number> {
+    const uniqueIds = Array.from(new Set(entityIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return 0;
+
+    const corpus = opts.corpus ?? (namespace.split(':')[1] as Corpus);
+    const newAuthority = CORPUS_AUTHORITY[corpus] ?? 1.0;
+    const allowedCorpora = (Object.keys(CORPUS_AUTHORITY) as Corpus[])
+      .filter(c => CORPUS_AUTHORITY[c] <= newAuthority);
+    const refTs = opts.sourceTs ?? new Date();
+
+    try {
+      const db = await getDb();
+      const idList = sql.join(uniqueIds.map(id => sql`${id}`), sql`, `);
+      const corpusList = sql.join(allowedCorpora.map(c => sql`${c}`), sql`, `);
+      const res = await db.execute(sql`
+        UPDATE knowledge_chunks
+        SET is_current = false,
+            superseded_by = ${newSourceId}
+        WHERE namespace = ${namespace}
+          AND source_id != ${newSourceId}
+          AND is_current = true
+          AND corpus IN (${corpusList})
+          AND (source_ts IS NULL OR source_ts < ${refTs.toISOString()})
+          AND source_id IN (
+            SELECT ce.chunk_source_id
+            FROM chunk_entities ce
+            WHERE ce.namespace = ${namespace}
+              AND ce.role = 'defines'
+              AND ce.chunk_source_id != ${newSourceId}
+            GROUP BY ce.chunk_source_id
+            HAVING COUNT(DISTINCT ce.entity_id) = ${uniqueIds.length}
+               AND COUNT(DISTINCT ce.entity_id) FILTER (WHERE ce.entity_id IN (${idList})) = ${uniqueIds.length}
+          )
+        RETURNING source_id
+      `);
+      return res.rows.length;
+    } catch {
+      // Entity tables may not exist yet — degrade gracefully
+      return 0;
     }
   }
 
