@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull } from 'drizzle-orm';
@@ -12,6 +12,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { postLinearCompletionComment } from '@/lib/work-tracker';
+import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -337,6 +338,7 @@ async function handlePullRequestEvent(event: {
     number: number;
     merged: boolean;
     draft?: boolean;
+    merge_commit_sha?: string | null;
     head: { ref: string; sha: string };
     html_url: string;
   };
@@ -365,6 +367,37 @@ async function handlePullRequestEvent(event: {
   // Only handle merged PRs beyond this point
   if (action !== 'closed' || !pr.merged) {
     return;
+  }
+
+  // Knowledge ingestion (KM v2 spec §3): ANY merged PR on a repo bound to one
+  // or more workspaces enqueues a diff ingest job per workspace, then kicks
+  // execution after the response is sent. Fully best-effort — never fails the
+  // webhook, and jobs stay queued (retryable) if background execution is lost.
+  try {
+    const jobIds = await enqueueMergedPrIngestJobs({
+      repoFullName: repository.full_name,
+      prNumber: pr.number,
+      sha: pr.merge_commit_sha ?? pr.head.sha,
+    });
+    if (jobIds.length > 0) {
+      try {
+        after(() =>
+          Promise.allSettled(
+            jobIds.map(id =>
+              runDiffIngestJob(id).catch(err =>
+                console.error(`[knowledge-ingest] job ${id} execution failed:`, err),
+              ),
+            ),
+          ),
+        );
+      } catch (err) {
+        // after() is unavailable outside a request scope (tests/build) — jobs
+        // remain queued for a later executor.
+        console.warn('[knowledge-ingest] after() unavailable; jobs remain queued:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[knowledge-ingest] enqueue failed (non-fatal):', err);
   }
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)

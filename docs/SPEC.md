@@ -312,6 +312,7 @@ brutalist UI.
 | `codex-backend-spec.md` | Codex backend invariants | Implemented |
 | `credentials-architecture.md` | Unified `secrets` scoping + refresh | Implemented |
 | `knowledge-store.md` | Hybrid retrieval design | Implemented |
+| `design/workspace-knowledge-management.md` | Per-PR ingestion, code graph, consolidation | Draft |
 | `testing.md`, `testing-strategy.md` | TDD, test layers, fixtures | Implemented |
 | `plan-remove-objectives.md` | Objectives→Mission port | Partial/historical |
 | `plan-ios-app-mvp.md` | iOS MVP | Planned (separate repo) |

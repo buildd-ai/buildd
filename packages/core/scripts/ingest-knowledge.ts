@@ -32,22 +32,21 @@ import { PgVectorStore } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedderForCorpus } from '../knowledge-store/voyage-embedder';
 import { ingestFiles, type SourceFile } from '../knowledge-store/ingest';
 import type { Corpus } from '../knowledge-store/types';
+import {
+  DOC_EXTENSIONS as DOC_EXT,
+  CODE_EXTENSIONS as CODE_EXT,
+  DEFAULT_SKIP_DIRS,
+  TEST_FILE_RE,
+  MAX_INGEST_FILE_BYTES as MAX_FILE_BYTES,
+} from '../knowledge-store/ingest-filter';
 
-const DOC_EXT = new Set(['.md', '.mdx', '.markdown']);
-const CODE_EXT = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.py', '.go', '.rs', '.java', '.rb', '.php', '.c', '.h', '.cc', '.cpp', '.hpp',
-  '.cs', '.swift', '.kt', '.scala', '.sh', '.sql', '.css', '.scss',
-]);
 const SKIP_DIRS = new Set([
-  'node_modules', '.git', '.next', 'dist', 'build', 'coverage', '.turbo', '.vercel',
+  ...DEFAULT_SKIP_DIRS,
   // Caller-supplied extra dirs (comma-separated), e.g. INGEST_SKIP_DIRS=drizzle,__tests__
   ...(process.env.INGEST_SKIP_DIRS?.split(',').map(s => s.trim()).filter(Boolean) ?? []),
 ]);
 // When set, drop test/spec files from the corpus (history, not current-state truth).
 const SKIP_TESTS = !!process.env.INGEST_SKIP_TESTS;
-const TEST_FILE_RE = /\.(test|spec)\.[tj]sx?$/;
-const MAX_FILE_BYTES = 512 * 1024; // skip very large files (minified bundles, lockfiles)
 const BATCH = 50;
 
 function getFlag(flag: string): string | undefined {

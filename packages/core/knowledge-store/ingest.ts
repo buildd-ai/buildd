@@ -1,12 +1,25 @@
 import type { KnowledgeStore, UpsertChunk, Corpus } from './types';
-import { chunkMarkdown, chunkCode, type ChunkOptions, type ChunkPiece } from './chunker';
+import {
+  chunkMarkdown,
+  chunkCode,
+  chunkCodeSymbols,
+  type ChunkOptions,
+  type ChunkPiece,
+} from './chunker';
 import { buildNamespace } from './pg-vector-store';
+import type { ExtractedSymbol, ExtractedImport } from './symbol-extractor';
 
 // Phase 2 ingestion: turn source files (code, docs) into multiple retrievable
 // chunks. A file becomes N chunks whose ids are `path#startLine` — stable
 // across re-ingests of unchanged regions and unique within the file. Re-ingest
 // first clears the file's existing chunks (via deleteBySource) so a file that
 // shrank doesn't leave orphaned tail chunks behind.
+//
+// For the code corpus in supported languages (ts/tsx/js/jsx), chunking is
+// symbol-boundary-aligned via ast-grep (spec §4, B1). The native binary is
+// loaded through a dynamic import inside symbol-extractor.ts; when it is
+// unavailable (e.g. serverless bundles) the line-window splitter output is
+// byte-identical to the pre-B1 behavior.
 
 export interface SourceFile {
   /** Repo-relative path — used as sourcePath and id prefix. */
@@ -35,21 +48,78 @@ function optionsFor(corpus: Corpus, overrides: Partial<ChunkOptions>): ChunkOpti
   return { maxChars: overrides.maxChars ?? base.maxChars, overlap: overrides.overlap ?? base.overlap };
 }
 
-/** Split a single file into upsertable chunks. Pure — no I/O. */
-export function fileToChunks(
+interface SymbolChunkingResult {
+  pieces: ChunkPiece[];
+  symbols: ExtractedSymbol[];
+  imports: ExtractedImport[];
+}
+
+/**
+ * Best-effort symbol-boundary chunking for code files. Returns null whenever
+ * the symbol layer can't help (unsupported language, ast-grep unavailable, no
+ * top-level declarations, or any unexpected error) — the caller then takes the
+ * existing line-window path unchanged.
+ */
+async function trySymbolChunking(
+  file: SourceFile,
+  opts: ChunkOptions,
+): Promise<SymbolChunkingResult | null> {
+  try {
+    // Dynamic import keeps symbol-extractor (and the @ast-grep/napi native
+    // binary behind it) out of any static bundle graph reaching this module.
+    const se = await import('./symbol-extractor');
+    const lang = se.langForPath(file.path);
+    if (!lang) return null;
+    const symbols = await se.extractSymbols(file.content, lang);
+    if (!symbols || symbols.length === 0) return null;
+    const imports = await se.extractImports(file.content, lang, file.path);
+    const pieces = chunkCodeSymbols(file.content, symbols, opts);
+    if (pieces.length === 0) return null;
+    return { pieces, symbols, imports };
+  } catch {
+    return null;
+  }
+}
+
+/** Split a single file into upsertable chunks. No I/O beyond optional in-process AST parsing. */
+export async function fileToChunks(
   file: SourceFile,
   corpus: Corpus,
   overrides: Partial<ChunkOptions> = {},
-): UpsertChunk[] {
+): Promise<UpsertChunk[]> {
   const opts = optionsFor(corpus, overrides);
   const useMarkdown = (corpus === 'docs' || corpus === 'spec') && MARKDOWN_EXT.test(file.path);
-  const pieces: ChunkPiece[] = useMarkdown ? chunkMarkdown(file.content, opts) : chunkCode(file.content, opts);
 
-  return pieces.map(piece => {
+  let pieces: ChunkPiece[];
+  let symbolInfo: SymbolChunkingResult | null = null;
+  if (useMarkdown) {
+    pieces = chunkMarkdown(file.content, opts);
+  } else {
+    if (corpus === 'code') symbolInfo = await trySymbolChunking(file, opts);
+    pieces = symbolInfo ? symbolInfo.pieces : chunkCode(file.content, opts);
+  }
+
+  return pieces.map((piece, index) => {
     const headingPath = piece.headingPath ?? [];
     // Prepend file path (and heading trail for docs) to the lexical text so
     // BM25 can match on filename / section even when the body doesn't repeat it.
     const lexicalPrefix = headingPath.length ? `${file.path}\n${headingPath.join(' > ')}` : file.path;
+
+    // Symbol layer metadata: each chunk lists the declarations it contains
+    // (consumed by entity-extractor/edge-builder for symbol entities +
+    // `defines` edges); imports ride on the first chunk only (one
+    // file→file `imports` edge set per file).
+    let symbolMeta: Record<string, unknown> = {};
+    if (symbolInfo) {
+      const defined = symbolInfo.symbols.filter(
+        s => s.startLine >= piece.startLine && s.startLine <= piece.endLine,
+      );
+      symbolMeta = {
+        ...(defined.length ? { symbols: defined } : {}),
+        ...(index === 0 && symbolInfo.imports.length ? { imports: symbolInfo.imports } : {}),
+      };
+    }
+
     return {
       id: `${file.path}#${piece.startLine}`,
       content: piece.content,
@@ -62,6 +132,7 @@ export function fileToChunks(
         startLine: piece.startLine,
         endLine: piece.endLine,
         ...(headingPath.length ? { headingPath } : {}),
+        ...symbolMeta,
       },
     } satisfies UpsertChunk;
   });
@@ -83,7 +154,7 @@ export async function ingestFiles(
   let chunkCount = 0;
 
   for (const file of files) {
-    const chunks = fileToChunks(file, corpus, overrides);
+    const chunks = await fileToChunks(file, corpus, overrides);
     // Clear prior chunks for this file even when it now yields zero chunks
     // (e.g. emptied) so stale content doesn't linger.
     await store.deleteBySource?.(namespace, { sourcePath: file.path });

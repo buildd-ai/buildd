@@ -1,6 +1,6 @@
 {
-  "id": "13a2575c-c8f6-4edc-902b-d87afe87d84c",
-  "prevId": "765d2daf-4cd0-469e-a61e-73421aeba4a2",
+  "id": "4715e019-3e86-4e24-894a-b3d565560330",
+  "prevId": "13a2575c-c8f6-4edc-902b-d87afe87d84c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -763,6 +763,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'none'"
+        },
+        "transport": {
+          "name": "transport",
+          "type": "connector_transport",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'http'"
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "args": {
+          "name": "args",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "env_mapping": {
+          "name": "env_mapping",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "header_name": {
           "name": "header_name",
@@ -6163,6 +6191,13 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "connector_refs": {
+          "name": "connector_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "is_role": {
           "name": "is_role",
           "type": "boolean",
@@ -6574,6 +6609,14 @@
         "none",
         "header",
         "oauth"
+      ]
+    },
+    "public.connector_transport": {
+      "name": "connector_transport",
+      "schema": "public",
+      "values": [
+        "http",
+        "stdio"
       ]
     }
   },

@@ -1171,6 +1171,39 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
   uniqueEdge: uniqueIndex('knowledge_edges_unique_idx').on(t.workspaceId, t.fromEntityId, t.toEntityId, t.type),
 }));
 
+// Workspace Knowledge Management v2 §3.2 — per-workspace ingest job queue.
+// One queue for incremental (diff) and full runs. Enqueued by the GitHub
+// webhook on merged PRs; diff jobs execute serverless via the contents API,
+// full jobs (backfill / escalated large diffs) run on the runner fleet.
+// Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
+// — failed jobs (status = 'error') don't block a retry insert.
+export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  /** "owner/name" — denormalized so jobs survive repo re-binding. */
+  repo: text('repo').notNull(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled'>(),
+  /** Merge SHA (diff jobs) or target SHA (full jobs). */
+  sha: text('sha'),
+  prNumber: integer('pr_number'),
+  scope: text('scope').notNull().$type<'diff' | 'full'>(),
+  status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'done' | 'error'>(),
+  /** File paths considered by this job (kept + deleted), for the health UI. */
+  changedFiles: jsonb('changed_files').$type<string[]>(),
+  /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
+  stats: jsonb('stats').$type<Record<string, unknown>>(),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  workspaceStatusIdx: index('knowledge_ingest_jobs_ws_status_idx').on(t.workspaceId, t.status),
+  // Idempotent enqueue: one non-errored job per (workspace, sha, scope).
+  idempotencyIdx: uniqueIndex('knowledge_ingest_jobs_ws_sha_scope_idx')
+    .on(t.workspaceId, t.sha, t.scope)
+    .where(sql`${t.status} != 'error'`),
+}));
+
 // Relations
 export const teamsRelations = relations(teams, ({ many }) => ({
   members: many(teamMembers),
