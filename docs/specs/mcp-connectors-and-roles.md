@@ -33,6 +33,11 @@
 > 4. **"Browse Registry" creates a connector**, not an inline role config.
 > 5. One injection path (claim route). The R2 `.mcp.json` role-config path for MCP
 >    is retired.
+> 6. **Connectors are shareable across teams.** `connectors.teamId` is the *owner*
+>    team; an owner-team admin may grant other teams use of the connector (reusing
+>    the single owner credential — no re-auth) and may transfer ownership. Sharing
+>    is **Phase 2**, additive on top of Phase 1. See §1b. Phase 1 already keys
+>    credential resolution on the *owner* team so Phase 2 only widens visibility.
 >
 > **Sources of truth read before this doc:**
 > - `packages/core/db/schema.ts` — `connectors` (1442), `connectorWorkspaces`
@@ -90,7 +95,63 @@ mechanism by which an MCP server is mounted onto an agent.
 - Migration: `packages/core/drizzle/00XX_*.sql`.
 
 **Out of scope**: SSE transport; per-user (account-scoped) connectors — connectors
-stay team-scoped (multi-account OAuth is a future doc).
+stay team-owned (multi-account OAuth is a future doc).
+
+---
+
+## 1b. Cross-team sharing (Phase 2)
+
+**Capability statement**: A connector owned by one team MAY be shared to other
+teams by an admin of the owner team; a shared-in connector is usable (enable per
+workspace, opt-in per role, inject at claim) by the grantee team exactly as an
+owned connector, WITHOUT re-running OAuth — the owner team's single credential
+is reused.
+
+**Invariants**:
+- `connectors.teamId` is the OWNER team. Credentials (`secrets` rows) are always
+  keyed on the owner team; grantees never store their own copy. **Phase 1 already
+  resolves connector credentials by `connector.teamId`, not the workspace's team**,
+  so sharing adds only a visibility widening — no injection rewrite.
+- Grants live in `connector_shares (connectorId, sharedWithTeamId, grantedByAccountId,
+  createdAt)`, unique `(connectorId, sharedWithTeamId)`. The owner team is implicit
+  (never a self-share row).
+- A workspace's *visible* connectors = connectors owned by the workspace's team ∪
+  connectors shared to the workspace's team.
+- **Slug-collision precedence**: if an owned and a shared-in connector slugify to
+  the same MCP key, the OWNED connector wins; the shared-in one is not mounted
+  (deterministic, no double-mount).
+- Only an admin of the OWNER team may create/revoke shares or transfer ownership.
+  Grantees may enable/disable per workspace and opt-in per role, but MUST NOT edit
+  the connector config or its credential.
+- Ownership transfer (`PATCH /api/connectors/[id]/transfer`) reassigns `teamId` to
+  another team the actor administers; the credential is re-keyed to the new owner
+  team and existing shares are preserved.
+- Revoking a share removes the connector from every grantee workspace's mounted
+  set at the next claim (no orphaned injection).
+
+**Acceptance criteria**:
+- AC-1: GIVEN connector C owned by team A, shared to team B WHEN a workspace in B
+  enables C and a role opts in THEN a task in B mounts C using A's credential and
+  no `secrets` row exists for team B.
+- AC-2: GIVEN C not shared to team B WHEN a workspace in B attempts to enable C
+  THEN the API rejects (`404`/`403` — not visible).
+- AC-3: GIVEN team B owns `github` AND team A's `github` is shared to B WHEN a
+  role in B references both THEN only B's owned `github` mounts (owned wins).
+- AC-4: GIVEN a non-admin of the owner team WHEN `POST` a share THEN `403`.
+- AC-5: GIVEN C shared to B WHEN the owner revokes the share THEN a subsequent
+  claim in B does NOT mount C.
+
+**Code surface**:
+- Data model: `connectors.teamId` (documented owner) + new `connector_shares`
+  table in `packages/core/db/schema.ts`.
+- Routes: `POST`/`DELETE /api/connectors/[id]/shares`,
+  `POST /api/connectors/[id]/transfer`.
+- Injection: `apps/web/src/app/api/workers/claim/route.ts` — visibility union +
+  owner-keyed credential fetch (already Phase 1) + collision precedence.
+
+**Out of scope**: sharing to a *specific workspace* in another team (grant is
+team-granularity; the grantee enables per workspace); public/marketplace
+connectors; per-grantee credential overrides.
 
 ---
 
@@ -151,8 +212,12 @@ a `mcpConnectors` array the runner merges verbatim into
 - `none`: no `headers`.
 - `stdio`: `env` resolved from `envMapping` against `mcp_credential` secrets;
   never `headers`.
-- Two connectors slugifying to the same key is impossible (uniqueness AC-4 §1);
-  the runner therefore never needs collision precedence.
+- **Credentials are resolved by `connector.teamId` (the owner team), NOT the
+  task's workspace team.** Today they are equal; keying on the owner now makes
+  cross-team sharing (§1b) a pure visibility widening with no injection rewrite.
+- Within a single team's own connectors, two rows slugifying to the same key is
+  impossible (uniqueness AC-4 §1). Cross-team collisions are resolved by §1b
+  precedence (owned wins) — a Phase 2 concern.
 
 **Acceptance criteria**:
 - AC-1: GIVEN an `oauth` connector with a valid token, referenced+enabled WHEN
@@ -200,6 +265,12 @@ a `mcpConnectors` array the runner merges verbatim into
 - `requiredEnvVars` (env→secret label) is copied onto the connector's
   `envMapping` for `stdio` transport connectors; the referenced `mcp_credential`
   secrets are left in place.
+- **Reach of pre-existing team connectors is NOT auto-preserved** (product
+  decision, 2026-07-12: manual re-opt-in via the role picker is cheaper and
+  safer than an automated backfill). Today's default-on injection ends at
+  deploy; admins opt roles into existing connectors via the role picker. The
+  backfill only converts legacy `role.mcpServers` entries (which DO get refs,
+  since the role explicitly listed them).
 - The migration is idempotent (re-running creates no duplicates).
 
 **Acceptance criteria**:
@@ -214,6 +285,9 @@ a `mcpConnectors` array the runner merges verbatim into
   is created and referenced.
 - AC-4: WHEN the migration runs twice THEN the second run creates 0 new rows and
   changes 0 `connectorRefs`.
+- AC-5 (removed): auto reach-preservation for pre-existing team connectors was
+  considered and rejected — manual re-opt-in via the role picker is the accepted
+  path. A post-deploy checklist item replaces the automated guarantee.
 
 **Code surface**:
 - Migration script: `packages/core/drizzle/00XX_migrate_role_mcp_to_connectors.sql`
