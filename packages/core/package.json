@@ -35,6 +35,8 @@
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
     "./knowledge-store/types": "./knowledge-store/types.ts",
     "./knowledge-store/ingest-filter": "./knowledge-store/ingest-filter.ts",
+    "./knowledge-store/pr-diff-chunker": "./knowledge-store/pr-diff-chunker.ts",
+    "./knowledge-store/full-ingest": "./knowledge-store/full-ingest.ts",
     "./path-overlap": "./path-overlap.ts"
   },
   "dependencies": {

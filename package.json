@@ -25,7 +25,8 @@
     "seed:multi-user": "bun run scripts/seed/multi-user.ts",
     "seed:concurrent": "bun run scripts/seed/concurrent.ts",
     "seed:reset": "bun run scripts/seed/reset.ts",
-    "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts"
+    "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts",
+    "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts"
   },
   "dependencies": {
     "next": "^16.0.0",
