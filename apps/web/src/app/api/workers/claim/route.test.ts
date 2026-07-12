@@ -34,6 +34,7 @@ const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
 const mockConnectorsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockConnectorWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockDbSelect = mock(() => ({
@@ -80,6 +81,7 @@ mock.module('@buildd/core/db', () => ({
       },
       connectors: { findMany: mockConnectorsFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
+      connectorShares: { findMany: mockConnectorSharesFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -124,6 +126,7 @@ mock.module('@buildd/core/db/schema', () => ({
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
+  connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -212,6 +215,9 @@ describe('POST /api/workers/claim', () => {
     // Default: no connectors
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    // Default: no cross-team shares (§1b)
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorSharesFindMany.mockResolvedValue([]);
     // Default: OAuth refresh fails (expired stays expired) unless a test overrides it
     mockRefreshMcpConnectorCredential.mockReset();
     mockRefreshMcpConnectorCredential.mockResolvedValue('error');
@@ -2368,7 +2374,7 @@ describe('POST /api/workers/claim', () => {
       // main secrets call → []; stdio env-secret call → the mapped mcp_credential secret
       mockSecretsFindMany
         .mockResolvedValueOnce([]) // main secrets call
-        .mockResolvedValueOnce([{ id: 'es-1', label: 'GH_SECRET' }]);
+        .mockResolvedValueOnce([{ id: 'es-1', label: 'GH_SECRET', teamId: 'team-1' }]);
       mockSecretsProviderGet.mockResolvedValue('ghp_decrypted');
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -2399,6 +2405,131 @@ describe('POST /api/workers/claim', () => {
       ]);
       // main secrets call → []; stdio env-secret call → [] (secret missing)
       mockSecretsFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    // --- §1b cross-team sharing ---
+
+    // §1b AC-1: a connector owned by another team but shared to this team mounts
+    // using the OWNER team's credential — no grantee-team secret exists or is needed.
+    it('mounts a shared-in connector using the owner-team credential', async () => {
+      setupConnectorClaim(['conn-shared']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-shared', teamId: 'team-owner', name: 'shared-mcp', url: 'https://shared.example.com', authMode: 'header', headerName: 'X-API-Key', transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([
+        { connectorId: 'conn-shared', sharedWithTeamId: 'team-1' },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-shared', workspaceId: 'ws-1', enabled: true },
+      ]);
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([{ id: 'cs-owner', label: 'conn-shared', tokenExpiresAt: null }]);
+      mockSecretsProviderGet.mockResolvedValue('owner-secret');
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'shared-mcp', transport: 'http', url: 'https://shared.example.com', headers: { 'X-API-Key': 'owner-secret' } },
+      ]);
+      // Credential lookup is keyed on the OWNER team (connector.teamId), not the
+      // task's workspace team (team-1) — §1b invariant.
+      const credCall = mockSecretsFindMany.mock.calls[1]?.[0] as any;
+      const teamFilter = credCall?.where?.args?.find((a: any) => a.type === 'inArray' && a.field === 'teamId');
+      expect(teamFilter?.values).toEqual(['team-owner']);
+    });
+
+    // §1b AC-3: owned wins on slug collision — when an owned and a shared-in
+    // connector slugify to the same key, only the owned one mounts.
+    it('mounts only the owned connector when an owned and a shared-in connector collide on slug', async () => {
+      setupConnectorClaim(['conn-own', 'conn-shared']);
+      // Shared-in row listed FIRST to prove precedence is enforced, not row order.
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-shared', teamId: 'team-owner', name: 'github', url: 'https://shared.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+        { id: 'conn-own', teamId: 'team-1', name: 'github', url: 'https://owned.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([
+        { connectorId: 'conn-shared', sharedWithTeamId: 'team-1' },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-own', workspaceId: 'ws-1', enabled: true },
+        { connectorId: 'conn-shared', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'github', transport: 'http', url: 'https://owned.example.com' },
+      ]);
+    });
+
+    // §1b invariant (credentials keyed on OWNER team): when an owned and a
+    // shared-in stdio connector map the same env label, each resolves the
+    // secret from its own owner team — never the other team's value.
+    it('resolves stdio env secrets per owner team when labels collide across teams', async () => {
+      setupConnectorClaim(['conn-own-stdio', 'conn-shared-stdio']);
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-own-stdio', teamId: 'team-1', name: 'local-tool', url: null, authMode: 'none', headerName: null,
+          transport: 'stdio', command: 'npx', args: ['local-tool'],
+          envMapping: { API_TOKEN: 'SHARED_LABEL' },
+        },
+        {
+          id: 'conn-shared-stdio', teamId: 'team-owner', name: 'remote-tool', url: null, authMode: 'none', headerName: null,
+          transport: 'stdio', command: 'npx', args: ['remote-tool'],
+          envMapping: { API_TOKEN: 'SHARED_LABEL' },
+        },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([
+        { connectorId: 'conn-shared-stdio', sharedWithTeamId: 'team-1' },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-own-stdio', workspaceId: 'ws-1', enabled: true },
+        { connectorId: 'conn-shared-stdio', workspaceId: 'ws-1', enabled: true },
+      ]);
+      // main secrets call → []; env-secret call → one row per owner team, same label
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([
+          { id: 'es-own', label: 'SHARED_LABEL', teamId: 'team-1' },
+          { id: 'es-owner', label: 'SHARED_LABEL', teamId: 'team-owner' },
+        ]);
+      mockSecretsProviderGet.mockImplementation((id: string) =>
+        Promise.resolve(id === 'es-own' ? 'own-team-value' : id === 'es-owner' ? 'owner-team-value' : null),
+      );
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      const mounted = data.workers[0].mcpConnectors as any[];
+      const own = mounted.find(c => c.name === 'local-tool');
+      const shared = mounted.find(c => c.name === 'remote-tool');
+      expect(own?.env).toEqual({ API_TOKEN: 'own-team-value' });
+      expect(shared?.env).toEqual({ API_TOKEN: 'owner-team-value' });
+    });
+
+    // §1b AC-5: after a share is revoked (no share row), the next claim does NOT
+    // mount the other team's connector even if a dangling ref/enablement remains.
+    it('does not mount another team connector when no share row exists (revoked)', async () => {
+      setupConnectorClaim(['conn-shared']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-shared', teamId: 'team-owner', name: 'shared-mcp', url: 'https://shared.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([]); // share revoked
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-shared', workspaceId: 'ws-1', enabled: true },
+      ]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();

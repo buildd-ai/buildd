@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorWorkspaces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -1299,14 +1299,26 @@ export async function POST(req: NextRequest) {
         const connectorRefs = ((role as any).connectorRefs as string[] | null) ?? [];
         if (connectorRefs.length === 0) continue;
 
-        // Only connectors owned by the task's team AND referenced by the role.
-        // A dangling ref (deleted / other-team connector) simply drops out here (§2 AC-4).
-        const referencedConnectors = await db.query.connectors.findMany({
+        // Cross-team sharing (§1b): visibility = owned ∪ shared-in. Fetch the
+        // share grants for this team first, then keep only referenced connectors
+        // that are owned by the task's team OR shared to it. A revoked share
+        // (row absent) drops the connector here — no orphaned injection (§1b AC-5).
+        // A dangling ref (deleted / invisible connector) simply drops out (§2 AC-4).
+        const shareRows = await db.query.connectorShares.findMany({
           where: and(
-            eq(connectors.teamId, workspaceTeamId),
-            inArray(connectors.id, connectorRefs),
+            eq(connectorShares.sharedWithTeamId, workspaceTeamId),
+            inArray(connectorShares.connectorId, connectorRefs),
           ),
+          columns: { connectorId: true },
         });
+        const sharedIdSet = new Set(shareRows.map(r => r.connectorId));
+
+        const referencedRows = await db.query.connectors.findMany({
+          where: inArray(connectors.id, connectorRefs),
+        });
+        const referencedConnectors = referencedRows.filter(
+          c => c.teamId === workspaceTeamId || sharedIdSet.has(c.id),
+        );
         if (referencedConnectors.length === 0) continue;
 
         // Filter to connectors enabled for this workspace (enabled !== false; a
@@ -1349,6 +1361,9 @@ export async function POST(req: NextRequest) {
             .filter(c => c.transport === 'stdio')
             .flatMap(c => Object.values((c.envMapping as Record<string, string> | null) ?? {})),
         )];
+        // Keyed by `${ownerTeamId}\0${label}` — the same label can exist in
+        // several owner teams (§1b), and each connector must only ever see its
+        // OWN team's secret value.
         const envSecretMap = new Map<string, string>();
         if (envLabels.length > 0) {
           const envSecretRows = await db.query.secrets.findMany({
@@ -1357,19 +1372,31 @@ export async function POST(req: NextRequest) {
               eq(secrets.purpose, 'mcp_credential'),
               inArray(secrets.label, envLabels),
             ),
-            columns: { id: true, label: true },
+            columns: { id: true, label: true, teamId: true },
           });
           await Promise.all(envSecretRows.map(async (s) => {
-            if (!s.label) return;
+            if (!s.label || !s.teamId) return;
             const val = await connectorProvider.get(s.id);
-            if (val) envSecretMap.set(s.label, val);
+            if (val) envSecretMap.set(`${s.teamId}\0${s.label}`, val);
           }));
         }
 
         const mcpConnectors: ResolvedMcpConnector[] = [];
 
-        for (const connector of activeConnectors) {
+        // Slug-collision precedence (§1b): if an owned and a shared-in connector
+        // slugify to the same MCP key, the OWNED one wins — process owned
+        // connectors first and drop any later connector whose key is already
+        // claimed (deterministic, no double-mount).
+        const orderedConnectors = [
+          ...activeConnectors.filter(c => c.teamId === workspaceTeamId),
+          ...activeConnectors.filter(c => c.teamId !== workspaceTeamId),
+        ];
+        const claimedNames = new Set<string>();
+
+        for (const connector of orderedConnectors) {
           const name = slugifyConnectorName(connector.name);
+          if (claimedNames.has(name)) continue;
+          claimedNames.add(name);
 
           // stdio transport: spawn a local process; env resolved from envMapping.
           // No headers, no url. Omit if a mapped secret is missing (AC-4 parity).
@@ -1379,7 +1406,7 @@ export async function POST(req: NextRequest) {
             const env: Record<string, string> = {};
             let missing = false;
             for (const [envVar, label] of Object.entries(mapping)) {
-              const val = envSecretMap.get(label);
+              const val = envSecretMap.get(`${connector.teamId}\0${label}`);
               if (!val) { missing = true; break; }
               env[envVar] = val;
             }
