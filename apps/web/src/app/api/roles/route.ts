@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { name, description, content, model, allowedTools, canDelegateTo,
-      background, maxTurns, color, mcpServers, requiredEnvVars, isRole,
+      background, maxTurns, color, mcpServers, requiredEnvVars, connectorRefs, isRole,
       repoUrl, defaultBackend } = body;
 
     if (!name || !content) {
@@ -148,6 +148,8 @@ export async function POST(req: NextRequest) {
         ...(color ? { color } : {}),
         ...(mcpServers ? { mcpServers } : {}),
         ...(requiredEnvVars ? { requiredEnvVars } : {}),
+        // Role opt-in to team connectors (spec §2).
+        ...(connectorRefs !== undefined ? { connectorRefs } : {}),
         ...(repoUrl !== undefined ? { repoUrl } : {}),
         ...(defaultBackend !== undefined ? { defaultBackend: normalizeBackend(defaultBackend) } : {}),
       })
@@ -160,8 +162,10 @@ export async function POST(req: NextRequest) {
         const bundle = await packageRoleConfig(firstWsId, {
           slug: skill.slug,
           claudeMd: skill.content,
-          mcpConfig: (skill.mcpServers as Record<string, unknown>) || {},
-          envMapping: (skill.requiredEnvVars as Record<string, string>) || {},
+          // MCP is injected solely at claim time from connectors (spec §3); the
+          // R2 role bundle carries no MCP server config or env mapping.
+          mcpConfig: {},
+          envMapping: {},
           skillSlugs: [],
           type: skill.repoUrl ? 'builder' : 'service',
           repoUrl: skill.repoUrl,
