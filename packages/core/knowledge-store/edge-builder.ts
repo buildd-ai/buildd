@@ -6,7 +6,7 @@ import type {
   PendingRef,
   RelationRef,
 } from './types';
-import { extractEntities } from './entity-extractor';
+import { extractEntities, type SymbolInfo } from './entity-extractor';
 
 // ── Edge weight defaults per type ─────────────────────────────────────────────
 
@@ -41,6 +41,32 @@ export interface EdgeBuilderInput {
   agentRelations?: RelationRef[];
   /** Candidate spec/docs paths sharing a basename with the chunk — produces `implements` edges. */
   speculativeMatchPaths?: string[];
+  /**
+   * Pre-extracted top-level symbols (ast-grep symbol layer). Falls back to
+   * `chunk.metadata.symbols` (attached by fileToChunks) when omitted.
+   * Produces `(file) -defines-> (symbol)` edges.
+   */
+  symbols?: SymbolInfo[];
+  /**
+   * Pre-extracted import statements (ast-grep). Falls back to
+   * `chunk.metadata.imports`. Resolved relative imports produce
+   * `(file) -imports-> (file)` edges.
+   */
+  imports?: ImportInfo[];
+}
+
+/** Structural subset of ExtractedImport — keeps this module dependency-free. */
+export interface ImportInfo {
+  specifier: string;
+  resolvedPath: string | null;
+}
+
+function importsFromInput(input: EdgeBuilderInput): ImportInfo[] {
+  const raw = input.imports ?? (input.chunk.metadata as { imports?: unknown } | undefined)?.imports;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (i): i is ImportInfo => !!i && typeof i === 'object' && typeof (i as ImportInfo).specifier === 'string',
+  );
 }
 
 export interface EdgeBuilderOutput {
@@ -88,7 +114,7 @@ const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
  * entity upserts, edge upserts, and pending refs — no I/O.
  */
 export function buildEdges(input: EdgeBuilderInput): EdgeBuilderOutput {
-  const { chunk, corpus, workspaceId, prDiff, agentRelations, speculativeMatchPaths } = input;
+  const { chunk, corpus, workspaceId, prDiff, agentRelations, speculativeMatchPaths, symbols } = input;
   const chunkId = chunk.id;
   const entities: EntityUpsert[] = [];
   const edges: EdgeUpsert[] = [];
@@ -101,8 +127,51 @@ export function buildEdges(input: EdgeBuilderInput): EdgeBuilderOutput {
     workspaceId,
     sourcePath: chunk.sourcePath,
     metadata: chunk.metadata,
+    symbols,
   });
   entities.push(...extracted);
+
+  // ── Step 1b: symbol defines / import edges (ast-grep symbol layer) ────────
+  if (chunk.sourcePath) {
+    // (file) -defines-> (symbol) for every symbol defined in this chunk.
+    // extractEntities already filtered symbols to the chunk's line range.
+    for (const sym of extracted.filter(e => e.kind === 'symbol')) {
+      edges.push({
+        workspaceId,
+        fromEntityKey: chunk.sourcePath,
+        fromEntityKind: 'file',
+        toEntityKey: sym.key,
+        toEntityKind: 'symbol',
+        type: 'defines',
+        weight: EDGE_WEIGHTS.defines,
+        sourceChunkId: chunkId,
+        rule: 'astgrep:definition',
+      });
+    }
+
+    // (file) -imports-> (file) for resolved relative imports. Best-effort:
+    // resolvedPath is a textually-normalized, extensionless candidate path.
+    for (const imp of importsFromInput(input)) {
+      if (!imp.resolvedPath || imp.resolvedPath === chunk.sourcePath) continue;
+      entities.push({
+        workspaceId,
+        kind: 'file',
+        key: imp.resolvedPath,
+        canonicalName: basename(imp.resolvedPath),
+      });
+      edges.push({
+        workspaceId,
+        fromEntityKey: chunk.sourcePath,
+        fromEntityKind: 'file',
+        toEntityKey: imp.resolvedPath,
+        toEntityKind: 'file',
+        type: 'imports',
+        weight: EDGE_WEIGHTS.imports,
+        sourceChunkId: chunkId,
+        rule: 'astgrep:import',
+      });
+    }
+  }
 
   // ── Step 2: PR produced edges (file entities from diff) ───────────────────
   if (corpus === 'pr' && prDiff && prDiff.length > 0) {

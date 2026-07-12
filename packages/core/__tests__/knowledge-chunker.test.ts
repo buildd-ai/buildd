@@ -109,3 +109,99 @@ describe('chunkCode', () => {
     expect(joined).toContain('fn39');
   });
 });
+
+// ── chunkCodeSymbols ─────────────────────────────────────────────────────────
+
+import { chunkCodeSymbols } from '../knowledge-store/chunker';
+
+describe('chunkCodeSymbols', () => {
+  // Fixture: imports header (lines 1-2), three declarations with a gap.
+  const LINES = [
+    "import { a } from './a';",   // 1
+    "import { b } from './b';",   // 2
+    '',                           // 3
+    'export function one() {',    // 4
+    '  return 1;',                // 5
+    '}',                          // 6
+    '',                           // 7
+    'const LOOSE = 1;',           // 8  (not a tracked symbol — gap statement)
+    '',                           // 9
+    'export function two() {',    // 10
+    '  return 2;',                // 11
+    '}',                          // 12
+    '',                           // 13
+    'export function three() {',  // 14
+    '  return 3;',                // 15
+    '}',                          // 16
+  ];
+  const SRC = LINES.join('\n');
+  const SYMS = [
+    { name: 'one', kind: 'function', startLine: 4, endLine: 6, exported: true },
+    { name: 'two', kind: 'function', startLine: 10, endLine: 12, exported: true },
+    { name: 'three', kind: 'function', startLine: 14, endLine: 16, exported: true },
+  ];
+
+  it('aligns chunk boundaries to declaration ends', () => {
+    // Budget fits any single declaration segment but never two adjacent ones.
+    const pieces = chunkCodeSymbols(SRC, SYMS, { maxChars: 95, overlap: 0 });
+    expect(pieces.length).toBe(3);
+    // First chunk absorbs the imports header (leading gap attaches forward).
+    expect(pieces[0].startLine).toBe(1);
+    expect(pieces[0].endLine).toBe(6);
+    expect(pieces[0].content).toContain("import { a }");
+    expect(pieces[0].content).toContain('function one');
+    // Gap lines (LOOSE) attach to the following declaration's chunk.
+    expect(pieces[1].startLine).toBe(7);
+    expect(pieces[1].endLine).toBe(12);
+    expect(pieces[1].content).toContain('LOOSE');
+    expect(pieces[1].content).toContain('function two');
+    // No declaration is split across chunks.
+    for (const p of pieces) {
+      const opens = (p.content.match(/function (one|two|three)/g) ?? []).length;
+      const closes = (p.content.match(/^\}$/gm) ?? []).length;
+      expect(opens).toBe(closes);
+    }
+  });
+
+  it('packs consecutive declarations into one chunk under a generous budget', () => {
+    const pieces = chunkCodeSymbols(SRC, SYMS, { maxChars: 4000, overlap: 0 });
+    expect(pieces.length).toBe(1);
+    expect(pieces[0].startLine).toBe(1);
+    expect(pieces[0].endLine).toBe(16);
+  });
+
+  it('attaches trailing lines after the last declaration to the last chunk', () => {
+    const src = SRC + '\n\n// trailing comment';
+    const pieces = chunkCodeSymbols(src, SYMS, { maxChars: 4000, overlap: 0 });
+    expect(pieces.length).toBe(1);
+    expect(pieces[0].endLine).toBe(18);
+    expect(pieces[0].content).toContain('trailing comment');
+  });
+
+  it('falls back to line-window splitting inside an oversized declaration', () => {
+    const bigBody = Array.from({ length: 50 }, (_, i) => `  const v${i} = ${i};`);
+    const src = ['export function big() {', ...bigBody, '}'].join('\n');
+    const syms = [{ name: 'big', kind: 'function', startLine: 1, endLine: 52, exported: true }];
+    const pieces = chunkCodeSymbols(src, syms, { maxChars: 200, overlap: 20 });
+    expect(pieces.length).toBeGreaterThan(1);
+    // Full coverage: every body line appears somewhere.
+    const joined = pieces.map(p => p.content).join('\n');
+    expect(joined).toContain('v0');
+    expect(joined).toContain('v49');
+    // Line ranges stay within the file and are ordered.
+    for (const p of pieces) {
+      expect(p.startLine).toBeGreaterThanOrEqual(1);
+      expect(p.endLine).toBeLessThanOrEqual(52);
+    }
+  });
+
+  it('degrades to plain line-window chunking when no symbols are provided', () => {
+    const withSyms = chunkCodeSymbols(SRC, [], { maxChars: 200, overlap: 40 });
+    const plain = chunkText(SRC, { maxChars: 200, overlap: 40 });
+    expect(withSyms).toEqual(plain);
+  });
+
+  it('returns [] for empty content', () => {
+    expect(chunkCodeSymbols('', SYMS, { maxChars: 200, overlap: 0 })).toEqual([]);
+  });
+});

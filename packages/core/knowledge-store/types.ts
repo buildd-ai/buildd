@@ -160,6 +160,12 @@ export interface EntityUpsert {
   key: string;
   canonicalName: string;
   attributes?: Record<string, unknown>;
+  /**
+   * Junction role for the chunk↔entity link (chunk_entities.role).
+   * Defaults to 'mentions'; symbol entities extracted from their defining
+   * chunk carry 'defines'.
+   */
+  role?: 'defines' | 'references' | 'mentions';
 }
 
 export interface EdgeUpsert {

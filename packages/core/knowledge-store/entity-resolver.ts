@@ -170,7 +170,9 @@ export async function resolveAndPersistEntities(
         const bn = e.key.split('/').pop();
         if (bn && bn !== e.canonicalName) await upsertAlias(db, entityId, bn, 'system');
       }
-      await upsertChunkEntity(db, chunkSourceId, namespace, entityId, 'mentions');
+      // Symbol entities from their defining chunk carry role='defines';
+      // everything else defaults to 'mentions'.
+      await upsertChunkEntity(db, chunkSourceId, namespace, entityId, e.role ?? 'mentions');
       bound++;
     } catch {
       // Best-effort
