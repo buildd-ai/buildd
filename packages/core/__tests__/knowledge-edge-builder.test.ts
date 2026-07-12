@@ -160,3 +160,100 @@ describe('buildEdges', () => {
     expect(producedEdge!.weight).toBe(1.0);
   });
 });
+
+// ── symbol defines / imports edges (ast-grep symbol layer) ──────────────────
+
+describe('buildEdges — symbols and imports', () => {
+  const SYMBOLS = [
+    { name: 'foo', kind: 'function', startLine: 2, endLine: 4, exported: true },
+    { name: 'Widget', kind: 'class', startLine: 6, endLine: 9, exported: true },
+  ];
+  const IMPORTS = [
+    { specifier: './token', resolvedPath: 'src/lib/token' },
+    { specifier: 'react', resolvedPath: null },
+  ];
+
+  it('emits file -defines-> symbol edges with rule astgrep:definition', () => {
+    const { entities, edges } = buildEdges({
+      chunk: { ...BASE_CHUNK, sourcePath: 'src/lib/auth.ts' },
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+    });
+    const symbolEntities = entities.filter(e => e.kind === 'symbol');
+    expect(symbolEntities).toHaveLength(2);
+    expect(symbolEntities[0].key).toBe('src/lib/auth.ts#foo');
+
+    const defines = edges.filter(e => e.type === 'defines');
+    expect(defines).toHaveLength(2);
+    for (const e of defines) {
+      expect(e.fromEntityKey).toBe('src/lib/auth.ts');
+      expect(e.fromEntityKind).toBe('file');
+      expect(e.toEntityKind).toBe('symbol');
+      expect(e.rule).toBe('astgrep:definition');
+    }
+    expect(defines.map(e => e.toEntityKey).sort()).toEqual([
+      'src/lib/auth.ts#Widget',
+      'src/lib/auth.ts#foo',
+    ]);
+  });
+
+  it('emits file -imports-> file edges only for resolved relative imports', () => {
+    const { entities, edges } = buildEdges({
+      chunk: { ...BASE_CHUNK, sourcePath: 'src/lib/auth.ts' },
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      imports: IMPORTS,
+    });
+    const importEdges = edges.filter(e => e.type === 'imports');
+    expect(importEdges).toHaveLength(1);
+    expect(importEdges[0].fromEntityKey).toBe('src/lib/auth.ts');
+    expect(importEdges[0].toEntityKey).toBe('src/lib/token');
+    expect(importEdges[0].toEntityKind).toBe('file');
+    expect(importEdges[0].rule).toBe('astgrep:import');
+    // The imported file gets an entity so the edge can bind.
+    expect(entities.some(e => e.kind === 'file' && e.key === 'src/lib/token')).toBe(true);
+  });
+
+  it('reads symbols and imports from chunk metadata when not passed explicitly', () => {
+    const { edges } = buildEdges({
+      chunk: {
+        ...BASE_CHUNK,
+        sourcePath: 'src/lib/auth.ts',
+        metadata: { startLine: 1, endLine: 20, symbols: SYMBOLS, imports: IMPORTS },
+      },
+      corpus: 'code',
+      workspaceId: 'ws-1',
+    });
+    expect(edges.filter(e => e.type === 'defines')).toHaveLength(2);
+    expect(edges.filter(e => e.type === 'imports')).toHaveLength(1);
+  });
+
+  it('respects the chunk line range for defines edges', () => {
+    const { edges } = buildEdges({
+      chunk: {
+        ...BASE_CHUNK,
+        sourcePath: 'src/lib/auth.ts',
+        metadata: { startLine: 1, endLine: 5 },
+      },
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+    });
+    const defines = edges.filter(e => e.type === 'defines');
+    expect(defines).toHaveLength(1);
+    expect(defines[0].toEntityKey).toBe('src/lib/auth.ts#foo');
+  });
+
+  it('emits no symbol/import edges without a sourcePath', () => {
+    const { edges } = buildEdges({
+      chunk: BASE_CHUNK,
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+      imports: IMPORTS,
+    });
+    expect(edges.filter(e => e.type === 'defines')).toHaveLength(0);
+    expect(edges.filter(e => e.type === 'imports')).toHaveLength(0);
+  });
+});
