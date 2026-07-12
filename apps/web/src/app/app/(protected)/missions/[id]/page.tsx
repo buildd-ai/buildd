@@ -64,6 +64,7 @@ export default async function MissionDetailPage({
           mode: true,
           roleSlug: true,
           creationSource: true,
+          dependsOn: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -75,6 +76,8 @@ export default async function MissionDetailPage({
               branch: true,
               prUrl: true,
               prNumber: true,
+              prLifecycleStatus: true,
+              mergedAt: true,
               costUsd: true,
               turns: true,
               completedAt: true,
@@ -187,6 +190,26 @@ export default async function MissionDetailPage({
   // Build roles map for color lookup
   const rolesMap = new Map<string, { name: string; color: string }>();
   roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
+
+  // Build task ID map for blocked-state computation (dependsOn resolution)
+  const taskMap = new Map((mission.tasks || []).map((t) => [t.id, t]));
+
+  // A task is "blocked" when it has unresolved dependsOn entries (upstream task
+  // not yet completed, or completed but PR not yet merged).
+  function getBlockingTask(task: typeof allTasks[0]) {
+    const deps = (task.dependsOn as string[] | null | undefined) ?? [];
+    if (deps.length === 0) return null;
+    if (task.status !== 'pending' && task.status !== 'assigned') return null;
+    for (const depId of deps) {
+      const dep = taskMap.get(depId);
+      if (!dep) continue;
+      if (dep.status !== 'completed') return dep;
+      // Completed but PR not yet merged → still blocking
+      const depWorker = (dep.workers as Array<{ prNumber?: number | null; mergedAt?: string | Date | null }> | null | undefined)?.[0];
+      if (depWorker?.prNumber && !depWorker.mergedAt) return dep;
+    }
+    return null;
+  }
 
   // Build orchestration timeline: group tasks into cycles
   // Planning tasks = evaluation nodes, execution tasks = branches
@@ -575,7 +598,7 @@ export default async function MissionDetailPage({
                                     {task.title}
                                   </span>
 
-                                  {/* Right-side metadata: role (hidden on mobile), PR, status */}
+                                  {/* Right-side metadata: role (hidden on mobile), PR, lifecycle status, task status */}
                                   <span className="flex items-center gap-1.5 shrink-0 ml-auto">
                                     {role && (
                                       <span
@@ -594,6 +617,26 @@ export default async function MissionDetailPage({
                                         PR #{latestWorker.prNumber}
                                       </ExternalLink>
                                     )}
+
+                                    {/* PR lifecycle status pill — shown next to PR badge */}
+                                    {latestWorker?.prUrl && latestWorker?.prLifecycleStatus && (() => {
+                                      const s = latestWorker.prLifecycleStatus as string;
+                                      const cfg: Record<string, { label: string; cls: string }> = {
+                                        merged:     { label: 'merged',    cls: 'bg-[color-mix(in_srgb,var(--status-success)_12%,transparent)] text-status-success' },
+                                        ci_running: { label: 'CI…',       cls: 'bg-blue-500/10 text-blue-400' },
+                                        ci_failed:  { label: 'CI ✗',      cls: 'bg-[color-mix(in_srgb,var(--status-error)_12%,transparent)] text-status-error' },
+                                        conflict:   { label: 'conflict',  cls: 'bg-amber-500/10 text-amber-500' },
+                                        closed:     { label: 'closed',    cls: 'bg-text-muted/10 text-text-muted' },
+                                        pr_open:    { label: 'open',      cls: 'bg-accent/10 text-accent-text' },
+                                      };
+                                      const pill = cfg[s];
+                                      if (!pill) return null;
+                                      return (
+                                        <span className={`text-[10px] font-medium px-1 py-0.5 rounded ${pill.cls}`}>
+                                          {pill.label}
+                                        </span>
+                                      );
+                                    })()}
 
                                     {isRunning && (
                                       <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
@@ -617,11 +660,25 @@ export default async function MissionDetailPage({
                                       </span>
                                     )}
 
-                                    {!isRunning && !isDone && !isFailed && (
-                                      <span className="text-[12px] md:text-[11px] text-text-muted">
-                                        {timeAgo(task.createdAt)}
-                                      </span>
-                                    )}
+                                    {!isRunning && !isDone && !isFailed && (() => {
+                                      const blockingTask = getBlockingTask(task);
+                                      if (blockingTask) {
+                                        const blockWorker = (blockingTask.workers as Array<{ prNumber?: number | null }> | null | undefined)?.[0];
+                                        const blockLabel = blockWorker?.prNumber
+                                          ? `Blocked on PR #${blockWorker.prNumber}`
+                                          : `Blocked on: ${blockingTask.title}`;
+                                        return (
+                                          <span className="text-[11px] text-amber-500 truncate max-w-[120px] sm:max-w-[180px]" title={blockLabel}>
+                                            {blockLabel}
+                                          </span>
+                                        );
+                                      }
+                                      return (
+                                        <span className="text-[12px] md:text-[11px] text-text-muted">
+                                          {timeAgo(task.createdAt)}
+                                        </span>
+                                      );
+                                    })()}
                                   </span>
                                 </div>
                               </div>

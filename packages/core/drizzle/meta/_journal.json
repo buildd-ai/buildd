@@ -512,6 +512,13 @@
       "when": 1783860631290,
       "tag": "0072_open_freak",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1783861109132,
+      "tag": "0073_cool_gabe_jones",
+      "breakpoints": true
     }
   ]
 }
