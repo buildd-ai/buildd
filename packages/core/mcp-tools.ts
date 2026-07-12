@@ -114,7 +114,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) }',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete before this task is claimable), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, model? (haiku|sonnet|opus or full ID), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) }',
@@ -164,9 +164,9 @@ export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     context: '{ project? } — get markdown-formatted memory context for agent injection',
     search: '{ query?, type?, files? (array), project?, limit?, offset? }',
-    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source? }',
+    save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
-    update: '{ id (required), title?, content?, type?, files? (array), tags?, project? }',
+    update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
     delete: '{ id (required) }',
     query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
   };
@@ -397,11 +397,44 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
 }
 
 /**
+ * Corpora eligible for entity-keyed supersession. Code/docs are deliberately
+ * excluded: path-keyed supersession already covers them, and defines-sets from
+ * regex extraction are too weak there to key replacement on.
+ */
+const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['memory', 'task', 'plan', 'artifact']);
+
+/**
+ * Validate an agent-supplied `supersedes` param.
+ * Returns `{}` when absent, `{ ids }` when valid, `{ error }` when malformed.
+ */
+function parseSupersedesParam(raw: unknown): { ids?: string[]; error?: string } {
+  if (raw === undefined || raw === null) return {};
+  if (!Array.isArray(raw)) {
+    return { error: 'supersedes must be an array of knowledge source_id strings (e.g. ["task:<taskId>"] or memory ids)' };
+  }
+  if (raw.length > 50) {
+    return { error: 'supersedes accepts at most 50 source_ids per call' };
+  }
+  const ids: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== 'string' || v.trim() === '') {
+      return { error: 'supersedes entries must be non-empty strings (chunk source_ids)' };
+    }
+    ids.push(v.trim());
+  }
+  return { ids };
+}
+
+/**
  * Best-effort entity binding after a chunk is indexed.
  *
  * Runs entity extraction on the chunk content, resolves agent-supplied entity
  * refs, and persists chunk_entities. Returns EntityBinding for caller feedback;
  * all errors are swallowed so entity failure never blocks the underlying action.
+ *
+ * When `store` is provided and the corpus is entity-supersedable, chunks whose
+ * defines-set identically matches this chunk's bound defines entities are
+ * marked superseded (best-effort, never fails the action).
  */
 async function processEntityRefs(
   workspaceId: string,
@@ -413,6 +446,8 @@ async function processEntityRefs(
   metadata: Record<string, unknown> | undefined,
   agentRefs: EntityRef[] | undefined,
   agentRelations: RelationRef[] | undefined,
+  store?: KnowledgeStore,
+  sourceTs?: Date | null,
 ): Promise<EntityBinding> {
   try {
     const { extractEntities } = await import('./knowledge-store/entity-extractor');
@@ -440,6 +475,21 @@ async function processEntityRefs(
       await buildAgentRelationEdges(workspaceId, agentRelations, chunkSourceId).catch(() => {});
     }
 
+    // Wave-1 C1: entity-keyed supersession — when this chunk defines the same
+    // entity set as an older chunk in a supersedable corpus, the old one yields.
+    if (
+      store?.markSupersededByEntities &&
+      ENTITY_SUPERSEDABLE_CORPORA.has(corpus) &&
+      result.definesEntityIds.length > 0
+    ) {
+      await store
+        .markSupersededByEntities(namespace, chunkSourceId, result.definesEntityIds, {
+          corpus: corpus as Corpus,
+          sourceTs: sourceTs ?? null,
+        })
+        .catch(() => {});
+    }
+
     return result.binding;
   } catch {
     return { bound: 0, ambiguous: [], unresolved: [] };
@@ -458,15 +508,17 @@ async function mirrorWorkProduct(
   ctx: ActionContext,
   corpus: Corpus,
   chunk: UpsertChunk,
-): Promise<void> {
-  if (!ctx.knowledgeStore) return;
+): Promise<UpsertResult | null> {
+  if (!ctx.knowledgeStore) return null;
   try {
     const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
-    if (!wsId) return;
+    if (!wsId) return null;
     const ns = buildNamespace(wsId, corpus);
-    await ctx.knowledgeStore.upsert(ns, [chunk]);
+    const result = await ctx.knowledgeStore.upsert(ns, [chunk]);
+    return result ?? null;
   } catch {
     // Best-effort — never fail the underlying action if indexing fails.
+    return null;
   }
 }
 
@@ -725,6 +777,12 @@ export async function handleBuilddAction(
     case 'complete_task': {
       const workerId = resolveWorkerId(params.workerId, ctx);
 
+      // Validate supersedes BEFORE any state change so malformed input never
+      // half-completes the task.
+      const supersedesParse = parseSupersedesParam(params.supersedes);
+      if (supersedesParse.error) return errorResult(supersedesParse.error);
+      const supersedesIds = supersedesParse.ids;
+
       if (params.error) {
         await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
@@ -735,6 +793,7 @@ export async function handleBuilddAction(
 
       let result: any;
       let entityBinding: EntityBinding | null = null;
+      let supersededCount = 0;
       try {
         result = await api(`/api/workers/${workerId}`, {
           method: 'PATCH',
@@ -803,7 +862,10 @@ export async function handleBuilddAction(
             // Stamp with completion time for recency decay scoring.
             const completedAtRaw = workerData?.completedAt ?? taskData?.completedAt;
             if (completedAtRaw) taskChunk.sourceTs = new Date(completedAtRaw);
-            await mirrorWorkProduct(ctx, 'task', taskChunk);
+            // Explicit supersession: agent-asserted source_ids this outcome replaces.
+            if (supersedesIds && supersedesIds.length > 0) taskChunk.supersedes = supersedesIds;
+            const mirrorResult = await mirrorWorkProduct(ctx, 'task', taskChunk);
+            if (mirrorResult) supersededCount = mirrorResult.superseded;
 
             // Layer 2: bind entity refs and build edges (best-effort)
             const wsId = ctx.workspaceId ?? await ctx.getWorkspaceId();
@@ -815,6 +877,8 @@ export async function handleBuilddAction(
                 { taskId, missionId: taskData?.missionId ?? null },
                 params.entities as EntityRef[] | undefined,
                 params.relations as RelationRef[] | undefined,
+                ctx.knowledgeStore,
+                taskChunk.sourceTs ?? null,
               );
               if (taskData?.missionId) {
                 const { buildOutcomeOfEdge } = await import('./knowledge-store/edge-builder');
@@ -836,7 +900,13 @@ export async function handleBuilddAction(
         }
       }
 
-      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}${entityBindingText}`);
+      // Acknowledge explicit supersession whenever the param was supplied so
+      // agents get truthful feedback (0 means no listed id matched a current chunk).
+      const supersededText = supersedesIds !== undefined
+        ? `\n\nSuperseded: ${supersededCount}`
+        : '';
+
+      return text(`Task completed successfully!${effortSuffix}${params.summary ? `\n\nSummary: ${params.summary}` : ''}${releaseLine}${entityBindingText}${supersededText}`);
     }
 
     case 'create_pr': {
@@ -2547,7 +2617,7 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
-import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
+import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import {
   buildTaskCard,
@@ -2651,6 +2721,9 @@ export async function handleMemoryAction(
         throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
       }
 
+      const saveSupersedes = parseSupersedesParam(params.supersedes);
+      if (saveSupersedes.error) throw new Error(saveSupersedes.error);
+
       const data = await memoryClient.save({
         type: params.type as string,
         title: params.title as string,
@@ -2664,18 +2737,23 @@ export async function handleMemoryAction(
       // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
       // belong to a team, not a workspace).
       let memEntityBinding: EntityBinding | null = null;
+      let memSuperseded = 0;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
-        await ctx.knowledgeStore.upsert(ns, [{
+        // Best-effort — don't fail the memory save if indexing fails
+        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
           id: m.id,
           content: m.content,
           lexicalText,
           sourceType: 'memory',
           sourceUrl: `/app/memory/${m.id}`,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-        }]).catch(() => {}); // Best-effort — don't fail the memory save if indexing fails
+          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
+          ...(saveSupersedes.ids && saveSupersedes.ids.length > 0 ? { supersedes: saveSupersedes.ids } : {}),
+        }]).catch(() => undefined);
+        if (upsertRes) memSuperseded = upsertRes.superseded;
 
         // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
         memEntityBinding = await processEntityRefs(
@@ -2684,13 +2762,16 @@ export async function handleMemoryAction(
           { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
           params.entities as EntityRef[] | undefined,
           params.relations as RelationRef[] | undefined,
+          ctx.knowledgeStore,
+          null,
         );
       }
 
       const bindingStr = memEntityBinding && memEntityBinding.bound > 0
         ? ` | ${memEntityBinding.bound} entities bound${memEntityBinding.ambiguous.length > 0 ? `, ${memEntityBinding.ambiguous.length} ambiguous` : ''}`
         : '';
-      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}`);
+      const saveSupersededStr = saveSupersedes.ids !== undefined ? ` | superseded: ${memSuperseded}` : '';
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}`);
     }
 
     case 'get': {
@@ -2722,22 +2803,29 @@ export async function handleMemoryAction(
         throw new Error('At least one field (title, content, type, files, tags, project) must be provided');
       }
 
+      const updateSupersedes = parseSupersedesParam(params.supersedes);
+      if (updateSupersedes.error) throw new Error(updateSupersedes.error);
+
       const data = await memoryClient.update(params.id as string, updateFields);
 
       // Mirror update into KnowledgeStore (team-scoped)
       let updateEntityBinding: EntityBinding | null = null;
+      let updateSuperseded = 0;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         const lexicalText = `${m.title}\n\n${m.content}`;
-        await ctx.knowledgeStore.upsert(ns, [{
+        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
           id: m.id,
           content: m.content,
           lexicalText,
           sourceType: 'memory',
           sourceUrl: `/app/memory/${m.id}`,
           metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-        }]).catch(() => {});
+          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
+          ...(updateSupersedes.ids && updateSupersedes.ids.length > 0 ? { supersedes: updateSupersedes.ids } : {}),
+        }]).catch(() => undefined);
+        if (upsertRes) updateSuperseded = upsertRes.superseded;
 
         // Layer 2: re-bind entity refs on update
         updateEntityBinding = await processEntityRefs(
@@ -2746,13 +2834,16 @@ export async function handleMemoryAction(
           { memoryId: m.id, type: m.type },
           params.entities as EntityRef[] | undefined,
           params.relations as RelationRef[] | undefined,
+          ctx.knowledgeStore,
+          null,
         );
       }
 
       const updateBindingStr = updateEntityBinding && updateEntityBinding.bound > 0
         ? ` | ${updateEntityBinding.bound} entities bound`
         : '';
-      return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${updateBindingStr}`);
+      const updateSupersededStr = updateSupersedes.ids !== undefined ? ` | superseded: ${updateSuperseded}` : '';
+      return text(`Memory updated: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${updateBindingStr}${updateSupersededStr}`);
     }
 
     case 'delete': {
