@@ -17,7 +17,24 @@ process.env.PUSHER_KEY = 'test-key';
 process.env.PUSHER_SECRET = 'test-secret';
 process.env.PUSHER_CLUSTER = 'test-cluster';
 
-const { triggerEvent, _resetPusher } = await import('./pusher');
+// Import a FRESH copy of the real module via a cache-busting query specifier.
+//
+// Why: Bun's mock.module has no unmock, and registrations leak across test
+// files within a `bun test` run. Many other test files (mission-loop.test.ts,
+// artifact-helpers.test.ts, a dozen route tests, ...) register
+// mock.module('@/lib/pusher', ...) stubs. When any of them runs before this
+// file, a plain import of './pusher' (same resolved module as '@/lib/pusher')
+// returns a namespace whose `triggerEvent` has been patched IN PLACE to that
+// other file's stub — while exports their factory omits (like _resetPusher)
+// stay real. The tests then assert on our mockTrigger while calling a foreign
+// stub, and fail with "0 calls".
+//
+// The `?payload-guard` query gives this import a distinct module-registry key
+// that no mock.module registration can ever match (they target the plain
+// path), so we always evaluate the genuine implementation regardless of which
+// test files ran first — including files added by future PRs.
+const { triggerEvent, _resetPusher } =
+  (await import('./pusher?payload-guard' as string)) as typeof import('./pusher');
 
 // Pre-built mock client — injected via _resetPusher so tests don't rely on
 // mock.module intercepting the pusher import inside pusher.ts (which broke in
