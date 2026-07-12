@@ -15,6 +15,7 @@ interface MissionSettingsProps {
     lastRunAt: string | null;
   } | null;
   hasSchedule: boolean;
+  orchestrationMode?: 'auto' | 'manual';
 }
 
 export default function MissionSettings({
@@ -25,10 +26,13 @@ export default function MissionSettings({
   roles,
   schedule,
   hasSchedule,
+  orchestrationMode: initialOrchestrationMode = 'auto',
 }: MissionSettingsProps) {
   const router = useRouter();
   const [status, setStatus] = useState(currentStatus);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [orchestrationMode, setOrchestrationMode] = useState(initialOrchestrationMode);
+  const [modeLoading, setModeLoading] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskLoading, setTaskLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +79,17 @@ export default function MissionSettings({
       router.refresh();
     }
     setStatusLoading(false);
+  }
+
+  async function handleToggleOrchestrationMode() {
+    const newMode = orchestrationMode === 'auto' ? 'manual' : 'auto';
+    setModeLoading(true);
+    const ok = await patchMission({ orchestrationMode: newMode });
+    if (ok) {
+      setOrchestrationMode(newMode);
+      router.refresh();
+    }
+    setModeLoading(false);
   }
 
   async function handleManualRun() {
@@ -152,6 +167,28 @@ export default function MissionSettings({
       {/* Mission Controls Bar */}
       {!isTerminal && (
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Orchestration mode badge + arm/disarm */}
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium ${
+              orchestrationMode === 'manual'
+                ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                : 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${orchestrationMode === 'manual' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+              {orchestrationMode === 'manual' ? 'Manual — orchestrator idle' : 'Auto'}
+            </span>
+            <button
+              onClick={handleToggleOrchestrationMode}
+              disabled={modeLoading}
+              title={orchestrationMode === 'manual' ? 'Arm orchestrator (switch to auto)' : 'Disarm orchestrator (switch to manual)'}
+              className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+            >
+              {modeLoading ? '...' : orchestrationMode === 'manual' ? 'Arm' : 'Disarm'}
+            </button>
+          </div>
+
+          <div className="h-4 border-r border-card-border" />
+
           {/* Monitoring toggle for missions with a schedule */}
           {hasSchedule ? (
             <div className="flex items-center gap-3">

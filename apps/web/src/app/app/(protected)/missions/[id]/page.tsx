@@ -64,6 +64,7 @@ export default async function MissionDetailPage({
           mode: true,
           roleSlug: true,
           creationSource: true,
+          dependsOn: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -75,6 +76,8 @@ export default async function MissionDetailPage({
               branch: true,
               prUrl: true,
               prNumber: true,
+              prLifecycleStatus: true,
+              mergedAt: true,
               costUsd: true,
               turns: true,
               completedAt: true,
@@ -148,6 +151,10 @@ export default async function MissionDetailPage({
   });
   const healthDisplay = HEALTH_DISPLAY[health];
 
+  // Orchestration mode
+  const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
+  const isManualMode = orchestrationMode === 'manual';
+
   // Heartbeat data — derived from schedule's taskTemplate.context
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
   const isHeartbeat = (templateContext?.heartbeat === true) || false;
@@ -183,6 +190,26 @@ export default async function MissionDetailPage({
   // Build roles map for color lookup
   const rolesMap = new Map<string, { name: string; color: string }>();
   roles.forEach((r) => rolesMap.set(r.slug, { name: r.name, color: r.color }));
+
+  // Build task ID map for blocked-state computation (dependsOn resolution)
+  const taskMap = new Map((mission.tasks || []).map((t) => [t.id, t]));
+
+  // A task is "blocked" when it has unresolved dependsOn entries (upstream task
+  // not yet completed, or completed but PR not yet merged).
+  function getBlockingTask(task: typeof allTasks[0]) {
+    const deps = (task.dependsOn as string[] | null | undefined) ?? [];
+    if (deps.length === 0) return null;
+    if (task.status !== 'pending' && task.status !== 'assigned') return null;
+    for (const depId of deps) {
+      const dep = taskMap.get(depId);
+      if (!dep) continue;
+      if (dep.status !== 'completed') return dep;
+      // Completed but PR not yet merged → still blocking
+      const depWorker = (dep.workers as Array<{ prNumber?: number | null; mergedAt?: string | Date | null }> | null | undefined)?.[0];
+      if (depWorker?.prNumber && !depWorker.mergedAt) return dep;
+    }
+    return null;
+  }
 
   // Build orchestration timeline: group tasks into cycles
   // Planning tasks = evaluation nodes, execution tasks = branches
@@ -400,6 +427,7 @@ export default async function MissionDetailPage({
             lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
           } : null}
           hasSchedule={!!scheduleCron}
+          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
         />
       </div>
 
@@ -570,7 +598,7 @@ export default async function MissionDetailPage({
                                     {task.title}
                                   </span>
 
-                                  {/* Right-side metadata: role (hidden on mobile), PR, status */}
+                                  {/* Right-side metadata: role (hidden on mobile), PR, lifecycle status, task status */}
                                   <span className="flex items-center gap-1.5 shrink-0 ml-auto">
                                     {role && (
                                       <span
@@ -589,6 +617,26 @@ export default async function MissionDetailPage({
                                         PR #{latestWorker.prNumber}
                                       </ExternalLink>
                                     )}
+
+                                    {/* PR lifecycle status pill — shown next to PR badge */}
+                                    {latestWorker?.prUrl && latestWorker?.prLifecycleStatus && (() => {
+                                      const s = latestWorker.prLifecycleStatus as string;
+                                      const cfg: Record<string, { label: string; cls: string }> = {
+                                        merged:     { label: 'merged',    cls: 'bg-[color-mix(in_srgb,var(--status-success)_12%,transparent)] text-status-success' },
+                                        ci_running: { label: 'CI…',       cls: 'bg-blue-500/10 text-blue-400' },
+                                        ci_failed:  { label: 'CI ✗',      cls: 'bg-[color-mix(in_srgb,var(--status-error)_12%,transparent)] text-status-error' },
+                                        conflict:   { label: 'conflict',  cls: 'bg-amber-500/10 text-amber-500' },
+                                        closed:     { label: 'closed',    cls: 'bg-text-muted/10 text-text-muted' },
+                                        pr_open:    { label: 'open',      cls: 'bg-accent/10 text-accent-text' },
+                                      };
+                                      const pill = cfg[s];
+                                      if (!pill) return null;
+                                      return (
+                                        <span className={`text-[10px] font-medium px-1 py-0.5 rounded ${pill.cls}`}>
+                                          {pill.label}
+                                        </span>
+                                      );
+                                    })()}
 
                                     {isRunning && (
                                       <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
@@ -612,11 +660,25 @@ export default async function MissionDetailPage({
                                       </span>
                                     )}
 
-                                    {!isRunning && !isDone && !isFailed && (
-                                      <span className="text-[12px] md:text-[11px] text-text-muted">
-                                        {timeAgo(task.createdAt)}
-                                      </span>
-                                    )}
+                                    {!isRunning && !isDone && !isFailed && (() => {
+                                      const blockingTask = getBlockingTask(task);
+                                      if (blockingTask) {
+                                        const blockWorker = (blockingTask.workers as Array<{ prNumber?: number | null }> | null | undefined)?.[0];
+                                        const blockLabel = blockWorker?.prNumber
+                                          ? `Blocked on PR #${blockWorker.prNumber}`
+                                          : `Blocked on: ${blockingTask.title}`;
+                                        return (
+                                          <span className="text-[11px] text-amber-500 truncate max-w-[120px] sm:max-w-[180px]" title={blockLabel}>
+                                            {blockLabel}
+                                          </span>
+                                        );
+                                      }
+                                      return (
+                                        <span className="text-[12px] md:text-[11px] text-text-muted">
+                                          {timeAgo(task.createdAt)}
+                                        </span>
+                                      );
+                                    })()}
                                   </span>
                                 </div>
                               </div>
@@ -659,9 +721,11 @@ export default async function MissionDetailPage({
             {scheduleCron && mission.status !== 'completed' && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
-                  <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
+                  <span className={`w-3 h-3 rounded-full border-2 shrink-0 ${isManualMode ? 'border-amber-500/40 bg-transparent' : 'border-border-default bg-transparent'}`} />
                 </div>
-                {mission.status === 'paused' ? (
+                {isManualMode ? (
+                  <span className="text-[12px] text-amber-600 italic pl-2">Monitoring active · Next: {scheduleNextRunAt ? timeAgo(scheduleNextRunAt) : '—'} · Orchestrator idle (manual)</span>
+                ) : mission.status === 'paused' ? (
                   <span className="text-[12px] text-text-muted italic pl-2">Monitoring paused</span>
                 ) : scheduleOverdue ? (
                   <span className="text-[12px] text-status-warning italic pl-2">Overdue by {scheduleOverdueMinutes}m</span>

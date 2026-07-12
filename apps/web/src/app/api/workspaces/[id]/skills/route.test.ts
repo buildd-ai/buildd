@@ -449,6 +449,42 @@ describe('POST /api/workspaces/[id]/skills', () => {
     expect(data.skill.name).toBe('Test Skill');
   });
 
+  it('persists connectorRefs on create (spec §2)', async () => {
+    const createdSkill = {
+      id: 'skill-123',
+      workspaceId: 'ws-1',
+      name: 'Builder',
+      slug: 'builder',
+      content: '# Builder',
+      isRole: true,
+      connectorRefs: ['conn-1'],
+      enabled: true,
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    const mockReturning = mock(() => [createdSkill]);
+    const mockValues = mock((v: any) => { capturedValues = v; return { returning: mockReturning }; });
+    mockSkillsInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { name: 'Builder', content: '# Builder', isRole: true, connectorRefs: ['conn-1'] },
+    });
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await POST(request, { params });
+
+    expect(response.status).toBe(201);
+    expect(capturedValues.connectorRefs).toEqual(['conn-1']);
+    const data = await response.json();
+    expect(data.skill.connectorRefs).toEqual(['conn-1']);
+  });
+
   it('creates skill with admin API key auth', async () => {
     const createdSkill = {
       id: 'skill-123',

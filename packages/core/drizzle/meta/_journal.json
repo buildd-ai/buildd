@@ -498,6 +498,34 @@
       "when": 1783830537772,
       "tag": "0070_skinny_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1783830537773,
+      "tag": "0071_omniscient_the_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1783860631290,
+      "tag": "0072_open_freak",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1783861109132,
+      "tag": "0073_cool_gabe_jones",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1783862000000,
+      "tag": "0074_reconcile_missions_secret_refs_drift",
+      "breakpoints": true
     }
   ]
 }

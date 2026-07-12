@@ -427,6 +427,7 @@ export async function GET(req: NextRequest) {
             dependsOnMissionId: true,
             gateCondition: true,
             dependencyMetAt: true,
+            orchestrationMode: true,
           },
         });
 
@@ -461,6 +462,19 @@ export async function GET(req: NextRequest) {
             enabled: false,
             updatedAt: now,
           }).where(eq(taskSchedules.id, schedule.id));
+          continue;
+        }
+
+        // Skip if linked mission is in manual orchestration mode — schedule is dormant until armed
+        if (linkedMission && linkedMission.orchestrationMode === 'manual') {
+          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+          const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
+          const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+          await db
+            .update(taskSchedules)
+            .set({ nextRunAt, lastDeferralReason: 'orchestration_manual', lastDeferredAt: now, updatedAt: now })
+            .where(eq(taskSchedules.id, schedule.id));
+          skipped++;
           continue;
         }
 

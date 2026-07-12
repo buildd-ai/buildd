@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "pr_lifecycle_status" text;
