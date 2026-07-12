@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
+import { deriveDisplayStatus } from '@/lib/task-timestamps';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -194,12 +195,12 @@ export default async function TaskDetailPage({
     taskWorkers.find(w => ['running', 'starting', 'waiting_input'].includes(w.status)) ||
     taskWorkers.find(w => w.waitingFor);
 
-  // Override task status for UI if worker is waiting
-  // Don't override if task is already in a terminal state (completed/failed)
+  // Derive canonical display status from task + active worker state.
+  // If the worker is running, the chip shows "Running" not "Assigned".
   const isTerminal = task.status === 'completed' || task.status === 'failed';
-  const displayStatus = !isTerminal && activeWorker?.status === 'waiting_input'
-    ? 'waiting_input'
-    : task.status;
+  const displayStatus = isTerminal
+    ? task.status
+    : deriveDisplayStatus(task.status, activeWorker?.status);
 
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs

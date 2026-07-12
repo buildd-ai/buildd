@@ -3,6 +3,12 @@ import Pusher from 'pusher';
 // Server-side Pusher client (optional)
 let pusher: Pusher | null = null;
 
+// Inject a mock client in tests — avoids relying on mock.module('pusher') for
+// transitive imports, which breaks when the real pusher package is installed.
+export function _resetPusher(client: Pusher | null = null): void {
+  pusher = client;
+}
+
 function getPusher(): Pusher | null {
   if (pusher) return pusher;
 

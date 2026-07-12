@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.130.0",
+  "version": "0.131.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -34,10 +34,12 @@
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
     "./knowledge-store/types": "./knowledge-store/types.ts",
+    "./knowledge-store/ingest-filter": "./knowledge-store/ingest-filter.ts",
     "./path-overlap": "./path-overlap.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.201",
+    "@ast-grep/napi": "^0.44.1",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.144.0",

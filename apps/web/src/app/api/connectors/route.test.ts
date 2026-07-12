@@ -5,6 +5,8 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockConnectorsFindMany = mock(() => [] as any[]);
+const mockConnectorsFindFirst = mock(() => null as any);
+const mockTeamMembersFindFirst = mock(() => null as any);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockConnectorsInsert = mock(() => ({
   values: mock(() => ({
@@ -33,8 +35,9 @@ mock.module('@buildd/core/secrets', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      connectors: { findMany: mockConnectorsFindMany },
+      connectors: { findMany: mockConnectorsFindMany, findFirst: mockConnectorsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
+      teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
     insert: () => mockConnectorsInsert(),
   },
@@ -47,8 +50,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  connectors: { teamId: 'teamId', id: 'id' },
+  connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
+  teamMembers: { userId: 'userId', teamId: 'teamId' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -92,13 +96,16 @@ describe('GET /api/connectors', () => {
   it('returns connector list for session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockConnectorsFindMany.mockResolvedValue([
-      { id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth' },
+      { id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth', transport: 'http' },
     ]);
     const res = await GET(makeGetReq());
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.connectors).toHaveLength(1);
     expect(data.connectors[0].status).toBe('not_connected');
+    // Role picker renders transport + authMode badges from the list response.
+    expect(data.connectors[0].transport).toBe('http');
+    expect(data.connectors[0].authMode).toBe('oauth');
   });
 
   it('returns connector list for API key auth', async () => {
@@ -139,10 +146,15 @@ describe('POST /api/connectors', () => {
     mockGetUserTeamIds.mockReset();
     mockDiscoverOAuthMetadata.mockReset();
     mockConnectorsInsert.mockReset();
+    mockConnectorsFindFirst.mockReset();
+    mockTeamMembersFindFirst.mockReset();
     mockSecretsProviderSet.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'none' as const });
+    mockConnectorsFindFirst.mockResolvedValue(null);
+    // Default: session user is an admin/owner of the team (no member row => personal team => allowed).
+    mockTeamMembersFindFirst.mockResolvedValue({ role: 'owner' });
     mockSecretsProviderSet.mockResolvedValue('secret-1');
     mockConnectorsInsert.mockReturnValue({
       values: mock(() => ({
@@ -212,5 +224,85 @@ describe('POST /api/connectors', () => {
     const res = await POST(makePostReq({ name: 'OAuth MCP', url: 'https://mcp.example.com' }));
     expect(res.status).toBe(201);
     expect(mockRegisterClient).toHaveBeenCalled();
+  });
+
+  // §1 AC-2: header authMode requires headerName
+  it('returns 400 header_name_required when header authMode has no headerName', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({
+      name: 'Header Connector',
+      url: 'https://mcp.example.com',
+      authMode: 'header',
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('header_name_required');
+  });
+
+  // §1 AC-3: stdio transport requires command
+  it('returns 400 command_required when stdio transport has no command', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({
+      name: 'Stdio Connector',
+      transport: 'stdio',
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('command_required');
+  });
+
+  it('creates a stdio connector with command/args/envMapping (authMode none, url optional)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return {
+        returning: mock(() => [{ id: 'conn-stdio', name: 'Stdio', transport: 'stdio', authMode: 'none', teamId: 'team-1' }]),
+      }; }),
+    });
+    const res = await POST(makePostReq({
+      name: 'Stdio Connector',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@some/mcp-server'],
+      envMapping: { API_KEY: 'my-secret-label' },
+    }));
+    expect(res.status).toBe(201);
+    expect(captured.transport).toBe('stdio');
+    expect(captured.command).toBe('npx');
+    expect(captured.args).toEqual(['-y', '@some/mcp-server']);
+    expect(captured.envMapping).toEqual({ API_KEY: 'my-secret-label' });
+    expect(captured.authMode).toBe('none');
+  });
+
+  // §1 AC-4: (teamId, name) uniqueness on the plain create path
+  it('returns 409 connector_name_taken when a connector with the same (teamId,name) exists', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-existing', name: 'Dup', url: 'https://mcp.example.com', teamId: 'team-1' });
+    const res = await POST(makePostReq({ name: 'Dup', url: 'https://mcp.example.com', authMode: 'none' }));
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toBe('connector_name_taken');
+  });
+
+  // §5 AC-3: create-or-reuse — installing an existing (teamId,name) reuses it (no 409)
+  it('reuses an existing connector when reuseIfExists is set', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const existing = { id: 'conn-existing', name: 'Dup', url: 'https://mcp.example.com', teamId: 'team-1' };
+    mockConnectorsFindFirst.mockResolvedValue(existing);
+    const res = await POST(makePostReq({ name: 'Dup', url: 'https://mcp.example.com', authMode: 'none', reuseIfExists: true }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.connector.id).toBe('conn-existing');
+    expect(data.reused).toBe(true);
+    // Must NOT insert a duplicate row.
+    expect(mockConnectorsInsert).not.toHaveBeenCalled();
+  });
+
+  // §6: non-admin team member cannot create a connector
+  it('returns 403 when a non-admin team member creates a connector', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
+    const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
+    expect(res.status).toBe(403);
   });
 });

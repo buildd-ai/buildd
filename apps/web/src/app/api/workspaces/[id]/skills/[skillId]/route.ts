@@ -9,29 +9,6 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 
-/** Convert mcpServers (legacy string[] or new Record) into .mcp.json mcpServers format */
-function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
-    if (Array.isArray(raw)) {
-        // Legacy: ["github", "slack"] → { mcpServers: { github: {}, slack: {} } }
-        const servers: Record<string, object> = {};
-        for (const name of raw) {
-            if (typeof name === 'string') servers[name] = {};
-        }
-        return { mcpServers: servers };
-    }
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        // Auto-add type: "http" to any server that has a url field
-        const servers = raw as Record<string, Record<string, unknown>>;
-        for (const config of Object.values(servers)) {
-            if (config && typeof config === 'object' && 'url' in config && !config.type) {
-                config.type = 'http';
-            }
-        }
-        return { mcpServers: servers };
-    }
-    return {};
-}
-
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -124,7 +101,7 @@ export async function PATCH(
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
-            mcpServers, requiredEnvVars, isRole, repoUrl, accountId } = body;
+            mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId } = body;
 
         const existing = await db.query.workspaceSkills.findFirst({
             where: and(
@@ -155,6 +132,7 @@ export async function PATCH(
         if (color !== undefined) updates.color = color;
         if (mcpServers !== undefined) updates.mcpServers = mcpServers;
         if (requiredEnvVars !== undefined) updates.requiredEnvVars = requiredEnvVars;
+        if (connectorRefs !== undefined) updates.connectorRefs = connectorRefs;
         if (isRole !== undefined) updates.isRole = isRole;
         if (repoUrl !== undefined) updates.repoUrl = repoUrl;
         if (accountId !== undefined) updates.accountId = accountId;
@@ -171,8 +149,10 @@ export async function PATCH(
             const bundle = await packageRoleConfig(id, {
                 slug: updatedSkill.slug,
                 claudeMd: updatedSkill.content,
-                mcpConfig: normalizeMcpToConfig(updatedSkill.mcpServers),
-                envMapping: (updatedSkill.requiredEnvVars as Record<string, string>) || {},
+                // MCP is injected solely at claim time from connectors (spec §3);
+                // the R2 role bundle carries no MCP server config or env mapping.
+                mcpConfig: {},
+                envMapping: {},
                 skillSlugs: body.skillSlugs || [],
                 type: updatedSkill.repoUrl ? 'builder' : 'service',
                 repoUrl: updatedSkill.repoUrl,

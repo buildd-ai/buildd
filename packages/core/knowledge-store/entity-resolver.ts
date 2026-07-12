@@ -140,6 +140,11 @@ export interface ResolveEntitiesInput {
 
 export interface ResolveEntitiesOutput {
   binding: EntityBinding;
+  /**
+   * Entity ids bound with role='defines' for this chunk (agent-asserted).
+   * Consumed by entity-keyed supersession (Wave-1 C1).
+   */
+  definesEntityIds: string[];
 }
 
 /**
@@ -157,6 +162,7 @@ export async function resolveAndPersistEntities(
   let bound = 0;
   const ambiguous: EntityBinding['ambiguous'] = [];
   const unresolved: string[] = [];
+  const definesEntityIds = new Set<string>();
 
   // 1. Upsert extracted (authoritative) entities
   for (const e of extracted) {
@@ -170,7 +176,9 @@ export async function resolveAndPersistEntities(
         const bn = e.key.split('/').pop();
         if (bn && bn !== e.canonicalName) await upsertAlias(db, entityId, bn, 'system');
       }
-      await upsertChunkEntity(db, chunkSourceId, namespace, entityId, 'mentions');
+      // Symbol entities from their defining chunk carry role='defines';
+      // everything else defaults to 'mentions'.
+      await upsertChunkEntity(db, chunkSourceId, namespace, entityId, e.role ?? 'mentions');
       bound++;
     } catch {
       // Best-effort
@@ -202,7 +210,9 @@ export async function resolveAndPersistEntities(
       }
 
       if (entityId) {
-        await upsertChunkEntity(db, chunkSourceId, namespace, entityId, ref.role ?? 'mentions');
+        const role = ref.role ?? 'mentions';
+        await upsertChunkEntity(db, chunkSourceId, namespace, entityId, role);
+        if (role === 'defines') definesEntityIds.add(entityId);
         bound++;
       } else {
         // Tier 3: fuzzy candidates → ambiguous
@@ -225,7 +235,10 @@ export async function resolveAndPersistEntities(
     }
   }
 
-  return { binding: { bound, ambiguous, unresolved } };
+  return {
+    binding: { bound, ambiguous, unresolved },
+    definesEntityIds: Array.from(definesEntityIds),
+  };
 }
 
 /**

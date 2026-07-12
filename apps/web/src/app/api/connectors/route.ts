@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, secrets } from '@buildd/core/db/schema';
+import { connectors, secrets, teamMembers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -29,6 +29,21 @@ async function authenticateRequest(req: NextRequest) {
   }
 
   return null;
+}
+
+/**
+ * Team-admin gate for connector writes (spec §6). A session user must be an
+ * owner/admin of the team to create a connector; a plain `member` is rejected
+ * with 403. Personal teams have no `team_members` row — absence => allowed
+ * (the user implicitly owns their personal team, and `getUserTeamIds` already
+ * scopes `teamId` to teams the user belongs to).
+ */
+async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
+  const membership = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
+    columns: { role: true },
+  });
+  return membership?.role !== 'member';
 }
 
 function deriveStatus(secret: { tokenExpiresAt: Date | null } | undefined): 'connected' | 'expired' | 'not_connected' {
@@ -83,7 +98,11 @@ export async function GET(req: NextRequest) {
       name: c.name,
       url: c.url,
       authMode: c.authMode,
+      transport: c.transport,
       status: deriveStatus(secretMap.get(c.id)),
+      // Migrated legacy placeholders (spec §4) carry needsReview in discoveredMetadata;
+      // the role editor surfaces a "needs review" badge from this flag.
+      needsReview: (c.discoveredMetadata as { needsReview?: boolean } | null)?.needsReview === true,
     }));
 
     return NextResponse.json({ connectors: result });
@@ -110,16 +129,25 @@ export async function POST(req: NextRequest) {
     const teamIds = await getUserTeamIds(auth.user.id);
     if (teamIds.length === 0) return NextResponse.json({ error: 'No team found' }, { status: 400 });
     teamId = teamIds[0];
+    // Spec §6: only a team owner/admin may create a connector.
+    if (!(await isTeamAdmin(auth.user.id, teamId))) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
 
   let body: {
     name: string;
-    url: string;
+    url?: string;
+    transport?: 'http' | 'stdio';
+    command?: string;
+    args?: string[];
+    envMapping?: Record<string, string>;
     authMode?: 'none' | 'header' | 'oauth';
     headerName?: string;
     headerValue?: string;
     clientId?: string;
     clientSecret?: string;
+    reuseIfExists?: boolean;
   };
   try {
     body = await req.json();
@@ -127,20 +155,54 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { name, url, authMode: rawAuthMode, headerName, headerValue, clientId: bodyClientId, clientSecret: bodyClientSecret } = body;
+  const {
+    name, url, command, args, envMapping,
+    authMode: rawAuthMode, headerName, headerValue,
+    clientId: bodyClientId, clientSecret: bodyClientSecret, reuseIfExists,
+  } = body;
 
-  if (!name || !url) {
-    return NextResponse.json({ error: 'name and url are required' }, { status: 400 });
+  const transport: 'http' | 'stdio' = body.transport === 'stdio' ? 'stdio' : 'http';
+
+  if (!name) {
+    return NextResponse.json({ error: 'name is required' }, { status: 400 });
   }
 
-  const authMode: 'none' | 'header' | 'oauth' = rawAuthMode ?? 'oauth';
+  // Transport-specific requirements (spec §1 invariants + AC-2/AC-3).
+  if (transport === 'stdio') {
+    if (!command) {
+      return NextResponse.json({ error: 'command_required' }, { status: 400 });
+    }
+  } else {
+    if (!url) {
+      return NextResponse.json({ error: 'url is required' }, { status: 400 });
+    }
+  }
+
+  // stdio auth is env-only → authMode forced to 'none'. http defaults to oauth.
+  const authMode: 'none' | 'header' | 'oauth' = transport === 'stdio' ? 'none' : (rawAuthMode ?? 'oauth');
+
+  if (authMode === 'header' && !headerName) {
+    return NextResponse.json({ error: 'header_name_required' }, { status: 400 });
+  }
 
   try {
+    // (teamId, name) uniqueness (spec §1 AC-4). Registry install passes
+    // reuseIfExists to adopt the existing row instead of erroring (spec §5 AC-3).
+    const existing = await db.query.connectors.findFirst({
+      where: and(eq(connectors.teamId, teamId), eq(connectors.name, name)),
+    });
+    if (existing) {
+      if (reuseIfExists) {
+        return NextResponse.json({ connector: existing, reused: true });
+      }
+      return NextResponse.json({ error: 'connector_name_taken' }, { status: 409 });
+    }
+
     let discoveredMetadata: Record<string, unknown> | undefined;
     let clientId = bodyClientId;
     let encryptedClientSecret: string | undefined;
 
-    if (authMode === 'oauth') {
+    if (authMode === 'oauth' && url) {
       const discovered = await discoverOAuthMetadata(url);
       if (discovered.authMode === 'oauth') {
         discoveredMetadata = discovered as unknown as Record<string, unknown>;
@@ -164,7 +226,13 @@ export async function POST(req: NextRequest) {
     const [connector] = await db.insert(connectors).values({
       teamId,
       name,
-      url,
+      // `connectors.url` is NOT NULL in the (frozen) schema; stdio connectors
+      // carry no url, so store an empty string for them.
+      url: url ?? '',
+      transport,
+      command: transport === 'stdio' ? (command ?? null) : null,
+      args: transport === 'stdio' ? (args ?? []) : [],
+      envMapping: transport === 'stdio' ? (envMapping ?? {}) : {},
       authMode,
       headerName: authMode === 'header' ? (headerName ?? null) : null,
       discoveredMetadata: discoveredMetadata ?? null,

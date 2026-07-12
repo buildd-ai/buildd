@@ -78,7 +78,7 @@ export async function PATCH(
 
     const body = await req.json();
     const { name, description, content, model, allowedTools, canDelegateTo,
-      background, maxTurns, color, mcpServers, requiredEnvVars, isRole,
+      background, maxTurns, color, mcpServers, requiredEnvVars, connectorRefs, isRole,
       repoUrl, enabled, defaultBackend } = body;
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -96,6 +96,10 @@ export async function PATCH(
     if (color !== undefined) updates.color = color;
     if (mcpServers !== undefined) updates.mcpServers = mcpServers;
     if (requiredEnvVars !== undefined) updates.requiredEnvVars = requiredEnvVars;
+    // Role opt-in to team connectors (spec §2). Persisted for team-level roles so
+    // the claim route can resolve connectorRefs on the team-default (workspaceId
+    // IS NULL) row; without this, promoting a role to team-level dropped its refs.
+    if (connectorRefs !== undefined) updates.connectorRefs = connectorRefs;
     if (isRole !== undefined) updates.isRole = isRole;
     if (repoUrl !== undefined) updates.repoUrl = repoUrl;
     if (enabled !== undefined) updates.enabled = enabled;
@@ -155,8 +159,10 @@ export async function PATCH(
         const bundle = await packageRoleConfig(wsIdForBundle, {
           slug: updated.slug,
           claudeMd: updated.content,
-          mcpConfig: (updated.mcpServers as Record<string, unknown>) || {},
-          envMapping: (updated.requiredEnvVars as Record<string, string>) || {},
+          // MCP is injected solely at claim time from connectors (spec §3); the
+          // R2 role bundle carries no MCP server config or env mapping.
+          mcpConfig: {},
+          envMapping: {},
           skillSlugs: body.skillSlugs || [],
           type: updated.repoUrl ? 'builder' : 'service',
           repoUrl: updated.repoUrl,

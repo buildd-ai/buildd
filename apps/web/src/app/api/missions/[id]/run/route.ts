@@ -4,7 +4,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { runMission } from '@/lib/mission-run';
 import { db } from '@buildd/core/db';
-import { missions, workspaces } from '@buildd/core/db/schema';
+import { missions, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 
 const resolveTeamIds = resolveAccountTeamIds;
@@ -41,7 +41,7 @@ export async function POST(
     // Verify mission exists and belongs to user's team (or open-access workspace)
     const mission = await db.query.missions.findFirst({
       where: eq(missions.id, id),
-      columns: { id: true, teamId: true, workspaceId: true },
+      columns: { id: true, teamId: true, workspaceId: true, orchestrationMode: true },
     });
 
     if (!mission) {
@@ -63,6 +63,21 @@ export async function POST(
     }
 
     const result = await runMission(id, { manualRun: true });
+
+    // Emit audit note for one-shot runs in manual mode (owner-triggered, so actor attribution matters)
+    if (mission.orchestrationMode === 'manual' && result.task && !result.deduped) {
+      const actor = user ? `user ${user.id}` : 'API key';
+      const authorType = user ? 'user' as const : 'system' as const;
+      await db.insert(missionNotes).values({
+        missionId: id,
+        authorType,
+        type: 'update',
+        title: 'One-shot run triggered',
+        body: `Manual orchestration run triggered by ${actor}. Orchestrator will evaluate the mission once then return to idle.`,
+        status: 'open',
+      }).catch(e => console.error('[run] Failed to emit manual-run note:', e));
+    }
+
     if (result.deduped) {
       return NextResponse.json({ task: result.task, deduped: true }, { status: 200 });
     }
