@@ -1537,9 +1537,24 @@ export const connectorWorkspaces = pgTable('connector_workspaces', {
   workspaceIdx: index('connector_workspaces_workspace_idx').on(t.workspaceId),
 }));
 
+// Cross-team connector sharing (spec §1b). `connectors.teamId` is the OWNER team;
+// a row here grants `sharedWithTeamId` use of the connector, reusing the owner's
+// credential. Grantees enable per workspace / opt in per role but never edit the
+// connector config or its credential. No self-share rows (owner is implicit).
+export const connectorShares = pgTable('connector_shares', {
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }).notNull(),
+  sharedWithTeamId: uuid('shared_with_team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  grantedByAccountId: uuid('granted_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.connectorId, t.sharedWithTeamId] }),
+  sharedWithTeamIdx: index('connector_shares_shared_with_team_idx').on(t.sharedWithTeamId),
+}));
+
 export const connectorsRelations = relations(connectors, ({ one, many }) => ({
   team: one(teams, { fields: [connectors.teamId], references: [teams.id] }),
   connectorWorkspaces: many(connectorWorkspaces),
+  shares: many(connectorShares),
 }));
 
 export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ one }) => ({
@@ -1547,8 +1562,15 @@ export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ on
   workspace: one(workspaces, { fields: [connectorWorkspaces.workspaceId], references: [workspaces.id] }),
 }));
 
+export const connectorSharesRelations = relations(connectorShares, ({ one }) => ({
+  connector: one(connectors, { fields: [connectorShares.connectorId], references: [connectors.id] }),
+  sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
+}));
+
 // TypeScript types for new tables
 export type Connector = typeof connectors.$inferSelect;
 export type NewConnector = typeof connectors.$inferInsert;
 export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
 export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
+export type ConnectorShare = typeof connectorShares.$inferSelect;
+export type NewConnectorShare = typeof connectorShares.$inferInsert;

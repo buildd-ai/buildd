@@ -123,7 +123,7 @@ is reused.
 - Only an admin of the OWNER team may create/revoke shares or transfer ownership.
   Grantees may enable/disable per workspace and opt-in per role, but MUST NOT edit
   the connector config or its credential.
-- Ownership transfer (`PATCH /api/connectors/[id]/transfer`) reassigns `teamId` to
+- Ownership transfer (`POST /api/connectors/[id]/transfer`) reassigns `teamId` to
   another team the actor administers; the credential is re-keyed to the new owner
   team and existing shares are preserved.
 - Revoking a share removes the connector from every grantee workspace's mounted
