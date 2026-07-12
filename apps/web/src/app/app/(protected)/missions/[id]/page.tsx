@@ -148,6 +148,10 @@ export default async function MissionDetailPage({
   });
   const healthDisplay = HEALTH_DISPLAY[health];
 
+  // Orchestration mode
+  const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
+  const isManualMode = orchestrationMode === 'manual';
+
   // Heartbeat data — derived from schedule's taskTemplate.context
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
   const isHeartbeat = (templateContext?.heartbeat === true) || false;
@@ -400,6 +404,7 @@ export default async function MissionDetailPage({
             lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
           } : null}
           hasSchedule={!!scheduleCron}
+          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
         />
       </div>
 
@@ -659,9 +664,11 @@ export default async function MissionDetailPage({
             {scheduleCron && mission.status !== 'completed' && (
               <div className="flex gap-0 items-center">
                 <div className="flex flex-col items-center w-8 shrink-0">
-                  <span className="w-3 h-3 rounded-full border-2 border-border-default bg-transparent shrink-0" />
+                  <span className={`w-3 h-3 rounded-full border-2 shrink-0 ${isManualMode ? 'border-amber-500/40 bg-transparent' : 'border-border-default bg-transparent'}`} />
                 </div>
-                {mission.status === 'paused' ? (
+                {isManualMode ? (
+                  <span className="text-[12px] text-amber-600 italic pl-2">Monitoring active · Next: {scheduleNextRunAt ? timeAgo(scheduleNextRunAt) : '—'} · Orchestrator idle (manual)</span>
+                ) : mission.status === 'paused' ? (
                   <span className="text-[12px] text-text-muted italic pl-2">Monitoring paused</span>
                 ) : scheduleOverdue ? (
                   <span className="text-[12px] text-status-warning italic pl-2">Overdue by {scheduleOverdueMinutes}m</span>

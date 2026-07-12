@@ -1,6 +1,6 @@
 {
-  "id": "4210a8a6-6fbe-434b-92dc-a52aa33657b1",
-  "prevId": "0d135b1a-128e-482f-a706-3f425106fae0",
+  "id": "b934dfbf-174b-428e-9059-c0e849a1fa91",
+  "prevId": "4715e019-3e86-4e24-894a-b3d565560330",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -763,6 +763,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'none'"
+        },
+        "transport": {
+          "name": "transport",
+          "type": "connector_transport",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'http'"
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "args": {
+          "name": "args",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "env_mapping": {
+          "name": "env_mapping",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "header_name": {
           "name": "header_name",
@@ -2010,6 +2038,170 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.knowledge_ingest_jobs": {
+      "name": "knowledge_ingest_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repo": {
+          "name": "repo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trigger": {
+          "name": "trigger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha": {
+          "name": "sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pr_number": {
+          "name": "pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "changed_files": {
+          "name": "changed_files",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stats": {
+          "name": "stats",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "knowledge_ingest_jobs_ws_status_idx": {
+          "name": "knowledge_ingest_jobs_ws_status_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "knowledge_ingest_jobs_ws_sha_scope_idx": {
+          "name": "knowledge_ingest_jobs_ws_sha_scope_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"knowledge_ingest_jobs\".\"status\" != 'error'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "knowledge_ingest_jobs_workspace_id_workspaces_id_fk": {
+          "name": "knowledge_ingest_jobs_workspace_id_workspaces_id_fk",
+          "tableFrom": "knowledge_ingest_jobs",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.mission_notes": {
       "name": "mission_notes",
       "schema": "",
@@ -2316,9 +2508,28 @@
           "notNull": true,
           "default": false
         },
+        "orchestration_mode": {
+          "name": "orchestration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'auto'"
+        },
         "released_at": {
           "name": "released_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_issue_id": {
+          "name": "external_issue_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_issue_url": {
+          "name": "external_issue_url",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -3650,6 +3861,18 @@
         },
         "external_url": {
           "name": "external_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_issue_id": {
+          "name": "external_issue_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_issue_url": {
+          "name": "external_issue_url",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -5975,6 +6198,13 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "connector_refs": {
+          "name": "connector_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "is_role": {
           "name": "is_role",
           "type": "boolean",
@@ -6259,6 +6489,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "work_tracker_config": {
+          "name": "work_tracker_config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -6380,6 +6616,14 @@
         "none",
         "header",
         "oauth"
+      ]
+    },
+    "public.connector_transport": {
+      "name": "connector_transport",
+      "schema": "public",
+      "values": [
+        "http",
+        "stdio"
       ]
     }
   },
