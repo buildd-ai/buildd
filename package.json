@@ -24,6 +24,7 @@
     "seed:completed-tasks": "bun run scripts/seed/completed-tasks.ts",
     "seed:multi-user": "bun run scripts/seed/multi-user.ts",
     "seed:concurrent": "bun run scripts/seed/concurrent.ts",
+    "seed:knowledge-consolidation": "bun run scripts/seed/knowledge-consolidation-schedule.ts",
     "seed:reset": "bun run scripts/seed/reset.ts",
     "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts"
   },
