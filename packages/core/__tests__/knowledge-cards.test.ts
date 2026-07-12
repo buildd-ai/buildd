@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   buildTaskCard,
+  buildSessionCard,
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,
@@ -64,6 +65,57 @@ describe('buildTaskCard', () => {
     expect(chunk.content).toContain('FAILED');
     expect(chunk.metadata?.success).toBe(false);
     expect(chunk.metadata?.missionId).toBeUndefined();
+  });
+});
+
+// ── buildSessionCard (corpus session, phase session) ─────────────────────────
+
+describe('buildSessionCard', () => {
+  it('builds a stable session:{taskId} id, session phase, and process narrative', () => {
+    const chunk = buildSessionCard({
+      taskId: 't-1',
+      workerId: 'w-5',
+      title: 'Fix login bug',
+      summary: 'Tried patching the callback; root cause was a stale token',
+      nextSuggestion: 'Add a regression test for expired tokens',
+      success: true,
+      turns: 12,
+      missionId: 'm-9',
+    });
+
+    expect(chunk.id).toBe('session:t-1');
+    expect(chunk.sourceType).toBe('session');
+    expect(chunk.metadata?.phase).toBe('session');
+    expect(chunk.metadata?.taskId).toBe('t-1');
+    expect(chunk.metadata?.workerId).toBe('w-5');
+    expect(chunk.metadata?.missionId).toBe('m-9');
+    expect(chunk.metadata?.success).toBe(true);
+    expect(chunk.content).toContain('Fix login bug');
+    expect(chunk.content).toContain('completed');
+    expect(chunk.content).toContain('12 turns');
+    expect(chunk.content).toContain('stale token');
+    expect(chunk.content).toContain('regression test for expired tokens');
+    expect(chunk.sourceUrl).toBe('/app/tasks/t-1');
+  });
+
+  it('marks failed/aborted sessions and omits optional linkage/effort when absent', () => {
+    const chunk = buildSessionCard({
+      taskId: 't-2',
+      success: false,
+    });
+    expect(chunk.id).toBe('session:t-2');
+    expect(chunk.content).toContain('failed/aborted');
+    expect(chunk.content).not.toContain('turns');
+    expect(chunk.metadata?.success).toBe(false);
+    expect(chunk.metadata?.workerId).toBeUndefined();
+    expect(chunk.metadata?.missionId).toBeUndefined();
+  });
+
+  it('keys by taskId so a re-worked task upserts to its latest session', () => {
+    const a = buildSessionCard({ taskId: 't-9', workerId: 'w-1', success: true });
+    const b = buildSessionCard({ taskId: 't-9', workerId: 'w-2', success: true });
+    expect(a.id).toBe(b.id);
+    expect(a.id).toBe('session:t-9');
   });
 });
 

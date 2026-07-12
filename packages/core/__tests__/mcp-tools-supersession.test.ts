@@ -146,8 +146,10 @@ describe('complete_task — supersedes param', () => {
     );
 
     expect(res.isError).toBeFalsy();
-    expect(store.upserts).toHaveLength(1);
-    expect(store.upserts[0].chunks[0].supersedes).toEqual(['task:t-old', 'task:t-older']);
+    // Two mirrors now: the task card (carries supersedes) + the session card.
+    expect(store.upserts).toHaveLength(2);
+    const taskUpsert = store.upserts.find(u => u.chunks[0]?.id?.startsWith('task:'));
+    expect(taskUpsert?.chunks[0].supersedes).toEqual(['task:t-old', 'task:t-older']);
     expect(res.content[0].text).toContain('Superseded: 2');
   });
 
