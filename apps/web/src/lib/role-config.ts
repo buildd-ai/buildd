@@ -7,7 +7,15 @@ import { uploadBuffer, deleteObject } from './storage';
 export interface RoleConfigInput {
   slug: string;
   claudeMd: string;
+  /**
+   * @deprecated MCP is injected solely at claim time from `connectors` (spec §3).
+   * Callers MUST pass `{}` — the R2 role bundle no longer carries MCP server config.
+   */
   mcpConfig: Record<string, unknown>;
+  /**
+   * @deprecated See `mcpConfig`. Callers MUST pass `{}` — MCP env is resolved at
+   * claim time from connector `envMapping`, not the R2 bundle.
+   */
   envMapping: Record<string, string>;
   skillSlugs: string[];
   type: 'builder' | 'service';

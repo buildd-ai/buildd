@@ -17,6 +17,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
+export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
 
@@ -955,8 +956,13 @@ export const workspaceSkills = pgTable('workspace_skills', {
   background: boolean('background').notNull().default(false),
   maxTurns: integer('max_turns'), // null = unlimited
   color: text('color').notNull().default('#8A8478'), // avatar color hex
+  // @deprecated Superseded by `connectorRefs` (connectors table). Kept for back-compat during
+  // rollout; no longer read/written by new code and slated for removal in a follow-up migration.
   mcpServers: jsonb('mcp_servers').notNull().default({}).$type<Record<string, unknown> | string[]>(), // MCP server configs or legacy name array
+  // @deprecated See `mcpServers` above — migrated to connectors; do NOT remove yet.
   requiredEnvVars: jsonb('required_env_vars').notNull().default({}).$type<Record<string, string>>(), // env var name → secret label mapping
+  // IDs of connectors (connectors table) this role mounts — role-level opt-in to team connectors.
+  connectorRefs: jsonb('connector_refs').notNull().default([]).$type<string[]>(),
   // Role-specific fields
   isRole: boolean('is_role').notNull().default(false), // distinguishes roles (Team page) from skills
   configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
@@ -1495,6 +1501,15 @@ export const connectors = pgTable('connectors', {
   name: text('name').notNull(),
   url: text('url').notNull(),
   authMode: connectorAuthModeEnum('auth_mode').notNull().default('none'),
+  // Transport: 'http' (remote MCP over HTTP/SSE — uses `url`) or 'stdio' (local
+  // process — uses `command`/`args`/`envMapping`). Default 'http' keeps existing rows unchanged.
+  transport: connectorTransportEnum('transport').notNull().default('http'),
+  // stdio transport: executable to spawn (e.g. 'npx', 'uvx'). Null for http transport.
+  command: text('command'),
+  // stdio transport: argv passed to `command` (e.g. ['-y', '@some/mcp-server']).
+  args: jsonb('args').notNull().default([]).$type<string[]>(),
+  // stdio transport: env var name → secret label mapping injected into the spawned process.
+  envMapping: jsonb('env_mapping').notNull().default({}).$type<Record<string, string>>(),
   // For authMode='header': the HTTP header name (e.g. 'Authorization', 'X-API-Key').
   // The header value is stored as a secret (purpose='mcp_connector_credential').
   headerName: text('header_name'),

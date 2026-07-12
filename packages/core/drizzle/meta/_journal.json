@@ -498,6 +498,13 @@
       "when": 1783830537772,
       "tag": "0070_skinny_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1783830537773,
+      "tag": "0071_omniscient_the_leader",
+      "breakpoints": true
     }
   ]
 }
