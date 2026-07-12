@@ -1,6 +1,7 @@
 export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker, EntityRef, RelationRef, EntityKind, RelationType, EntityUpsert, EdgeUpsert, PendingRef } from './types';
 export {
   buildTaskCard,
+  buildSessionCard,
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,
@@ -8,7 +9,7 @@ export {
   truncate,
   CARD_CONTENT_CAP,
 } from './cards';
-export type { TaskCardInput, PrCardInput, ArtifactCardInput, PlanCardInput } from './cards';
+export type { TaskCardInput, SessionCardInput, PrCardInput, ArtifactCardInput, PlanCardInput } from './cards';
 export { PgVectorStore, buildNamespace, reciprocalRankFusion } from './pg-vector-store';
 export { VoyageEmbedder, getVoyageEmbedder } from './voyage-embedder';
 export { VoyageReranker, getVoyageReranker, applyRerank } from './reranker';
