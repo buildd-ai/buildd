@@ -1,6 +1,6 @@
 # Workspace Knowledge Management v2 — Per-PR Ingestion, Code Graph, Semantic Supersession, Distillation
 
-**Status:** Draft spec — awaiting approval before implementation tasks are created
+**Status:** Accepted — Wave 1 implementation in flight (see §7)
 **Date:** 2026-07-12
 **Scope:** `packages/core/knowledge-store/`, GitHub webhook, runner, MCP tooling
 **Prior art:** `docs/knowledge-store.md` (implemented), `docs/design/knowledge-graph-retrieval.md` (partially implemented)
@@ -64,7 +64,7 @@ One queue for both incremental and full runs; idempotent (unique partial index o
 
 ### 3.3 Two execution paths by job size
 
-**Diff jobs (the common case) run serverless.** For a merged PR: list changed files via the GitHub API (installation token, already available in the webhook), fetch blob contents at the merge SHA via the contents API — **no checkout needed** — chunk + upsert via the existing `fileToChunks`/`PgVectorStore.upsert`, `deleteBySource` for removed/renamed paths. Cap at ~100 files / 2 MB per job; larger diffs escalate to a full job. Run via `waitUntil` or a follow-up invocation, never blocking the webhook response.
+**Diff jobs (the common case) run serverless.** For a merged PR: list changed files via the GitHub API (installation token, already available in the webhook — payload HMAC-verified upstream), fetch blob contents at the merge SHA via the contents API — **no checkout needed** — chunk + upsert via the existing `fileToChunks`/`PgVectorStore.upsert`, `deleteBySource` for removed/renamed paths. Apply the same skip filters as `ingest-knowledge.ts` (tests, migrations, lockfiles, generated dirs, binaries). Cap at 100 files / 2 MB fetched per job; larger diffs escalate to a `full` job. Execute via `waitUntil` after the webhook 200s; if that proves flaky, flip to a self-invoked internal route — the jobs table makes either transport idempotent and retryable.
 
 Existing `_markSuperseded` fires on these upserts — **this alone delivers old→new replacement for code**: pre-merge chunks for a changed file are marked `is_current=false, superseded_by=<new>` automatically.
 
@@ -86,7 +86,7 @@ Beyond the existing summary card (`buildPrCard`, no diffs), ingest the patch its
 
 Implements §9 of `knowledge-graph-retrieval.md`, adapted to the Phase A split:
 
-- **ast-grep (`@ast-grep/napi`) in the serverless diff path.** No build required, stateless, fast. Two uses:
+- **ast-grep (`@ast-grep/napi`) in the ingest path.** No build required, stateless, fast. **Risk:** it's a native napi binary — fine in Bun scripts, runner jobs, and CI, but must be loaded via dynamic `import()` with graceful fallback to the line-window splitter wherever it's unavailable (notably the Vercel serverless diff path, where the platform-specific binary may not bundle). Symbol-quality chunks are an enhancement, never a dependency. Two uses:
   1. **Symbol-boundary chunking** — replace the line-window splitter for supported languages: chunks align to function/class/export boundaries (fall back to line-window). Better retrieval units at zero pipeline cost.
   2. **Symbol entity extraction** — top-level exports/classes/functions → `knowledge_entities(kind='symbol')` + `(file, defines, symbol)` edges; import statements → `(file, imports, file)` edges (path-resolved, best-effort).
 - **scip-typescript in runner full jobs only.** Needs an installable project — runners have one. Emits canonical monikers → precise `defines`/`references`/`imports` edges + alias seeding (`entity_aliases.source='scip'`, already in the schema). Cache by SHA; skip if unchanged. Graceful degradation: SCIP failure leaves ast-grep edges in place.
@@ -121,19 +121,31 @@ Implements §9 of `knowledge-graph-retrieval.md`, adapted to the Phase A split:
 
 ---
 
-## 7. Rollout
+## 7. Rollout — work streams
 
-| Phase | Ships as | Depends on |
-|---|---|---|
-| A1 webhook→jobs table→diff ingest | 1 PR (schema + webhook + serverless ingester) | — |
-| A2 runner full jobs + backfill + Action fallback | 1–2 PRs | A1 |
-| A3 PR-diff corpus | 1 PR | A1 |
-| B1 ast-grep chunking + symbol entities | 1 PR | A1 (runs in its path) |
-| B2 SCIP in runner jobs + catalog injection | 2 PRs | A2, B1 |
-| C entity supersession + `supersedes` param + consolidation task | 2 PRs | B1 |
-| D session corpus, digest, health UI, CI eval | independent small PRs | A1 for UI |
+Three streams are **independent at the file level** and start immediately, in parallel. The rest sequence behind them.
 
-Each phase is independently shippable and abandonable, consistent with the Layer 1–3 precedent.
+### Wave 1 (parallel, in flight)
+
+| Stream | Scope | Files touched | Ships as |
+|---|---|---|---|
+| **A1** ingest queue + webhook + diff ingester | `knowledge_ingest_jobs` schema + migration; enqueue on merged PR; serverless diff ingest via contents API; backfill enqueue on empty `{workspaceId}:code` namespace | `packages/core/db/schema.ts` + migration, `apps/web/src/app/api/github/webhook/route.ts`, new `apps/web/src/lib/knowledge-ingest.ts` | 1 PR |
+| **B1** ast-grep symbol layer | symbol-boundary chunking (dynamic-import + line-window fallback); symbol entities + `defines`/`imports` edges | `packages/core/knowledge-store/{chunker,entity-extractor,edge-builder,ingest}.ts`, new `symbol-extractor.ts` | 1 PR |
+| **C1** explicit + entity-keyed supersession | wire `UpsertChunk.supersedes` through `complete_task`/`buildd_memory save`; entity-keyed `_markSuperseded` extension | `packages/core/mcp-tools.ts`, `packages/core/knowledge-store/pg-vector-store.ts` | 1 PR |
+
+Only A1 carries a migration — no migration conflicts across the wave. B1 and C1 both touch `knowledge-store/types.ts` additively (trivial merge).
+
+### Wave 2+ (sequenced)
+
+| Stream | Depends on |
+|---|---|
+| A2 runner full jobs + backfill executor + GH Action fallback | A1 (jobs table) |
+| A3 PR-diff corpus | A1 |
+| B2 SCIP in runner jobs + entity catalog injection at claim | A2, B1 |
+| C2 consolidation task + hit tracking (`hit_count`/`last_hit_at` migration) | C1 |
+| D session corpus, weekly digest, health UI, CI eval | A1 for UI; others independent |
+
+Each stream is independently shippable and abandonable, consistent with the Layer 1–3 precedent.
 
 ## 8. Open questions
 
