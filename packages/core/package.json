@@ -34,6 +34,7 @@
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
     "./knowledge-store/types": "./knowledge-store/types.ts",
+    "./knowledge-store/ingest-filter": "./knowledge-store/ingest-filter.ts",
     "./path-overlap": "./path-overlap.ts"
   },
   "dependencies": {
