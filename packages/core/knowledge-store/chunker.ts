@@ -140,3 +140,130 @@ export function chunkMarkdown(text: string, opts: ChunkOptions): ChunkPiece[] {
 export function chunkCode(text: string, opts: ChunkOptions): ChunkPiece[] {
   return chunkText(text, opts);
 }
+
+// ── Symbol-boundary chunking (spec §4, B1) ───────────────────────────────────
+
+/**
+ * Minimal span a chunkable symbol needs — structurally satisfied by
+ * `ExtractedSymbol` from symbol-extractor.ts. Kept loose so this module stays
+ * dependency-free (the ast-grep call happens in ingest.ts, not here).
+ */
+export interface SymbolSpan {
+  /** 1-based, inclusive. */
+  startLine: number;
+  /** 1-based, inclusive. */
+  endLine: number;
+}
+
+interface Segment {
+  start: number; // 1-based, inclusive
+  end: number;   // 1-based, inclusive
+}
+
+/**
+ * Symbol-boundary code splitter. Given the file text and its top-level
+ * declaration spans (pre-extracted — no ast-grep dependency here), produces
+ * chunks aligned to declaration boundaries:
+ *
+ * - Each chunk covers one or more consecutive declarations, greedily packed
+ *   up to the `maxChars` budget.
+ * - Gap lines between declarations (imports header, loose statements,
+ *   comments) attach to the adjacent chunk: leading/inter-declaration gaps to
+ *   the following declaration, the trailing gap to the last chunk.
+ * - A single declaration larger than the budget falls back to the line-window
+ *   splitter internally (with overlap), so nothing is ever dropped.
+ * - No symbols at all degrades to plain `chunkText`.
+ */
+export function chunkCodeSymbols(
+  text: string,
+  symbols: SymbolSpan[],
+  opts: ChunkOptions,
+): ChunkPiece[] {
+  if (!text || !text.trim()) return [];
+  const lines = text.split('\n');
+  const lineCount = lines.length;
+
+  // Sanitize: clamp to file bounds, drop inverted spans, sort by start.
+  const spans = symbols
+    .map(s => ({
+      startLine: Math.max(1, Math.min(s.startLine, lineCount)),
+      endLine: Math.max(1, Math.min(s.endLine, lineCount)),
+    }))
+    .filter(s => s.endLine >= s.startLine)
+    .sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+
+  if (spans.length === 0) return chunkText(text, opts);
+
+  // Build contiguous segments: each ends at a declaration end; the gap before
+  // a declaration (imports, loose statements) rides along with it.
+  const segments: Segment[] = [];
+  let cursor = 1;
+  for (const span of spans) {
+    const end = Math.max(span.endLine, cursor);
+    if (segments.length > 0 && span.startLine <= segments[segments.length - 1].end) {
+      // Overlapping/nested span (defensive) — extend the previous segment.
+      segments[segments.length - 1].end = Math.max(segments[segments.length - 1].end, end);
+    } else {
+      segments.push({ start: cursor, end });
+    }
+    cursor = segments[segments.length - 1].end + 1;
+  }
+  // Trailing gap after the last declaration attaches to the last segment.
+  if (cursor <= lineCount) segments[segments.length - 1].end = lineCount;
+
+  const segmentChars = (seg: Segment): number => {
+    let size = 0;
+    for (let l = seg.start; l <= seg.end; l++) {
+      size += lines[l - 1].length + (l > seg.start ? 1 : 0);
+    }
+    return size;
+  };
+
+  const pieces: ChunkPiece[] = [];
+  const pushPiece = (start: number, end: number) => {
+    const content = lines.slice(start - 1, end).join('\n');
+    if (content.trim()) pieces.push({ content, startLine: start, endLine: end, headingPath: [] });
+  };
+
+  // Greedy packing of consecutive segments up to the char budget.
+  let packStart: number | null = null;
+  let packEnd = 0;
+  let packSize = 0;
+  const flush = () => {
+    if (packStart !== null) pushPiece(packStart, packEnd);
+    packStart = null;
+    packSize = 0;
+  };
+
+  for (const seg of segments) {
+    const size = segmentChars(seg);
+
+    if (size > opts.maxChars) {
+      // Oversized single declaration: flush the current pack, then fall back
+      // to line-window splitting inside the segment (offsetting line numbers).
+      flush();
+      const body = lines.slice(seg.start - 1, seg.end).join('\n');
+      for (const sub of chunkText(body, opts)) {
+        pieces.push({
+          content: sub.content,
+          startLine: seg.start + sub.startLine - 1,
+          endLine: seg.start + sub.endLine - 1,
+          headingPath: [],
+        });
+      }
+      continue;
+    }
+
+    if (packStart !== null && packSize + 1 + size > opts.maxChars) flush();
+    if (packStart === null) {
+      packStart = seg.start;
+      packSize = size;
+    } else {
+      packSize += 1 + size; // +1 for the joining newline
+    }
+    packEnd = seg.end;
+  }
+  flush();
+
+  return pieces;
+}

@@ -62,6 +62,12 @@ export interface UpsertChunk {
   supersedes?: string[];
 }
 
+/** Result of an upsert batch. Superseded counts explicit-supersession matches. */
+export interface UpsertResult {
+  /** Rows marked is_current=false via `UpsertChunk.supersedes` across the batch. */
+  superseded: number;
+}
+
 export interface QueryResult {
   id: string;
   namespace: string;
@@ -97,10 +103,27 @@ export interface QueryParams {
  * namespace = `${workspaceId}:${corpus}` (e.g. "ws-abc123:memory").
  */
 export interface KnowledgeStore {
-  upsert(namespace: string, chunks: UpsertChunk[]): Promise<void>;
+  /**
+   * Upsert chunks. May return an UpsertResult (explicit-supersession count);
+   * simple implementations can keep returning void.
+   */
+  upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult | void>;
   query(namespace: string, params: QueryParams): Promise<QueryResult[]>;
   delete(namespace: string, ids: string[]): Promise<void>;
   listNamespaces(): Promise<string[]>;
+  /**
+   * Entity-keyed supersession (optional). Mark other `is_current` chunks in the
+   * namespace whose `role='defines'` entity set is IDENTICAL to `entityIds`,
+   * whose source_ts is older than the new chunk's, and whose corpus authority
+   * is ≤ the new chunk's, as superseded by `newSourceId`. Returns the number of
+   * chunks marked.
+   */
+  markSupersededByEntities?(
+    namespace: string,
+    newSourceId: string,
+    entityIds: string[],
+    opts?: { corpus?: Corpus; sourceTs?: Date | null },
+  ): Promise<number>;
   /**
    * Delete every chunk for a given source file (all `path#idx` chunks).
    * Used by code/docs ingestion to clean up before re-chunking a file, so a
@@ -160,6 +183,12 @@ export interface EntityUpsert {
   key: string;
   canonicalName: string;
   attributes?: Record<string, unknown>;
+  /**
+   * Junction role for the chunk↔entity link (chunk_entities.role).
+   * Defaults to 'mentions'; symbol entities extracted from their defining
+   * chunk carry 'defines'.
+   */
+  role?: 'defines' | 'references' | 'mentions';
 }
 
 export interface EdgeUpsert {

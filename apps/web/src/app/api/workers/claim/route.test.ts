@@ -58,6 +58,11 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mockHasCodexCredential,
 }));
 
+const mockRefreshMcpConnectorCredential = mock(() => Promise.resolve('error' as string));
+mock.module('@/lib/mcp-connector-refresh', () => ({
+  refreshMcpConnectorCredential: mockRefreshMcpConnectorCredential,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -113,11 +118,11 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
-  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId' },
+  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
-  connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName' },
+  connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
 }));
 
@@ -207,6 +212,9 @@ describe('POST /api/workers/claim', () => {
     // Default: no connectors
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    // Default: OAuth refresh fails (expired stays expired) unless a test overrides it
+    mockRefreshMcpConnectorCredential.mockReset();
+    mockRefreshMcpConnectorCredential.mockResolvedValue('error');
     // Default: zero recent claims (router spike-detection input)
     mockDbSelect.mockReturnValue({
       from: mock(() => ({
@@ -1301,7 +1309,7 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers[0].taskId).toBe('task-1');
   });
 
-  it('attaches mcpSecrets when mcp_credential secrets exist for account', async () => {
+  it('no longer flat-injects mcp_credential secrets as mcpSecrets (connectors are the only path)', async () => {
     // Set ENCRYPTION_KEY so secrets branch executes
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
@@ -1344,16 +1352,13 @@ describe('POST /api/workers/claim', () => {
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
     }));
 
-    // Mock secrets: return mcp_credential secrets scoped to workspace team
+    // Even if mcp_credential secrets exist, they must NOT surface as a flat
+    // `mcpSecrets` map — that legacy role-MCP env injection path was retired.
+    // The anthropic/oauth secrets query now only asks for those two purposes,
+    // so this row would never be returned; assert nothing leaks.
     mockSecretsFindMany.mockResolvedValue([
       { id: 'secret-1', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
-      { id: 'secret-2', purpose: 'mcp_credential', label: 'SLACK_TOKEN' },
     ]);
-
-    // provider.get called for each mcp_credential secret (no api_key/oauth found)
-    mockSecretsProviderGet
-      .mockResolvedValueOnce('decrypted-dispatch-key')
-      .mockResolvedValueOnce('decrypted-slack-token');
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1364,10 +1369,7 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
-    expect(data.workers[0].mcpSecrets).toEqual({
-      DISPATCH_API_KEY: 'decrypted-dispatch-key',
-      SLACK_TOKEN: 'decrypted-slack-token',
-    });
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
 
     // Restore
     if (origKey !== undefined) {
@@ -2115,10 +2117,15 @@ describe('POST /api/workers/claim', () => {
 
   // --- MCP connector injection tests ---
 
-  describe('mcpConnectors injection', () => {
+  describe('mcpConnectors injection (role opt-in intersection)', () => {
     const origKey = process.env.ENCRYPTION_KEY;
 
-    function setupConnectorClaim() {
+    // Set up a claimable task. `connectorRefs` populates the resolved role's
+    // opt-in list; pass `null` for roleSlug to simulate an unrouted task (no role).
+    function setupConnectorClaim(
+      connectorRefs: string[] = [],
+      roleSlug: string | null = 'builder',
+    ) {
       process.env.ENCRYPTION_KEY = 'test-encryption-key';
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
@@ -2134,6 +2141,7 @@ describe('POST /api/workers/claim', () => {
         workspaceId: 'ws-1',
         title: 'Test task',
         dependsOn: [],
+        roleSlug,
         workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
       }]);
       mockTasksUpdate.mockReturnValue({
@@ -2143,6 +2151,15 @@ describe('POST /api/workers/claim', () => {
         rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
       }));
       mockSecretsFindMany.mockResolvedValue([]); // no main team secrets
+      // Role resolution: a team-default role (workspaceId null) with the given refs.
+      // Used by both the model-floor prefetch and the connector-block role lookup.
+      if (roleSlug) {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: roleSlug, isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs },
+        ]);
+      } else {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+      }
     }
 
     afterEach(() => {
@@ -2153,13 +2170,15 @@ describe('POST /api/workers/claim', () => {
       }
     });
 
-    it('injects connector with authMode=none when workspace row is enabled', async () => {
-      setupConnectorClaim();
+    // §2 AC-1: role refs [conn-1], workspace enables {conn-1, conn-2} → only conn-1 mounts.
+    it('mounts only role-referenced connectors even when the workspace enables more', async () => {
+      setupConnectorClaim(['conn-1']);
       mockConnectorsFindMany.mockResolvedValue([
-        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null },
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
       ]);
       mockConnectorWorkspacesFindMany.mockResolvedValue([
         { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
+        { connectorId: 'conn-2', workspaceId: 'ws-1', enabled: true },
       ]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -2167,14 +2186,15 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'my-mcp', url: 'https://mcp.example.com' },
+        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
       ]);
     });
 
-    it('skips connector when workspace row has enabled=false', async () => {
-      setupConnectorClaim();
+    // §2 AC-2: role references conn-1 but the workspace has NOT enabled it → not mounted.
+    it('does not mount a referenced connector the workspace disabled', async () => {
+      setupConnectorClaim(['conn-1']);
       mockConnectorsFindMany.mockResolvedValue([
-        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null },
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
       ]);
       mockConnectorWorkspacesFindMany.mockResolvedValue([
         { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: false },
@@ -2187,42 +2207,94 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
-    it('skips oauth connector when token is expired', async () => {
-      setupConnectorClaim();
+    // §2 AC-3: a task with no roleSlug (unrouted) mounts no connectors.
+    it('mounts nothing when the task has no role', async () => {
+      setupConnectorClaim([], null);
       mockConnectorsFindMany.mockResolvedValue([
-        { id: 'conn-oauth', teamId: 'team-1', name: 'oauth-mcp', url: 'https://oauth.example.com', authMode: 'oauth', headerName: null },
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
       ]);
       mockConnectorWorkspacesFindMany.mockResolvedValue([
-        { connectorId: 'conn-oauth', workspaceId: 'ws-1', enabled: true },
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
       ]);
-      // Connector credential secret with expired tokenExpiresAt
-      mockSecretsFindMany
-        .mockResolvedValueOnce([]) // main secrets call
-        .mockResolvedValueOnce([
-          { id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(Date.now() - 60_000) },
-        ]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
       expect(res.status).toBe(200);
-      // Expired token → connector silently skipped
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
-    it('injects header auth connector with decrypted header value', async () => {
-      setupConnectorClaim();
+    // §2 AC-4: a dangling ref (deleted / other-team connector) is tolerated — the
+    // claim succeeds and mounts only the surviving valid refs (no 500).
+    it('tolerates a dangling connector ref and mounts the remaining valid ones', async () => {
+      setupConnectorClaim(['conn-1', 'conn-deleted']);
+      // The connectors query only returns the still-existing owned connector.
       mockConnectorsFindMany.mockResolvedValue([
-        { id: 'conn-hdr', teamId: 'team-1', name: 'header-mcp', url: 'https://header.example.com', authMode: 'header', headerName: 'X-API-Key' },
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+      ]);
+    });
+
+    // §3: authMode=none http connector → { transport: http, url }, no headers.
+    it('injects an authMode=none http connector', async () => {
+      setupConnectorClaim(['conn-1']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+      ]);
+    });
+
+    // §3 AC-4: header connector missing its secret row → omitted (not mounted empty).
+    it('omits a header connector whose secret row is missing', async () => {
+      setupConnectorClaim(['conn-hdr']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-hdr', teamId: 'team-1', name: 'header-mcp', url: 'https://header.example.com', authMode: 'header', headerName: 'X-API-Key', transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-hdr', workspaceId: 'ws-1', enabled: true },
+      ]);
+      // main secrets call → []; connector credential call → [] (no secret)
+      mockSecretsFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    // §3: header connector → { transport: http, url, headers: { [headerName]: value } }.
+    it('injects a header-auth http connector with the decrypted header value', async () => {
+      setupConnectorClaim(['conn-hdr']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-hdr', teamId: 'team-1', name: 'header-mcp', url: 'https://header.example.com', authMode: 'header', headerName: 'X-API-Key', transport: 'http', command: null, args: [], envMapping: {} },
       ]);
       mockConnectorWorkspacesFindMany.mockResolvedValue([
         { connectorId: 'conn-hdr', workspaceId: 'ws-1', enabled: true },
       ]);
       mockSecretsFindMany
         .mockResolvedValueOnce([]) // main secrets call
-        .mockResolvedValueOnce([
-          { id: 'cs-2', label: 'conn-hdr', tokenExpiresAt: null },
-        ]);
+        .mockResolvedValueOnce([{ id: 'cs-2', label: 'conn-hdr', tokenExpiresAt: null }]);
       mockSecretsProviderGet.mockResolvedValue('secret-header-value');
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -2230,8 +2302,109 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'header-mcp', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
+        { name: 'header-mcp', transport: 'http', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
       ]);
+    });
+
+    // §3 AC-3: expired oauth token whose refresh FAILS → connector omitted, claim 200.
+    it('omits an oauth connector whose expired token cannot be refreshed', async () => {
+      setupConnectorClaim(['conn-oauth']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-oauth', teamId: 'team-1', name: 'oauth-mcp', url: 'https://oauth.example.com', authMode: 'oauth', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-oauth', workspaceId: 'ws-1', enabled: true },
+      ]);
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(Date.now() - 60_000) }]);
+      mockRefreshMcpConnectorCredential.mockResolvedValue('expired');
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    // §3 AC-2: expired oauth token whose refresh SUCCEEDS → refreshed token injected.
+    it('injects an oauth connector after a successful claim-time refresh', async () => {
+      setupConnectorClaim(['conn-oauth']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-oauth', teamId: 'team-1', name: 'oauth-mcp', url: 'https://oauth.example.com', authMode: 'oauth', headerName: null, transport: 'http', command: null, args: [], envMapping: {} },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-oauth', workspaceId: 'ws-1', enabled: true },
+      ]);
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([{ id: 'cs-1', label: 'conn-oauth', tokenExpiresAt: new Date(Date.now() - 60_000) }]);
+      mockRefreshMcpConnectorCredential.mockResolvedValue('refreshed');
+      // provider.get returns the (now-refreshed) token blob
+      mockSecretsProviderGet.mockResolvedValue(JSON.stringify({ access_token: 'fresh-token' }));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { name: 'oauth-mcp', transport: 'http', url: 'https://oauth.example.com', headers: { Authorization: 'Bearer fresh-token' } },
+      ]);
+    });
+
+    // §3: stdio connector → { transport: stdio, command, args, env } from envMapping.
+    it('injects a stdio connector with command/args and env resolved from envMapping', async () => {
+      setupConnectorClaim(['conn-stdio']);
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-stdio', teamId: 'team-1', name: 'github', url: null, authMode: 'none', headerName: null,
+          transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'],
+          envMapping: { GITHUB_TOKEN: 'GH_SECRET' },
+        },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-stdio', workspaceId: 'ws-1', enabled: true },
+      ]);
+      // main secrets call → []; stdio env-secret call → the mapped mcp_credential secret
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets call
+        .mockResolvedValueOnce([{ id: 'es-1', label: 'GH_SECRET' }]);
+      mockSecretsProviderGet.mockResolvedValue('ghp_decrypted');
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        {
+          name: 'github', transport: 'stdio', command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-github'],
+          env: { GITHUB_TOKEN: 'ghp_decrypted' },
+        },
+      ]);
+    });
+
+    // §3: stdio connector missing a mapped secret → omitted (no half-formed mount).
+    it('omits a stdio connector when a mapped env secret is missing', async () => {
+      setupConnectorClaim(['conn-stdio']);
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-stdio', teamId: 'team-1', name: 'github', url: null, authMode: 'none', headerName: null,
+          transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'],
+          envMapping: { GITHUB_TOKEN: 'GH_SECRET' },
+        },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-stdio', workspaceId: 'ws-1', enabled: true },
+      ]);
+      // main secrets call → []; stdio env-secret call → [] (secret missing)
+      mockSecretsFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
   });
 

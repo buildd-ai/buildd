@@ -9,28 +9,6 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 
-/** Convert mcpServers (legacy string[] or new Record) into .mcp.json mcpServers format */
-function normalizeMcpToConfig(raw: unknown): Record<string, unknown> {
-    if (Array.isArray(raw)) {
-        const servers: Record<string, object> = {};
-        for (const name of raw) {
-            if (typeof name === 'string') servers[name] = {};
-        }
-        return { mcpServers: servers };
-    }
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        // Auto-add type: "http" to any server that has a url field
-        const servers = raw as Record<string, Record<string, unknown>>;
-        for (const config of Object.values(servers)) {
-            if (config && typeof config === 'object' && 'url' in config && !config.type) {
-                config.type = 'http';
-            }
-        }
-        return { mcpServers: servers };
-    }
-    return {};
-}
-
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
     return raw === 'claude' || raw === 'codex' ? raw : null;
@@ -145,7 +123,7 @@ export async function POST(
         const body = await req.json();
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
-            mcpServers, requiredEnvVars, isRole, repoUrl, accountId, defaultBackend } = body;
+            mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId, defaultBackend } = body;
 
         if (!name || !content) {
             return NextResponse.json(
@@ -198,6 +176,7 @@ export async function POST(
                     ...(color !== undefined ? { color } : {}),
                     ...(mcpServers !== undefined ? { mcpServers } : {}),
                     ...(requiredEnvVars !== undefined ? { requiredEnvVars } : {}),
+                    ...(connectorRefs !== undefined ? { connectorRefs } : {}),
                     ...(isRole !== undefined ? { isRole } : {}),
                     ...(repoUrl !== undefined ? { repoUrl } : {}),
                     ...(accountId !== undefined ? { accountId } : {}),
@@ -211,8 +190,10 @@ export async function POST(
                 const bundle = await packageRoleConfig(id, {
                     slug: updated.slug,
                     claudeMd: updated.content,
-                    mcpConfig: normalizeMcpToConfig(updated.mcpServers),
-                    envMapping: (updated.requiredEnvVars as Record<string, string>) || {},
+                    // MCP is injected solely at claim time from connectors (spec §3);
+                    // the R2 role bundle carries no MCP server config or env mapping.
+                    mcpConfig: {},
+                    envMapping: {},
                     skillSlugs: body.skillSlugs || [],
                     type: updated.repoUrl ? 'builder' : 'service',
                     repoUrl: updated.repoUrl,
@@ -248,6 +229,7 @@ export async function POST(
                 ...(color ? { color } : {}),
                 ...(mcpServers ? { mcpServers } : {}),
                 ...(requiredEnvVars ? { requiredEnvVars } : {}),
+                ...(connectorRefs ? { connectorRefs } : {}),
                 ...(isRole !== undefined ? { isRole } : {}),
                 ...(repoUrl !== undefined ? { repoUrl } : {}),
                 ...(accountId ? { accountId } : {}),
@@ -259,8 +241,10 @@ export async function POST(
             const bundle = await packageRoleConfig(id, {
                 slug: skill.slug,
                 claudeMd: skill.content,
-                mcpConfig: normalizeMcpToConfig(skill.mcpServers),
-                envMapping: (skill.requiredEnvVars as Record<string, string>) || {},
+                // MCP is injected solely at claim time from connectors (spec §3);
+                // the R2 role bundle carries no MCP server config or env mapping.
+                mcpConfig: {},
+                envMapping: {},
                 skillSlugs: body.skillSlugs || [],
                 type: skill.repoUrl ? 'builder' : 'service',
                 repoUrl: skill.repoUrl,

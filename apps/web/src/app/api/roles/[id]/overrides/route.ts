@@ -115,8 +115,10 @@ export async function POST(
         const bundle = await packageRoleConfig(workspaceId, {
           slug: result.slug,
           claudeMd: result.content,
-          mcpConfig: (result.mcpServers as Record<string, unknown>) || {},
-          envMapping: (result.requiredEnvVars as Record<string, string>) || {},
+          // MCP is injected solely at claim time from connectors (spec §3); the
+          // R2 role bundle carries no MCP server config or env mapping.
+          mcpConfig: {},
+          envMapping: {},
           skillSlugs: [],
           type: result.repoUrl ? 'builder' : 'service',
           repoUrl: result.repoUrl,
@@ -155,6 +157,10 @@ export async function POST(
         color: teamDefault.color,
         mcpServers: teamDefault.mcpServers as Record<string, unknown>,
         requiredEnvVars: teamDefault.requiredEnvVars as Record<string, string>,
+        // Inherit connector opt-ins from the team default (spec §2); otherwise a new
+        // workspace override would start with empty connectorRefs and silently lose
+        // the team role's mounted connectors at claim time.
+        connectorRefs: (teamDefault.connectorRefs as string[] | null) ?? [],
         repoUrl: teamDefault.repoUrl,
         defaultBackend: teamDefault.defaultBackend,
         // Apply override fields on top
@@ -167,8 +173,10 @@ export async function POST(
       const bundle = await packageRoleConfig(workspaceId, {
         slug: result.slug,
         claudeMd: result.content,
-        mcpConfig: (result.mcpServers as Record<string, unknown>) || {},
-        envMapping: (result.requiredEnvVars as Record<string, string>) || {},
+        // MCP is injected solely at claim time from connectors (spec §3); the
+        // R2 role bundle carries no MCP server config or env mapping.
+        mcpConfig: {},
+        envMapping: {},
         skillSlugs: [],
         type: result.repoUrl ? 'builder' : 'service',
         repoUrl: result.repoUrl,

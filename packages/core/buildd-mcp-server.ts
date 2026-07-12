@@ -132,7 +132,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
       // ── buildd tool ──────────────────────────────────────────────────
       tool(
         'buildd',
-        `Task coordination tool. Available actions: ${filteredActions.join(', ')}. Use action parameter to select operation, params for action-specific arguments.`,
+        `Task coordination tool. Available actions: ${filteredActions.join(', ')}. Use action parameter to select operation, params for action-specific arguments. complete_task also accepts supersedes: string[] — knowledge source_ids this outcome replaces (e.g. "task:<taskId>", "pr:<number>"); superseded chunks drop out of default knowledge retrieval.`,
         {
           action: z.enum(filteredActions as [string, ...string[]]),
           params: z.record(z.string(), z.unknown()).optional(),
@@ -160,7 +160,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
       // ── buildd_memory tool ────────────────────────────────────────────
       tool(
         'buildd_memory',
-        `Search, save, and manage shared team memories (code patterns, gotchas, decisions). Actions: ${filteredMemoryActions.join(', ')}`,
+        `Search, save, and manage shared team memories (code patterns, gotchas, decisions). Actions: ${filteredMemoryActions.join(', ')}. save/update also accept supersedes: string[] — memory IDs the new entry replaces; superseded entries drop out of default knowledge retrieval.`,
         {
           action: z.enum(filteredMemoryActions as [string, ...string[]]),
           params: z.record(z.string(), z.unknown()).optional(),

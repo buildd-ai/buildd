@@ -484,6 +484,45 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     expect(capturedUpdates.contentHash).not.toBe('old-hash');
   });
 
+  it('persists connectorRefs on PATCH (spec §2)', async () => {
+    const existingSkill = {
+      id: 'skill-1',
+      workspaceId: 'ws-1',
+      name: 'Builder',
+      slug: 'builder',
+      content: '# Builder',
+      isRole: true,
+      connectorRefs: [],
+      enabled: true,
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+
+    let capturedUpdates: any = null;
+    const mockReturning = mock(() => [{ ...existingSkill, connectorRefs: ['conn-1', 'conn-2'] }]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((updates: any) => {
+      capturedUpdates = updates;
+      return { where: mockWhere };
+    });
+    mockSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { connectorRefs: ['conn-1', 'conn-2'] },
+    });
+    const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-1' });
+    const response = await PATCH(request, { params });
+
+    expect(response.status).toBe(200);
+    expect(capturedUpdates.connectorRefs).toEqual(['conn-1', 'conn-2']);
+    const data = await response.json();
+    expect(data.skill.connectorRefs).toEqual(['conn-1', 'conn-2']);
+  });
+
   it('returns 404 when skill not found', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
