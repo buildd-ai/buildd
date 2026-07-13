@@ -9,6 +9,7 @@ import { TeamTransferSection } from './TeamTransferSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
 import WorkTrackerSection from './WorkTrackerSection';
+import KnowledgeHealthSection from './KnowledgeHealthSection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
@@ -101,6 +102,8 @@ export default async function WorkspaceConfigPage({
                     workspaceId={workspace.id}
                     initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}
                 />
+
+                <KnowledgeHealthSection workspaceId={workspace.id} />
             </div>
         </main>
     );
