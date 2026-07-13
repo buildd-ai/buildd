@@ -1247,9 +1247,39 @@ export async function POST(req: NextRequest) {
         if (decryptedOauthToken) {
           (cw as any).serverOauthToken = decryptedOauthToken;
         }
-        // NOTE: mcp_credential secrets are no longer injected as a flat `mcpSecrets`
-        // env map here. MCP servers now flow exclusively through connectors (below);
-        // stdio-connector env vars are resolved from mcp_credential secrets there.
+        // Inject mcp_credential secrets as mcpSecrets env vars so ${VAR} references
+        // in .mcp.json headers resolve at worker startup. This covers HTTP MCP
+        // servers that require multiple auth headers (e.g. Cue needs x-api-key AND
+        // x-tenant-id) which the connectors system cannot carry with its single
+        // headerName column. Stdio-connector env vars still resolve via envMapping in
+        // the connectors block below; this injection is additive, not a replacement.
+        const mcpCredentialRows = await db.query.secrets.findMany({
+          where: and(
+            eq(secrets.teamId, workspaceTeamId),
+            eq(secrets.purpose, 'mcp_credential'),
+            or(
+              isNull(secrets.workspaceId),
+              eq(secrets.workspaceId, task.workspaceId),
+            ),
+          ),
+          columns: { id: true, label: true },
+        });
+        if (mcpCredentialRows.length > 0) {
+          const resolved = await Promise.all(
+            mcpCredentialRows.map(async (s) => {
+              if (!s.label) return null;
+              const val = await provider.get(s.id).catch(() => null);
+              return val ? [s.label, val] as [string, string] : null;
+            }),
+          );
+          const mcpSecrets = Object.fromEntries(
+            resolved.filter((e): e is [string, string] => e !== null),
+          );
+          if (Object.keys(mcpSecrets).length > 0) {
+            (cw as any).mcpSecrets = mcpSecrets;
+            console.log(`[claim] task=${task.id} injected ${Object.keys(mcpSecrets).length} mcp_credential env var(s): ${Object.keys(mcpSecrets).join(', ')}`);
+          }
+        }
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials
