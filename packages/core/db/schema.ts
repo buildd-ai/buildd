@@ -600,7 +600,7 @@ export const tasks = pgTable('tasks', {
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task category for visual grouping
-  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),

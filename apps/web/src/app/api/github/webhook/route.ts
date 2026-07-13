@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -14,6 +14,9 @@ import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
+import { resolvePolicy } from '@/lib/merge-policy';
+import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -395,7 +398,7 @@ async function handlePullRequestEvent(event: {
   ) {
     const openWorker = await db.query.workers.findFirst({
       where: eq(workers.prNumber, pr.number),
-      columns: { id: true, workspaceId: true, taskId: true },
+      columns: { id: true, workspaceId: true, taskId: true, branch: true },
     });
     if (openWorker) {
       await db
@@ -405,6 +408,21 @@ async function handlePullRequestEvent(event: {
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
+    }
+
+    // On PR open (not synchronize/reopen), check merge policy and possibly dispatch reviewer
+    if (!pr.draft && event.installation && action === 'opened' && openWorker?.taskId) {
+      const dispatched = await maybeDispatchReviewer(
+        event.installation.id,
+        repository.full_name,
+        pr,
+        openWorker as typeof openWorker & { taskId: string },
+      );
+      if (dispatched) {
+        // Work-tracker update still fires; skip no-CI auto-merge path
+        maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
+        return;
+      }
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -826,6 +844,132 @@ async function fetchCIFailureLogs(
   }
 }
 
+/**
+ * BT-5 / BT-10: Check merge policy for an opened PR and dispatch a reviewer task
+ * if the workspace is configured for agent-review.
+ *
+ * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
+ * and the caller should skip the normal no-CI auto-merge path.
+ */
+async function maybeDispatchReviewer(
+  installationId: number,
+  repoFullName: string,
+  pr: { number: number; head: { sha: string }; html_url: string },
+  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
+): Promise<boolean> {
+  try {
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, openWorker.workspaceId),
+    });
+    if (!workspace) return false;
+
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, openWorker.taskId),
+      columns: { id: true, title: true, description: true, missionId: true, pathManifest: true, context: true },
+    });
+    if (!task) return false;
+
+    // Load mission separately to resolve merge policy
+    let mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null } | null = null;
+    if (task.missionId) {
+      const row = await db.query.missions.findFirst({
+        where: eq(missions.id, task.missionId),
+        columns: { mergePolicy: true },
+      });
+      if (row) mission = row as { mergePolicy?: import('@buildd/shared').MergePolicy | null };
+    }
+    const policy = resolvePolicy(workspace, mission);
+
+    if (policy.tier !== 'agent-review') return false;
+
+    // Fetch PR files for pre-flight check
+    let prFiles: Array<{ filename: string }> = [];
+    try {
+      const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
+      if (Array.isArray(raw)) prFiles = raw;
+    } catch (err) {
+      console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
+    }
+
+    // BT-10: Pre-flight escalation guard
+    const preflight = preflightEscalationCheck(prFiles, policy);
+    if (preflight.shouldEscalate) {
+      console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${preflight.reason}`);
+      if (task.missionId) {
+        await db.insert(missionNotes).values({
+          missionId: task.missionId,
+          taskId: task.id,
+          authorType: 'system',
+          type: 'reviewer_escalated',
+          title: `PR #${pr.number} escalated to human (pre-flight)`,
+          body: preflight.reason,
+          status: 'open',
+        });
+        await notifyMissionPrReady(task.missionId, {
+          title: `PR #${pr.number} requires human review`,
+          prUrl: pr.html_url,
+          prNumber: pr.number,
+          headSha: pr.head.sha,
+          reason: 'auto_merge_blocked',
+          message: `${task.title} — ${preflight.reason}`,
+        });
+      }
+      notify({
+        app: 'alerts',
+        title: `PR #${pr.number} escalated`,
+        message: preflight.reason,
+        url: pr.html_url,
+        urlTitle: 'View PR',
+      });
+      return true; // handled — skip auto-merge
+    }
+
+    // iteration/maxIterations are stored in task.context JSONB (not columns)
+    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
+    const originalTask = {
+      title: task.title,
+      description: task.description,
+      missionId: task.missionId ?? null,
+      pathManifest: task.pathManifest as string[] | null ?? null,
+      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
+      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
+    };
+
+    // Create reviewer task
+    const reviewerTask = await createReviewerTask({
+      workspaceId: openWorker.workspaceId,
+      originalTaskId: task.id,
+      originalTask,
+      worker: { branch: openWorker.branch },
+      prNumber: pr.number,
+      prUrl: pr.html_url,
+      headSha: pr.head.sha,
+      reviewerRole: policy.agentReview!.reviewerRole,
+      installationId,
+      repoFullName,
+    });
+
+    if (reviewerTask) {
+      // dispatchNewTask needs more than just the id — pass the reviewer task details
+      // we know from the params rather than re-querying the DB.
+      const reviewerTaskFull = {
+        id: reviewerTask.id,
+        title: `[reviewer] PR #${pr.number}: ${task.title}`,
+        description: null as null,
+        workspaceId: openWorker.workspaceId,
+        missionId: task.missionId ?? null,
+      };
+      await dispatchNewTask(reviewerTaskFull, workspace);
+      console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
+    }
+
+    return true; // handled — skip auto-merge
+  } catch (err) {
+    console.error(`[reviewer] maybeDispatchReviewer failed for PR #${pr.number}:`, err);
+    return false;
+  }
+}
+
 // For a newly-opened worker PR on a repo with no CI, attempt auto-merge now.
 // Repos that DO have CI are skipped here and handled by the check_suite path
 // once checks go green.
@@ -874,123 +1018,8 @@ async function maybeAutoMergeNoCiPr(
   }
 }
 
-// Shared auto-merge step: enforce safety rails (deny paths + line budget), then
-// squash-merge. On a rail violation, notify the mission instead of merging.
-// Used by both the check_suite (CI-green) path and the no-CI open-PR path.
-async function tryAutoMergeWorkerPr(params: {
-  installationId: number;
-  repoFullName: string;
-  prNumber: number;
-  headSha: string;
-  worker: { id: string; taskId: string | null };
-  gitConfig: WorkspaceGitConfig | null | undefined;
-}): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
-
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, gitConfig);
-  if (!safetyCheck.ok) {
-    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
-    if (worker.taskId) {
-      const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
-        columns: { missionId: true, title: true },
-      });
-      if (task?.missionId) {
-        await notifyMissionPrReady(task.missionId, {
-          title: 'Auto-merge blocked — review needed',
-          prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
-          prNumber,
-          headSha,
-          reason: 'auto_merge_blocked',
-          message: `${task.title} — ${safetyCheck.reason}`,
-        });
-      }
-    }
-    return;
-  }
-
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
-  if (result.merged) {
-    console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
-  } else {
-    console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
-  }
-}
-
-const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
-
-async function evaluateAutoMergeSafety(
-  installationId: number,
-  repoFullName: string,
-  prNumber: number,
-  headSha: string,
-  gitConfig: { autoMergeDenyPaths?: string[]; autoMergeMaxLines?: number } | null | undefined,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  // CI completeness check — verify no check runs are still pending or failing.
-  try {
-    const checkRunsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-runs`,
-    );
-    const checkRuns: Array<{ name: string; status: string; conclusion: string | null }> =
-      checkRunsData?.check_runs ?? [];
-
-    const pendingOrFailed = checkRuns.filter(
-      (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
-    );
-    if (pendingOrFailed.length > 0) {
-      return {
-        ok: false,
-        reason: `CI checks still pending or failed: ${pendingOrFailed.map((r) => r.name).join(', ')}`,
-      };
-    }
-
-    // Warn if expected named checks are absent — likely means no test suite is configured.
-    const runNames = checkRuns.map((r) => r.name.toLowerCase());
-    const missingChecks = ['typecheck', 'build', 'test'].filter(
-      (c) => !runNames.some((n) => n.includes(c)),
-    );
-    if (missingChecks.length > 0) {
-      console.warn(
-        `${repoFullName}#${prNumber}: expected CI checks not found (${missingChecks.join(', ')}) — no test suite configured?`,
-      );
-    }
-  } catch (err) {
-    console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
-  }
-
-  const denyPaths = gitConfig?.autoMergeDenyPaths ?? [];
-  const maxLines = gitConfig?.autoMergeMaxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
-
-  let files: Array<{ filename: string; additions: number; deletions: number }> = [];
-  try {
-    files = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
-  } catch (err) {
-    return { ok: false, reason: `could not fetch PR files: ${err instanceof Error ? err.message : 'unknown'}` };
-  }
-  if (!Array.isArray(files)) {
-    return { ok: false, reason: 'malformed PR files response' };
-  }
-
-  if (denyPaths.length > 0) {
-    const hit = files.find((f) => denyPaths.some((p) => f.filename.startsWith(p)));
-    if (hit) {
-      return { ok: false, reason: `touches protected path (${hit.filename})` };
-    }
-  }
-
-  const NOISE_PATTERNS = [/^packages\/core\/drizzle\/meta\//, /\.lock$/, /^bun\.lockb$/];
-  const sourceFiles = files.filter((f) => !NOISE_PATTERNS.some((p) => p.test(f.filename)));
-  const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-  if (totalLines > maxLines) {
-    return {
-      ok: false,
-      reason: `diff size ${totalLines} source lines > limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
-    };
-  }
-
-  return { ok: true };
-}
+// tryAutoMergeWorkerPr and evaluateAutoMergeSafety are now in @/lib/auto-merge
+// (shared with the reviewer outcome handler in apps/web/src/app/api/workers/[id]/route.ts)
 
 /**
  * When CI goes green on a PR that a release task is tracking, merge the release
