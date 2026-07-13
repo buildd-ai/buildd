@@ -6,12 +6,23 @@
  */
 
 import { db } from '@buildd/core/db';
-import { secrets, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { secrets, workspaces, missionNotes, githubInstallations, type WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { githubApi } from '@/lib/github';
 
 const LINEAR_API = 'https://api.linear.app/graphql';
+
+/** Parse a GitHub issue URL into its parts. Returns null if it isn't one. */
+export function parseGitHubIssueUrl(
+  url: string | null | undefined,
+): { owner: string; repo: string; number: number } | null {
+  if (!url) return null;
+  const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2], number: Number(m[3]) };
+}
 
 async function getConnectorAccessToken(connectorId: string, teamId: string): Promise<string | null> {
   const secretRow = await db.query.secrets.findFirst({
@@ -118,6 +129,88 @@ export async function postLinearCompletionComment(opts: {
         }
       }
     `, { issueId: externalIssueId, stateId: stateNodes[0].id });
+  }
+}
+
+/**
+ * Post a completion comment on a GitHub issue and (on merge) close it, using the
+ * workspace's existing GitHub App installation — no connector. The issue is
+ * identified by the task's `externalIssueUrl`; if it isn't a GitHub issue URL, or
+ * the workspace has no installation, this is a no-op.
+ */
+export async function postGitHubCompletionUpdate(opts: {
+  workspaceId: string;
+  externalIssueUrl: string | null;
+  prUrl: string | null;
+  merged: boolean;
+}): Promise<void> {
+  const { workspaceId, externalIssueUrl, prUrl, merged } = opts;
+
+  const issue = parseGitHubIssueUrl(externalIssueUrl);
+  if (!issue) {
+    console.log('[work-tracker] externalIssueUrl is not a GitHub issue URL, skipping');
+    return;
+  }
+
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { githubInstallationId: true },
+  });
+  if (!ws?.githubInstallationId) {
+    console.log(`[work-tracker] Workspace ${workspaceId} has no GitHub installation, skipping`);
+    return;
+  }
+
+  const installation = await db.query.githubInstallations.findFirst({
+    where: eq(githubInstallations.id, ws.githubInstallationId),
+    columns: { installationId: true },
+  });
+  if (!installation) return;
+  const installId = installation.installationId;
+
+  const prLine = prUrl ? `\n\nPR: ${prUrl}` : '';
+  const base = `/repos/${issue.owner}/${issue.repo}/issues/${issue.number}`;
+
+  try {
+    await githubApi(installId, `${base}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body: `Task ${merged ? 'completed' : 'in review'}.${prLine}` }),
+    });
+    if (merged) {
+      await githubApi(installId, base, {
+        method: 'PATCH',
+        body: JSON.stringify({ state: 'closed', state_reason: 'completed' }),
+      });
+    }
+  } catch (err) {
+    console.error('[work-tracker] GitHub issue update failed:', err);
+  }
+}
+
+/**
+ * Provider-dispatched completion update (spec §2). Routes to the configured work
+ * tracker: Linear via its connector, GitHub via the App installation. Best-effort
+ * — never throws into the caller (the GitHub webhook).
+ */
+export async function postWorkTrackerCompletionUpdate(opts: {
+  workspaceId: string;
+  teamId: string;
+  config: WorkspaceWorkTrackerConfig;
+  externalIssueId: string | null;
+  externalIssueUrl: string | null;
+  prUrl: string | null;
+  merged: boolean;
+}): Promise<void> {
+  const { workspaceId, teamId, config, externalIssueId, externalIssueUrl, prUrl, merged } = opts;
+  try {
+    if (config.provider === 'linear') {
+      if (!externalIssueId || !config.connectorId) return;
+      await postLinearCompletionComment({ externalIssueId, connectorId: config.connectorId, teamId, prUrl, merged });
+    } else if (config.provider === 'github') {
+      await postGitHubCompletionUpdate({ workspaceId, externalIssueUrl, prUrl, merged });
+    }
+  } catch (err) {
+    console.error('[work-tracker] completion update failed:', err);
   }
 }
 

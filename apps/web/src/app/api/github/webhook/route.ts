@@ -12,7 +12,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { postLinearCompletionComment } from '@/lib/work-tracker';
+import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 
 export async function POST(req: NextRequest) {
@@ -1147,25 +1147,23 @@ async function maybePostWorkTrackerIssueUpdate(
     where: eq(workers.prNumber, prNumber),
     with: { task: true },
   });
-  if (!worker?.task?.externalIssueId) return;
+  const task = worker?.task;
+  // A tracker link is either the id (Linear) or the issue URL (GitHub).
+  if (!task || (!task.externalIssueId && !task.externalIssueUrl)) return;
 
-  const task = worker.task;
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, task.workspaceId),
     columns: { workTrackerConfig: true, teamId: true },
   });
   if (!ws?.workTrackerConfig) return;
 
-  const { connectorId, provider } = ws.workTrackerConfig;
-  if (provider !== 'linear') {
-    // Only Linear is supported in this phase
-    return;
-  }
-
-  await postLinearCompletionComment({
-    externalIssueId: task.externalIssueId!,
-    connectorId,
+  // Provider-dispatched (Linear via connector, GitHub via the App installation).
+  await postWorkTrackerCompletionUpdate({
+    workspaceId: task.workspaceId,
     teamId: ws.teamId,
+    config: ws.workTrackerConfig,
+    externalIssueId: task.externalIssueId,
+    externalIssueUrl: task.externalIssueUrl,
     prUrl,
     merged,
   });
