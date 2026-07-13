@@ -600,6 +600,22 @@ export class WorkerManager {
     } catch (err) {
       console.warn('[Cleanup] Failed to run server cleanup:', err instanceof Error ? err.message : err);
     }
+
+    // Sweep stale worktrees. Each worktree now carries a full node_modules (see
+    // setupWorktree / installWorkspaceDeps), so worktrees leaked by crashed or
+    // aborted runs are no longer cheap — reclaim them on the cleanup cadence
+    // instead of only when `--doctor` is invoked manually. The sweep has its own
+    // safety gates (idle > 1h, not owned by a live worker, branch pushed or
+    // orphaned), so it never touches an active worktree.
+    try {
+      const { fixStaleWorktrees } = await import('./doctor');
+      const result = fixStaleWorktrees();
+      if (result.message && !result.message.startsWith('No stale')) {
+        console.log(`[Cleanup] Worktree sweep: ${result.message}`);
+      }
+    } catch (err) {
+      console.warn('[Cleanup] Worktree sweep failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   /** Remove completed/errored workers from memory and disk. Returns count purged. */
