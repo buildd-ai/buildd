@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, tasks, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql } from 'drizzle-orm';
+import { watchedProjects, watcherEvents, workspaces, tasks, workers, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc, sql, lt } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -57,6 +57,15 @@ export interface UsageStats {
   byRole: { slug: string; name: string; color: string; completed: number; failed: number; total: number }[];
 }
 
+export interface RecentFailure {
+  workerId: string;
+  taskId: string | null;
+  taskTitle: string;
+  workspaceName: string;
+  error: string | null;
+  completedAt: string;
+}
+
 export default async function HealthPage({
   searchParams,
 }: {
@@ -101,8 +110,10 @@ export default async function HealthPage({
     ? [wsFilter]
     : teamWorkspaceIds;
 
-  // Parallel fetches: watched projects, runners, usage, schedules
-  const [rows, runners, usageStats, scheduleRows] = await Promise.all([
+  const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
+
+  // Parallel fetches: watched projects, runners, usage, schedules, recent failures
+  const [rows, runners, usageStats, scheduleRows, recentFailureRows] = await Promise.all([
     // Watched projects
     db
       .select()
@@ -201,6 +212,40 @@ export default async function HealthPage({
         isHeartbeat: !!(s.taskTemplate?.context?.heartbeat),
       }));
     })().catch(() => [] as any[]),
+
+    // Recent worker failures across scoped workspaces (past 24h)
+    (async (): Promise<RecentFailure[]> => {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const failedWorkers = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.workspaceId, scopedWsIds),
+          eq(workers.status, 'failed'),
+          sql`${workers.completedAt} >= ${cutoff}`,
+        ),
+        columns: { id: true, taskId: true, workspaceId: true, error: true, completedAt: true },
+        orderBy: [desc(workers.completedAt)],
+        limit: 20,
+      });
+      if (failedWorkers.length === 0) return [];
+
+      const taskIds = (failedWorkers as any[]).flatMap((w: any) => w.taskId ? [w.taskId as string] : []);
+      const taskTitles = taskIds.length
+        ? await db.query.tasks.findMany({
+            where: inArray(tasks.id, taskIds),
+            columns: { id: true, title: true },
+          })
+        : [];
+      const titleById = new Map((taskTitles as any[]).map((t: any) => [t.id as string, t.title as string]));
+
+      return (failedWorkers as any[]).map((w: any) => ({
+        workerId: w.id,
+        taskId: w.taskId ?? null,
+        taskTitle: (w.taskId && titleById.get(w.taskId)) ? titleById.get(w.taskId)! : 'Untitled task',
+        workspaceName: wsById.get(w.workspaceId) ?? '(unknown)',
+        error: w.error ?? null,
+        completedAt: w.completedAt ? w.completedAt.toISOString() : new Date().toISOString(),
+      }));
+    })().catch(() => [] as RecentFailure[]),
   ]);
 
   // Attach recent events to watched project rows
@@ -222,8 +267,6 @@ export default async function HealthPage({
       eventsByProject.set(e.projectId, list);
     }
   }
-
-  const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
   const serialized: WatchedProjectRow[] = (rows as any[]).map((r: any) => ({
     id: r.id,
@@ -276,6 +319,7 @@ export default async function HealthPage({
       runners={runners}
       usageStats={usageStats}
       schedules={serializedSchedules}
+      recentFailures={recentFailureRows ?? []}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
     />
