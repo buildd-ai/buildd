@@ -1,5 +1,13 @@
-import { PgVectorStore, getVoyageEmbedder, getVoyageReranker, buildNamespace } from '@buildd/core/knowledge-store';
-import type { QueryResult } from '@buildd/core/knowledge-store';
+import {
+  PgVectorStore,
+  getVoyageEmbedder,
+  getVoyageReranker,
+  buildNamespace,
+  extractFilePaths,
+  fetchEntityCatalog,
+  renderEntityCatalog,
+} from '@buildd/core/knowledge-store';
+import type { QueryResult, CatalogEntity } from '@buildd/core/knowledge-store';
 
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
@@ -52,5 +60,39 @@ export async function buildKnowledgeContext(
     return ['\n## Related prior work (retrieved from knowledge base)', ...parts];
   } catch {
     return []; // non-fatal: knowledge retrieval must never block planning
+  }
+}
+
+/** Catalog lookup shape used by buildEntityCatalogContext (injectable for tests). */
+export type EntityCatalogFetcher = (
+  workspaceId: string,
+  paths: string[],
+) => Promise<CatalogEntity[]>;
+
+/**
+ * Build the "known entities" catalog block for a task (§8.4 entity catalog
+ * pre-seeding): file paths mentioned in the task text → their file/symbol
+ * entities, plus the workspace's most-connected concept-level entities. Agents
+ * then reference real canonical names instead of inventing loose refs.
+ *
+ * Best-effort — returns '' on any failure or when the workspace has no
+ * entities, so claiming/planning never breaks.
+ */
+export async function buildEntityCatalogContext(
+  taskText: string,
+  workspaceId: string | null | undefined,
+  fetcher?: EntityCatalogFetcher,
+): Promise<string> {
+  if (!workspaceId) return '';
+  try {
+    const paths = extractFilePaths(taskText ?? '');
+    const fetch: EntityCatalogFetcher = fetcher ?? (async (wsId, p) => {
+      const { db } = await import('@buildd/core/db');
+      return fetchEntityCatalog(db, { workspaceId: wsId, paths: p });
+    });
+    const entities = await fetch(workspaceId, paths);
+    return renderEntityCatalog(entities);
+  } catch {
+    return ''; // non-fatal: the catalog is a hint, never a blocker
   }
 }

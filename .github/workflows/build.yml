@@ -92,7 +92,7 @@ jobs:
   # Pre-promote schema drift check — runs only on release PRs (dev→main).
   # Compares the production DB's actual column structure against the Drizzle
   # migration snapshot. Blocks merging if manual DDL has drifted the DB.
-  # Requires DATABASE_URL_PROD (read-only introspection of information_schema).
+  # Requires DATABASE_URL (read-only introspection of information_schema).
   schema-drift:
     name: Schema Drift / check-prod
     runs-on: ubuntu-latest
@@ -113,7 +113,7 @@ jobs:
         id: drift_check
         run: bun run scripts/check-schema-drift.ts
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Notify on schema drift
         if: failure() && steps.drift_check.outcome == 'failure'

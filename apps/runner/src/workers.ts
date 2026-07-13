@@ -21,6 +21,7 @@ import {
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
+import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
@@ -327,6 +328,8 @@ export class WorkerManager {
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
+  // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
+  private knowledgeIngestPoller: KnowledgeIngestPoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -429,6 +432,14 @@ export class WorkerManager {
       } catch { /* non-fatal */ }
     }, 30 * 60_000);
 
+    // Runner-executed full knowledge-ingest jobs (KM v2 spec §3.3, A2).
+    // Opt-out via KNOWLEDGE_INGEST_JOBS=0; polls only on idle heartbeat ticks.
+    this.knowledgeIngestPoller = createKnowledgeIngestPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      scanRepos: () => this.resolver.scanGitRepos(),
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -452,6 +463,11 @@ export class WorkerManager {
         ).length;
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
+        }
+        // Idle runners pick up full knowledge-ingest jobs (fire-and-forget;
+        // the poller serializes itself and never throws).
+        if (active === 0) {
+          this.knowledgeIngestPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
     }

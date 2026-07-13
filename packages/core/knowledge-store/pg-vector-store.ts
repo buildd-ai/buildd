@@ -25,6 +25,65 @@ function vectorToString(v: number[]): string {
   return `[${v.join(',')}]`;
 }
 
+// ── NUL-byte sanitization ────────────────────────────────────────────────────
+//
+// Postgres text columns reject literal NUL (0x00) bytes with
+// `invalid byte sequence for encoding "UTF8"`. A file misclassified as text
+// (or any other artifact upstream in the ingest pipeline — file walker,
+// chunker, decoding) can smuggle a stray NUL byte into content that otherwise
+// looks like ordinary text. We can't guarantee every upstream producer is
+// clean, so strip defensively right before insert instead.
+
+const NUL_BYTE = String.fromCharCode(0);
+
+/** Remove literal NUL bytes from a string. Returns the same reference when none are present. */
+export function stripNulBytes(value: string): string {
+  return value.indexOf(NUL_BYTE) === -1 ? value : value.split(NUL_BYTE).join('');
+}
+
+interface SanitizedChunkText {
+  sourceId: string;
+  sourceType: string;
+  sourcePath: string | null;
+  sourceUrl: string | null;
+  content: string;
+  lexicalText: string;
+}
+
+/**
+ * Sanitize every text field of a chunk that gets written to `knowledge_chunks`.
+ * Strips NUL bytes and logs a warning (without throwing) when any were found,
+ * so a single bad byte doesn't crash the whole ingest batch but is still
+ * visible in ingest output.
+ */
+export function sanitizeChunkForInsert(chunk: UpsertChunk, lexicalText: string): SanitizedChunkText {
+  const sanitized: SanitizedChunkText = {
+    sourceId: stripNulBytes(chunk.id),
+    sourceType: stripNulBytes(chunk.sourceType),
+    sourcePath: chunk.sourcePath != null ? stripNulBytes(chunk.sourcePath) : null,
+    sourceUrl: chunk.sourceUrl != null ? stripNulBytes(chunk.sourceUrl) : null,
+    content: stripNulBytes(chunk.content),
+    lexicalText: stripNulBytes(lexicalText),
+  };
+
+  const changed =
+    sanitized.sourceId !== chunk.id ||
+    sanitized.sourceType !== chunk.sourceType ||
+    sanitized.sourcePath !== (chunk.sourcePath ?? null) ||
+    sanitized.sourceUrl !== (chunk.sourceUrl ?? null) ||
+    sanitized.content !== chunk.content ||
+    sanitized.lexicalText !== lexicalText;
+
+  if (changed) {
+    console.warn(
+      `[knowledge-store] stripped NUL byte(s) from chunk "${chunk.id}" ` +
+        `(source: ${chunk.sourcePath ?? 'unknown'}) before insert`,
+    );
+  }
+
+  return sanitized;
+}
+
 /**
  * Reciprocal Rank Fusion — fuse vector ANN and lexical BM25 result lists.
  * k=60 is the standard constant from the original RRF paper.
@@ -119,8 +178,11 @@ export class PgVectorStore implements KnowledgeStore {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedding = embeddings[i];
-      const contentHash = sha256(chunk.content);
-      const lexicalText = chunk.lexicalText ?? chunk.content;
+      const rawLexicalText = chunk.lexicalText ?? chunk.content;
+      // Defensively strip any stray NUL bytes before they hit the INSERT —
+      // Postgres text columns reject 0x00 outright (see stripNulBytes above).
+      const clean = sanitizeChunkForInsert(chunk, rawLexicalText);
+      const contentHash = sha256(clean.content);
       const sourceTs = chunk.sourceTs ?? null;
 
       // Write source_ts into metadata so recency scoring can read it on query
@@ -136,9 +198,9 @@ export class PgVectorStore implements KnowledgeStore {
              content, lexical_text, embedding, embedding_model, metadata, content_hash,
              source_ts, updated_at)
           VALUES
-            (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
-             ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
-             ${chunk.content}, ${lexicalText},
+            (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
+             ${clean.sourcePath}, ${clean.sourceUrl},
+             ${clean.content}, ${clean.lexicalText},
              ${vectorToString(embedding)}::vector,
              ${activeEmbedder!.model},
              ${JSON.stringify(metadataWithTs)}::jsonb,
@@ -163,9 +225,9 @@ export class PgVectorStore implements KnowledgeStore {
             (source_id, namespace, corpus, source_type, source_path, source_url,
              content, lexical_text, metadata, content_hash, source_ts, updated_at)
           VALUES
-            (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
-             ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
-             ${chunk.content}, ${lexicalText},
+            (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
+             ${clean.sourcePath}, ${clean.sourceUrl},
+             ${clean.content}, ${clean.lexicalText},
              ${JSON.stringify(metadataWithTs)}::jsonb,
              ${contentHash},
              ${sourceTs ? sourceTs.toISOString() : null},
@@ -183,8 +245,8 @@ export class PgVectorStore implements KnowledgeStore {
       }
 
       // Phase 1: supersession — mark older same-path chunks as not current
-      if (chunk.sourcePath && sourceTs) {
-        await this._markSuperseded(db, namespace, chunk.id, chunk.sourcePath, sourceTs);
+      if (clean.sourcePath && sourceTs) {
+        await this._markSuperseded(db, namespace, clean.sourceId, clean.sourcePath, sourceTs);
       }
 
       // Wave-1 C1: explicit supersession — the agent asserted this chunk
@@ -192,7 +254,7 @@ export class PgVectorStore implements KnowledgeStore {
       // skipped; ids that don't match any current row are silently ignored).
       const explicitTargets = (chunk.supersedes ?? []).filter(s => s && s !== chunk.id);
       if (explicitTargets.length > 0) {
-        superseded += await this._markSupersededExplicit(db, namespace, chunk.id, explicitTargets);
+        superseded += await this._markSupersededExplicit(db, namespace, clean.sourceId, explicitTargets);
       }
     }
 
@@ -200,7 +262,7 @@ export class PgVectorStore implements KnowledgeStore {
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
-    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false } = params;
+    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false, trackHits = true } = params;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
@@ -310,7 +372,40 @@ export class PgVectorStore implements KnowledgeStore {
     // Sort by final score DESC before passing to reranker
     results.sort((a, b) => b.score - a.score);
 
-    return this._finalize(results, text, limit);
+    const finalResults = await this._finalize(results, text, limit);
+
+    // Phase C (C2): retrieval-hit tracking — fire-and-forget, never awaited,
+    // never fails the query. Skippable for eval/assessment runs.
+    if (trackHits && finalResults.length > 0) {
+      this._recordHits(db, namespace, finalResults.map(r => r.id));
+    }
+
+    return finalResults;
+  }
+
+  /**
+   * Increment hit_count / stamp last_hit_at on the chunks a query returned.
+   * Single UPDATE, deliberately not awaited by the caller — retrieval must
+   * never block or fail on hit bookkeeping (column may also predate the
+   * migration on older databases).
+   */
+  private _recordHits(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    sourceIds: string[],
+  ): void {
+    try {
+      const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
+      Promise.resolve(db.execute(sql`
+        UPDATE knowledge_chunks
+        SET hit_count = hit_count + 1,
+            last_hit_at = NOW()
+        WHERE namespace = ${namespace}
+          AND source_id IN (${inList})
+      `)).catch(() => {});
+    } catch {
+      // Hit tracking is best-effort by contract
+    }
   }
 
   /**

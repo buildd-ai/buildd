@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -172,7 +172,7 @@ export async function PATCH(
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
-      dependsOnMission, gateCondition } = body;
+      dependsOnMission, gateCondition, orchestrationMode } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -180,6 +180,10 @@ export async function PATCH(
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
+    }
+
+    if (orchestrationMode !== undefined && orchestrationMode !== 'auto' && orchestrationMode !== 'manual') {
+      return NextResponse.json({ error: 'orchestrationMode must be "auto" or "manual"' }, { status: 400 });
     }
 
     if (dependsOnMission !== undefined) {
@@ -242,6 +246,9 @@ export async function PATCH(
     }
     if (gateCondition !== undefined) {
       updateData.gateCondition = gateCondition;
+    }
+    if (orchestrationMode !== undefined) {
+      updateData.orchestrationMode = orchestrationMode;
     }
 
     // Handle schedule updates
@@ -354,6 +361,23 @@ export async function PATCH(
       .set(updateData)
       .where(eq(missions.id, id))
       .returning();
+
+    // Emit audit note when orchestrationMode changes
+    if (orchestrationMode !== undefined && orchestrationMode !== existing.orchestrationMode) {
+      const actor = user?.id ? `user ${user.id}` : 'API caller';
+      const modeLabel = orchestrationMode === 'manual' ? 'manual' : 'auto';
+      const modeDesc = orchestrationMode === 'manual'
+        ? 'Orchestrator is now idle — no heartbeat evaluation or task spawning until armed.'
+        : 'Orchestrator is now active — heartbeat evaluation and task spawning resumed.';
+      await db.insert(missionNotes).values({
+        missionId: id,
+        authorType: 'system',
+        type: 'update',
+        title: `Orchestration mode set to ${modeLabel}`,
+        body: `${modeDesc} (by ${actor})`,
+        status: 'open',
+      }).catch(e => console.error('[missions/patch] Failed to emit mode-change note:', e));
+    }
 
     return NextResponse.json(updated);
   } catch (error) {

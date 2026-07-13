@@ -105,7 +105,10 @@ mock.module('drizzle-orm', () => ({
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
-    { raw: (s: string) => ({ raw: s, type: 'sql' }) },
+    {
+      raw: (s: string) => ({ raw: s, type: 'sql' }),
+      join: (parts: any[], sep?: any) => ({ parts, sep, type: 'sql' }),
+    },
   ),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
@@ -2712,5 +2715,139 @@ describe('path-overlap claim guard', () => {
     const data = await res.json();
     // No manifest → guard is a no-op → task is claimed
     expect(data.workers).toHaveLength(1);
+  });
+});
+
+describe('entity catalog injection at claim time', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Fix reconnect in `apps/web/src/lib/api-auth.ts`',
+        backend: 'claude',
+        dependsOn: [],
+        requiredCapabilities: [],
+        context: {},
+        workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      },
+    ]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockReset();
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+    });
+    mockDbSelect.mockReturnValue({
+      from: mock(() => ({
+        where: mock(() => Promise.resolve([{ count: 0 }])),
+      })),
+    });
+  });
+
+  afterEach(() => {
+    // Restore the file-wide default so later suites see the original behavior
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+  });
+
+  it('appends a Known entities block to resolvedContextProviders', async () => {
+    // Route SQL discrimination: entity-catalog queries reference knowledge_entities;
+    // everything else (worker INSERT, chunk retrieval) gets the default worker row.
+    mockDbExecute.mockImplementation(((q: any) => {
+      const text = Array.isArray(q?.strings) ? q.strings.join(' ') : '';
+      if (text.includes('knowledge_entities')) {
+        if (text.includes("kind = 'file'")) {
+          return Promise.resolve({
+            rows: [{ id: 'ent-f1', kind: 'file', key: 'apps/web/src/lib/api-auth.ts', canonical_name: 'api-auth.ts' }],
+          });
+        }
+        if (text.includes('NOT IN')) {
+          // top-connected vocabulary query
+          return Promise.resolve({
+            rows: [{ id: 'ent-c1', kind: 'concept', key: 'auth-model', canonical_name: 'Auth Model' }],
+          });
+        }
+        return Promise.resolve({
+          rows: [{ id: 'ent-s1', kind: 'symbol', key: 'apps/web/src/lib/api-auth.ts#authenticateApiKey', canonical_name: 'authenticateApiKey' }],
+        });
+      }
+      return Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      });
+    }) as any);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+
+    const providers = data.workers[0].resolvedContextProviders as string[];
+    expect(providers).toBeDefined();
+    const block = providers.join('\n');
+    expect(block).toContain('## Known entities');
+    expect(block).toContain('file: apps/web/src/lib/api-auth.ts');
+    expect(block).toContain('symbol: authenticateApiKey (apps/web/src/lib/api-auth.ts#authenticateApiKey)');
+    expect(block).toContain('concept: Auth Model (auth-model)');
+    // Also mirrored into task.context for the runner
+    expect(data.workers[0].task.context.resolvedContextProviders.join('\n')).toContain('## Known entities');
+  });
+
+  it('claims successfully with no catalog block when the entity store errors', async () => {
+    mockDbExecute.mockImplementation(((q: any) => {
+      const text = Array.isArray(q?.strings) ? q.strings.join(' ') : '';
+      if (text.includes('knowledge_entities')) {
+        return Promise.reject(new Error('entity store unavailable'));
+      }
+      return Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      });
+    }) as any);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    // Claim must NEVER fail because of the catalog
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].resolvedContextProviders).toBeUndefined();
   });
 });

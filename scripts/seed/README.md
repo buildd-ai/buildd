@@ -28,6 +28,17 @@ This creates:
 - A worker assigned to the task
 - Worker status set to `waiting_input` with a question prompt and options
 
+#### `knowledge-consolidation`
+Opts a workspace into the weekly knowledge-consolidation agent task (merge
+near-duplicate knowledge, archive decayed zero-hit chunks, emit a report
+artifact — see `docs/design/workspace-knowledge-management.md` §5). Per-workspace
+and opt-in by design; idempotent per workspace. Not tracked by `seed:reset` —
+remove via the dashboard or the `delete_schedule` MCP action.
+
+```bash
+BUILDD_API_KEY=your_key WORKSPACE_ID=<workspace-uuid> bun run seed:knowledge-consolidation
+```
+
 #### `reset`
 Cleans up the most recently seeded data.
 

@@ -539,6 +539,10 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
+  // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
+  // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
+  orchestrationMode: text('orchestration_mode').default('auto').notNull().$type<'auto' | 'manual'>(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
@@ -673,6 +677,9 @@ export const workers = pgTable('workers', {
   // Set by webhook when the worker's PR is merged; used by dependsOn gate to
   // distinguish "task completed before PR merged" from "PR actually landed".
   mergedAt: timestamp('merged_at', { withTimezone: true }),
+  // PR/git lifecycle state — kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -819,7 +826,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -1095,6 +1102,9 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceTs: timestamp('source_ts', { withTimezone: true }),
   isCurrent: boolean('is_current').notNull().default(true),
   supersededBy: text('superseded_by'),
+  // Phase C (C2): retrieval-hit tracking — incremented fire-and-forget on query.
+  hitCount: integer('hit_count').notNull().default(0),
+  lastHitAt: timestamp('last_hit_at', { withTimezone: true }),
 }, (t) => ({
   namespaceIdx: index('knowledge_chunks_namespace_idx').on(t.namespace),
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),

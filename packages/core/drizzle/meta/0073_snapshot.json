@@ -1,6 +1,6 @@
 {
-  "id": "90103d0e-35c4-432e-bdd4-d348a0bb912d",
-  "prevId": "4715e019-3e86-4e24-894a-b3d565560330",
+  "id": "1fc280b3-2d7f-46c5-b05f-b5b33c28d818",
+  "prevId": "b934dfbf-174b-428e-9059-c0e849a1fa91",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -636,108 +636,6 @@
             "namespace",
             "entity_id",
             "role"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.connector_shares": {
-      "name": "connector_shares",
-      "schema": "",
-      "columns": {
-        "connector_id": {
-          "name": "connector_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "shared_with_team_id": {
-          "name": "shared_with_team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "granted_by_account_id": {
-          "name": "granted_by_account_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "connector_shares_shared_with_team_idx": {
-          "name": "connector_shares_shared_with_team_idx",
-          "columns": [
-            {
-              "expression": "shared_with_team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "connector_shares_connector_id_connectors_id_fk": {
-          "name": "connector_shares_connector_id_connectors_id_fk",
-          "tableFrom": "connector_shares",
-          "tableTo": "connectors",
-          "columnsFrom": [
-            "connector_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "connector_shares_shared_with_team_id_teams_id_fk": {
-          "name": "connector_shares_shared_with_team_id_teams_id_fk",
-          "tableFrom": "connector_shares",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "shared_with_team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "connector_shares_granted_by_account_id_accounts_id_fk": {
-          "name": "connector_shares_granted_by_account_id_accounts_id_fk",
-          "tableFrom": "connector_shares",
-          "tableTo": "accounts",
-          "columnsFrom": [
-            "granted_by_account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "connector_shares_connector_id_shared_with_team_id_pk": {
-          "name": "connector_shares_connector_id_shared_with_team_id_pk",
-          "columns": [
-            "connector_id",
-            "shared_with_team_id"
           ]
         }
       },
@@ -2609,6 +2507,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "orchestration_mode": {
+          "name": "orchestration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'auto'"
         },
         "released_at": {
           "name": "released_at",
@@ -5937,6 +5842,12 @@
         "merged_at": {
           "name": "merged_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pr_lifecycle_status": {
+          "name": "pr_lifecycle_status",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
