@@ -37,3 +37,17 @@ export {
   upsertEdge,
   upsertChunkEntity,
 } from './entity-resolver';
+export {
+  getKnowledgeHealth,
+  computeFreshness,
+  ALL_CORPORA,
+  DEFAULT_STALE_AFTER_DAYS,
+} from './health';
+export type {
+  KnowledgeHealth,
+  CorpusStat,
+  LastIngestJob,
+  FreshnessVerdict,
+  FreshnessInput,
+  GetKnowledgeHealthOptions,
+} from './health';
