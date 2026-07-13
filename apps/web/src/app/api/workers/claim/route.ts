@@ -1191,9 +1191,9 @@ export async function POST(req: NextRequest) {
         const mcpSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential' && s.label);
 
         const [decryptedApiKey, decryptedOauthToken, ...decryptedMcpValues] = await Promise.all([
-          apiKeySecret ? provider.get(apiKeySecret.id) : null,
-          oauthSecret ? provider.get(oauthSecret.id) : null,
-          ...mcpSecrets.map(s => provider.get(s.id)),
+          apiKeySecret ? provider.get(apiKeySecret.id).catch((e: Error) => { console.warn(`[claim] Failed to decrypt apiKey secret ${apiKeySecret.id}:`, e.message); return null; }) : null,
+          oauthSecret ? provider.get(oauthSecret.id).catch((e: Error) => { console.warn(`[claim] Failed to decrypt oauthToken secret ${oauthSecret.id}:`, e.message); return null; }) : null,
+          ...mcpSecrets.map(s => provider.get(s.id).catch((e: Error) => { console.warn(`[claim] Failed to decrypt mcpSecret ${s.id} (${s.label}):`, e.message); return null; })),
         ]);
 
         // TEMP diagnostic (value-free) — pin why serverOauthToken is empty in prod
