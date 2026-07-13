@@ -122,3 +122,67 @@ describe('extractEntities', () => {
     expect(headings.length).toBe(0);
   });
 });
+
+// ── symbol entities (ast-grep symbol layer) ──────────────────────────────────
+
+describe('extractEntities — symbols', () => {
+  const SYMBOLS = [
+    { name: 'foo', kind: 'function', startLine: 5, endLine: 7, exported: true },
+    { name: 'Widget', kind: 'class', startLine: 15, endLine: 19, exported: true },
+  ];
+
+  it('emits symbol entities keyed {sourcePath}#{name} with role=defines', () => {
+    const entities = extractEntities({
+      content: 'export function foo() {}',
+      sourcePath: 'src/lib/auth.ts',
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+    });
+    const symbols = entities.filter(e => e.kind === 'symbol');
+    expect(symbols).toHaveLength(2);
+    const foo = symbols.find(s => s.canonicalName === 'foo')!;
+    expect(foo.key).toBe('src/lib/auth.ts#foo');
+    expect(foo.role).toBe('defines');
+    expect(foo.attributes?.symbolKind).toBe('function');
+    expect(foo.attributes?.exported).toBe(true);
+    const widget = symbols.find(s => s.canonicalName === 'Widget')!;
+    expect(widget.key).toBe('src/lib/auth.ts#Widget');
+  });
+
+  it('filters symbols to the chunk line range when metadata has startLine/endLine', () => {
+    const entities = extractEntities({
+      content: 'export function foo() {}',
+      sourcePath: 'src/lib/auth.ts',
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+      metadata: { startLine: 1, endLine: 10 },
+    });
+    const symbols = entities.filter(e => e.kind === 'symbol');
+    expect(symbols).toHaveLength(1);
+    expect(symbols[0].canonicalName).toBe('foo');
+  });
+
+  it('reads symbols from chunk metadata when not passed explicitly', () => {
+    const entities = extractEntities({
+      content: 'export function foo() {}',
+      sourcePath: 'src/lib/auth.ts',
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      metadata: { startLine: 1, endLine: 20, symbols: SYMBOLS },
+    });
+    const symbols = entities.filter(e => e.kind === 'symbol');
+    expect(symbols).toHaveLength(2);
+  });
+
+  it('emits no symbol entities without a sourcePath', () => {
+    const entities = extractEntities({
+      content: 'export function foo() {}',
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      symbols: SYMBOLS,
+    });
+    expect(entities.filter(e => e.kind === 'symbol')).toHaveLength(0);
+  });
+});

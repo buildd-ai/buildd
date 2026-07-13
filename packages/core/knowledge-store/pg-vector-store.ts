@@ -1,8 +1,8 @@
 import { sql } from 'drizzle-orm';
-import type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
+import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
 import { applyRerank } from './reranker';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
-import { applyRecencyAuthority } from './recency-authority';
+import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
 import { createHash } from 'crypto';
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
@@ -23,6 +23,65 @@ function sha256(text: string): string {
 
 function vectorToString(v: number[]): string {
   return `[${v.join(',')}]`;
+}
+
+// ── NUL-byte sanitization ────────────────────────────────────────────────────
+//
+// Postgres text columns reject literal NUL (0x00) bytes with
+// `invalid byte sequence for encoding "UTF8"`. A file misclassified as text
+// (or any other artifact upstream in the ingest pipeline — file walker,
+// chunker, decoding) can smuggle a stray NUL byte into content that otherwise
+// looks like ordinary text. We can't guarantee every upstream producer is
+// clean, so strip defensively right before insert instead.
+
+const NUL_BYTE = String.fromCharCode(0);
+
+/** Remove literal NUL bytes from a string. Returns the same reference when none are present. */
+export function stripNulBytes(value: string): string {
+  return value.indexOf(NUL_BYTE) === -1 ? value : value.split(NUL_BYTE).join('');
+}
+
+interface SanitizedChunkText {
+  sourceId: string;
+  sourceType: string;
+  sourcePath: string | null;
+  sourceUrl: string | null;
+  content: string;
+  lexicalText: string;
+}
+
+/**
+ * Sanitize every text field of a chunk that gets written to `knowledge_chunks`.
+ * Strips NUL bytes and logs a warning (without throwing) when any were found,
+ * so a single bad byte doesn't crash the whole ingest batch but is still
+ * visible in ingest output.
+ */
+export function sanitizeChunkForInsert(chunk: UpsertChunk, lexicalText: string): SanitizedChunkText {
+  const sanitized: SanitizedChunkText = {
+    sourceId: stripNulBytes(chunk.id),
+    sourceType: stripNulBytes(chunk.sourceType),
+    sourcePath: chunk.sourcePath != null ? stripNulBytes(chunk.sourcePath) : null,
+    sourceUrl: chunk.sourceUrl != null ? stripNulBytes(chunk.sourceUrl) : null,
+    content: stripNulBytes(chunk.content),
+    lexicalText: stripNulBytes(lexicalText),
+  };
+
+  const changed =
+    sanitized.sourceId !== chunk.id ||
+    sanitized.sourceType !== chunk.sourceType ||
+    sanitized.sourcePath !== (chunk.sourcePath ?? null) ||
+    sanitized.sourceUrl !== (chunk.sourceUrl ?? null) ||
+    sanitized.content !== chunk.content ||
+    sanitized.lexicalText !== lexicalText;
+
+  if (changed) {
+    console.warn(
+      `[knowledge-store] stripped NUL byte(s) from chunk "${chunk.id}" ` +
+        `(source: ${chunk.sourcePath ?? 'unknown'}) before insert`,
+    );
+  }
+
+  return sanitized;
 }
 
 /**
@@ -103,9 +162,10 @@ export class PgVectorStore implements KnowledgeStore {
     return this.embedder;
   }
 
-  async upsert(namespace: string, chunks: UpsertChunk[]): Promise<void> {
-    if (chunks.length === 0) return;
+  async upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult> {
+    if (chunks.length === 0) return { superseded: 0 };
 
+    let superseded = 0;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
@@ -118,8 +178,11 @@ export class PgVectorStore implements KnowledgeStore {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedding = embeddings[i];
-      const contentHash = sha256(chunk.content);
-      const lexicalText = chunk.lexicalText ?? chunk.content;
+      const rawLexicalText = chunk.lexicalText ?? chunk.content;
+      // Defensively strip any stray NUL bytes before they hit the INSERT —
+      // Postgres text columns reject 0x00 outright (see stripNulBytes above).
+      const clean = sanitizeChunkForInsert(chunk, rawLexicalText);
+      const contentHash = sha256(clean.content);
       const sourceTs = chunk.sourceTs ?? null;
 
       // Write source_ts into metadata so recency scoring can read it on query
@@ -135,9 +198,9 @@ export class PgVectorStore implements KnowledgeStore {
              content, lexical_text, embedding, embedding_model, metadata, content_hash,
              source_ts, updated_at)
           VALUES
-            (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
-             ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
-             ${chunk.content}, ${lexicalText},
+            (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
+             ${clean.sourcePath}, ${clean.sourceUrl},
+             ${clean.content}, ${clean.lexicalText},
              ${vectorToString(embedding)}::vector,
              ${activeEmbedder!.model},
              ${JSON.stringify(metadataWithTs)}::jsonb,
@@ -162,9 +225,9 @@ export class PgVectorStore implements KnowledgeStore {
             (source_id, namespace, corpus, source_type, source_path, source_url,
              content, lexical_text, metadata, content_hash, source_ts, updated_at)
           VALUES
-            (${chunk.id}, ${namespace}, ${corpus}, ${chunk.sourceType},
-             ${chunk.sourcePath ?? null}, ${chunk.sourceUrl ?? null},
-             ${chunk.content}, ${lexicalText},
+            (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
+             ${clean.sourcePath}, ${clean.sourceUrl},
+             ${clean.content}, ${clean.lexicalText},
              ${JSON.stringify(metadataWithTs)}::jsonb,
              ${contentHash},
              ${sourceTs ? sourceTs.toISOString() : null},
@@ -182,14 +245,24 @@ export class PgVectorStore implements KnowledgeStore {
       }
 
       // Phase 1: supersession — mark older same-path chunks as not current
-      if (chunk.sourcePath && sourceTs) {
-        await this._markSuperseded(db, namespace, chunk.id, chunk.sourcePath, sourceTs);
+      if (clean.sourcePath && sourceTs) {
+        await this._markSuperseded(db, namespace, clean.sourceId, clean.sourcePath, sourceTs);
+      }
+
+      // Wave-1 C1: explicit supersession — the agent asserted this chunk
+      // replaces specific earlier chunks (same namespace only; self-references
+      // skipped; ids that don't match any current row are silently ignored).
+      const explicitTargets = (chunk.supersedes ?? []).filter(s => s && s !== chunk.id);
+      if (explicitTargets.length > 0) {
+        superseded += await this._markSupersededExplicit(db, namespace, clean.sourceId, explicitTargets);
       }
     }
+
+    return { superseded };
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
-    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false } = params;
+    const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false, trackHits = true } = params;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
@@ -299,7 +372,40 @@ export class PgVectorStore implements KnowledgeStore {
     // Sort by final score DESC before passing to reranker
     results.sort((a, b) => b.score - a.score);
 
-    return this._finalize(results, text, limit);
+    const finalResults = await this._finalize(results, text, limit);
+
+    // Phase C (C2): retrieval-hit tracking — fire-and-forget, never awaited,
+    // never fails the query. Skippable for eval/assessment runs.
+    if (trackHits && finalResults.length > 0) {
+      this._recordHits(db, namespace, finalResults.map(r => r.id));
+    }
+
+    return finalResults;
+  }
+
+  /**
+   * Increment hit_count / stamp last_hit_at on the chunks a query returned.
+   * Single UPDATE, deliberately not awaited by the caller — retrieval must
+   * never block or fail on hit bookkeeping (column may also predate the
+   * migration on older databases).
+   */
+  private _recordHits(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    sourceIds: string[],
+  ): void {
+    try {
+      const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
+      Promise.resolve(db.execute(sql`
+        UPDATE knowledge_chunks
+        SET hit_count = hit_count + 1,
+            last_hit_at = NOW()
+        WHERE namespace = ${namespace}
+          AND source_id IN (${inList})
+      `)).catch(() => {});
+    } catch {
+      // Hit tracking is best-effort by contract
+    }
   }
 
   /**
@@ -430,6 +536,98 @@ export class PgVectorStore implements KnowledgeStore {
       `);
     } catch {
       // Degrade gracefully if the column doesn't exist yet
+    }
+  }
+
+  /**
+   * Wave-1 C1: explicit supersession — mark the listed source_ids in the SAME
+   * namespace as superseded by newSourceId. Only `is_current` rows match, so
+   * the returned count reflects rows actually flipped; unknown ids are ignored.
+   */
+  private async _markSupersededExplicit(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    newSourceId: string,
+    targetSourceIds: string[],
+  ): Promise<number> {
+    try {
+      const inList = sql.join(targetSourceIds.map(id => sql`${id}`), sql`, `);
+      const res = await db.execute(sql`
+        UPDATE knowledge_chunks
+        SET is_current = false,
+            superseded_by = ${newSourceId}
+        WHERE namespace = ${namespace}
+          AND source_id IN (${inList})
+          AND source_id != ${newSourceId}
+          AND is_current = true
+        RETURNING source_id
+      `);
+      return res.rows.length;
+    } catch {
+      // Degrade gracefully if the columns don't exist yet
+      return 0;
+    }
+  }
+
+  /**
+   * Wave-1 C1: entity-keyed supersession (deterministic).
+   *
+   * Marks other `is_current` chunks in the namespace as superseded by
+   * `newSourceId` when ALL of the following hold:
+   *  - the candidate's `chunk_entities` rows with role='defines' form a
+   *    non-empty set IDENTICAL to `entityIds` (strict exact-set match);
+   *  - the candidate's `source_ts` is strictly older than the new chunk's
+   *    (NULL counts as older, matching path-keyed supersession);
+   *  - the candidate's corpus authority is ≤ the new chunk's corpus authority
+   *    (per CORPUS_AUTHORITY).
+   *
+   * Single atomic UPDATE (no transaction — neon-http constraint). Returns the
+   * number of chunks marked; degrades gracefully to 0 on any error.
+   */
+  async markSupersededByEntities(
+    namespace: string,
+    newSourceId: string,
+    entityIds: string[],
+    opts: { corpus?: Corpus; sourceTs?: Date | null } = {},
+  ): Promise<number> {
+    const uniqueIds = Array.from(new Set(entityIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return 0;
+
+    const corpus = opts.corpus ?? (namespace.split(':')[1] as Corpus);
+    const newAuthority = CORPUS_AUTHORITY[corpus] ?? 1.0;
+    const allowedCorpora = (Object.keys(CORPUS_AUTHORITY) as Corpus[])
+      .filter(c => CORPUS_AUTHORITY[c] <= newAuthority);
+    const refTs = opts.sourceTs ?? new Date();
+
+    try {
+      const db = await getDb();
+      const idList = sql.join(uniqueIds.map(id => sql`${id}`), sql`, `);
+      const corpusList = sql.join(allowedCorpora.map(c => sql`${c}`), sql`, `);
+      const res = await db.execute(sql`
+        UPDATE knowledge_chunks
+        SET is_current = false,
+            superseded_by = ${newSourceId}
+        WHERE namespace = ${namespace}
+          AND source_id != ${newSourceId}
+          AND is_current = true
+          AND corpus IN (${corpusList})
+          AND (source_ts IS NULL OR source_ts < ${refTs.toISOString()})
+          AND source_id IN (
+            SELECT ce.chunk_source_id
+            FROM chunk_entities ce
+            WHERE ce.namespace = ${namespace}
+              AND ce.role = 'defines'
+              AND ce.chunk_source_id != ${newSourceId}
+            GROUP BY ce.chunk_source_id
+            HAVING COUNT(DISTINCT ce.entity_id) = ${uniqueIds.length}
+               AND COUNT(DISTINCT ce.entity_id) FILTER (WHERE ce.entity_id IN (${idList})) = ${uniqueIds.length}
+          )
+        RETURNING source_id
+      `);
+      return res.rows.length;
+    } catch {
+      // Entity tables may not exist yet — degrade gracefully
+      return 0;
     }
   }
 

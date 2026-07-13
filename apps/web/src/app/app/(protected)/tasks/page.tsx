@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
+import { deriveDisplayStatus } from '@/lib/task-timestamps';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -26,6 +27,7 @@ export default async function TasksPage({
     title: string;
     status: string;
     category: string | null;
+    createdAt: string;
     updatedAt: string;
     workspaceName: string;
     prUrl: string | null;
@@ -39,6 +41,9 @@ export default async function TasksPage({
     budgetPaused: boolean;
     budgetBackend: string;
     budgetResetsAt: string | null;
+    workerStatus: string | null;
+    workerStartedAt: string | null;
+    workerUpdatedAt: string | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -76,6 +81,7 @@ export default async function TasksPage({
               title: true,
               status: true,
               category: true,
+              createdAt: true,
               updatedAt: true,
               workspaceId: true,
               result: true,
@@ -100,30 +106,49 @@ export default async function TasksPage({
             }
           }
 
-          // Query workers waiting for input to enrich task status
-          const waitingWorkers = await db.query.workers.findMany({
-            where: eq(workers.status, 'waiting_input'),
-            columns: { taskId: true, waitingFor: true },
-          });
-          const waitingByTaskId = new Map<string, string>();
-          for (const w of waitingWorkers) {
-            if (w.taskId && w.waitingFor) {
-              const wf = w.waitingFor as { prompt?: string };
-              waitingByTaskId.set(w.taskId, wf.prompt || 'Needs input');
+          // Query active workers (running, starting, waiting_input) to enrich task status and timestamps
+          const taskIds = recentTasks.map(t => t.id);
+          const activeWorkers = taskIds.length > 0
+            ? await db.query.workers.findMany({
+                where: and(
+                  inArray(workers.taskId, taskIds),
+                  inArray(workers.status, ['running', 'starting', 'waiting_input']),
+                ),
+                columns: {
+                  taskId: true,
+                  status: true,
+                  waitingFor: true,
+                  startedAt: true,
+                  updatedAt: true,
+                },
+              })
+            : [];
+          const activeWorkerByTaskId = new Map<string, { status: string; waitingFor: unknown; startedAt: string | null; updatedAt: string | null }>();
+          for (const w of activeWorkers) {
+            if (w.taskId && !activeWorkerByTaskId.has(w.taskId)) {
+              activeWorkerByTaskId.set(w.taskId, {
+                status: w.status,
+                waitingFor: w.waitingFor,
+                startedAt: w.startedAt?.toISOString() ?? null,
+                updatedAt: w.updatedAt?.toISOString() ?? null,
+              });
             }
           }
 
           gridTasks = recentTasks.map(t => {
             const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
             const isTerminal = t.status === 'completed' || t.status === 'failed';
-            const isWaiting = !isTerminal && waitingByTaskId.has(t.id);
             const ctx = (t.context || {}) as Record<string, unknown>;
             const budgetPaused = t.status === 'pending' && ctx.budgetExhausted === true;
+            const activeW = !isTerminal ? activeWorkerByTaskId.get(t.id) : undefined;
+            const effectiveStatus = deriveDisplayStatus(t.status, activeW?.status);
+            const waitingFor = activeW?.status === 'waiting_input' ? (activeW.waitingFor as { prompt?: string } | null) : null;
             return {
               id: t.id,
               title: t.title,
-              status: isWaiting ? 'waiting_input' : t.status,
+              status: effectiveStatus,
               category: t.category,
+              createdAt: t.createdAt.toISOString(),
               updatedAt: t.updatedAt.toISOString(),
               workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
               prUrl: result?.prUrl || null,
@@ -131,12 +156,15 @@ export default async function TasksPage({
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,
-              waitingPrompt: isWaiting ? (waitingByTaskId.get(t.id) || null) : null,
+              waitingPrompt: waitingFor ? (waitingFor.prompt || 'Needs input') : null,
               missionId: t.missionId || null,
               missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
               budgetPaused,
               budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
               budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
+              workerStatus: activeW?.status ?? null,
+              workerStartedAt: activeW?.startedAt ?? null,
+              workerUpdatedAt: activeW?.updatedAt ?? null,
             };
           });
         }

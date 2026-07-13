@@ -4,9 +4,9 @@ import { DEFAULT_ROLES } from './default-roles';
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
 
-  it('seeds the full six-role set', () => {
+  it('seeds the full seven-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'organizer', 'researcher', 'spec-validator', 'writer',
+      'analyst', 'builder', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'writer',
     ]);
   });
 

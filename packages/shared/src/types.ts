@@ -574,8 +574,12 @@ export interface WorkspaceSkill {
   background: boolean;
   maxTurns: number | null;
   color: string;
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   mcpServers: string[];
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   requiredEnvVars: Record<string, string>;
+  /** IDs of connectors (connectors table) this role mounts. */
+  connectorRefs: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -601,8 +605,12 @@ export interface SkillBundle {
   canDelegateTo: string[];
   background: boolean;
   maxTurns: number | null;
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   mcpServers: string[];
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   requiredEnvVars: Record<string, string>;
+  /** IDs of connectors (connectors table) this role mounts. */
+  connectorRefs?: string[];
 }
 
 export interface McpServerConfig {
@@ -872,8 +880,12 @@ export interface CreateWorkspaceSkillInput {
   background?: boolean;
   maxTurns?: number;
   color?: string;
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   mcpServers?: string[];
+  /** @deprecated Superseded by `connectorRefs`. Kept for back-compat during rollout. */
   requiredEnvVars?: Record<string, string>;
+  /** IDs of connectors (connectors table) this role mounts. */
+  connectorRefs?: string[];
 }
 
 

@@ -81,15 +81,25 @@ describe('knowledge mirror — complete_task', () => {
       },
     });
 
-    await handleBuilddAction(api, 'complete_task', { summary: 'done' }, ctxWith(store));
+    await handleBuilddAction(api, 'complete_task', { summary: 'done', nextSuggestion: 'follow up on X' }, ctxWith(store));
 
-    expect(store.upserts).toHaveLength(1);
-    const { namespace, chunks } = store.upserts[0];
-    expect(namespace).toBe(`${MOCK_WORKSPACE_ID}:task`);
-    expect(chunks[0].id).toBe('task:t-1');
-    expect(chunks[0].metadata?.phase).toBe('outcome');
-    expect(chunks[0].metadata?.missionId).toBe('m-1');
-    expect(chunks[0].content).toContain('done');
+    // Two mirrors: the durable task card and the recency-weighted session card.
+    expect(store.upserts).toHaveLength(2);
+
+    const task = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:task`);
+    expect(task).toBeDefined();
+    expect(task!.chunks[0].id).toBe('task:t-1');
+    expect(task!.chunks[0].metadata?.phase).toBe('outcome');
+    expect(task!.chunks[0].metadata?.missionId).toBe('m-1');
+    expect(task!.chunks[0].content).toContain('done');
+
+    const session = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:session`);
+    expect(session).toBeDefined();
+    expect(session!.chunks[0].id).toBe('session:t-1');
+    expect(session!.chunks[0].metadata?.phase).toBe('session');
+    expect(session!.chunks[0].metadata?.missionId).toBe('m-1');
+    expect(session!.chunks[0].content).toContain('done');
+    expect(session!.chunks[0].content).toContain('follow up on X');
   });
 
   it('does NOT fail the action when the store throws', async () => {

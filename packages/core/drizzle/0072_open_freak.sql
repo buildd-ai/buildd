@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "orchestration_mode" text DEFAULT 'auto' NOT NULL;

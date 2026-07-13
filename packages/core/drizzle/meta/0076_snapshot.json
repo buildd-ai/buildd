@@ -1,6 +1,6 @@
 {
-  "id": "d4e3f2a1-0b5c-6d9e-1f7a-8b2c3d4e5f6a",
-  "prevId": "765d2daf-4cd0-469e-a61e-73421aeba4a2",
+  "id": "be4d8fef-43df-46b1-9bec-a8ed79a1a87c",
+  "prevId": "edb9a7d3-fa24-4e01-91f3-8481ebea3278",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -763,6 +763,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'none'"
+        },
+        "transport": {
+          "name": "transport",
+          "type": "connector_transport",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'http'"
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "args": {
+          "name": "args",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "env_mapping": {
+          "name": "env_mapping",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "header_name": {
           "name": "header_name",
@@ -1628,6 +1656,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "hit_count": {
+          "name": "hit_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_hit_at": {
+          "name": "last_hit_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2010,6 +2051,170 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.knowledge_ingest_jobs": {
+      "name": "knowledge_ingest_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repo": {
+          "name": "repo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trigger": {
+          "name": "trigger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha": {
+          "name": "sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pr_number": {
+          "name": "pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "changed_files": {
+          "name": "changed_files",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stats": {
+          "name": "stats",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "knowledge_ingest_jobs_ws_status_idx": {
+          "name": "knowledge_ingest_jobs_ws_status_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "knowledge_ingest_jobs_ws_sha_scope_idx": {
+          "name": "knowledge_ingest_jobs_ws_sha_scope_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"knowledge_ingest_jobs\".\"status\" != 'error'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "knowledge_ingest_jobs_workspace_id_workspaces_id_fk": {
+          "name": "knowledge_ingest_jobs_workspace_id_workspaces_id_fk",
+          "tableFrom": "knowledge_ingest_jobs",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.mission_notes": {
       "name": "mission_notes",
       "schema": "",
@@ -2316,6 +2521,19 @@
           "notNull": true,
           "default": false
         },
+        "merge_policy": {
+          "name": "merge_policy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "orchestration_mode": {
+          "name": "orchestration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'auto'"
+        },
         "released_at": {
           "name": "released_at",
           "type": "timestamp with time zone",
@@ -2353,12 +2571,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "merge_policy": {
-          "name": "merge_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5652,6 +5864,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pr_lifecycle_status": {
+          "name": "pr_lifecycle_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_commit_sha": {
           "name": "last_commit_sha",
           "type": "text",
@@ -6004,6 +6222,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
+        },
+        "connector_refs": {
+          "name": "connector_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "is_role": {
           "name": "is_role",
@@ -6416,6 +6641,14 @@
         "none",
         "header",
         "oauth"
+      ]
+    },
+    "public.connector_transport": {
+      "name": "connector_transport",
+      "schema": "public",
+      "values": [
+        "http",
+        "stdio"
       ]
     }
   },

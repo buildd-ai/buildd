@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
@@ -25,15 +25,51 @@ const COLOR_PALETTE = [
   '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
-interface McpServerConfig {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  type?: 'stdio' | 'http';
-  url?: string;
+type Scope = 'team' | 'workspace';
+
+/**
+ * A team connector as surfaced by GET /api/connectors.
+ *
+ * ASSUMED SHAPE (reconcile with the connectors API agent):
+ *   - id, name, url, authMode, status are already returned today.
+ *   - transport is added by the foundation (defaults 'http'); optional here so the
+ *     UI degrades gracefully if the route hasn't been updated to project it yet.
+ *   - enabledWorkspaceIds: ids of workspaces this connector is enabled for. If the
+ *     payload omits it we cannot tell workspace-enablement → see the TODO in the
+ *     connector list (spec §2: mounting needs role-ref AND workspace-enable).
+ *   - needsReview: true for migrated placeholders (discoveredMetadata.needsReview,
+ *     spec §4) — the URL/auth still needs a human.
+ */
+interface Connector {
+  id: string;
+  name: string;
+  url: string | null;
+  authMode: 'none' | 'header' | 'oauth';
+  status: 'connected' | 'expired' | 'not_connected';
+  transport?: 'http' | 'stdio';
+  enabledWorkspaceIds?: string[];
+  needsReview?: boolean;
 }
 
-type Scope = 'team' | 'workspace';
+/**
+ * Payload sent to POST /api/connectors when installing a registry entry.
+ *
+ * ASSUMED SHAPE (reconcile with the connectors API agent — spec §5/§6):
+ *   - `reuseIfExists: true` → create-or-reuse by (teamId, name); no 409 on repeat.
+ *   - http transport carries `url` (authMode discovered server-side via probe).
+ *   - stdio transport carries `command`/`args`/`envMapping` and `authMode:'none'`;
+ *     `url` is omitted (POST must not require url for stdio).
+ */
+interface ConnectorCreateInput {
+  name: string;
+  transport: 'http' | 'stdio';
+  url?: string;
+  command?: string;
+  args?: string[];
+  envMapping?: Record<string, string>;
+  authMode?: 'none' | 'header' | 'oauth';
+  reuseIfExists: true;
+}
 
 interface Skill {
   id: string;
@@ -49,8 +85,9 @@ interface Skill {
   background: boolean;
   maxTurns: number | null;
   color: string;
-  mcpServers: Record<string, McpServerConfig> | string[];
-  requiredEnvVars: Record<string, string>;
+  // IDs of team connectors this role opts into (spec §2). Superseded fields
+  // mcpServers/requiredEnvVars are no longer read or written by this editor.
+  connectorRefs: string[] | null;
   isRole: boolean;
   repoUrl: string | null;
   createdAt: string;
@@ -69,174 +106,34 @@ interface Props {
   workspaces: WorkspaceOption[];
 }
 
-/** Normalize legacy string[] to Record<string, McpServerConfig> */
-function normalizeMcpServers(raw: Record<string, McpServerConfig> | string[] | null): Record<string, McpServerConfig> {
-  if (!raw) return {};
-  if (Array.isArray(raw)) {
-    const result: Record<string, McpServerConfig> = {};
-    for (const name of raw) {
-      if (typeof name === 'string') result[name] = {};
-    }
-    return result;
+/** Small auth-mode + connection-status badge, matching Settings → Connectors. */
+function ConnectorBadge({ authMode, status }: { authMode: Connector['authMode']; status: Connector['status'] }) {
+  if (authMode === 'none') {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
+        public
+      </span>
+    );
   }
-  return raw as Record<string, McpServerConfig>;
-}
-
-function McpServerEditor({
-  name,
-  config,
-  onUpdate,
-  onRemove,
-}: {
-  name: string;
-  config: McpServerConfig;
-  onUpdate: (config: McpServerConfig) => void;
-  onRemove: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const isHttp = config.type === 'http' || !!config.url;
-  const hasConfig = config.command || config.url || (config.args && config.args.length > 0) || (config.env && Object.keys(config.env).length > 0);
-
+  const label = authMode === 'oauth' ? 'oauth' : 'header';
+  if (status === 'connected') {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
+        {label} · connected
+      </span>
+    );
+  }
+  if (status === 'expired') {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+        {label} · expired
+      </span>
+    );
+  }
   return (
-    <div className="border border-border-default rounded-md overflow-hidden">
-      <div
-        className="flex items-center gap-2 px-3 py-2 bg-surface-2 cursor-pointer"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-text-muted flex-shrink-0">
-          <path d="M12 2v6m0 8v6M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m8 0h6M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24" />
-        </svg>
-        <span className="text-[13px] font-medium text-text-primary flex-1">{name}</span>
-        {hasConfig && (
-          <span className="text-[11px] text-text-muted">{isHttp ? 'HTTP' : 'stdio'}</span>
-        )}
-        <svg
-          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-          className={`text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </div>
-
-      {expanded && (
-        <div className="px-3 py-3 space-y-3 bg-surface-1">
-          {/* Transport type */}
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => onUpdate({ ...config, type: 'stdio', url: undefined })}
-              className={`px-2.5 py-1 rounded text-[12px] font-medium border transition-colors ${
-                !isHttp ? 'bg-text-primary text-white border-text-primary' : 'bg-surface-2 border-border-default text-text-muted'
-              }`}
-            >
-              stdio
-            </button>
-            <button
-              type="button"
-              onClick={() => onUpdate({ ...config, type: 'http', command: undefined, args: undefined })}
-              className={`px-2.5 py-1 rounded text-[12px] font-medium border transition-colors ${
-                isHttp ? 'bg-text-primary text-white border-text-primary' : 'bg-surface-2 border-border-default text-text-muted'
-              }`}
-            >
-              HTTP
-            </button>
-          </div>
-
-          {isHttp ? (
-            <div>
-              <label className="block text-[12px] text-text-muted mb-1">URL</label>
-              <input
-                type="text"
-                value={config.url || ''}
-                onChange={(e) => onUpdate({ ...config, url: e.target.value || undefined })}
-                className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
-                placeholder="http://localhost:3100/mcp"
-              />
-            </div>
-          ) : (
-            <>
-              <div>
-                <label className="block text-[12px] text-text-muted mb-1">Command</label>
-                <input
-                  type="text"
-                  value={config.command || ''}
-                  onChange={(e) => onUpdate({ ...config, command: e.target.value || undefined })}
-                  className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
-                  placeholder="npx, uvx, docker..."
-                />
-              </div>
-              <div>
-                <label className="block text-[12px] text-text-muted mb-1">Args</label>
-                <input
-                  type="text"
-                  value={(config.args || []).join(' ')}
-                  onChange={(e) => {
-                    const val = e.target.value.trim();
-                    onUpdate({ ...config, args: val ? val.split(/\s+/) : undefined });
-                  }}
-                  className="w-full px-2 py-1.5 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
-                  placeholder="-y @modelcontextprotocol/server-github"
-                />
-                <p className="text-[11px] text-text-muted mt-0.5">Space-separated arguments</p>
-              </div>
-            </>
-          )}
-
-          {/* Env vars per server */}
-          <div>
-            <label className="block text-[12px] text-text-muted mb-1">Environment</label>
-            <div className="space-y-1">
-              {Object.entries(config.env || {}).map(([key, value]) => (
-                <div key={key} className="flex items-center gap-1.5">
-                  <code className="px-1.5 py-0.5 bg-surface-3 rounded text-[11px] font-mono text-text-primary">{key}</code>
-                  <span className="text-[11px] text-text-muted">=</span>
-                  <span className="text-[11px] text-text-muted flex-1 truncate">{value}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = { ...config.env };
-                      delete next[key];
-                      onUpdate({ ...config, env: Object.keys(next).length > 0 ? next : undefined });
-                    }}
-                    className="text-text-muted hover:text-status-error text-[11px]"
-                  >
-                    &times;
-                  </button>
-                </div>
-              ))}
-            </div>
-            <form
-              className="flex items-center gap-1.5 mt-1.5"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const form = e.target as HTMLFormElement;
-                const keyInput = form.elements.namedItem('envKey') as HTMLInputElement;
-                const valInput = form.elements.namedItem('envVal') as HTMLInputElement;
-                const k = keyInput.value.trim();
-                const v = valInput.value.trim();
-                if (k && v) {
-                  onUpdate({ ...config, env: { ...(config.env || {}), [k]: v } });
-                  keyInput.value = '';
-                  valInput.value = '';
-                }
-              }}
-            >
-              <input name="envKey" type="text" placeholder="KEY" className="w-24 px-1.5 py-1 border border-border-default rounded text-[11px] font-mono bg-surface-1 text-text-primary" />
-              <input name="envVal" type="text" placeholder="value" className="flex-1 px-1.5 py-1 border border-border-default rounded text-[11px] bg-surface-1 text-text-primary" />
-              <button type="submit" className="px-2 py-1 rounded text-[11px] border border-border-default text-text-muted hover:text-text-secondary">+</button>
-            </form>
-          </div>
-
-          <button
-            type="button"
-            onClick={onRemove}
-            className="text-[12px] text-status-error hover:underline"
-          >
-            Remove server
-          </button>
-        </div>
-      )}
-    </div>
+    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
+      {label} · connect
+    </span>
   );
 }
 
@@ -252,49 +149,53 @@ interface RegistryServer {
   };
 }
 
-/** Convert a registry server entry into an MCP config */
-function registryToConfig(entry: RegistryServer['server']): McpServerConfig {
-  // Prefer remote (HTTP) if available
-  const remote = entry.remotes?.[0];
-  if (remote) {
-    const config: McpServerConfig = { type: 'http', url: remote.url };
-    // Add required header env stubs
-    const envHeaders = remote.headers?.filter(h => h.isSecret || h.isRequired);
-    if (envHeaders?.length) {
-      config.env = {};
-      for (const h of envHeaders) {
-        config.env[h.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')] = `\${${h.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}}`;
-      }
-    }
-    return config;
-  }
-  // Fallback: try npm package
-  const pkg = entry.packages?.find(p => p.registryType === 'npm');
-  if (pkg) {
-    const config: McpServerConfig = {
-      command: 'npx',
-      args: ['-y', pkg.identifier],
-    };
-    if (pkg.environmentVariables?.length) {
-      config.env = {};
-      for (const ev of pkg.environmentVariables) {
-        config.env[ev.name] = `\${${ev.name}}`;
-      }
-    }
-    return config;
-  }
-  return {};
-}
-
 /** Short display name from registry name like "io.github/user-repo" */
 function shortName(registryName: string): string {
   const parts = registryName.split('/');
   return parts[parts.length - 1] || registryName;
 }
 
-function McpRegistryBrowser({ onInstall, installedNames }: {
-  onInstall: (name: string, config: McpServerConfig) => void;
+/**
+ * Convert a registry entry into a connector-create payload (spec §5).
+ * Prefers a remote (http) transport; falls back to an npm package as stdio with
+ * envMapping seeded from the entry's declared environmentVariables.
+ */
+function registryToConnectorInput(entry: RegistryServer['server']): ConnectorCreateInput {
+  const name = shortName(entry.name);
+
+  const remote = entry.remotes?.[0];
+  if (remote) {
+    // http: authMode discovered server-side by probing the URL.
+    return { name, transport: 'http', url: remote.url, reuseIfExists: true };
+  }
+
+  const pkg = entry.packages?.find(p => p.registryType === 'npm');
+  if (pkg) {
+    const envMapping: Record<string, string> = {};
+    for (const ev of pkg.environmentVariables || []) {
+      // Seed env var name → secret label placeholder (human completes the label).
+      envMapping[ev.name] = ev.name;
+    }
+    return {
+      name,
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', pkg.identifier],
+      envMapping,
+      authMode: 'none',
+      reuseIfExists: true,
+    };
+  }
+
+  // No remote and no npm package — create a placeholder http connector the user
+  // completes later.
+  return { name, transport: 'http', reuseIfExists: true };
+}
+
+function McpRegistryBrowser({ onInstall, installedNames, installing }: {
+  onInstall: (input: ConnectorCreateInput) => void;
   installedNames: string[];
+  installing: string | null;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<RegistryServer[]>([]);
@@ -352,6 +253,7 @@ function McpRegistryBrowser({ onInstall, installedNames }: {
             const s = entry.server;
             const displayName = shortName(s.name);
             const isInstalled = installedNames.includes(displayName);
+            const isInstalling = installing === displayName;
             const hasRemote = !!s.remotes?.length;
             const hasPkg = !!s.packages?.find(p => p.registryType === 'npm');
 
@@ -382,18 +284,15 @@ function McpRegistryBrowser({ onInstall, installedNames }: {
                   </div>
                   <button
                     type="button"
-                    disabled={isInstalled}
-                    onClick={() => {
-                      const config = registryToConfig(s);
-                      onInstall(displayName, config);
-                    }}
+                    disabled={isInstalled || isInstalling}
+                    onClick={() => onInstall(registryToConnectorInput(s))}
                     className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
                       isInstalled
                         ? 'bg-surface-3 text-text-muted cursor-default'
-                        : 'bg-primary text-white hover:bg-primary-hover'
+                        : 'bg-primary text-white hover:bg-primary-hover disabled:opacity-50'
                     }`}
                   >
-                    {isInstalled ? 'Added' : '+ Add'}
+                    {isInstalled ? 'Added' : isInstalling ? 'Adding…' : '+ Add'}
                   </button>
                 </div>
               </div>
@@ -427,19 +326,38 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [background, setBackground] = useState(skill.background);
   const [maxTurns, setMaxTurns] = useState<string>(skill.maxTurns?.toString() || '');
   const [color, setColor] = useState(skill.color);
-  const [mcpServers, setMcpServers] = useState<Record<string, McpServerConfig>>(
-    normalizeMcpServers(skill.mcpServers)
-  );
-  const [newServerName, setNewServerName] = useState('');
-  const [showBrowse, setShowBrowse] = useState(false);
-  const [envVars, setEnvVars] = useState<Record<string, string>>(skill.requiredEnvVars || {});
   const [isRole, setIsRole] = useState(skill.isRole);
   const [repoUrl, setRepoUrl] = useState(skill.repoUrl || '');
-  const [newEnvKey, setNewEnvKey] = useState('');
-  const [newEnvValue, setNewEnvValue] = useState('');
+
+  // Connectors (spec §2): role opts into team connectors by id.
+  const [connectorRefs, setConnectorRefs] = useState<string[]>(skill.connectorRefs ?? []);
+  const [teamConnectors, setTeamConnectors] = useState<Connector[]>([]);
+  const [connectorsLoading, setConnectorsLoading] = useState(true);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [showBrowse, setShowBrowse] = useState(false);
 
   // Scope (applies-to) state — workspace-scoped roles always start as 'workspace'
   const [scope, setScope] = useState<Scope>('workspace');
+
+  // Load the team's connectors for the picker.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setConnectorsLoading(true);
+      try {
+        const res = await fetch(`/api/connectors?teamId=${encodeURIComponent(skill.teamId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setTeamConnectors(data.connectors || []);
+        }
+      } catch {
+        // silent — picker just shows empty
+      } finally {
+        if (!cancelled) setConnectorsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [skill.teamId]);
 
   const toggleTool = (tool: string) => {
     setAllowedTools(prev =>
@@ -453,22 +371,38 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     );
   };
 
-  function updateServer(name: string, config: McpServerConfig) {
-    setMcpServers(prev => ({ ...prev, [name]: config }));
-  }
+  const toggleConnector = (id: string) => {
+    setConnectorRefs(prev =>
+      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
+    );
+  };
 
-  function removeServer(name: string) {
-    setMcpServers(prev => {
-      const next = { ...prev };
-      delete next[name];
-      return next;
-    });
-  }
-
-  function addServer(serverName: string) {
-    const trimmed = serverName.trim();
-    if (trimmed && !mcpServers[trimmed]) {
-      setMcpServers(prev => ({ ...prev, [trimmed]: {} }));
+  // Browse Registry → create (or reuse) a team connector, then opt the role in.
+  async function installConnector(input: ConnectorCreateInput) {
+    setInstalling(input.name);
+    setError(null);
+    try {
+      const res = await fetch('/api/connectors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to add connector');
+      }
+      const data = await res.json();
+      const created: Connector | undefined = data.connector;
+      if (created?.id) {
+        setTeamConnectors(prev =>
+          prev.some(c => c.id === created.id) ? prev : [...prev, created]
+        );
+        setConnectorRefs(prev => (prev.includes(created.id) ? prev : [...prev, created.id]));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add connector');
+    } finally {
+      setInstalling(null);
     }
   }
 
@@ -487,8 +421,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         background,
         maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
         color,
-        mcpServers,
-        requiredEnvVars: envVars,
+        connectorRefs,
         isRole,
         repoUrl: repoUrl || null,
       };
@@ -550,6 +483,11 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     day: 'numeric',
     year: 'numeric',
   });
+
+  // Names of connectors the role already references — drives the registry "Added" state.
+  const installedConnectorNames = teamConnectors
+    .filter(c => connectorRefs.includes(c.id))
+    .map(c => c.name);
 
   return (
     <main className="min-h-screen pt-4 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
@@ -730,7 +668,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               </div>
             )}
 
-            {/* Connectors (MCP Servers) */}
+            {/* Connectors — picker over the team's connectors (spec §2/§5) */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-text-primary">Connectors</label>
@@ -742,115 +680,90 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                   {showBrowse ? 'Hide Registry' : 'Browse Registry'}
                 </button>
               </div>
-              <p className="text-xs text-text-muted mb-2">MCP servers available to this role at runtime</p>
+              <p className="text-xs text-text-muted mb-2">Team MCP servers this role mounts at runtime</p>
 
               {showBrowse && (
                 <div className="mb-3">
                   <McpRegistryBrowser
-                    installedNames={Object.keys(mcpServers)}
-                    onInstall={(installName, config) => {
-                      setMcpServers(prev => ({ ...prev, [installName]: config }));
-                    }}
+                    installedNames={installedConnectorNames}
+                    installing={installing}
+                    onInstall={installConnector}
                   />
                 </div>
               )}
 
               <div className="space-y-2">
-                {Object.entries(mcpServers).map(([serverName, config]) => (
-                  <McpServerEditor
-                    key={serverName}
-                    name={serverName}
-                    config={config}
-                    onUpdate={(c) => updateServer(serverName, c)}
-                    onRemove={() => removeServer(serverName)}
-                  />
-                ))}
-              </div>
-              <form
-                className="flex items-center gap-2 mt-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (newServerName.trim()) {
-                    addServer(newServerName);
-                    setNewServerName('');
-                  }
-                }}
-              >
-                <input
-                  type="text"
-                  value={newServerName}
-                  onChange={(e) => setNewServerName(e.target.value)}
-                  placeholder="Server name"
-                  className="flex-1 px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
-                />
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded-md text-[12px] border border-border-default text-text-muted hover:text-text-secondary"
-                >
-                  + Add
-                </button>
-              </form>
-            </div>
-
-            {/* Environment (Required Env Vars) */}
-            <div>
-              <label className="block text-sm font-medium text-text-primary mb-1">Environment</label>
-              <p className="text-xs text-text-muted mb-2">Secrets injected as env vars at runtime</p>
-              <div className="space-y-1.5">
-                {Object.entries(envVars).map(([key, value]) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <code className="px-2 py-1 bg-surface-3 rounded text-[12px] font-mono text-text-primary">{key}</code>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-text-muted flex-shrink-0">
-                      <path d="M5 12h14m-7-7 7 7-7 7" />
-                    </svg>
-                    <span className="text-[12px] text-text-muted">{value}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = { ...envVars };
-                        delete next[key];
-                        setEnvVars(next);
-                      }}
-                      className="ml-auto w-5 h-5 flex items-center justify-center border-2 border-border-strong text-text-primary hover:bg-text-primary hover:text-surface-1 text-[13px] leading-none transition-colors"
-                      aria-label={`Remove ${key}`}
+                {connectorsLoading && (
+                  <p className="text-[12px] text-text-muted">Loading connectors…</p>
+                )}
+                {!connectorsLoading && teamConnectors.length === 0 && (
+                  <p className="text-[12px] text-text-muted">
+                    No team connectors yet. Browse the registry above or add one in Settings → Connectors.
+                  </p>
+                )}
+                {teamConnectors.map((connector) => {
+                  const active = connectorRefs.includes(connector.id);
+                  // TODO(spec §2): mounting needs BOTH a role ref AND workspace enablement.
+                  // If GET /api/connectors omits enabledWorkspaceIds we cannot detect the
+                  // "enabled for this workspace" case here — reconcile the payload with the
+                  // connectors API agent so this note fires accurately.
+                  const enabledHere = connector.enabledWorkspaceIds
+                    ? connector.enabledWorkspaceIds.includes(workspaceId)
+                    : true;
+                  return (
+                    <div
+                      key={connector.id}
+                      className={`border rounded-md overflow-hidden transition-colors ${
+                        active ? 'border-text-primary' : 'border-border-default'
+                      }`}
                     >
-                      &times;
-                    </button>
-                  </div>
-                ))}
+                      <button
+                        type="button"
+                        onClick={() => toggleConnector(connector.id)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors"
+                      >
+                        <span
+                          className={`w-4 h-4 flex-shrink-0 border-2 flex items-center justify-center ${
+                            active ? 'bg-text-primary border-text-primary' : 'border-border-strong'
+                          }`}
+                        >
+                          {active && (
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-surface-1">
+                              <path d="M20 6L9 17l-5-5" />
+                            </svg>
+                          )}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[13px] font-medium text-text-primary truncate">{connector.name}</span>
+                            {connector.transport === 'stdio' && (
+                              <span className="text-[10px] text-text-muted font-mono">stdio</span>
+                            )}
+                          </div>
+                          {connector.url && (
+                            <span className="block text-[11px] text-text-muted font-mono truncate">{connector.url}</span>
+                          )}
+                        </div>
+                        <div className="flex-shrink-0 flex items-center gap-1.5">
+                          {connector.needsReview && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
+                              needs review
+                            </span>
+                          )}
+                          <ConnectorBadge authMode={connector.authMode} status={connector.status} />
+                        </div>
+                      </button>
+                      {active && !enabledHere && (
+                        <div className="px-3 py-1.5 bg-surface-2 border-t border-border-default">
+                          <p className="text-[11px] text-text-muted">
+                            Enable this connector for <span className="font-medium text-text-primary">{workspaceName}</span> in Settings → Connectors to mount it.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <form
-                className="flex items-center gap-2 mt-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (newEnvKey.trim() && newEnvValue.trim()) {
-                    setEnvVars(prev => ({ ...prev, [newEnvKey.trim()]: newEnvValue.trim() }));
-                    setNewEnvKey('');
-                    setNewEnvValue('');
-                  }
-                }}
-              >
-                <input
-                  type="text"
-                  value={newEnvKey}
-                  onChange={(e) => setNewEnvKey(e.target.value)}
-                  placeholder="KEY"
-                  className="w-28 px-2 py-1 border border-border-default rounded text-[12px] font-mono bg-surface-1 text-text-primary"
-                />
-                <input
-                  type="text"
-                  value={newEnvValue}
-                  onChange={(e) => setNewEnvValue(e.target.value)}
-                  placeholder="secret-name"
-                  className="flex-1 px-2 py-1 border border-border-default rounded text-[12px] bg-surface-1 text-text-primary"
-                />
-                <button
-                  type="submit"
-                  className="px-2.5 py-1 rounded-full text-[12px] border border-border-default text-text-muted hover:text-text-secondary"
-                >
-                  + Add
-                </button>
-              </form>
             </div>
 
             {/* Allowed Tools (collapsed) */}

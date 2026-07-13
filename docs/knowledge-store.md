@@ -113,6 +113,46 @@ MEMORY_API_URL=... VOYAGE_API_KEY=... DATABASE_URL=... \
   bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId]
 ```
 
+### Per-PR ingest jobs (KM v2)
+
+Merged PRs on bound repos enqueue jobs into `knowledge_ingest_jobs`
+(spec: `docs/design/workspace-knowledge-management.md` §3):
+
+- **`diff` jobs** run serverless right after the webhook: changed files are
+  re-ingested into `code`/`docs` via the GitHub contents API, and the patch
+  itself is chunked per-file into the **`pr` corpus**
+  (`source_id = pr:{prNumber}#{path}`, metadata `{prNumber, path, sha, taskId?,
+  missionId?}`) so code deltas are retrievable history. PR chunks carry no
+  `source_path` on purpose — path-keyed supersession must not hide older PRs.
+- **`full` jobs** (first-index backfill, escalated large diffs, manual) need a
+  checkout and run on the **runner fleet**: an idle runner offers its local
+  clones to `POST /api/knowledge/ingest-jobs/claim`, reads the repo tree at the
+  job sha via `git ls-tree`/`git show` (no working-tree mutation), and streams
+  file batches to `POST /api/knowledge/ingest-jobs/{id}/files`; the server
+  chunks/embeds/upserts. Completion (`…/{id}/complete`) prunes file-derived
+  chunks in the workspace's `code`/`docs` namespaces that the run did not
+  refresh (`sweep`), so deleted/renamed files drop out of retrieval. Disable
+  per runner with `KNOWLEDGE_INGEST_JOBS=0`.
+
+**Caveat:** the completion sweep removes *all* file-derived chunks in
+`{ws}:code` / `{ws}:docs` older than the run — including manual
+`ingest-knowledge.ts` ingests from other source trees into the same namespaces.
+Re-run those after a full sync, or keep them in the `spec` corpus (never swept).
+
+### CI fallback for full jobs
+
+Repos without a runner can execute full jobs from any CI that checks out the
+repo — only a `BUILDD_API_KEY` secret is needed (no `DATABASE_URL` /
+`VOYAGE_API_KEY`; embedding happens server-side):
+
+```bash
+BUILDD_API_KEY=bld_... bun run knowledge:ingest            # claims jobs for this checkout's origin repo
+BUILDD_API_KEY=bld_... bun run knowledge:ingest --repo owner/name --dir /path/to/checkout
+```
+
+The script exits 0 when no jobs are queued, so it's safe on a schedule
+(e.g. a small workflow step after merge).
+
 ## spec-validator role
 
 The **spec-validator** is a default role seeded on workspace creation (alongside

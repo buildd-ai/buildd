@@ -7,6 +7,30 @@ export interface ExtractEntityInput {
   workspaceId: string;
   sourcePath?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Pre-extracted top-level symbols for the file (from symbol-extractor via
+   * ast-grep). When omitted, `metadata.symbols` is used as a fallback so
+   * chunks that carry symbol metadata (fileToChunks output) work end-to-end.
+   * Filtered to the chunk's line range when metadata has startLine/endLine.
+   */
+  symbols?: SymbolInfo[];
+}
+
+/** Structural subset of ExtractedSymbol — keeps this module dependency-free. */
+export interface SymbolInfo {
+  name: string;
+  kind?: string;
+  startLine?: number;
+  endLine?: number;
+  exported?: boolean;
+}
+
+function symbolsFromInput(input: ExtractEntityInput): SymbolInfo[] {
+  const raw = input.symbols ?? (input.metadata as { symbols?: unknown } | undefined)?.symbols;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (s): s is SymbolInfo => !!s && typeof s === 'object' && typeof (s as SymbolInfo).name === 'string',
+  );
 }
 
 const PR_REF_RE = /#(\d+)/g;
@@ -47,6 +71,35 @@ export function extractEntities(input: ExtractEntityInput): EntityUpsert[] {
       key: sourcePath,
       canonicalName: basename(sourcePath),
     });
+  }
+
+  // ── symbol entities (ast-grep symbol layer, code corpus) ─────────────────
+  // Symbols DEFINED in this chunk: keyed `{sourcePath}#{symbolName}` with
+  // junction role 'defines'. The bare symbol name is the canonical name, so
+  // resolveAndPersistEntities seeds it as a system alias automatically.
+  if (sourcePath) {
+    const chunkStart = typeof metadata?.startLine === 'number' ? metadata.startLine : null;
+    const chunkEnd = typeof metadata?.endLine === 'number' ? metadata.endLine : null;
+    for (const sym of symbolsFromInput(input)) {
+      // When the chunk's line range is known, keep only symbols declared in it.
+      if (
+        chunkStart !== null && chunkEnd !== null && typeof sym.startLine === 'number' &&
+        (sym.startLine < chunkStart || sym.startLine > chunkEnd)
+      ) {
+        continue;
+      }
+      entities.push({
+        workspaceId,
+        kind: 'symbol',
+        key: `${sourcePath}#${sym.name}`,
+        canonicalName: sym.name,
+        role: 'defines',
+        attributes: {
+          ...(sym.kind ? { symbolKind: sym.kind } : {}),
+          ...(typeof sym.exported === 'boolean' ? { exported: sym.exported } : {}),
+        },
+      });
+    }
   }
 
   // ── heading entities (docs/spec only) ────────────────────────────────────

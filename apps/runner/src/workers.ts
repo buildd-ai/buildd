@@ -21,6 +21,7 @@ import {
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
+import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
@@ -188,6 +189,58 @@ export function selectServerCredentials(claimed: {
   };
 }
 
+// An MCP connector resolved server-side at claim time (credentials already
+// decrypted). `transport` selects the SDK entry shape; `http` carries url/headers,
+// `stdio` carries command/args/env. Mirrors the claim route's ResolvedMcpConnector.
+export interface ResolvedMcpConnector {
+  name: string;
+  transport?: 'http' | 'stdio';
+  url?: string;
+  command?: string;
+  args?: string[];
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+type SdkMcpServerEntry =
+  | { type: 'http'; url: string; headers?: Record<string, string> }
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> };
+
+/**
+ * Map claim-time connector entries to the SDK `mcpServers` record shape, keyed by
+ * connector name. Handles both transports; entries missing their required fields
+ * for the declared transport are skipped (never merged half-formed). Pure — unit
+ * tested in apps/runner/__tests__/unit/mcp-connectors.test.ts.
+ */
+export function buildMcpServerEntries(
+  connectors: ResolvedMcpConnector[] | undefined,
+): Record<string, SdkMcpServerEntry> {
+  const out: Record<string, SdkMcpServerEntry> = {};
+  if (!connectors) return out;
+  for (const c of connectors) {
+    if (!c?.name) continue;
+    // Default to http for back-compat with older claim payloads that omit transport.
+    const transport = c.transport ?? 'http';
+    if (transport === 'stdio') {
+      if (!c.command) continue;
+      out[c.name] = {
+        type: 'stdio',
+        command: c.command,
+        ...(c.args && c.args.length > 0 ? { args: c.args } : {}),
+        ...(c.env && Object.keys(c.env).length > 0 ? { env: c.env } : {}),
+      };
+    } else {
+      if (!c.url) continue;
+      out[c.name] = {
+        type: 'http',
+        url: c.url,
+        ...(c.headers && Object.keys(c.headers).length > 0 ? { headers: c.headers } : {}),
+      };
+    }
+  }
+  return out;
+}
+
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
   const credentialsPath = join(homedir(), '.claude', '.credentials.json');
@@ -275,6 +328,8 @@ export class WorkerManager {
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
+  // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
+  private knowledgeIngestPoller: KnowledgeIngestPoller;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -377,6 +432,14 @@ export class WorkerManager {
       } catch { /* non-fatal */ }
     }, 30 * 60_000);
 
+    // Runner-executed full knowledge-ingest jobs (KM v2 spec §3.3, A2).
+    // Opt-out via KNOWLEDGE_INGEST_JOBS=0; polls only on idle heartbeat ticks.
+    this.knowledgeIngestPoller = createKnowledgeIngestPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      scanRepos: () => this.resolver.scanGitRepos(),
+    });
+
     // Send heartbeat to register availability (immediate + periodic)
     // Heartbeat is now a lightweight ping (no workspace queries server-side)
     if (!config.serverless) {
@@ -400,6 +463,11 @@ export class WorkerManager {
         ).length;
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
+        }
+        // Idle runners pick up full knowledge-ingest jobs (fire-and-forget;
+        // the poller serializes itself and never throws).
+        if (active === 0) {
+          this.knowledgeIngestPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
     }
@@ -930,7 +998,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1045,6 +1113,10 @@ export class WorkerManager {
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
+    }
+    if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
+      (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
     }
     if (claimedWorker.codexCredential) {
       worker.codexCredential = claimedWorker.codexCredential;
@@ -1748,6 +1820,19 @@ export class WorkerManager {
           },
         },
       };
+
+      // Merge team MCP connectors resolved at claim time (role opt-in ∩ workspace-
+      // enabled). Credentials were decrypted server-side; both http (url/headers)
+      // and stdio (command/args/env) transports are supported. `buildd` is reserved.
+      const claimConnectors = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
+      if (claimConnectors && claimConnectors.length > 0) {
+        const entries = buildMcpServerEntries(claimConnectors);
+        for (const [name, cfg] of Object.entries(entries)) {
+          if (name === 'buildd') continue; // never override the buildd coordination server
+          queryOptions.mcpServers[name] = cfg;
+        }
+        console.log(`[Worker ${worker.id}] Merged ${Object.keys(entries).length} MCP connector(s) into query options`);
+      }
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),

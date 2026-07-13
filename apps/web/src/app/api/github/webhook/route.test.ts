@@ -22,6 +22,13 @@ let insertCalls: Array<{ table: any; values: any; conflict: string | null }> = [
 let deleteCalls: Array<{ table: any }> = [];
 let updateCalls: Array<{ table: any; setValues: any }> = [];
 
+// Table-keyed select results — lets tests configure `db.select().from(<table>)`
+// responses (used by the knowledge-ingest enqueue path). Return null to fall
+// back to the legacy `.limit()` chain used by the release-PR lookups.
+let selectTableResults: (table: any) => any[] | null = () => null;
+// When true, ingest-job inserts return no rows (simulated ON CONFLICT DO NOTHING).
+let jobInsertConflicts = false;
+
 // ── Module mocks (must be before route import) ──────────────────────────────
 mock.module('@/lib/github', () => ({
   verifyWebhookSignature: mockVerifyWebhookSignature,
@@ -66,7 +73,8 @@ mock.module('@buildd/core/db', () => ({
           onConflictDoNothing: () => {
             call.conflict = 'nothing';
             return {
-              returning: () => Promise.resolve([{ id: 'task-1', ...values }]),
+              returning: () =>
+                Promise.resolve(jobInsertConflicts ? [] : [{ id: 'task-1', ...values }]),
             };
           },
           returning: () => Promise.resolve([{ id: 'new-task-1', ...values }]),
@@ -90,12 +98,19 @@ mock.module('@buildd/core/db', () => ({
         };
       },
     }),
-    // Used by handleReleasePrCiSuccess / handleReleasePrCiFailure to find pending release tasks
+    // Used by handleReleasePrCiSuccess / handleReleasePrCiFailure (via .limit)
+    // and by the knowledge-ingest enqueue path (awaited directly).
     select: (_columns?: any) => ({
-      from: (_table: any) => ({
-        where: (_cond: any) => ({
-          limit: (_n: number) => Promise.resolve([]),
-        }),
+      from: (table: any) => ({
+        where: (_cond: any) => {
+          const rows = selectTableResults(table);
+          if (rows) {
+            return Object.assign(Promise.resolve(rows), {
+              limit: (_n: number) => Promise.resolve(rows),
+            });
+          }
+          return { limit: (_n: number) => Promise.resolve([]) };
+        },
       }),
     }),
   },
@@ -109,14 +124,19 @@ mock.module('drizzle-orm', () => ({
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+const schemaMock = {
   githubInstallations: { id: 'id', installationId: 'installationId' },
-  githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId' },
+  githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId', fullName: 'fullName' },
   tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
   workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
-  workspaces: { id: 'id', repo: 'repo' },
+  workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
-}));
+  knowledgeIngestJobs: {
+    id: 'id', workspaceId: 'workspaceId', repo: 'repo', trigger: 'trigger',
+    sha: 'sha', prNumber: 'prNumber', scope: 'scope', status: 'status',
+  },
+};
+mock.module('@buildd/core/db/schema', () => schemaMock);
 
 // Mock release-strategy (real logic but isolated from DB)
 const mockResolveReleaseStrategy = mock((config: any) => {
@@ -149,6 +169,39 @@ mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
+// Pusher — no-op in tests; triggerEvent calls should be silently skipped
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mock(() => Promise.resolve()),
+  channels: {
+    workspace: (id: string) => `workspace-${id}`,
+    task: (id: string) => `task-${id}`,
+    worker: (id: string) => `worker-${id}`,
+    mission: (id: string) => `mission-${id}`,
+  },
+  events: {
+    TASK_CREATED: 'task:created',
+    TASK_CLAIMED: 'task:claimed',
+    TASK_COMPLETED: 'task:completed',
+    TASK_FAILED: 'task:failed',
+    TASK_ASSIGNED: 'task:assigned',
+    WORKER_STARTED: 'worker:started',
+    WORKER_PROGRESS: 'worker:progress',
+    WORKER_COMPLETED: 'worker:completed',
+    WORKER_FAILED: 'worker:failed',
+    WORKER_COMMAND: 'worker:command',
+    SCHEDULE_TRIGGERED: 'schedule:triggered',
+    SCHEDULE_DEFERRED: 'schedule:deferred',
+    CHILDREN_COMPLETED: 'task:children_completed',
+    TASK_UNBLOCKED: 'task:unblocked',
+    TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
+    MISSION_CYCLE_STARTED: 'mission:cycle_started',
+    MISSION_LOOP_COMPLETED: 'mission:loop_completed',
+    MISSION_LOOP_STALLED: 'mission:loop_stalled',
+    TASK_UPDATED: 'task:updated',
+    TASK_RETRY_CAP: 'task:retry_cap',
+    MISSION_NOTE_POSTED: 'mission:note_posted',
+  },
+}));
 mock.module('@/lib/work-tracker', () => ({
   maybePostWorkTrackerNote: mock(() => Promise.resolve()),
   postLinearCompletionComment: mock(() => Promise.resolve()),
@@ -248,6 +301,8 @@ function resetAll() {
   insertCalls = [];
   deleteCalls = [];
   updateCalls = [];
+  selectTableResults = () => null;
+  jobInsertConflicts = false;
 
   // Defaults
   mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(true));
@@ -1101,6 +1156,190 @@ describe('POST /api/github/webhook', () => {
       expect(workerUpdate).toBeDefined();
     });
 
+    it('enqueues a knowledge diff ingest job per bound workspace on merged PR', async () => {
+      // Bind repo → two workspaces via github_repos.fullName → workspaces.githubRepoId
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-a' }, { id: 'ws-b' }];
+        return null;
+      };
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 77,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-77',
+          head: { ref: 'feature/anything', sha: 'head-sha-77' },
+          html_url: 'https://github.com/test-org/test-repo/pull/77',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+      expect(jobInserts.length).toBe(2);
+      expect(jobInserts[0].values).toMatchObject({
+        workspaceId: 'ws-a',
+        repo: 'test-org/test-repo',
+        trigger: 'pr_merged',
+        sha: 'merge-sha-77',
+        prNumber: 77,
+        scope: 'diff',
+        status: 'queued',
+      });
+      expect(jobInserts[1].values.workspaceId).toBe('ws-b');
+      // Idempotent enqueue — must go through ON CONFLICT DO NOTHING
+      expect(jobInserts.every(c => c.conflict === 'nothing')).toBe(true);
+    });
+
+    it('enqueues ingest jobs even for non-worker PRs (any merged PR on a bound repo)', async () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-a' }];
+        return null;
+      };
+      // No worker owns this PR and branch doesn't match buildd/ pattern
+      mockWorkersFindFirst.mockReturnValue(null);
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 88,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-88',
+          head: { ref: 'human/manual-fix', sha: 'head-sha-88' },
+          html_url: 'https://github.com/test-org/test-repo/pull/88',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+      expect(jobInserts.length).toBe(1);
+    });
+
+    it('does not enqueue an ingest job when the repo is not bound to any workspace', async () => {
+      // Default selectTableResults → githubRepos select returns null → legacy
+      // chain; configure explicitly to return empty for repos.
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [];
+        return null;
+      };
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 78,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-78',
+          head: { ref: 'feature/x', sha: 'head-sha-78' },
+          html_url: 'https://github.com/unbound-org/unbound-repo/pull/78',
+        },
+        repository: { full_name: 'unbound-org/unbound-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+      expect(jobInserts.length).toBe(0);
+    });
+
+    it('returns 200 even when ingest enqueue throws (best-effort)', async () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) throw new Error('db exploded');
+        return null;
+      };
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 79,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-79',
+          head: { ref: 'feature/y', sha: 'head-sha-79' },
+          html_url: 'https://github.com/test-org/test-repo/pull/79',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+      expect((await res.json()).ok).toBe(true);
+    });
+
+    it('duplicate delivery: conflict on unique index yields no new job and still 200', async () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-a' }];
+        return null;
+      };
+      jobInsertConflicts = true; // second delivery — partial unique index fires
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 80,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-80',
+          head: { ref: 'feature/z', sha: 'head-sha-80' },
+          html_url: 'https://github.com/test-org/test-repo/pull/80',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      // Insert attempted (idempotency handled by Postgres), but no row returned
+      const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+      expect(jobInserts.length).toBe(1);
+      expect(jobInserts[0].conflict).toBe('nothing');
+    });
+
+    it('falls back to head SHA when merge_commit_sha is absent', async () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-a' }];
+        return null;
+      };
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 81,
+          merged: true,
+          draft: false,
+          head: { ref: 'feature/no-merge-sha', sha: 'head-sha-81' },
+          html_url: 'https://github.com/test-org/test-repo/pull/81',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+      expect(jobInserts.length).toBe(1);
+      expect(jobInserts[0].values.sha).toBe('head-sha-81');
+    });
+
     it('excludes drizzle/meta and lockfile noise from the line budget', async () => {
       mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
@@ -1120,6 +1359,164 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       // Source-only lines (6) < limit (10) → should auto-merge
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── PR lifecycle status tracking ─────────────────────────────────────────
+  describe('PR lifecycle status', () => {
+    it('sets prLifecycleStatus=pr_open when PR is opened and worker exists', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-open',
+        workspaceId: 'ws1',
+        taskId: 'task-open',
+        prNumber: 42,
+      });
+      // Also return no CI for the no-CI auto-merge path (workspace lookup)
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const payload = {
+        action: 'opened',
+        pull_request: {
+          number: 42,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-42' },
+          html_url: 'https://github.com/test-org/test-repo/pull/42',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
+      expect(openUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-merged',
+        workspaceId: 'ws1',
+        taskId: 'task-merged',
+        prNumber: 55,
+        task: {
+          id: 'task-merged',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 55,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-55' },
+          html_url: 'https://github.com/test-org/test-repo/pull/55',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const mergeUpdate = updateCalls.find(
+        (c) => (c.setValues as any).prLifecycleStatus === 'merged' && (c.setValues as any).mergedAt instanceof Date,
+      );
+      expect(mergeUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=closed when PR is closed without merge', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-closed',
+        workspaceId: 'ws1',
+        taskId: 'task-closed',
+        prNumber: 60,
+        task: {
+          id: 'task-closed',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 60,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-60' },
+          html_url: 'https://github.com/test-org/test-repo/pull/60',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const closedUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'closed');
+      expect(closedUpdate).toBeDefined();
+      // mergedAt must NOT be set on an abandoned PR
+      expect(closedUpdate!.setValues.mergedAt).toBeUndefined();
+      // The task must NOT be auto-completed on a non-merged close
+      const taskUpdate = updateCalls.find((c) => (c.setValues as any).status === 'completed');
+      expect(taskUpdate).toBeUndefined();
+    });
+
+    it('sets prLifecycleStatus=ci_running on check_suite requested', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-ci',
+        workspaceId: 'ws1',
+        taskId: 'task-ci',
+        prNumber: 42,
+      });
+
+      const payload = {
+        action: 'requested',
+        check_suite: {
+          id: 1,
+          head_sha: 'sha-ci',
+          status: 'queued',
+          conclusion: null,
+          pull_requests: [{ number: 42, head: { sha: 'sha-ci', ref: 'buildd/fix' }, base: { sha: 'base', ref: 'dev' } }],
+        },
+        repository: { id: 100, full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('check_suite', payload));
+      expect(res.status).toBe(200);
+
+      const ciUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_running');
+      expect(ciUpdate).toBeDefined();
+    });
+
+    it('sets prLifecycleStatus=ci_failed on check_suite completed failure', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-ci-fail',
+        workspaceId: 'ws1',
+        taskId: 'task-ci-fail',
+        prNumber: 42,
+        task: { id: 'task-ci-fail', status: 'in_progress', workspaceId: 'ws1', missionId: null, title: 'Fix bug' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      // CI logs fetch
+      mockGithubApi.mockReturnValue(Promise.resolve({ workflow_runs: [] }));
+
+      const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'failure' } });
+      const res = await POST(createWebhookRequest('check_suite', payload));
+      expect(res.status).toBe(200);
+
+      const failUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
+      expect(failUpdate).toBeDefined();
     });
   });
 });
