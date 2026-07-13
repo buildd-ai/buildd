@@ -533,6 +533,20 @@
       "when": 1783871443767,
       "tag": "0075_curious_absorbing_man",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1783900782395,
+      "tag": "0076_connector_shares",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1783901391651,
+      "tag": "0077_merge_policy",
+      "breakpoints": true
     }
   ]
 }

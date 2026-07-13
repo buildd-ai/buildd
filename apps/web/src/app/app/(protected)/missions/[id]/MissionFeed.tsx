@@ -13,6 +13,11 @@ const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: s
   update: { label: 'UPDATE', color: 'text-status-info', bg: 'bg-status-info/10', icon: 'M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182' },
   reply: { label: 'REPLY', color: 'text-accent-text', bg: 'bg-accent-text/10', icon: 'M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3' },
   guidance: { label: 'GUIDANCE', color: 'text-accent-text', bg: 'bg-accent-text/10', icon: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z' },
+  // Reviewer role verdicts (spec: reviewer role seed, merge-policy Phase 1). Reuse the
+  // decision/warning visual language — these are decisions, just reviewer-scoped.
+  reviewer_approved: { label: 'APPROVED', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
+  reviewer_request_changes: { label: 'CHANGES REQUESTED', color: 'text-[#D97706]', bg: 'bg-[#D97706]/10', icon: 'M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  reviewer_escalated: { label: 'ESCALATED', color: 'text-status-error', bg: 'bg-status-error/10', icon: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z' },
 };
 
 function timeAgo(date: string | Date): string {

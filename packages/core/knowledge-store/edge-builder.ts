@@ -53,6 +53,14 @@ export interface EdgeBuilderInput {
    * `(file) -imports-> (file)` edges.
    */
   imports?: ImportInfo[];
+  /**
+   * Precise cross-file edges/entities from SCIP (stream B2b), merged ADDITIVELY.
+   * ast-grep edges are emitted first, so on an exact `from→type→to` collision
+   * the ast-grep edge is kept — SCIP never removes or supersedes it, it only
+   * adds edges ast-grep can't see (cross-file `references`, resolved `imports`).
+   */
+  scipEdges?: EdgeUpsert[];
+  scipEntities?: EntityUpsert[];
 }
 
 /** Structural subset of ExtractedImport — keeps this module dependency-free. */
@@ -357,6 +365,12 @@ export function buildEdges(input: EdgeBuilderInput): EdgeBuilderOutput {
       });
     }
   }
+
+  // ── Step 9: merge SCIP precise edges/entities (additive) ──────────────────
+  // Pushed last so dedup/dedupEntities (first-wins) preserve the ast-grep
+  // edges above; SCIP contributes only what ast-grep couldn't resolve.
+  if (input.scipEntities) entities.push(...input.scipEntities);
+  if (input.scipEdges) edges.push(...input.scipEdges);
 
   return {
     entities: dedupEntities(entities),

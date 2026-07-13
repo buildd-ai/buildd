@@ -163,7 +163,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -174,6 +174,11 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     if (project !== undefined) updateData.project = project;
     if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
+    // Link (or unlink) the task to an external issue tracker item (e.g. a Linear
+    // issue). Setting this is what enables the PR-merge completion comment in the
+    // GitHub webhook (maybePostWorkTrackerIssueUpdate reads task.externalIssueId).
+    if (externalIssueId !== undefined) updateData.externalIssueId = externalIssueId || null;
+    if (externalIssueUrl !== undefined) updateData.externalIssueUrl = externalIssueUrl || null;
     if (missionId !== undefined) updateData.missionId = missionId || null;
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {

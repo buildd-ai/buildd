@@ -1,0 +1,87 @@
+# Retrieval Eval — regression gate for the knowledge-store retrieval pipeline.
+#
+# Runs packages/core/scripts/eval-retrieval.ts against the buildd workspace's
+# live index and fails if recall@k / MRR / NDCG regress by more than 20%
+# (relative) versus the committed baseline (packages/core/eval/retrieval-baseline.json).
+#
+# Triggers:
+#   - after "Knowledge Ingest" completes (post-ingest, fresh index)
+#   - on PRs that touch the retrieval pipeline or the eval harness
+#   - manual dispatch
+#
+# Secret guard: the job needs DATABASE_URL (read-only) + VOYAGE_API_KEY. On
+# forks / repos without these secrets it SKIPS cleanly and never fails the PR —
+# the gate only runs where it can actually measure retrieval.
+name: Retrieval Eval
+
+on:
+  workflow_run:
+    workflows: ["Knowledge Ingest"]
+    types: [completed]
+  workflow_dispatch:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'packages/core/knowledge-store/**'
+      - 'packages/core/scripts/eval-retrieval.ts'
+      - 'packages/core/scripts/assess-knowledge.ts'
+      - 'packages/core/eval/**'
+      - '.github/workflows/knowledge-eval.yml'
+
+concurrency:
+  group: retrieval-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    name: Retrieval regression gate
+    runs-on: ubuntu-latest
+    env:
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WORKSPACE_ID: 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Retrieval eval regression gate
+        id: eval
+        run: |
+          # Skip cleanly when secrets are absent (forks / unconfigured repos).
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::DATABASE_URL secret not available (fork or unconfigured repo) — skipping retrieval eval gate."
+            exit 0
+          fi
+          if [ -z "$VOYAGE_API_KEY" ]; then
+            echo "::warning::VOYAGE_API_KEY not set — the eval will run BM25-only, which the baseline already reflects."
+          fi
+          bun run packages/core/scripts/eval-retrieval.ts "$WORKSPACE_ID" \
+            --check-regression \
+            --baseline packages/core/eval/retrieval-baseline.json \
+            --output /tmp/eval-results.json
+
+      - name: Notify on regression
+        if: failure() && steps.eval.outcome == 'failure'
+        env:
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN_ALERT: ${{ secrets.PUSHOVER_TOKEN_ALERT }}
+        run: |
+          if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="Retrieval eval regressed >20% vs the committed baseline. Check knowledge ingest health and the pipeline change that landed."
+          curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
+            --form-string "user=${PUSHOVER_USER}" \
+            --form-string "title=📉 Retrieval eval regression" \
+            --form-string "message=${MSG}" \
+            --form-string "priority=1" \
+            --form-string "url=${RUN}" \
+            --form-string "url_title=View CI run" \
+            https://api.pushover.net/1/messages.json || true

@@ -19,7 +19,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -253,6 +253,10 @@ export interface WorkspaceGitConfig {
   // Controls which type of runner (user/service/action) can claim tasks by default
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+
+  // Merge policy — supersedes autoMerge* fields when set.
+  // null / absent → fall back to legacy autoMerge* fields (backward compat).
+  mergePolicy?: MergePolicy;
 
 }
 
@@ -539,6 +543,9 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
+  // null means "use workspace default".
+  mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -770,7 +777,7 @@ export const missionNotes = pgTable('mission_notes', {
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
   authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
-  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance'>(),
+  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated'>(),
   title: text('title').notNull(),
   body: text('body'),
   replyTo: uuid('reply_to'),
@@ -1547,9 +1554,24 @@ export const connectorWorkspaces = pgTable('connector_workspaces', {
   workspaceIdx: index('connector_workspaces_workspace_idx').on(t.workspaceId),
 }));
 
+// Cross-team connector sharing (spec §1b). `connectors.teamId` is the OWNER team;
+// a row here grants `sharedWithTeamId` use of the connector, reusing the owner's
+// credential. Grantees enable per workspace / opt in per role but never edit the
+// connector config or its credential. No self-share rows (owner is implicit).
+export const connectorShares = pgTable('connector_shares', {
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }).notNull(),
+  sharedWithTeamId: uuid('shared_with_team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  grantedByAccountId: uuid('granted_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.connectorId, t.sharedWithTeamId] }),
+  sharedWithTeamIdx: index('connector_shares_shared_with_team_idx').on(t.sharedWithTeamId),
+}));
+
 export const connectorsRelations = relations(connectors, ({ one, many }) => ({
   team: one(teams, { fields: [connectors.teamId], references: [teams.id] }),
   connectorWorkspaces: many(connectorWorkspaces),
+  shares: many(connectorShares),
 }));
 
 export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ one }) => ({
@@ -1557,8 +1579,15 @@ export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ on
   workspace: one(workspaces, { fields: [connectorWorkspaces.workspaceId], references: [workspaces.id] }),
 }));
 
+export const connectorSharesRelations = relations(connectorShares, ({ one }) => ({
+  connector: one(connectors, { fields: [connectorShares.connectorId], references: [connectors.id] }),
+  sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
+}));
+
 // TypeScript types for new tables
 export type Connector = typeof connectors.$inferSelect;
 export type NewConnector = typeof connectors.$inferInsert;
 export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
 export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
+export type ConnectorShare = typeof connectorShares.$inferSelect;
+export type NewConnectorShare = typeof connectorShares.$inferInsert;

@@ -6,6 +6,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockConnectorsFindMany = mock(() => [] as any[]);
 const mockConnectorsFindFirst = mock(() => null as any);
+const mockConnectorSharesFindMany = mock(() => [] as any[]);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockConnectorsInsert = mock(() => ({
@@ -36,6 +37,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       connectors: { findMany: mockConnectorsFindMany, findFirst: mockConnectorsFindFirst },
+      connectorShares: { findMany: mockConnectorSharesFindMany },
       secrets: { findMany: mockSecretsFindMany },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
     },
@@ -51,6 +53,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
+  connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
   teamMembers: { userId: 'userId', teamId: 'teamId' },
 }));
@@ -78,10 +81,12 @@ describe('GET /api/connectors', () => {
     mockAuthenticateApiKey.mockReset();
     mockGetUserTeamIds.mockReset();
     mockConnectorsFindMany.mockReset();
+    mockConnectorSharesFindMany.mockReset();
     mockSecretsFindMany.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
     mockSecretsFindMany.mockResolvedValue([]);
   });
 
@@ -126,6 +131,41 @@ describe('GET /api/connectors', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });
     const res = await GET(makeGetReq({ authorization: 'Bearer bld_key' }));
     expect(res.status).toBe(401);
+  });
+
+  // §1b: visibility = owned ∪ shared-in. Shared-in entries are marked
+  // { shared: true, ownerTeamId, ownerTeamName } and MUST stay credential-free.
+  it('includes shared-in connectors marked shared, without credential internals', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'conn-own', name: 'owned-mcp', url: 'https://owned.example.com', authMode: 'none', transport: 'http', teamId: 'team-1' },
+    ]);
+    mockConnectorSharesFindMany.mockResolvedValue([
+      {
+        connectorId: 'conn-shared',
+        sharedWithTeamId: 'team-1',
+        connector: {
+          id: 'conn-shared', name: 'shared-mcp', url: 'https://shared.example.com', authMode: 'oauth', transport: 'http',
+          teamId: 'team-owner', clientId: 'owner-client', encryptedClientSecret: 'enc:owner-secret',
+          team: { name: 'Owner Team' },
+        },
+      },
+    ]);
+    const res = await GET(makeGetReq());
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.connectors).toHaveLength(2);
+
+    const owned = data.connectors.find((c: any) => c.id === 'conn-own');
+    expect(owned.shared).toBeUndefined();
+
+    const shared = data.connectors.find((c: any) => c.id === 'conn-shared');
+    expect(shared.shared).toBe(true);
+    expect(shared.ownerTeamId).toBe('team-owner');
+    expect(shared.ownerTeamName).toBe('Owner Team');
+    // Grantee visibility MUST NOT include credential internals (§1b).
+    expect(shared).not.toHaveProperty('clientId');
+    expect(shared).not.toHaveProperty('encryptedClientSecret');
   });
 
   it('marks connector as expired when tokenExpiresAt is in the past', async () => {

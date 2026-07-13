@@ -868,6 +868,26 @@ export async function handleBuilddAction(
             const mirrorResult = await mirrorWorkProduct(ctx, 'task', taskChunk);
             if (mirrorResult) supersededCount = mirrorResult.superseded;
 
+            // Phase D1: also mirror a recency-weighted session card into the
+            // `session` corpus (process narrative + loose threads, low authority
+            // / 7-day half-life). Distinct from the durable task card above; it
+            // powers "someone worked this area recently" at claim time. Fully
+            // best-effort — never let it disturb completion.
+            try {
+              const sessionChunk = buildSessionCard({
+                taskId,
+                workerId: (params.workerId as string) || ctx.workerId || null,
+                title: taskData?.title ?? null,
+                summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+                nextSuggestion: (params.nextSuggestion as string) ?? null,
+                success: true,
+                turns: typeof result?.turns === 'number' ? result.turns : null,
+                missionId: taskData?.missionId ?? null,
+              });
+              if (completedAtRaw) sessionChunk.sourceTs = new Date(completedAtRaw);
+              await mirrorWorkProduct(ctx, 'session', sessionChunk);
+            } catch { /* non-fatal */ }
+
             // Layer 2: bind entity refs and build edges (best-effort)
             const wsId = ctx.workspaceId ?? await ctx.getWorkspaceId();
             if (wsId && ctx.knowledgeStore) {
@@ -2641,6 +2661,7 @@ import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
+  buildSessionCard,
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,

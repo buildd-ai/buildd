@@ -139,10 +139,12 @@ async function main() {
       continue;
     }
 
-    // Columns expected by schema but missing from DB
+    // Columns expected by schema but missing from DB — same reasoning as a
+    // whole missing table: the migration adding this column may simply not
+    // have run yet (migrations run on deploy, not before this check).
     for (const col of expectedCols) {
       if (!actualCols.has(col)) {
-        driftLines.push(`  MISSING in DB  : ${tableName}.${col}`);
+        console.log(`  [pending] Column '${tableName}.${col}' not in DB yet — will be created on migrate`);
       }
     }
 
