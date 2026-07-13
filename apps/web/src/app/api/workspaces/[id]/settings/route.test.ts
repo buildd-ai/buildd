@@ -182,6 +182,53 @@ describe('PATCH /api/workspaces/[id]/settings', () => {
     expect(data.success).toBe(true);
     expect(data.workTrackerConfig).toEqual({ connectorId: 'conn-1', provider: 'linear' });
   });
+
+  // §1 AC-1: GitHub uses the App installation — no connector required.
+  it('saves github provider without a connector when the App is installed', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', githubInstallationId: 'inst-uuid' });
+
+    const res = await PATCH(
+      makeReq('PATCH', {}, { workTrackerConfig: { provider: 'github' } }),
+      { params: PARAMS },
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workTrackerConfig).toEqual({ provider: 'github' });
+  });
+
+  // §1 AC-2
+  it('returns 400 github_app_not_installed when github is set without an installation', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', githubInstallationId: null });
+
+    const res = await PATCH(makeReq('PATCH', {}, { workTrackerConfig: { provider: 'github' } }), { params: PARAMS });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('github_app_not_installed');
+  });
+
+  // §1 AC-3
+  it('returns 400 when linear is set without a connectorId', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+
+    const res = await PATCH(makeReq('PATCH', {}, { workTrackerConfig: { provider: 'linear' } }), { params: PARAMS });
+    expect(res.status).toBe(400);
+  });
+
+  // §1 AC-4
+  it('returns 400 unsupported_provider for an unknown provider', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+
+    const res = await PATCH(makeReq('PATCH', {}, { workTrackerConfig: { provider: 'jira' } }), { params: PARAMS });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unsupported_provider');
+  });
 });
 
 // Smoke test: verify externalIssueId column exists in the schema export

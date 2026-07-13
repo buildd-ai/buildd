@@ -204,6 +204,7 @@ mock.module('@/lib/pusher', () => ({
 }));
 mock.module('@/lib/work-tracker', () => ({
   maybePostWorkTrackerNote: mock(() => Promise.resolve()),
+  postWorkTrackerCompletionUpdate: mock(() => Promise.resolve()),
   postLinearCompletionComment: mock(() => Promise.resolve()),
 }));
 
