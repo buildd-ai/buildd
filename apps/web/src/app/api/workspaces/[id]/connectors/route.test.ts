@@ -7,6 +7,7 @@ const mockVerifyWorkspaceAccess = mock(() => null as any);
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockConnectorWorkspacesFindMany = mock(() => [] as any[]);
 const mockConnectorsFindFirst = mock(() => null as any);
+const mockConnectorSharesFindFirst = mock(() => null as any);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockInsert = mock(() => ({
   values: mock(() => ({
@@ -26,6 +27,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectors: { findFirst: mockConnectorsFindFirst },
+      connectorShares: { findFirst: mockConnectorSharesFindFirst },
       secrets: { findMany: mockSecretsFindMany },
     },
     insert: () => mockInsert(),
@@ -35,11 +37,13 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
   and: (...args: any[]) => ({ args, op: 'and' }),
+  inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   connectors: { id: 'id', teamId: 'teamId' },
   connectorWorkspaces: { workspaceId: 'workspaceId', enabled: 'enabled', connectorId: 'connectorId' },
+  connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   workspaces: { id: 'id' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
 }));
@@ -113,10 +117,12 @@ describe('PATCH /api/workspaces/[id]/connectors', () => {
     mockAuthenticateApiKey.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockConnectorsFindFirst.mockReset();
+    mockConnectorSharesFindFirst.mockReset();
     mockInsert.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
-    mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', teamId: 'team-1' });
+    mockConnectorSharesFindFirst.mockResolvedValue(null);
     mockInsert.mockReturnValue({
       values: mock(() => ({
         onConflictDoUpdate: mock(() => Promise.resolve()),
@@ -138,11 +144,32 @@ describe('PATCH /api/workspaces/[id]/connectors', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns 403 when connector does not belong to team', async () => {
+  // §1b AC-2: a connector that is neither owned by nor shared to the workspace's
+  // team is not visible — enabling it is rejected 404.
+  it('returns 404 when connector does not exist', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockConnectorsFindFirst.mockResolvedValue(null);
     const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { connectorId: 'conn-other', enabled: true }), { params: PARAMS });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when connector belongs to another team and is not shared in', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-other', teamId: 'team-other' });
+    mockConnectorSharesFindFirst.mockResolvedValue(null);
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { connectorId: 'conn-other', enabled: true }), { params: PARAMS });
+    expect(res.status).toBe(404);
+  });
+
+  // §1b: a shared-in connector is enableable per workspace exactly like an owned one.
+  it('enables a connector shared to the workspace team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-shared', teamId: 'team-owner' });
+    mockConnectorSharesFindFirst.mockResolvedValue({ connectorId: 'conn-shared', sharedWithTeamId: 'team-1' });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { connectorId: 'conn-shared', enabled: true }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
   });
 
   it('upserts connectorWorkspaces row', async () => {

@@ -10,6 +10,21 @@ interface Connector {
   url: string;
   authMode: 'none' | 'header' | 'oauth';
   status: 'connected' | 'expired' | 'not_connected';
+  /** Present when the connector is shared *to* the current team (grantee view). */
+  shared?: boolean;
+  ownerTeamName?: string | null;
+}
+
+interface Team {
+  id: string;
+  name: string;
+  role: string; // 'owner' | 'admin' | 'member'
+}
+
+interface ConnectorShare {
+  sharedWithTeamId: string;
+  teamName?: string;
+  createdAt?: string;
 }
 
 function StatusBadge({ authMode, status }: { authMode: Connector['authMode']; status: Connector['status'] }) {
@@ -66,6 +81,20 @@ export default function ConnectionsClient({
   const [deleting, setDeleting] = useState<Connector | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
+  // Cross-team sharing (spec §1b — owner-side UX)
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [sharingConnector, setSharingConnector] = useState<Connector | null>(null);
+  const [shares, setShares] = useState<ConnectorShare[]>([]);
+  const [ownerTeamId, setOwnerTeamId] = useState<string | null>(null);
+  const [sharesLoading, setSharesLoading] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareTeamId, setShareTeamId] = useState('');
+  const [shareSaving, setShareSaving] = useState(false);
+  const [revokingTeamId, setRevokingTeamId] = useState<string | null>(null);
+  const [transferTeamId, setTransferTeamId] = useState('');
+  const [confirmingTransfer, setConfirmingTransfer] = useState(false);
+  const [transferLoading, setTransferLoading] = useState(false);
+
   const loadConnectors = useCallback(async () => {
     try {
       const res = await fetch('/api/connectors');
@@ -83,6 +112,25 @@ export default function ConnectionsClient({
   useEffect(() => {
     loadConnectors();
   }, [loadConnectors]);
+
+  // Teams the current user belongs to — feeds the share/transfer pickers.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/teams');
+        if (res.ok) {
+          const data = await res.json();
+          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string }) => ({
+            id: t.id,
+            name: t.name,
+            role: t.role ?? 'member',
+          })));
+        }
+      } catch {
+        // ignore — pickers render empty
+      }
+    })();
+  }, []);
 
   // Show toast on OAuth redirect params
   useEffect(() => {
@@ -180,6 +228,116 @@ export default function ConnectionsClient({
     }
   }
 
+  async function loadShares(connectorId: string) {
+    setSharesLoading(true);
+    setShareError(null);
+    try {
+      const res = await fetch(`/api/connectors/${connectorId}/shares`);
+      if (res.ok) {
+        const data = await res.json();
+        setShares(data.shares || []);
+        setOwnerTeamId(data.ownerTeamId ?? null);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setShareError(err.error || 'Failed to load shares');
+      }
+    } catch {
+      setShareError('Failed to load shares');
+    } finally {
+      setSharesLoading(false);
+    }
+  }
+
+  function openSharing(connector: Connector) {
+    setSharingConnector(connector);
+    setShares([]);
+    setOwnerTeamId(null);
+    setShareTeamId('');
+    setTransferTeamId('');
+    setShareError(null);
+    void loadShares(connector.id);
+  }
+
+  function closeSharing() {
+    setSharingConnector(null);
+    setConfirmingTransfer(false);
+  }
+
+  async function handleShare() {
+    if (!sharingConnector || !shareTeamId) return;
+    setShareSaving(true);
+    setShareError(null);
+    try {
+      const res = await fetch(`/api/connectors/${sharingConnector.id}/shares`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId: shareTeamId }),
+      });
+      if (res.ok) {
+        setShareTeamId('');
+        await loadShares(sharingConnector.id);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setShareError(err.error || 'Failed to share connector');
+      }
+    } catch {
+      setShareError('Failed to share connector');
+    } finally {
+      setShareSaving(false);
+    }
+  }
+
+  async function handleRevoke(teamId: string) {
+    if (!sharingConnector) return;
+    setRevokingTeamId(teamId);
+    setShareError(null);
+    try {
+      const res = await fetch(`/api/connectors/${sharingConnector.id}/shares`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId }),
+      });
+      if (res.ok) {
+        setShares(prev => prev.filter(s => s.sharedWithTeamId !== teamId));
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setShareError(err.error || 'Failed to revoke share');
+      }
+    } catch {
+      setShareError('Failed to revoke share');
+    } finally {
+      setRevokingTeamId(null);
+    }
+  }
+
+  async function handleTransfer() {
+    if (!sharingConnector || !transferTeamId) return;
+    setTransferLoading(true);
+    setShareError(null);
+    try {
+      const res = await fetch(`/api/connectors/${sharingConnector.id}/transfer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId: transferTeamId }),
+      });
+      if (res.ok) {
+        const target = teams.find(t => t.id === transferTeamId);
+        setMessage({ type: 'success', text: `Transferred ${sharingConnector.name} to ${target?.name ?? 'the selected team'}` });
+        closeSharing();
+        loadConnectors();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setShareError(err.error || 'Failed to transfer ownership');
+        setConfirmingTransfer(false);
+      }
+    } catch {
+      setShareError('Failed to transfer ownership');
+      setConfirmingTransfer(false);
+    } finally {
+      setTransferLoading(false);
+    }
+  }
+
   function handleAdded(connector: Connector) {
     setShowAddModal(false);
     loadConnectors();
@@ -187,6 +345,13 @@ export default function ConnectionsClient({
       handleConnect(connector);
     }
   }
+
+  // Share picker: teams the user belongs to, minus the owner team and teams
+  // already granted. Transfer picker: teams the user administers (spec §1b —
+  // ownership moves only to a team the actor is owner/admin of).
+  const sharedTeamIds = new Set(shares.map(s => s.sharedWithTeamId));
+  const shareableTeams = teams.filter(t => t.id !== ownerTeamId && !sharedTeamIds.has(t.id));
+  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && t.role !== 'member');
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl">
@@ -232,13 +397,20 @@ export default function ConnectionsClient({
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
+                    {connector.shared && (
+                      <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
+                        Shared by {connector.ownerTeamName || 'another team'}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-text-secondary font-mono break-all">
                     {truncateUrl(connector.url)}
                   </div>
                 </div>
+                {/* Grantees only enable per workspace / opt roles in — no config,
+                    credential, or sharing controls on a shared-in connector (spec §1b). */}
                 <div className="flex gap-2 flex-shrink-0 flex-wrap justify-end">
-                  {connector.authMode === 'oauth' && connector.status === 'expired' && (
+                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'expired' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
@@ -247,7 +419,7 @@ export default function ConnectionsClient({
                       {connecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
                   )}
-                  {connector.authMode === 'oauth' && connector.status === 'not_connected' && (
+                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'not_connected' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
@@ -256,7 +428,7 @@ export default function ConnectionsClient({
                       {connecting === connector.id ? 'Redirecting…' : 'Connect'}
                     </button>
                   )}
-                  {connector.authMode === 'header' && connector.status === 'not_connected' && (
+                  {!connector.shared && connector.authMode === 'header' && connector.status === 'not_connected' && (
                     <button
                       onClick={() => { setEditingHeaderConnector(connector); setHeaderKeyValue(''); }}
                       className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 transition-colors"
@@ -264,7 +436,7 @@ export default function ConnectionsClient({
                       Set key
                     </button>
                   )}
-                  {(connector.status === 'connected' || connector.status === 'expired') && connector.authMode !== 'none' && (
+                  {!connector.shared && (connector.status === 'connected' || connector.status === 'expired') && connector.authMode !== 'none' && (
                     <button
                       onClick={() => setDisconnecting(connector)}
                       className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
@@ -272,13 +444,24 @@ export default function ConnectionsClient({
                       Disconnect
                     </button>
                   )}
-                  <button
-                    onClick={() => setDeleting(connector)}
-                    className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
-                    title="Delete connector"
-                  >
-                    Delete
-                  </button>
+                  {!connector.shared && (
+                    <button
+                      onClick={() => openSharing(connector)}
+                      className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 transition-colors"
+                      title="Share with other teams"
+                    >
+                      Sharing
+                    </button>
+                  )}
+                  {!connector.shared && (
+                    <button
+                      onClick={() => setDeleting(connector)}
+                      className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
+                      title="Delete connector"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -339,6 +522,124 @@ export default function ConnectionsClient({
         loading={disconnectLoading}
         onConfirm={handleDisconnect}
         onCancel={() => setDisconnecting(null)}
+      />
+
+      {sharingConnector && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => e.target === e.currentTarget && closeSharing()}
+        >
+          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md p-6">
+            <h2 className="text-base font-semibold text-text-primary mb-1">
+              Sharing — {sharingConnector.name}
+            </h2>
+            <p className="text-xs text-text-muted mb-4">
+              Grantee teams use this connector with your team&apos;s credential. They can
+              enable it per workspace and opt roles in, but cannot edit or reconnect it.
+            </p>
+
+            {shareError && (
+              <div className="mb-3 p-2 rounded-md text-xs bg-status-error/10 text-status-error border border-status-error/30">
+                {shareError}
+              </div>
+            )}
+
+            <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+              Shared with
+            </div>
+            {sharesLoading ? (
+              <div className="text-sm text-text-secondary mb-4">Loading…</div>
+            ) : shares.length === 0 ? (
+              <div className="text-sm text-text-muted mb-4">Not shared with any team.</div>
+            ) : (
+              <ul className="mb-4 border border-border-default rounded-md divide-y divide-border-default">
+                {shares.map(share => (
+                  <li key={share.sharedWithTeamId} className="flex items-center justify-between px-3 py-2">
+                    <span className="text-sm text-text-primary">{share.teamName || share.sharedWithTeamId}</span>
+                    <button
+                      onClick={() => handleRevoke(share.sharedWithTeamId)}
+                      disabled={revokingTeamId === share.sharedWithTeamId}
+                      className="text-xs text-text-muted hover:text-status-error disabled:opacity-50 transition-colors"
+                    >
+                      {revokingTeamId === share.sharedWithTeamId ? 'Revoking…' : 'Revoke'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+              Share with team…
+            </div>
+            <div className="flex gap-2 mb-5">
+              <select
+                value={shareTeamId}
+                onChange={(e) => setShareTeamId(e.target.value)}
+                className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary focus:outline-none focus:border-primary"
+              >
+                <option value="">Select a team…</option>
+                {shareableTeams.map(team => (
+                  <option key={team.id} value={team.id}>{team.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleShare}
+                disabled={shareSaving || !shareTeamId}
+                className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+              >
+                {shareSaving ? 'Sharing…' : 'Share'}
+              </button>
+            </div>
+
+            <div className="border-t border-border-default pt-4">
+              <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+                Transfer ownership…
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={transferTeamId}
+                  onChange={(e) => setTransferTeamId(e.target.value)}
+                  className="flex-1 min-w-0 px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary focus:outline-none focus:border-primary"
+                >
+                  <option value="">Select a team…</option>
+                  {transferableTeams.map(team => (
+                    <option key={team.id} value={team.id}>{team.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setConfirmingTransfer(true)}
+                  disabled={!transferTeamId || transferLoading}
+                  className="px-4 py-2 text-sm border border-status-error/40 text-status-error rounded-md hover:bg-status-error/10 disabled:opacity-50 transition-colors"
+                >
+                  Transfer…
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-text-muted">
+                Moves the connector and its credential to the selected team. Existing shares are preserved.
+              </p>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={closeSharing}
+                className="px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 rounded-md transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmingTransfer}
+        title={`Transfer ${sharingConnector?.name ?? 'connector'}?`}
+        message={`Ownership moves to ${teams.find(t => t.id === transferTeamId)?.name ?? 'the selected team'}. That team's admins will control this connector and its credential. Existing shares are preserved; your team keeps access only if it is shared back.`}
+        confirmLabel="Transfer ownership"
+        variant="danger"
+        loading={transferLoading}
+        onConfirm={handleTransfer}
+        onCancel={() => setConfirmingTransfer(false)}
       />
 
       <ConfirmDialog

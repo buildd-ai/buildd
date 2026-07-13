@@ -14,6 +14,11 @@ interface Connector {
   url: string;
   authMode: 'none' | 'header' | 'oauth';
   status: 'connected' | 'expired' | 'not_connected';
+  /** Present when the connector is shared *to* the current team (spec §1b).
+   * Shared-in connectors are enable-only here; owner controls live with the
+   * owner team on /app/connections. */
+  shared?: boolean;
+  ownerTeamName?: string | null;
 }
 
 interface ConnectorWithWorkspaces extends Connector {
@@ -132,6 +137,11 @@ export default function ConnectorsSection({ workspaces }: { workspaces: Workspac
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className="text-sm font-medium text-text-primary">{connector.name}</span>
                     <span className="text-xs text-text-muted font-mono">{connector.authMode}</span>
+                    {connector.shared && (
+                      <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
+                        Shared by {connector.ownerTeamName || 'another team'}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-text-muted font-mono truncate">{connector.url}</div>
                 </div>
