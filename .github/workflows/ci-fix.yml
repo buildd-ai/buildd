@@ -27,7 +27,7 @@ jobs:
       # release PR's required check stuck until a human manually re-runs it.
       # Reuses the same App as release.yml (vars.RELEASE_APP_ID +
       # secrets.RELEASE_APP_PRIVATE_KEY). Absent ⇒ falls back to github.token.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         if: ${{ vars.RELEASE_APP_ID != '' }}
         with:
