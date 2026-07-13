@@ -23,6 +23,52 @@ describe('buildEdges', () => {
     expect(output.pendingRefs).toBeDefined();
   });
 
+  it('merges SCIP edges/entities additively without dropping ast-grep edges', () => {
+    const input: EdgeBuilderInput = {
+      chunk: {
+        ...BASE_CHUNK,
+        sourceType: 'code',
+        sourcePath: 'src/a.ts',
+        metadata: { startLine: 1, endLine: 20, symbols: [{ name: 'foo', kind: 'function', startLine: 1, endLine: 5 }] },
+      },
+      corpus: 'code',
+      workspaceId: 'ws-1',
+      // A duplicate of the ast-grep defines edge plus a SCIP-only cross-file edge.
+      scipEdges: [
+        {
+          workspaceId: 'ws-1',
+          fromEntityKey: 'src/a.ts',
+          fromEntityKind: 'file',
+          toEntityKey: 'src/a.ts#foo',
+          toEntityKind: 'symbol',
+          type: 'defines',
+          weight: 1.0,
+          rule: 'scip:defines',
+        },
+        {
+          workspaceId: 'ws-1',
+          fromEntityKey: 'src/a.ts',
+          fromEntityKind: 'file',
+          toEntityKey: 'src/b.ts',
+          toEntityKind: 'file',
+          type: 'imports',
+          weight: 0.8,
+          rule: 'scip:imports',
+        },
+      ],
+      scipEntities: [
+        { workspaceId: 'ws-1', kind: 'file', key: 'src/b.ts', canonicalName: 'b.ts' },
+      ],
+    };
+    const { edges } = buildEdges(input);
+    const defines = edges.filter(e => e.type === 'defines' && e.toEntityKey === 'src/a.ts#foo');
+    // Duplicate collapsed to one, and ast-grep's rule wins (emitted first).
+    expect(defines).toHaveLength(1);
+    expect(defines[0].rule).toBe('astgrep:definition');
+    // The SCIP-only cross-file import edge survives.
+    expect(edges.some(e => e.type === 'imports' && e.toEntityKey === 'src/b.ts' && e.rule === 'scip:imports')).toBe(true);
+  });
+
   it('produces a file entity for code chunks with sourcePath', () => {
     const input: EdgeBuilderInput = {
       chunk: { ...BASE_CHUNK, sourceType: 'code', sourcePath: 'src/lib/auth.ts' },

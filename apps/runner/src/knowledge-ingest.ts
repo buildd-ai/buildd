@@ -89,7 +89,22 @@ export class KnowledgeIngestPoller {
 function defaultExecuteJob(api: FullIngestApiClient) {
   return async (job: FullIngestJob, repoPath: string) => {
     const reader = createGitRepoReader(repoPath, job.sha);
-    return runFullIngestJob(job, reader, api);
+    return runFullIngestJob(job, reader, api, undefined, {
+      // SCIP precise-graph enrichment (stream B2b). Dynamic import keeps
+      // scip-runner's child_process/fs surface lazy and off the static graph;
+      // any failure (binary absent, project won't index) is a graceful no-op.
+      scipEnrich: async j => {
+        if (process.env.KNOWLEDGE_SCIP !== '1') return null; // opt-in for now
+        const { runScipGraph } = await import('@buildd/core/knowledge-store/scip-runner');
+        return runScipGraph({
+          repoPath,
+          sha: reader.resolvedSha ?? j.sha ?? null,
+          workspaceId: j.workspaceId,
+          repoSlug: j.repo,
+          log: msg => console.log(`[knowledge-ingest] ${msg}`),
+        });
+      },
+    });
   };
 }
 
