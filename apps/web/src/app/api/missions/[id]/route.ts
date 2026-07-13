@@ -172,7 +172,7 @@ export async function PATCH(
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
-      dependsOnMission, gateCondition, orchestrationMode, externalIssueId, externalIssueUrl } = body;
+      dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -249,6 +249,9 @@ export async function PATCH(
     }
     if (gateCondition !== undefined) {
       updateData.gateCondition = gateCondition;
+    }
+    if (mergePolicy !== undefined) {
+      updateData.mergePolicy = mergePolicy ?? null;
     }
     if (orchestrationMode !== undefined) {
       updateData.orchestrationMode = orchestrationMode;

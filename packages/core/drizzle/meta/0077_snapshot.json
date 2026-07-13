@@ -1,6 +1,6 @@
 {
-  "id": "13a2575c-c8f6-4edc-902b-d87afe87d84c",
-  "prevId": "765d2daf-4cd0-469e-a61e-73421aeba4a2",
+  "id": "6c64bf1c-0b75-404e-8454-0d3ebbea0e53",
+  "prevId": "7605dd4b-4eed-430d-9f81-1d2f709a0479",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -644,6 +644,108 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.connector_shares": {
+      "name": "connector_shares",
+      "schema": "",
+      "columns": {
+        "connector_id": {
+          "name": "connector_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shared_with_team_id": {
+          "name": "shared_with_team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by_account_id": {
+          "name": "granted_by_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "connector_shares_shared_with_team_idx": {
+          "name": "connector_shares_shared_with_team_idx",
+          "columns": [
+            {
+              "expression": "shared_with_team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "connector_shares_connector_id_connectors_id_fk": {
+          "name": "connector_shares_connector_id_connectors_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "connectors",
+          "columnsFrom": [
+            "connector_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connector_shares_shared_with_team_id_teams_id_fk": {
+          "name": "connector_shares_shared_with_team_id_teams_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "shared_with_team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connector_shares_granted_by_account_id_accounts_id_fk": {
+          "name": "connector_shares_granted_by_account_id_accounts_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "accounts",
+          "columnsFrom": [
+            "granted_by_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "connector_shares_connector_id_shared_with_team_id_pk": {
+          "name": "connector_shares_connector_id_shared_with_team_id_pk",
+          "columns": [
+            "connector_id",
+            "shared_with_team_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.connector_workspaces": {
       "name": "connector_workspaces",
       "schema": "",
@@ -763,6 +865,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'none'"
+        },
+        "transport": {
+          "name": "transport",
+          "type": "connector_transport",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'http'"
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "args": {
+          "name": "args",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "env_mapping": {
+          "name": "env_mapping",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "header_name": {
           "name": "header_name",
@@ -1628,6 +1758,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "hit_count": {
+          "name": "hit_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_hit_at": {
+          "name": "last_hit_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2479,6 +2622,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "merge_policy": {
+          "name": "merge_policy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "orchestration_mode": {
+          "name": "orchestration_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'auto'"
         },
         "released_at": {
           "name": "released_at",
@@ -5810,6 +5966,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pr_lifecycle_status": {
+          "name": "pr_lifecycle_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_commit_sha": {
           "name": "last_commit_sha",
           "type": "text",
@@ -6162,6 +6324,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
+        },
+        "connector_refs": {
+          "name": "connector_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "is_role": {
           "name": "is_role",
@@ -6574,6 +6743,14 @@
         "none",
         "header",
         "oauth"
+      ]
+    },
+    "public.connector_transport": {
+      "name": "connector_transport",
+      "schema": "public",
+      "values": [
+        "http",
+        "stdio"
       ]
     }
   },

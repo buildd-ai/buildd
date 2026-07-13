@@ -19,7 +19,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -253,6 +253,10 @@ export interface WorkspaceGitConfig {
   // Controls which type of runner (user/service/action) can claim tasks by default
   // Can be overridden per-task at creation time
   defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
+
+  // Merge policy — supersedes autoMerge* fields when set.
+  // null / absent → fall back to legacy autoMerge* fields (backward compat).
+  mergePolicy?: MergePolicy;
 
 }
 
@@ -539,6 +543,9 @@ export const missions = pgTable('missions', {
   lastNotifiedSha: text('last_notified_sha'),
   // When true, worker PRs for tasks in this mission must be reviewed by a human before merging.
   requiresReview: boolean('requires_review').default(false).notNull(),
+  // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
+  // null means "use workspace default".
+  mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -770,7 +777,7 @@ export const missionNotes = pgTable('mission_notes', {
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
   authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
-  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance'>(),
+  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated'>(),
   title: text('title').notNull(),
   body: text('body'),
   replyTo: uuid('reply_to'),
