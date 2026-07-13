@@ -201,6 +201,48 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.result).toBeNull();
   });
 
+  it('passes costUsd as a string when Drizzle returns a decimal string (regression: TaskPanel crash)', async () => {
+    // Drizzle returns decimal columns as strings (e.g. "0.050000"), not numbers.
+    // The API must forward this value as-is so consumers can coerce safely.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-cost',
+      title: 'Cost test task',
+      status: 'completed',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-cost',
+      status: 'completed',
+      currentAction: null,
+      turns: 5,
+      prUrl: null,
+      prNumber: null,
+      commitCount: 0,
+      filesChanged: 0,
+      costUsd: '0.050000',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      waitingFor: null,
+      branch: null,
+    }]);
+
+    const res = await callGET('task-cost');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    // costUsd must be the string as returned by Drizzle — consumers must coerce with Number()
+    expect(data.worker?.costUsd).toBe('0.050000');
+    // Verify Number() coercion works correctly (what TaskPanel.tsx does)
+    expect(Number(data.worker?.costUsd).toFixed(3)).toBe('0.050');
+  });
+
   it('surfaces waiting_input status when worker is blocked', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({

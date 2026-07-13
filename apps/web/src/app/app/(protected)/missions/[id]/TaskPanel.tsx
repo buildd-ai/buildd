@@ -23,7 +23,7 @@ interface TaskPanelData {
     prNumber: number | null;
     commitCount: number | null;
     filesChanged: number | null;
-    costUsd: number | null;
+    costUsd: string | null;
     startedAt: string | null;
     completedAt: string | null;
     waitingFor: { type: string; prompt: string; options?: string[] } | null;
@@ -204,7 +204,7 @@ export default function TaskPanel({
                   {w.costUsd != null && (
                     <div>
                       <span className="text-text-muted">Cost:</span>{' '}
-                      <span className="text-text-primary">${w.costUsd.toFixed(3)}</span>
+                      <span className="text-text-primary">${Number(w.costUsd).toFixed(3)}</span>
                     </div>
                   )}
                 </div>
