@@ -1,0 +1,1 @@
+ALTER TABLE "connectors" ADD COLUMN "custom_headers" jsonb DEFAULT '{}' NOT NULL;

@@ -547,6 +547,13 @@
       "when": 1783901391651,
       "tag": "0077_merge_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1752364800000,
+      "tag": "0078_connector_custom_headers",
+      "breakpoints": true
     }
   ]
 }

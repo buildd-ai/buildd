@@ -1429,8 +1429,16 @@ export async function POST(req: NextRequest) {
           // http transport.
           if (!connector.url) continue;
 
+          const customHeaders = (connector as any).customHeaders as Record<string, string> | null | undefined;
+          const baseHeaders = (customHeaders && Object.keys(customHeaders).length > 0) ? { ...customHeaders } : {};
+
           if (connector.authMode === 'none') {
-            mcpConnectors.push({ name, transport: 'http', url: connector.url });
+            mcpConnectors.push({
+              name,
+              transport: 'http',
+              url: connector.url,
+              ...(Object.keys(baseHeaders).length > 0 ? { headers: baseHeaders } : {}),
+            });
             continue;
           }
 
@@ -1453,7 +1461,7 @@ export async function POST(req: NextRequest) {
                 name,
                 transport: 'http',
                 url: connector.url,
-                headers: { Authorization: `Bearer ${accessToken}` },
+                headers: { ...baseHeaders, Authorization: `Bearer ${accessToken}` },
               });
             } catch {
               // Malformed JSON blob — skip
@@ -1465,7 +1473,7 @@ export async function POST(req: NextRequest) {
               name,
               transport: 'http',
               url: connector.url,
-              headers: { [connector.headerName!]: decryptedValue },
+              headers: { ...baseHeaders, [connector.headerName!]: decryptedValue },
             });
           }
         }

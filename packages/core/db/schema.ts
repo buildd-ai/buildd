@@ -1530,6 +1530,10 @@ export const connectors = pgTable('connectors', {
   // For authMode='header': the HTTP header name (e.g. 'Authorization', 'X-API-Key').
   // The header value is stored as a secret (purpose='mcp_connector_credential').
   headerName: text('header_name'),
+  // Additional non-secret HTTP headers sent on every request (http transport only).
+  // Use for non-sensitive routing parameters like tenant IDs that must travel alongside
+  // the auth header (e.g. { 'x-tenant-id': 'abc123' }).
+  customHeaders: jsonb('custom_headers').notNull().default({}).$type<Record<string, string>>(),
   // Cached AS metadata + DCR result — avoids re-running OAuth discovery on every auth.
   discoveredMetadata: jsonb('discovered_metadata').$type<Record<string, unknown>>(),
   // OAuth client credentials (authMode='oauth')

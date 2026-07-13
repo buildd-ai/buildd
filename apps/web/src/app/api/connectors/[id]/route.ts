@@ -89,6 +89,7 @@ export async function PATCH(
     rediscover?: boolean;
     headerName?: string;
     headerValue?: string;
+    customHeaders?: Record<string, string>;
     clientId?: string;
     clientSecret?: string;
   };
@@ -106,6 +107,7 @@ export async function PATCH(
     if (body.name !== undefined) updates.name = body.name;
     if (body.url !== undefined) updates.url = body.url;
     if (body.headerName !== undefined) updates.headerName = body.headerName;
+    if (body.customHeaders !== undefined) updates.customHeaders = body.customHeaders;
     if (body.clientId !== undefined) updates.clientId = body.clientId;
     if (body.clientSecret !== undefined) updates.encryptedClientSecret = encrypt(body.clientSecret);
 

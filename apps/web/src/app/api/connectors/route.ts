@@ -171,6 +171,7 @@ export async function POST(req: NextRequest) {
     authMode?: 'none' | 'header' | 'oauth';
     headerName?: string;
     headerValue?: string;
+    customHeaders?: Record<string, string>;
     clientId?: string;
     clientSecret?: string;
     reuseIfExists?: boolean;
@@ -183,7 +184,7 @@ export async function POST(req: NextRequest) {
 
   const {
     name, url, command, args, envMapping,
-    authMode: rawAuthMode, headerName, headerValue,
+    authMode: rawAuthMode, headerName, headerValue, customHeaders,
     clientId: bodyClientId, clientSecret: bodyClientSecret, reuseIfExists,
   } = body;
 
@@ -261,6 +262,7 @@ export async function POST(req: NextRequest) {
       envMapping: transport === 'stdio' ? (envMapping ?? {}) : {},
       authMode,
       headerName: authMode === 'header' ? (headerName ?? null) : null,
+      customHeaders: (transport === 'http' && customHeaders) ? customHeaders : {},
       discoveredMetadata: discoveredMetadata ?? null,
       clientId: clientId ?? null,
       encryptedClientSecret: encryptedClientSecret ?? null,
