@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "description": "Committed retrieval-eval baseline for the CI regression gate (.github/workflows/knowledge-eval.yml). Holds ONLY aggregate metric numbers and golden-query ids — no workspace content, names, or counts. `overall` metrics are compared against a fresh eval run by packages/core/eval/regression.ts; the gate fails when any metric drops by more than `threshold` (relative) versus these numbers. Regenerate deliberately with `bun run eval:retrieval <workspaceId> --output packages/core/eval/retrieval-baseline.json` after an intentional pipeline change, then eyeball the delta before committing.",
+  "threshold": 0.2,
+  "pipeline": "bm25-lexical-only-no-voyage-key",
+  "overall": {
+    "recallAt5": 0.29363636363636364,
+    "recallAt10": 0.29515151515151516,
+    "mrr": 0.28185786435786436,
+    "ndcg10": 0.28521736649902407
+  },
+  "queryIds": [
+    "code-rrf-001",
+    "code-ks-types-001",
+    "code-embedder-001",
+    "code-chunker-001",
+    "code-ingest-001",
+    "code-reranker-001",
+    "code-pg-vector-query-001",
+    "code-cards-001",
+    "code-mcp-query-knowledge-001",
+    "code-worker-claim-001",
+    "code-db-schema-knowledge-001",
+    "code-mission-context-001",
+    "code-release-executor-001",
+    "code-role-config-001",
+    "code-assess-knowledge-001",
+    "docs-missions-arch-001",
+    "docs-testing-strategy-001",
+    "docs-sdk-research-001",
+    "spec-kg-retrieval-layer1-001",
+    "spec-kg-retrieval-graph-001"
+  ]
+}

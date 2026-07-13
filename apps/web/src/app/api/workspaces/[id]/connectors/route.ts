@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorWorkspaces, workspaces, secrets } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { connectors, connectorShares, connectorWorkspaces, workspaces, secrets } from '@buildd/core/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -69,13 +69,16 @@ export async function GET(
       with: { connector: true },
     });
 
-    // Batch load secrets for status
+    // Batch load secrets for status. Keyed on each connector's OWNER team
+    // (spec §1b): a shared-in connector's credential lives on the owner team,
+    // not this workspace's team.
     const connectorIds = rows.map(r => r.connectorId);
     let secretMap = new Map<string, { tokenExpiresAt: Date | null }>();
     if (connectorIds.length > 0) {
+      const ownerTeamIds = [...new Set(rows.map(r => r.connector?.teamId).filter(Boolean))] as string[];
       const secretRows = await db.query.secrets.findMany({
         where: and(
-          eq(secrets.teamId, teamId),
+          inArray(secrets.teamId, ownerTeamIds.length > 0 ? ownerTeamIds : [teamId]),
           eq(secrets.purpose, 'mcp_connector_credential'),
         ),
         columns: { label: true, tokenExpiresAt: true },
@@ -143,13 +146,25 @@ export async function PATCH(
     return NextResponse.json({ error: 'connectorId and enabled are required' }, { status: 400 });
   }
 
-  // Verify connector belongs to the workspace's team
+  // Visibility check (spec §1b AC-2): a workspace may enable a connector its
+  // team OWNS, or one SHARED to its team via connector_shares. Anything else
+  // is not visible → 404.
   const connector = await db.query.connectors.findFirst({
-    where: and(eq(connectors.id, connectorId), eq(connectors.teamId, teamId)),
-    columns: { id: true },
+    where: eq(connectors.id, connectorId),
+    columns: { id: true, teamId: true },
   });
-  if (!connector) {
-    return NextResponse.json({ error: 'Connector not found or does not belong to this team' }, { status: 403 });
+  let visible = !!connector && connector.teamId === teamId;
+  if (connector && !visible) {
+    const share = await db.query.connectorShares.findFirst({
+      where: and(
+        eq(connectorShares.connectorId, connectorId),
+        eq(connectorShares.sharedWithTeamId, teamId),
+      ),
+    });
+    visible = !!share;
+  }
+  if (!visible) {
+    return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
 
   try {

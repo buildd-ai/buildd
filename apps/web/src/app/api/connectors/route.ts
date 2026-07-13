@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, secrets, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -77,12 +77,27 @@ export async function GET(req: NextRequest) {
       where: eq(connectors.teamId, teamId),
     });
 
+    // Cross-team sharing (spec §1b): visibility = owned ∪ shared-in. Shared-in
+    // connectors are joined via connector_shares; their credentials stay on the
+    // owner team and are never exposed here.
+    const shareRows = await db.query.connectorShares.findMany({
+      where: eq(connectorShares.sharedWithTeamId, teamId),
+      with: { connector: { with: { team: { columns: { name: true } } } } },
+    });
+    const ownedIds = new Set(rows.map(r => r.id));
+    const sharedIn = shareRows
+      .map(s => s.connector)
+      .filter((c): c is NonNullable<typeof c> => !!c && !ownedIds.has(c.id));
+
     let secretMap = new Map<string, { tokenExpiresAt: Date | null }>();
-    const connectorIds = rows.map(r => r.id);
+    const connectorIds = [...rows.map(r => r.id), ...sharedIn.map(c => c.id)];
     if (connectorIds.length > 0) {
+      // Credential status is keyed on each connector's OWNER team (§1b):
+      // shared-in connectors' secrets live under the owner's teamId.
+      const secretTeamIds = [...new Set([teamId, ...sharedIn.map(c => c.teamId)])];
       const secretRows = await db.query.secrets.findMany({
         where: and(
-          eq(secrets.teamId, teamId),
+          inArray(secrets.teamId, secretTeamIds),
           eq(secrets.purpose, 'mcp_connector_credential'),
           inArray(secrets.label, connectorIds),
         ),
@@ -93,7 +108,8 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const result = rows.map(c => ({
+    // Credential-free projection — never include clientId/encryptedClientSecret.
+    const project = (c: typeof rows[number]) => ({
       id: c.id,
       name: c.name,
       url: c.url,
@@ -103,7 +119,17 @@ export async function GET(req: NextRequest) {
       // Migrated legacy placeholders (spec §4) carry needsReview in discoveredMetadata;
       // the role editor surfaces a "needs review" badge from this flag.
       needsReview: (c.discoveredMetadata as { needsReview?: boolean } | null)?.needsReview === true,
-    }));
+    });
+
+    const result = [
+      ...rows.map(project),
+      ...sharedIn.map(c => ({
+        ...project(c),
+        shared: true as const,
+        ownerTeamId: c.teamId,
+        ownerTeamName: (c as { team?: { name?: string } }).team?.name ?? null,
+      })),
+    ];
 
     return NextResponse.json({ connectors: result });
   } catch (error) {

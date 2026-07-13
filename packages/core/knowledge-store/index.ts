@@ -29,6 +29,26 @@ export { extractFilePaths, fetchEntityCatalog, renderEntityCatalog } from './ent
 export type { CatalogEntity, EntityCatalogParams, RenderCatalogOptions } from './entity-catalog';
 export { buildEdges, buildOutcomeOfEdge, buildAgentRelationEdges } from './edge-builder';
 export type { EdgeBuilderInput, EdgeBuilderOutput, ImportInfo } from './edge-builder';
+// SCIP precise code-graph parser (stream B2b). Pure (no child_process/fs/DB),
+// so it's safe to re-export. The side-effectful invocation lives in
+// scip-runner.ts, which is deliberately NOT re-exported here (child_process).
+export {
+  parseScipIndex,
+  buildScipGraph,
+  decodeScipIndex,
+  parseScipSymbol,
+  SCIP_ROLE_DEFINITION,
+  SCIP_ROLE_IMPORT,
+} from './scip-parser';
+export type {
+  ScipIndex,
+  ScipDocument,
+  ScipOccurrence,
+  ScipSymbolInformation,
+  ScipGraph,
+  ScipAliasSeed,
+  ParsedScipSymbol,
+} from './scip-parser';
 export {
   upsertEntity,
   upsertAlias,
@@ -38,3 +58,17 @@ export {
   upsertEdge,
   upsertChunkEntity,
 } from './entity-resolver';
+export {
+  getKnowledgeHealth,
+  computeFreshness,
+  ALL_CORPORA,
+  DEFAULT_STALE_AFTER_DAYS,
+} from './health';
+export type {
+  KnowledgeHealth,
+  CorpusStat,
+  LastIngestJob,
+  FreshnessVerdict,
+  FreshnessInput,
+  GetKnowledgeHealthOptions,
+} from './health';

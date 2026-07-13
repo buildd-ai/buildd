@@ -8,6 +8,10 @@
 
 import { execFileSync } from 'child_process';
 import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
+import type { ScipGraph } from './scip-parser';
+
+/** Serializable code-graph payload transmitted to the server for persistence. */
+export type IngestGraphPayload = Pick<ScipGraph, 'entities' | 'edges' | 'aliases'>;
 
 export interface FullIngestJob {
   id: string;
@@ -43,6 +47,13 @@ export interface FullIngestApiClient {
   claimJob(repos: string[]): Promise<FullIngestJob | null>;
   pushFiles(jobId: string, files: IngestFileEntry[]): Promise<IngestBatchStats>;
   completeJob(jobId: string, result: FullIngestCompletion): Promise<void>;
+  /**
+   * Persist a precise code graph (SCIP) ADDITIVELY alongside the ast-grep
+   * edges built during file ingest — stream B2b. Optional: clients/servers that
+   * don't yet support graph persistence simply omit it, and the SCIP layer
+   * degrades to a no-op. Returns the count of edges/aliases the server wrote.
+   */
+  pushGraph?(jobId: string, graph: IngestGraphPayload): Promise<{ edges: number; aliases: number }>;
 }
 
 export interface RepoReader {
@@ -92,6 +103,68 @@ export interface RunFullIngestResult {
   error?: string;
 }
 
+/** Outcome of a SCIP enrichment attempt (see scip-runner.ts). */
+export interface ScipEnrichResult {
+  graph: ScipGraph | null;
+  cached?: boolean;
+  skippedReason?: string;
+}
+
+export interface RunFullIngestOptions {
+  /**
+   * Optional precise-graph enrichment for this checkout (SCIP, stream B2b).
+   * When provided and it yields a graph, the graph is transmitted via
+   * `api.pushGraph` for ADDITIVE persistence. Any failure is swallowed — SCIP
+   * is an enhancement, never a dependency, and never affects the file ingest.
+   */
+  scipEnrich?: (job: FullIngestJob) => Promise<ScipEnrichResult | null>;
+  log?: (msg: string) => void;
+}
+
+/**
+ * Run the optional SCIP enrichment and transmit the resulting graph. Never
+ * throws; returns a compact stats object for the job row (or undefined when no
+ * enricher ran). The ast-grep edges built during file ingest are untouched
+ * regardless of outcome.
+ */
+async function enrichWithScip(
+  job: FullIngestJob,
+  api: FullIngestApiClient,
+  opts: RunFullIngestOptions,
+): Promise<Record<string, unknown> | undefined> {
+  if (!opts.scipEnrich) return undefined;
+  const log = opts.log ?? (() => {});
+  try {
+    const result = await opts.scipEnrich(job);
+    if (!result) return undefined;
+    if (!result.graph) {
+      return { attempted: true, ...(result.skippedReason ? { skippedReason: result.skippedReason } : {}) };
+    }
+    const graph = result.graph;
+    const base: Record<string, unknown> = {
+      attempted: true,
+      cached: !!result.cached,
+      ...graph.stats,
+    };
+    if (!api.pushGraph) {
+      // Graph computed but the transport isn't available — record counts so the
+      // health UI still reflects that SCIP ran; persistence lands once the
+      // server graph route ships.
+      return { ...base, persisted: false };
+    }
+    const written = await api.pushGraph(job.id, {
+      entities: graph.entities,
+      edges: graph.edges,
+      aliases: graph.aliases,
+    });
+    log(`[knowledge-ingest] SCIP persisted ${written.edges} edges, ${written.aliases} aliases`);
+    return { ...base, persisted: true, edgesWritten: written.edges, aliasesWritten: written.aliases };
+  } catch (err) {
+    log(`[knowledge-ingest] SCIP enrichment skipped: ${err instanceof Error ? err.message : err}`);
+    return { attempted: true, skippedReason: err instanceof Error ? err.message.slice(0, 200) : String(err) };
+  }
+}
+
 /**
  * Execute a claimed full ingest job: list files at the target sha, apply the
  * shared ingest filter, push batches to the server, and record the outcome on
@@ -102,6 +175,7 @@ export async function runFullIngestJob(
   reader: RepoReader,
   api: FullIngestApiClient,
   caps: BatchCaps = { maxFiles: MAX_BATCH_FILES, maxBytes: MAX_BATCH_BYTES },
+  opts: RunFullIngestOptions = {},
 ): Promise<RunFullIngestResult> {
   const startedAt = Date.now();
   try {
@@ -128,6 +202,11 @@ export async function runFullIngestJob(
       skipped += res.filesSkipped;
     }
 
+    // Precise code-graph enrichment (SCIP). Runs after files are ingested so
+    // its edges layer ADDITIVELY on top of the ast-grep graph. Best-effort:
+    // a null/failed result never affects the 'done' status below.
+    const scipStats = await enrichWithScip(job, api, opts);
+
     const stats: Record<string, unknown> = {
       filesListed: allPaths.length,
       filesSent: entries.length,
@@ -136,6 +215,7 @@ export async function runFullIngestJob(
       chunksUpserted,
       durationMs: Date.now() - startedAt,
       ...(reader.resolvedSha ? { sha: reader.resolvedSha } : {}),
+      ...(scipStats ? { scip: scipStats } : {}),
     };
     // sweep: a full run touched every current file, so the server can prune
     // file-derived chunks in this workspace's code/docs namespaces that this
@@ -246,6 +326,12 @@ export function createHttpIngestApi(opts: HttpIngestApiOptions): FullIngestApiCl
     },
     async completeJob(jobId, result) {
       await post(`/api/knowledge/ingest-jobs/${jobId}/complete`, result);
+    },
+    async pushGraph(jobId, graph) {
+      return post<{ edges: number; aliases: number }>(
+        `/api/knowledge/ingest-jobs/${jobId}/graph`,
+        graph,
+      );
     },
   };
 }

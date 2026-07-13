@@ -404,6 +404,54 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(data.title).toBe('Updated Title');
   });
 
+  it('links the task to an external issue (externalIssueId + url)', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    let capturedSet: any = null;
+    const mockReturning = mock(() => [{ ...mockTask, externalIssueId: 'ISSUE-42' }]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((v: any) => { capturedSet = v; return { where: mockWhere }; });
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { externalIssueId: 'ISSUE-42', externalIssueUrl: 'https://tracker.example.com/ISSUE-42' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.externalIssueId).toBe('ISSUE-42');
+    expect(capturedSet.externalIssueUrl).toBe('https://tracker.example.com/ISSUE-42');
+  });
+
+  it('unlinks the task when externalIssueId is empty', async () => {
+    const mockTask = {
+      id: 'task-123', title: 'Test Task', workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    let capturedSet: any = null;
+    const mockWhere = mock(() => ({ returning: mock(() => [mockTask]) }));
+    const mockSet = mock((v: any) => { capturedSet = v; return { where: mockWhere }; });
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({ method: 'PATCH', body: { externalIssueId: '' } });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.externalIssueId).toBeNull();
+  });
+
   it('updates description only', async () => {
     const mockTask = {
       id: 'task-123',

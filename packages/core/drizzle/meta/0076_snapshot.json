@@ -1,5 +1,5 @@
 {
-  "id": "be4d8fef-43df-46b1-9bec-a8ed79a1a87c",
+  "id": "7605dd4b-4eed-430d-9f81-1d2f709a0479",
   "prevId": "edb9a7d3-fa24-4e01-91f3-8481ebea3278",
   "version": "7",
   "dialect": "postgresql",
@@ -636,6 +636,108 @@
             "namespace",
             "entity_id",
             "role"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.connector_shares": {
+      "name": "connector_shares",
+      "schema": "",
+      "columns": {
+        "connector_id": {
+          "name": "connector_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shared_with_team_id": {
+          "name": "shared_with_team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by_account_id": {
+          "name": "granted_by_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "connector_shares_shared_with_team_idx": {
+          "name": "connector_shares_shared_with_team_idx",
+          "columns": [
+            {
+              "expression": "shared_with_team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "connector_shares_connector_id_connectors_id_fk": {
+          "name": "connector_shares_connector_id_connectors_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "connectors",
+          "columnsFrom": [
+            "connector_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connector_shares_shared_with_team_id_teams_id_fk": {
+          "name": "connector_shares_shared_with_team_id_teams_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "shared_with_team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connector_shares_granted_by_account_id_accounts_id_fk": {
+          "name": "connector_shares_granted_by_account_id_accounts_id_fk",
+          "tableFrom": "connector_shares",
+          "tableTo": "accounts",
+          "columnsFrom": [
+            "granted_by_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "connector_shares_connector_id_shared_with_team_id_pk": {
+          "name": "connector_shares_connector_id_shared_with_team_id_pk",
+          "columns": [
+            "connector_id",
+            "shared_with_team_id"
           ]
         }
       },
@@ -2520,12 +2622,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "merge_policy": {
-          "name": "merge_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "orchestration_mode": {
           "name": "orchestration_mode",

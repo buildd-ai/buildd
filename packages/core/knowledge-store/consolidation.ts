@@ -271,3 +271,43 @@ Create a report artifact via \`buildd\` action=create_artifact type=report title
     priority: 1,
   },
 } as const;
+
+// ── Weekly workspace digest schedule template ─────────────────────────────────
+
+/**
+ * Ready-to-insert `taskSchedules` payload for the weekly workspace digest agent
+ * task (spec §6.2 / D2). The agent synthesises the last 7 days of activity —
+ * merged PRs, completed tasks, new memories — into a concise digest and saves
+ * it as a `type=summary` artifact, which the artifact-mirroring pipeline then
+ * auto-indexes into the knowledge store (so next week's digest and claim-time
+ * injection can retrieve it). NOT auto-enabled anywhere — opt a workspace in via
+ * `bun run seed:knowledge-digest` or by creating a schedule from this template
+ * through the schedules API / create_schedule. Runs an hour after the
+ * consolidation schedule so it digests a freshly-consolidated store.
+ */
+export const WEEKLY_DIGEST_SCHEDULE = {
+  name: 'knowledge-digest',
+  cronExpression: '0 7 * * 1', // Mondays 07:00 (schedule timezone), after consolidation at 06:00
+  timezone: 'UTC',
+  maxConcurrentFromSchedule: 1,
+  taskTemplate: {
+    title: 'Weekly workspace digest',
+    description: `Write this workspace's weekly digest: a concise, human-readable summary of the last 7 days of activity, saved as a summary artifact that is auto-indexed into the knowledge store. Report only what actually happened — never invent activity. If a source is empty, say so briefly and move on.
+
+Step 1 — gather the last 7 days:
+- Completed work: \`buildd\` action=list_tasks (filter to tasks completed in the last 7 days). Note titles, outcomes, and the PRs they merged.
+- Merged PRs: read the PR references on those completed tasks (and \`buildd\` action=query_events for merge events if available) — capture PR number, title, and the one-line "what changed".
+- New knowledge: \`buildd_memory\` action=search for memories saved in the last 7 days — capture the durable decisions/gotchas worth resurfacing.
+
+Step 2 — synthesise:
+Write a tight digest (aim for under ~400 words) with these sections, omitting any that are empty:
+- **Shipped** — merged PRs / completed tasks, one bullet each (what changed and why it matters).
+- **Decisions & learnings** — new memories and notable outcomes.
+- **In flight / carry-over** — anything still open worth flagging.
+Lead with a one-sentence "the week in a line" summary. No filler, no restating the prompt.
+
+Step 3 — save as an indexed artifact:
+Create the digest via \`buildd\` action=create_artifact type=summary, title "Weekly digest <week-of date>". Because it is a summary artifact it is mirrored into the knowledge store automatically — do NOT separately save it as a memory. That is the whole deliverable; do not open a PR.`,
+    priority: 1,
+  },
+} as const;
