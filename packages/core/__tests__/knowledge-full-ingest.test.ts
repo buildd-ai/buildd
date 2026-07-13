@@ -155,6 +155,96 @@ describe('runFullIngestJob', () => {
   });
 });
 
+// ── SCIP precise-graph enrichment (stream B2b) ────────────────────────────────
+
+const fakeGraph = {
+  entities: [
+    { workspaceId: 'ws-1', kind: 'file' as const, key: 'src/a.ts', canonicalName: 'a.ts' },
+    { workspaceId: 'ws-1', kind: 'symbol' as const, key: 'src/a.ts#foo', canonicalName: 'foo', role: 'defines' as const },
+  ],
+  edges: [
+    {
+      workspaceId: 'ws-1',
+      fromEntityKey: 'src/a.ts',
+      fromEntityKind: 'file' as const,
+      toEntityKey: 'src/a.ts#foo',
+      toEntityKind: 'symbol' as const,
+      type: 'defines' as const,
+      weight: 1.0,
+      rule: 'scip:defines',
+    },
+  ],
+  aliases: [{ entityKind: 'symbol' as const, entityKey: 'src/a.ts#foo', alias: 'foo', source: 'scip' as const }],
+  stats: { documents: 1, definitions: 1, references: 0, imports: 0, aliases: 1 },
+};
+
+describe('runFullIngestJob — SCIP enrichment', () => {
+  const reader = fakeReader({ 'src/a.ts': 'export const foo = 1;' });
+
+  it('transmits the derived graph via pushGraph and records scip stats', async () => {
+    const graphs: Array<{ jobId: string; graph: unknown }> = [];
+    const { api, completions } = fakeApi({
+      pushGraph: async (jobId, graph) => {
+        graphs.push({ jobId, graph });
+        return { edges: graph.edges.length, aliases: graph.aliases.length };
+      },
+    });
+
+    const result = await runFullIngestJob(job, reader, api, undefined, {
+      scipEnrich: async () => ({ graph: fakeGraph, cached: false }),
+    });
+    expect(result.status).toBe('done');
+    expect(graphs).toHaveLength(1);
+    expect(graphs[0].jobId).toBe('job-1');
+
+    const scip = (completions[0].stats as Record<string, unknown>).scip as Record<string, unknown>;
+    expect(scip.attempted).toBe(true);
+    expect(scip.persisted).toBe(true);
+    expect(scip.edgesWritten).toBe(1);
+    expect(scip.aliasesWritten).toBe(1);
+    expect(scip.definitions).toBe(1);
+  });
+
+  it('records counts but marks persisted=false when pushGraph is unavailable', async () => {
+    const { api, completions } = fakeApi(); // no pushGraph
+    await runFullIngestJob(job, reader, api, undefined, {
+      scipEnrich: async () => ({ graph: fakeGraph, cached: true }),
+    });
+    const scip = (completions[0].stats as Record<string, unknown>).scip as Record<string, unknown>;
+    expect(scip.persisted).toBe(false);
+    expect(scip.cached).toBe(true);
+  });
+
+  it('records a skip reason when SCIP produced no graph', async () => {
+    const { api, completions } = fakeApi({ pushGraph: async () => ({ edges: 0, aliases: 0 }) });
+    await runFullIngestJob(job, reader, api, undefined, {
+      scipEnrich: async () => ({ graph: null, skippedReason: 'scip-typescript unavailable' }),
+    });
+    const scip = (completions[0].stats as Record<string, unknown>).scip as Record<string, unknown>;
+    expect(scip.attempted).toBe(true);
+    expect(scip.skippedReason).toContain('unavailable');
+  });
+
+  it('never fails the job when the enricher throws — ast-grep ingest stands', async () => {
+    const { api, completions, pushed } = fakeApi();
+    const result = await runFullIngestJob(job, reader, api, undefined, {
+      scipEnrich: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect(result.status).toBe('done'); // file ingest unaffected
+    expect(pushed.flat().map(f => f.path)).toEqual(['src/a.ts']);
+    const scip = (completions[0].stats as Record<string, unknown>).scip as Record<string, unknown>;
+    expect(scip.skippedReason).toContain('boom');
+  });
+
+  it('omits scip stats entirely when no enricher is configured', async () => {
+    const { api, completions } = fakeApi();
+    await runFullIngestJob(job, reader, api);
+    expect((completions[0].stats as Record<string, unknown>).scip).toBeUndefined();
+  });
+});
+
 describe('createGitRepoReader', () => {
   function makeRepo(): string {
     const dir = mkdtempSync(join(tmpdir(), 'kfi-git-'));

@@ -37,6 +37,8 @@
     "./knowledge-store/ingest-filter": "./knowledge-store/ingest-filter.ts",
     "./knowledge-store/pr-diff-chunker": "./knowledge-store/pr-diff-chunker.ts",
     "./knowledge-store/full-ingest": "./knowledge-store/full-ingest.ts",
+    "./knowledge-store/scip-parser": "./knowledge-store/scip-parser.ts",
+    "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./path-overlap": "./path-overlap.ts"
   },
   "dependencies": {
