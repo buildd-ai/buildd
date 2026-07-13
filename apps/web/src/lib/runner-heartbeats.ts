@@ -1,8 +1,14 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, gt, inArray } from 'drizzle-orm';
-export type { RunnerHeartbeat, RunnerRelevanceCandidate } from './runner-heartbeats-pure';
-export { isRunnerOnline, selectRelevantRunnerAccounts } from './runner-heartbeats-pure';
+import {
+  type RunnerHeartbeat,
+  type RunnerRelevanceCandidate,
+  isRunnerOnline,
+  selectRelevantRunnerAccounts,
+} from './runner-heartbeats-pure';
+export type { RunnerHeartbeat, RunnerRelevanceCandidate };
+export { isRunnerOnline, selectRelevantRunnerAccounts };
 
 /**
  * Fetch runner heartbeats seen within the past 150 minutes that are relevant
