@@ -826,6 +826,16 @@ export class WorkerManager {
             const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
             await overlayRoleFiles(roleDir, workspacePath);
           }
+        } else if (task.roleSlug && !task.workspace?.repo) {
+          // No roleConfig from claim (role registered via MCP but not uploaded to R2
+          // storage — configStorageKey/configHash absent). Fall back to the locally-
+          // synced role directory so service-role workers load the correct .mcp.json,
+          // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
+          const localRoleDir = getRoleDir(task.roleSlug as string);
+          if (existsSync(localRoleDir)) {
+            resolvedPath = localRoleDir;
+            console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
+          }
         }
         this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
         const worker = await this.startFromClaim(claimedWorker, task, resolvedPath);
@@ -991,6 +1001,16 @@ export class WorkerManager {
         // Builder role: sync config, then overlay files into repo
         const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
         await overlayRoleFiles(roleDir, workspacePath);
+      }
+    } else if (fullTask.roleSlug && !fullTask.workspace?.repo) {
+      // No roleConfig from claim (role registered via MCP but not uploaded to R2
+      // storage — configStorageKey/configHash absent). Fall back to the locally-
+      // synced role directory so service-role workers load the correct .mcp.json,
+      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
+      const localRoleDir = getRoleDir(fullTask.roleSlug as string);
+      if (existsSync(localRoleDir)) {
+        resolvedPath = localRoleDir;
+        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
       }
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
