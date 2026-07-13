@@ -1,12 +1,156 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-06-08
-**Previous scan**: 2026-06-01
-**Current SDK version in Buildd**: `^0.3.168` (up to date)
+**Last updated**: 2026-07-13
+**Previous scan**: 2026-06-08
+**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.207)
 **Python SDK**: v0.2.87+ (tracking CLI parity)
-**Claude Code CLI**: v2.1.168 (released ~June 6, 2026)
+**Claude Code CLI**: v2.1.207 (released July 11, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## SDK Releases (v0.3.169 - v0.3.207) — June 8 – July 13, 2026
+
+### TypeScript SDK v0.3.207 (July 11, 2026) — current latest
+- **Fixed**: `canUseTool` returning `{behavior: 'allow'}` without `updatedInput` was incorrectly treated as deny — tool now runs with original input per documented contract
+- **New**: `AgentToolCompletedOutput` SDK type added, matching emitted object exactly for type-safe tool completion handlers
+
+### TypeScript SDK v0.3.206 (July 10, 2026)
+- **New**: `command_lifecycle` frames in stream-json and SDK sessions — reports each uuid-stamped message's terminal state: `queued`/`started`/`completed`/`cancelled`/`discarded`
+- **Fixed**: Zero-API results no longer report stale `duration_api_ms`
+
+### TypeScript SDK v0.3.205 (July 8, 2026)
+- **New**: Interrupt control responses include `still_queued` field (UUIDs of queued async messages)
+- **New**: `Query.interrupt()` returns typed `InterruptReceipt`
+- **New**: `system/init` advertises `interrupt_receipt_v1` capability for feature detection
+- **New**: Structured `name` and `body` fields added to peer-message session events
+
+### TypeScript SDK v0.3.203 (July 7, 2026)
+- **New**: `background_tasks_changed` system message — emits full set of live background tasks on every membership change; enables tracking all background agent activity without polling
+
+### TypeScript SDK v0.3.202 (July 6, 2026)
+- **New**: `parent_agent_id` field on subagent session messages — **enables depth-2+ agent trees** (previously max depth was 1)
+- **Fixed**: `apply_flag_settings` with non-object settings value now returns control error instead of crashing
+
+### TypeScript SDK v0.3.200 (July 3, 2026)
+- **New**: `'manual'` accepted as alias for `'default'` permission mode
+- **Fixed**: `onSetPermissionMode` callback not firing for SDK-hosted Remote Control sessions
+- **Fixed**: `set_model` control request now rejects unrecognized model strings before latching
+
+### TypeScript SDK v0.3.199 (July 2, 2026)
+- **New**: `requestId` field on `canUseTool` callback options — enables out-of-band correlation for async permission responses
+- **New**: Support for returning `null` from `canUseTool` to suppress automatic control response
+- **New**: `blocked` field on `workflow_agent` progress events
+- **New**: `mode:"mask"` and per-credential `injectHosts` added to `sandbox.credentials` settings
+
+### TypeScript SDK v0.3.198 (July 1, 2026)
+- **New**: Runtime warning when `canUseTool` configured alongside `allowedTools` or `bypassPermissions` (conflicting config detection)
+- **New**: Per-server `request_timeout_ms` option in `mcp_set_servers` control request
+- **Fixed**: `SDKUserMessage.isSynthetic` not being mapped to `isMeta` on ingestion
+- **Fixed**: Workflow progress events silently dropping earliest agents from list
+
+### TypeScript SDK v0.3.193 (mid-June)
+- **New**: `promptSuggestions` option in Browser SDK `query()` — opt CLI into emitting follow-up suggestions
+- **Fixed**: Brief console window flashes on Windows when spawning CLI subprocesses
+
+### TypeScript SDK v0.3.187 (mid-June)
+- **New**: `sandbox.credentials` added to SDK settings types — configure credential file and env var denial in sandboxed commands
+
+### TypeScript SDK v0.3.169–186 (June 8–30, 2026)
+- **Breaking** (0.3.185 range): v2 session API removed (deprecated since 0.2.133). `query()` is the sole API.
+- **New**: `claude-fable-5` model and `fable` alias added to SDK model types
+- **New**: `sessionStore` option (alpha) on `query()` — mirrors session transcripts to external storage
+- **New**: `deleteSession()` function for removing sessions from disk or `SessionStore`
+- **Fixed**: MCP resource tools not injected for servers added at runtime via `mcp_set_servers`
+- **Fixed**: Long-running SDK sessions now reconnect claude.ai-proxied MCP servers after transport-stream abort
+- **Fixed**: Control protocol deduplication dropping tool-use IDs after 1,000 resolutions (could cause duplicate `tool_result` deliveries in long sessions)
+- Exported: `TaskCreateInput`, `TaskCreateOutput`, `TaskGetInput`, `TaskGetOutput` from `@anthropic-ai/claude-agent-sdk/sdk-tools`
+- **New**: `prompt_id` field in hook input payloads — correlate hook events with OTel prompt-level events
+
+### Python SDK (June–July 2026)
+- **New**: Full `SessionStore` support at parity with TypeScript — `SessionStore` protocol with 5 methods, `InMemorySessionStore` reference, transcript mirroring via `--session-mirror`, 9 async store-backed helpers
+- **New**: `ThinkingConfig` types (`ThinkingConfigAdaptive`, `ThinkingConfigEnabled`, `ThinkingConfigDisabled`) + `thinking` field on `ClaudeAgentOptions`
+- **New**: `effort` field on `ClaudeAgentOptions` — supports `"low"`, `"medium"`, `"high"`, `"max"` for controlling thinking depth
+
+---
+
+## Claude Code CLI Releases (v2.1.169 - v2.1.207) — June 8 – July 13, 2026
+
+### v2.1.207 (July 11, 2026) — current latest
+- **New**: Auto mode enabled by default on Bedrock/Vertex/Foundry (no longer needs `CLAUDE_CODE_ENABLE_AUTO_MODE`)
+- **Improved**: `/cd` now shows directory path suggestions matching `/add-dir` behavior
+- **New**: `/doctor` check proposes trimming CLAUDE.md files by cutting derivable content
+- **Improved**: `/commit-push-pr` auto-allows `git push` to the configured push remote (not just `origin`)
+- **Security**: Remote managed settings from non-interactive runs no longer permanently recorded as consented
+- **Fixed**: Terminal freeze during response streaming; worktree configuration issues
+
+### v2.1.205–206 (July 8–10, 2026)
+- **New**: `/doctor` expanded to full setup checkup
+- **Fixed**: Auto-update binary downloads now stream to disk (~400 MB peak memory reduction)
+- **Fixed**: Background agents showing stale "Running" status after resuming with SendMessage
+- **Security**: Auto mode transcript tampering protection
+
+### v2.1.203–204 (July 7–8, 2026)
+- **New**: Login expiry warning shown before session interruption
+- **New**: Grey ⏸ badge in footer when in manual permission mode
+- **Fixed**: Hook events not streaming during `SessionStart` hooks in headless sessions (critical: caused remote workers to be idle-reaped mid-hook)
+- **Fixed**: macOS stalling and context-usage indicator re-analyzing entire transcript after every turn
+
+### v2.1.202 (July 7, 2026)
+- **New**: "Dynamic workflow size" setting in `/config` — advisory control over agent count in dynamic workflows (small/medium/large)
+- **New**: Richer OTel telemetry: `workflow.run_id` and `workflow.name` attributes on workflow-spawned agents
+- **Fixed**: `/review` restored to single-pass operation; multiple crash/login fixes
+
+### v2.1.200–201 (July 3–4, 2026)
+- **Breaking**: Default permission mode changed to **Manual** (was Auto); `AskUserQuestion` dialogs now require explicit continuation
+- **Fixed**: Crash loops, background session reliability across platforms (long-running commands survive process stop/restart/update including Windows)
+- **Fixed**: Claude Sonnet 5 sessions no longer use mid-conversation system role for harness reminders
+
+### v2.1.198–199 (July 1–2, 2026)
+- **New**: Chrome integration out of preview — GA for all direct Anthropic plan users. Claude drives browser via Claude in Chrome extension (tabs, clicks, forms, console logs, shared login state)
+- **New**: `/dataviz` skill added to CLI
+- **New**: Draft PR handoff for background agents
+- **New**: Background notifications for agents
+- **Fixed**: Background-agent daemon killing itself every ~50 seconds after unclean shutdown; streaming recovery and retry logic
+
+### v2.1.197 (July 1, 2026)
+- **New**: **Claude Sonnet 5 becomes default model** — 1M-token context window, adaptive thinking on by default, `xhigh` effort support. Promotional pricing $2/$10 per MTok through August 31, 2026.
+
+### v2.1.184–196 (June 8–30, 2026)
+- **New**: Background subagents — Claude keeps working while subagents run and picks up results when finished (no more pausing to wait); still runs foreground when result needed before continuing
+- **New**: Agent Teams simplification — `TeamCreate`/`TeamDelete` tools removed; every session with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` now has one implicit team — spawn teammates directly via Agent tool `name` parameter
+- **New**: MCP `roots/list` now includes session's additional working directories; `notifications/roots/list_changed` sent when set changes
+- **New**: Bedrock upgraded to Claude Opus 4.8 as default
+- **Fixed**: Orphaned `claude --bg-pty-host` processes at 100% CPU on macOS (was in v0.3.168 but fully resolved now)
+
+---
+
+## Major Model Releases (June–July 2026)
+
+### Claude Sonnet 5 (June 30, 2026) — now default in Claude Code
+- **Context**: 1M-token context window, 128K max output — first Sonnet with frontier-scale context natively
+- **Pricing**: $2/$10 per MTok input/output through Aug 31; $3/$15 afterwards
+- **Performance**: Near-Opus 4.8 quality on coding/agentic tasks at 2–2.5× lower cost
+- **Adaptive thinking**: On by default; disable with `"thinking": {"type": "disabled"}`
+- **Effort**: First Sonnet to support `xhigh` effort (recommended for hard coding/agentic work)
+- **Tokenizer**: Updated tokenizer — same input maps to **1.0–1.35× more tokens** vs. previous Sonnet models
+- **Breaking API**: `temperature`, `top_p`, `top_k` at non-default values return 400; manual `thinking: {type: "enabled"}` returns 400 — use `effort` parameter instead
+- **Model ID**: `claude-sonnet-5`
+- **Safety**: Cyber safeguards enabled by default; lower undesirable behavior than Sonnet 4.6
+- **SDK**: Use `claude-sonnet-5` model ID; now available as the `sonnet` alias
+
+### Claude Fable 5 — Saga (June 9 – July 19, 2026)
+- **Released**: June 9, 2026 alongside Claude Mythos 5
+- **Pulled**: June 12 — US export controls applied after Amazon researchers found safeguard bypass; access suspended globally
+- **Returned**: July 1 — export controls lifted; Anthropic deployed improved safety classifier (blocks bypass technique >99%)
+- **CAISI**: US DoC Center for AI Standards verified safeguards as "extraordinarily strong"
+- **Free access extended**: Through **July 19, 2026** (twice extended); 50% of weekly limits on Pro/Max/Team
+- **Pricing after July 19**: $10/$50 per MTok input/output (usage credits)
+- **Model ID**: `claude-fable-5` (alias: `fable`)
+- **Claude Code requirement**: v2.1.170+ to use Fable 5
+- **Note**: Fable 5 draws from the same weekly usage pool but consumes it faster
+- **Competitive context**: OpenAI GPT-5.6 ("Sol") reached GA the same week, narrowing the gap on coding benchmarks
 
 ---
 
@@ -308,37 +452,49 @@ See [sdk-reference/integration-status.md](sdk-reference/integration-status.md) f
 
 ## Community & Ecosystem
 
-### New Ecosystem Projects (Since May 27, 2026)
+### New Ecosystem Projects (Since June 8, 2026)
 
 | Project | Description |
 |---------|-------------|
-| **Hivemind** | Plugin for Claude Code/Codex/OpenClaw adding persistent memory, context sync, and virtual filesystem hooks via Deeplake; supports long-term memory, RAG, and embeddings |
-| **Claude-World** | AI-powered content pipeline (trend discovery → research → social publishing) + security scanner for Claude Skills (71K+ skills across 9 engines) |
-| **Real-time Claude Agent Monitor** | SQLite/Node/React/WebSocket dashboard for tracking agent sessions, tool usage, and subagent orchestration via hooks |
-| **openinference-instrumentation-claude-agent-sdk** (PyPI v0.1.5, May 29) | Official OpenInference OTEL instrumentation for Python SDK — traces queries as spans, captures prompts, token counts, tool calls; exports to Arize Phoenix |
-| **Awesome Claude Code & Skills** (GetBindu) | Curated collection of production-ready Claude skills for coding, security, marketing, and specialized domains |
+| **Persistent Context / Memory Engine** | Captures everything an agent does per session, compresses with AI, injects relevant context into future sessions — compatible with Claude Code, Codex, Gemini, Hermes, Copilot, OpenCode, and more |
+| **AI Research Skill** | Agent skill that researches any topic across Reddit, X, YouTube, HN, Polymarket, and the web then synthesizes a grounded summary — 51.8K stars |
+| **Agent Harness Performance Optimization System** | 229K-star meta-harness for skills, instincts, memory, security, and research-first development across Claude Code, Codex, Opencode, Cursor |
+| **Free AI Gateway** | Single endpoint with 231+ providers (50+ free); RTK+Caveman stacked compression (15–95% token savings), smart auto-fallback, MCP/A2A, multimodal APIs |
+| **OfficeCLI** | First Office suite built for AI agents — reads, edits, and automates Word, Excel, PowerPoint without Office installed; single binary, open source |
+| **AI Research Skill** (51.8K stars) | Researches across Reddit, X, YouTube, HN, Polymarket, and the web → grounded summary |
+| **Curated Agent Skills Collection** | 1,000+ agent skills from official dev teams and community, compatible with Claude Code, Codex, Gemini CLI, Cursor |
 
 ### New Enterprise Integration: Xcode 26.3
 Apple announced that **Xcode 26.3** will include a native Claude Agent SDK integration for iOS/macOS/visionOS development. Specifically calls out hooks and subagents as the building blocks; uses Xcode Previews for visual feedback in SwiftUI editing.
 
-### GitHub Stars & Adoption (April 20, 2026)
-- **13,087 total repositories** indexed in awesome-claude-plugins collection
-- Claude Code repo: 55K+ stars
-- **4% of all GitHub commits** now authored by Claude Code agents
-- Persona distillation wave: >50% of new repos are "distill thinking style into a Skill" variations
+### GitHub Stars & Adoption (July 2026)
+- **600+ community tools and projects** in Claude Code ecosystem
+- **Karpathy's CLAUDE.md**: 110K+ stars — held #1 weekly GitHub Trending for 28 consecutive days
+- Monthly AI agent category: 17.7K new stars; AI skills: 6.7K; MCP: 2.3K
+- Open-source alternatives: OpenHands 80.5K stars, Goose 51.1K stars, Cline 8M VS Code installs
 
-### Trending Community Projects (New/Updated Since June 1, 2026)
+### Trending Community Projects (Updated July 2026)
 
 | Project | Stars | Description |
 |---------|-------|-------------|
-| **Everything Claude Code (ECC)** (affaan-m) | 100K+ | Most comprehensive agent harness — 135 agents, security scanning, memory optimization, model routing via NanoClaw v2, 12 language ecosystems. Anthropic Hackathon winner. |
-| **Superpowers** | 94K+ | TDD-enforced dev framework — 7-phase workflow (Brainstorm→Spec→Plan→TDD→Subagent Dev→Review→Finalize). Literally deletes code written before tests exist. |
-| **andrej-karpathy-skills** (multica-ai) | 156K | CLAUDE.md with Karpathy's 4 behavioral principles: Think Before Coding, Simplicity First, Surgical Changes, Goal-Driven Execution. Fastest-growing AI workflow repo. |
-| **Taskmaster** | growing | AI project management layer — feed a PRD → breaks into ordered tasks with dependency tracking → exposes 36 MCP tools for Claude Code to execute sequentially. |
-| **awesome-claude-code** (hesreallyhim) | growing | Curated directory of skills, hooks, slash-commands, orchestrators, plugins. The go-to ecosystem index. |
-| **claude-mem** (thedotmack) | 64.1K | Auto-captures coding sessions, compresses with AI, injects context into future sessions |
-| **open-agent-sdk-typescript** (codeany-ai) | 2.6K | Alternative agent framework without CLI dependencies, fully open source |
-| **claude_telemetry** (TechNickAI) | — | OpenTelemetry wrapper logging tool calls, tokens, costs to Logfire/Sentry/Honeycomb/Datadog |
+| **Agent Harness Performance Optimization** | 229K | Meta-harness for skills, memory, security, research-first dev across Claude Code + Codex + Cursor |
+| **Karpathy's CLAUDE.md** (multica-ai) | 110K | 4 behavioral principles: Think Before Coding, Simplicity First, Surgical Changes, Goal-Driven Execution. 28 days #1 GitHub Trending. |
+| **Everything Claude Code (ECC)** (affaan-m) | 100K+ | Most comprehensive agent harness — 135 agents, NanoClaw v2 model routing, 12 language ecosystems |
+| **Superpowers** | 94K+ | TDD-enforced dev framework — 7-phase workflow. Deletes code written before tests exist. |
+| **AI Research Skill** | 51.8K | Multi-platform research agent (Reddit, X, YT, HN, Polymarket, web) |
+| **claude-mem** (thedotmack) | 64.1K | Auto-capture → compress → inject session memory |
+| **Taskmaster** | growing | PRD → ordered tasks with deps → 36 MCP tools for Claude Code execution |
+| **open-agent-sdk-typescript** (codeany-ai) | 2.6K | Alternative agent framework without CLI dependencies |
+| **claude_telemetry** (TechNickAI) | — | OTel wrapper for tool calls, tokens, costs → Logfire/Sentry/Honeycomb/Datadog |
+
+### Earlier Projects (Still Relevant, Since May 27, 2026)
+
+| Project | Description |
+|---------|-------------|
+| **Hivemind** | Plugin for Claude Code/Codex/OpenClaw: persistent memory, context sync, virtual filesystem hooks via Deeplake |
+| **Claude-World** | AI-powered content pipeline + security scanner for 71K+ Claude Skills across 9 engines |
+| **Real-time Claude Agent Monitor** | SQLite/Node/React/WebSocket dashboard for agent sessions, tool usage, subagent orchestration via hooks |
+| **openinference-instrumentation-claude-agent-sdk** (PyPI v0.1.5) | Official OpenInference OTEL instrumentation for Python SDK |
 
 ### Anthropic Business News (June 2026)
 - **S-1 filing**: Anthropic confidentially submitted a draft S-1 to the SEC on June 1, 2026 — IPO process underway
@@ -404,66 +560,60 @@ Anthropic rebuilt the Claude Code desktop experience around:
 
 ## Recommendations for Buildd
 
-### This Week (June 8, 2026)
+### This Week (July 13, 2026)
 
-**#0 — CRITICAL: Audit for hardcoded model API strings before June 15 (7 days)**
-`claude-sonnet-4-20250514` and `claude-opus-4-20250514` API IDs retire on June 15. Any hardcoded string hits an error on June 16. Run `grep -r '20250514' packages/ apps/` to find exposure. `packages/core/model-aliases.ts` should shield most of this, but verify. Migration: Sonnet → `claude-sonnet-4-6`, Opus → `claude-opus-4-8`.
+**#0 — Bump SDK version in Buildd to ^0.3.207**
+Current Buildd version is `^0.3.168`; latest is `0.3.207`. Key fixes include: `canUseTool` bug (tools ran with wrong input), workflow agent tracking issues, and `AgentToolCompletedOutput` types. Location: `packages/core/package.json`. Effort: Trivial.
 
-**#1 — URGENT: Dashboard billing change notice is now 7 days away**
-The June 15 Agent SDK billing split (covered in detail last week) is now imminent. If the dashboard banner/docs update hasn't shipped, it needs to ship this week.
+**#1 — Adopt Claude Sonnet 5 as default worker model**
+`claude-sonnet-5` is now the Claude Code default. Near-Opus 4.8 quality at half the cost, 1M-token context, `xhigh` effort support. Update default-roles model references and any hardcoded model strings in `packages/core/model-aliases.ts`. Note: Sonnet 5 uses an updated tokenizer that may produce 1.0–1.35× more tokens — verify token budget calculations still hold. Effort: Low.
 
-**#2 — Use `agentProgressSummaries` for live task visibility**
-New in v0.3.162+: pass `agentProgressSummaries: true` to the SDK `query()` options to get periodic AI-generated progress summaries from subagents on `task_progress` events. This could be displayed on the Buildd task detail page as live progress updates without requiring workers to call `update_progress` manually. Location: `packages/core/worker-runner.ts`. Effort: Low.
+**#2 — Add `claude-fable-5` to model catalog with usage warnings**
+Fable 5 is available until July 19 at no extra cost (subscription), then $10/$50 per MTok. Add it to role model options in `apps/web/src/lib/default-roles.ts` with a clear warning about its faster weekly limit consumption and the July 19 pricing switch. Effort: Low.
 
-**#3 — Adopt `fallbackModel` in worker runner for reliability**
-New in CLI v2.1.160+: `fallbackModel` allows configuring up to 3 fallback models when the primary is overloaded. For Buildd workers, this means fewer failed tasks during Opus/Sonnet capacity spikes. Configure via role config or worker-runner settings. Location: `packages/core/worker-runner.ts`, `apps/web/src/lib/role-config.ts`. Effort: Low.
+**#3 — Adopt `background_tasks_changed` system message for live agent tracking**
+New in v0.3.203: the SDK now emits `background_tasks_changed` on every change to the live background task set. Buildd's task detail page could subscribe to this to show which sub-agents are running in real time without polling. Location: `packages/core/worker-runner.ts`. Effort: Low.
 
-**#4 — Consider Security Guidance Plugin for code-writing roles**
-The security plugin (free, 3-layer review) integrates at the Claude Code level. Buildd roles configured for application development (Builder, etc.) could declare it in their skill config. Would catch 30–40% of security PR issues before they reach review. Location: `apps/web/src/lib/default-roles.ts`, role skill config. Effort: Low.
+**#4 — Exploit `parent_agent_id` for depth-2+ agent trees in work tracker**
+SDK v0.3.202 added `parent_agent_id` on subagent session messages, enabling multi-level agent hierarchies. If Buildd workers use nested agent delegation, the work-tracker can now reconstruct full agent trees up to any depth. Location: `apps/web/src/lib/work-tracker.ts`. Effort: Medium.
 
-### Still Urgent (From Previous Weeks)
+**#5 — Use `command_lifecycle` frames for more granular task progress**
+SDK v0.3.206 emits `command_lifecycle` frames with per-command states (queued/started/completed/cancelled/discarded). Buildd runners could use these to emit finer-grained `update_progress` calls without manual instrumentation. Effort: Medium.
 
-**#5 — Expose Claude Opus 4.8 in Role model options**
-`claude-opus-4-8` is now available and ships with meaningful improvements for agentic sessions: lower prompt cache threshold (1,024 tokens), mid-conversation system messages for cost-efficient long sessions, and better code reliability. Add it to role model selection. Note the prompt-injection caveat in docs.
+**#6 — Implement `sessionStore` for task transcript persistence**
+SDK v0.3.169+ added `sessionStore` (alpha) to mirror session transcripts to external storage. For Buildd, this means task transcripts could be persisted to R2 or Neon and made available as artifacts, enabling replay and analysis without relying on CLI disk state. Effort: Medium.
 
-**#6 — Consider Dynamic Workflows compatibility statement**
-Buildd's coordination model (tasks + workers) and Dynamic Workflows are complementary but distinct. A Buildd worker running with Dynamic Workflows enabled will spawn up to 1,000 sub-sessions — these will each generate separate Claude sessions not tracked by Buildd's worker system. Decisions to make:
-- Should Buildd workers allow or block Dynamic Workflows? (Token cost is extreme)
-- Should Buildd expose an "ultracode" option per task or mission?
-- If a Buildd worker uses workflows, should the sub-agent sessions be captured as task artifacts?
+**#7 — Evaluate Sonnet 5 tokenizer impact on cost estimates**
+Sonnet 5's updated tokenizer outputs 1.0–1.35× more tokens for the same input. Any token budget calculations, cost estimates, or rate limit checks in Buildd that reference per-task token counts need to be recalibrated. Effort: Low–Medium.
 
-**#7 — Use Opus 4.8 mid-conversation system messages in worker runner**
-Long-running Buildd tasks could benefit from mid-conversation system prompt injection (e.g., appending progress-aware instructions) without restating the full system prompt. This preserves cache hits and reduces input cost. Relevant in `packages/core/worker-runner.ts`.
+**#8 — Handle Sonnet 5 `effort` API (replaces thinking params)**
+Sonnet 5 returns 400 if you set `temperature`, `top_p`, `top_k` to non-defaults or use manual `thinking: {type: "enabled"}`. Workers that pass these params will fail on Sonnet 5. Migrate to `effort: "low"|"medium"|"high"|"xhigh"`. Location: `packages/core/worker-runner.ts`, `apps/web/src/lib/role-config.ts`. Effort: Low.
 
-### High Priority
+**#9 — Expose `fallbackModel` in role config (now stable)**
+Introduced in v2.1.160, `fallbackModel` allows up to 3 fallback models when the primary is overloaded. Now stable and in wide use. Wire this into role configuration so workspace admins can set fallback chains (e.g., Sonnet 5 → Sonnet 4.6 during Sonnet 5 capacity spikes). Effort: Low.
 
-1. **Adopt OpenTelemetry for worker observability** — The SDK now natively propagates W3C trace context. Buildd runners should set `CLAUDE_CODE_ENABLE_TELEMETRY=1` and export to a collector. This gives per-task token costs, tool call traces, and session-level metrics without custom instrumentation. The Langfuse integration is drop-in.
+**#10 — Fix headless hook streaming (critical for background workers)**
+CLI v2.1.204 fixed hook events not streaming during `SessionStart` hooks in headless sessions — this was causing remote workers to be idle-reaped mid-hook. Verify Buildd workers are on CLI v2.1.204+. Effort: Verify only.
 
-2. **Expose `skills` configuration per role** — Python SDK v0.1.62 added `skills` as a top-level agent option. Buildd roles should be able to specify which skills are available (`"all"`, specific list, or none). This is cleaner than the current `allowedTools` approach for skill-level control.
+### Still Relevant (From Previous Weeks)
 
-3. **Leverage `getSessionMessages()` for task analysis** — Use transcript data to build post-mortem analysis, extract patterns from successful tasks, and feed memory systems. The 64K-star claude-mem project validates that session history is extremely valuable.
+**#11 — Use `agentProgressSummaries` for live task visibility**
+New in v0.3.162+: periodic AI-generated progress summaries on `task_progress` events. Still valid; workers on v0.3.168 already have this. Surface these summaries on the Buildd task detail page.
 
-4. **Monitor native binary transition** — v2.1.113's switch to spawning a native binary may affect runner packaging. Test that Buildd's runner Bun-based setup works correctly with this change.
+**#12 — Security Guidance Plugin for code-writing roles**
+3-layer security review (pattern scan + LLM diff review + commit review). Add to default Builder role config. Requires CLI v2.1.144+.
 
-### Medium Priority
+**#13 — OpenTelemetry worker observability**
+W3C trace context propagation now built-in. Set `CLAUDE_CODE_ENABLE_TELEMETRY=1` in workers. OTel `workflow.run_id`/`workflow.name` attributes (new in v2.1.202) also enable reconstructing entire workflow runs from telemetry data.
 
-5. **Implement distributed tracing end-to-end** — With W3C trace context propagation, Buildd can trace a task from API creation → worker claim → agent session → subagent execution → PR creation. This is the #1 observability gap.
+**#14 — `SessionStore` for transcript persistence**
+Consider storing task session transcripts in R2/Neon via the new `sessionStore` alpha option. Feeds the memory system and enables task replay.
 
-6. **Add subagent transcript access to task artifacts** — The new `list_subagents()` and `get_subagent_messages()` APIs enable capturing subagent work as structured data. Save as task artifacts for debugging and review.
+**#15 — Leverage `getSessionMessages()` for task post-mortems**
+Use transcript data for pattern extraction and memory system feeding.
 
-7. **Evaluate Managed Agents for overflow capacity** — At $0.08/session-hour + tokens, Managed Agents could serve as burst capacity when self-hosted runners are maxed. Route non-critical tasks there during peak load.
-
-8. **Adopt cascading session deletion** — Python SDK v0.1.60 added cascading deletion of subagent transcripts. Ensure worker cleanup properly handles transcript directories to avoid disk bloat.
-
-### Lower Priority
-
-9. **Desktop parallel session UX inspiration** — Anthropic's rebuilt desktop (sidebar, status filters, integrated terminal) validates Buildd's dashboard design direction. Consider adopting the "filter by status/project" pattern in the missions view.
-
-10. **Cross-user prompt caching** — Python SDK v0.1.57 added cross-user prompt caching. For workspaces running multiple agents with shared system prompts (roles), this could reduce costs significantly. Verify Buildd's runner benefits from this automatically.
-
-11. **Network domain blocking** — The new `sandbox.network.deniedDomains` setting could be exposed in role configuration, allowing workspace admins to restrict which domains agents can access per role.
-
-12. **Explore claude-mem pattern** — The 64K-star project's approach (auto-capture sessions → compress → inject into future sessions) is essentially what Buildd's memory system does at the workspace level. Study their compression strategy for memory efficiency gains.
+**#16 — Dynamic Workflows compatibility decision**
+Still needs a product decision: should Buildd workers be allowed to spawn Dynamic Workflows (up to 1,000 sub-agents)? Token costs are high. Options: block by default, opt-in per task/mission, or expose "ultracode mode" as a premium feature.
 
 ---
 
@@ -471,6 +621,7 @@ Long-running Buildd tasks could benefit from mid-conversation system prompt inje
 
 | Date | SDK Versions (TS) | SDK Versions (Py) | CLI Versions | Key Changes |
 |------|-------------------|-------------------|-------------|-------------|
+| 2026-07-13 | 0.3.169-0.3.207 | SessionStore parity | 2.1.169-2.1.207 | Sonnet 5 default (1M ctx), Fable 5 launch/suspension/return, background subagents non-blocking, Agent Teams simplified, Chrome GA, command_lifecycle frames, parent_agent_id (depth-2+ trees), background_tasks_changed, sessionStore (alpha), /dataviz skill, Manual default permission mode, /doctor enhancements |
 | 2026-06-08 | 0.3.160-0.3.168 | 0.2.87+ | 2.1.160-2.1.168 | agentProgressSummaries, reloadPlugins(), fallbackModel, getSettings().applied, cross-session messaging hardening, glob deny rules, Managed Agents GA (Outcomes/Orchestration/Webhooks), Security Plugin GA, rate limits doubled, model retirement June 15 |
 | 2026-06-01 | 0.3.159 | 0.2.87 | 2.1.159 | Dynamic Workflows + Ultracode (up to 1,000 subagents), Opus 4.8, billing split June 15, OpenInference OTEL, Python SDK major version bump to 0.2.x, Xcode 26.3 integration |
 | 2026-05-27 | 0.3.150-0.3.158 | 0.1.63+ | 2.1.150-2.1.158 | Skills auto-loaded, Opus 4.8 preview, auto mode on Bedrock/Vertex/Foundry, tool_decision telemetry, worktree lifecycle improvements, streaming tool exec GA |
