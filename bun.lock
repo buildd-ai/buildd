@@ -19,7 +19,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.132.0",
+      "version": "0.133.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.201",
         "@buildd/core": "workspace:*",
@@ -39,7 +39,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.132.0",
+      "version": "0.133.0",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
@@ -80,7 +80,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.132.0",
+      "version": "0.133.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.201",
         "@ast-grep/napi": "^0.44.1",
@@ -89,6 +89,7 @@
         "@openai/codex-sdk": "^0.144.0",
         "dotenv": "^17.0.0",
         "drizzle-orm": "^0.45.2",
+        "server-only": "^0.0.1",
         "zod": "^4.3.6",
       },
       "devDependencies": {
@@ -109,7 +110,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.132.0",
+      "version": "0.133.0",
       "devDependencies": {
         "typescript": "^5.4.0",
       },
@@ -934,6 +935,8 @@
     "send": ["send@1.2.1", "", { "dependencies": { "debug": "^4.4.3", "encodeurl": "^2.0.0", "escape-html": "^1.0.3", "etag": "^1.8.1", "fresh": "^2.0.0", "http-errors": "^2.0.1", "mime-types": "^3.0.2", "ms": "^2.1.3", "on-finished": "^2.4.1", "range-parser": "^1.2.1", "statuses": "^2.0.2" } }, "sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ=="],
 
     "serve-static": ["serve-static@2.2.1", "", { "dependencies": { "encodeurl": "^2.0.0", "escape-html": "^1.0.3", "parseurl": "^1.3.3", "send": "^1.2.0" } }, "sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw=="],
+
+    "server-only": ["server-only@0.0.1", "", {}, "sha512-qepMx2JxAa5jjfzxG79yPPq+8BuFToHd1hm7kI+Z4zAq1ftQiP7HcxMhDDItrbtwVeLg/cY2JnKnrcFkmiswNA=="],
 
     "setprototypeof": ["setprototypeof@1.2.0", "", {}, "sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw=="],
 

@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import { isRunnerOnline } from '@/lib/runner-heartbeats';
+import { isRunnerOnline } from '@/lib/runner-heartbeats-pure';
+import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-pure';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
 import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow } from './page';
-import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
 
 interface Props {
   initialRows: WatchedProjectRow[];
