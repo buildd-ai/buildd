@@ -74,6 +74,70 @@ export function buildTaskCard(input: TaskCardInput): UpsertChunk {
   };
 }
 
+// ── complete_task → corpus `session`, phase `session` ───────────────────────
+
+export interface SessionCardInput {
+  taskId: string;
+  /** Distinguishes the working session; falls back to taskId for the source id. */
+  workerId?: string | null;
+  title?: string | null;
+  /** The agent's own outcome summary — what it did, tried, decided. */
+  summary?: string | null;
+  /** Follow-up the agent suggested — signals unfinished threads. */
+  nextSuggestion?: string | null;
+  /** true = success, false = failed/aborted. */
+  success: boolean;
+  /** Effort signal (agentic turns) when available. */
+  turns?: number | null;
+  missionId?: string | null;
+  sourceUrl?: string | null;
+}
+
+/**
+ * A session card is the recency-weighted, process-oriented counterpart to the
+ * durable task-outcome card. It answers "did anyone work this area recently,
+ * and how did it go?" at claim time — hence corpus `session` (low authority,
+ * 7-day half-life). Distinct from `buildTaskCard`: that records the settled
+ * outcome; this records the working session and any loose threads it left.
+ *
+ * Keyed by taskId so a re-worked task upserts to its latest session (recency is
+ * exactly what this corpus is for). Best-effort at the call site — a failure to
+ * write it must never fail task completion.
+ */
+export function buildSessionCard(input: SessionCardInput): UpsertChunk {
+  const status = input.success ? 'completed' : 'failed/aborted';
+  const heading = input.title
+    ? `# Session: ${input.title}`
+    : `# Session on task ${input.taskId}`;
+  const effort = typeof input.turns === 'number' && input.turns > 0
+    ? `${input.turns} turns`
+    : null;
+
+  const content = joinSections([
+    heading,
+    `Status: ${status}${effort ? ` · ${effort}` : ''}`,
+    input.summary ? `## What happened\n${input.summary}` : null,
+    input.nextSuggestion ? `## Left to do / next\n${input.nextSuggestion}` : null,
+  ]);
+
+  const metadata: Record<string, unknown> = {
+    phase: 'session',
+    taskId: input.taskId,
+    success: input.success,
+  };
+  if (input.workerId) metadata.workerId = input.workerId;
+  if (input.missionId) metadata.missionId = input.missionId;
+
+  return {
+    id: `session:${input.taskId}`,
+    content: truncate(content),
+    lexicalText: truncate(joinSections([input.title, input.summary, input.nextSuggestion])),
+    sourceType: 'session',
+    sourceUrl: input.sourceUrl ?? `/app/tasks/${input.taskId}`,
+    metadata,
+  };
+}
+
 // ── create_pr → corpus `pr`, phase `implementation` ─────────────────────────
 
 export interface PrCardInput {
