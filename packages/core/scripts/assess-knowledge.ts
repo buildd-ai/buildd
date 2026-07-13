@@ -32,9 +32,11 @@ function queryFromChunk(text: string): string {
 }
 
 async function main() {
-  const [workspaceId, corpusArg, sampleArg, kArg] = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const jsonMode = rawArgs.includes('--json');
+  const [workspaceId, corpusArg, sampleArg, kArg] = rawArgs.filter(a => !a.startsWith('--'));
   if (!workspaceId) {
-    console.error('Usage: assess-knowledge.ts <workspaceId> [corpus=memory] [sampleSize=25] [k=5]');
+    console.error('Usage: assess-knowledge.ts <workspaceId> [corpus=memory] [sampleSize=25] [k=5] [--json]');
     process.exit(1);
   }
   const corpus = (corpusArg || 'memory') as Corpus;
@@ -66,7 +68,11 @@ async function main() {
   `);
   const rows = sample.rows as Array<{ source_id: string; content: string; lexical_text: string | null }>;
   if (rows.length === 0) {
-    console.log(`[assess] no chunks in namespace ${ns} — nothing to assess`);
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ namespace: ns, sample: 0, k, recall: 0, mrr: 0, skipped: 'namespace empty' }) + '\n');
+    } else {
+      console.log(`[assess] no chunks in namespace ${ns} — nothing to assess`);
+    }
     process.exit(0);
   }
 
@@ -85,9 +91,13 @@ async function main() {
 
   const recall = hits / rows.length;
   const mrr = mrrSum / rows.length;
-  console.log(`\n[assess] namespace=${ns}  sample=${rows.length}  k=${k}`);
-  console.log(`  recall@${k}: ${(recall * 100).toFixed(1)}%   (fraction of items retrievable by their own title/first line)`);
-  console.log(`  MRR@${k}:    ${mrr.toFixed(3)}   (mean reciprocal rank of the source chunk)`);
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify({ namespace: ns, sample: rows.length, k, recall, mrr }) + '\n');
+  } else {
+    console.log(`\n[assess] namespace=${ns}  sample=${rows.length}  k=${k}`);
+    console.log(`  recall@${k}: ${(recall * 100).toFixed(1)}%   (fraction of items retrievable by their own title/first line)`);
+    console.log(`  MRR@${k}:    ${mrr.toFixed(3)}   (mean reciprocal rank of the source chunk)`);
+  }
   process.exit(0);
 }
 
