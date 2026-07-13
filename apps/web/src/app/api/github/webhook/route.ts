@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray, isNull } from 'drizzle-orm';
+import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
-import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
@@ -142,6 +142,61 @@ async function handleInstallationReposEvent(event: {
   }
 }
 
+const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
+
+/**
+ * Create a buildd task from a labeled GitHub issue (spec §3). Idempotent per
+ * (workspace, issue). When the workspace uses GitHub as its work tracker, the
+ * task is also linked via externalIssueId/externalIssueUrl so the outbound
+ * completion path (maybePostWorkTrackerIssueUpdate) closes the loop on merge.
+ */
+async function createTaskFromIssue(
+  workspace: { id: string; workTrackerConfig: WorkspaceWorkTrackerConfig | null },
+  issue: GitHubIssuesEvent['issue'],
+  repository: GitHubIssuesEvent['repository'],
+): Promise<void> {
+  const externalId = `issue-${issue.id}`;
+
+  // Idempotent: one task per (workspace, issue) whether triggered by opened or
+  // labeled (or the same event redelivered).
+  const existing = await db.query.tasks.findFirst({
+    where: and(eq(tasks.workspaceId, workspace.id), eq(tasks.externalId, externalId)),
+    columns: { id: true },
+  });
+  if (existing) return;
+
+  const isGithubTracker = workspace.workTrackerConfig?.provider === 'github';
+
+  const [newTask] = await db
+    .insert(tasks)
+    .values({
+      workspaceId: workspace.id,
+      title: issue.title,
+      description: issue.body || '',
+      externalId,
+      externalUrl: issue.html_url,
+      // Work-tracker link (github only) → enables the outbound comment on merge.
+      ...(isGithubTracker
+        ? { externalIssueId: String(issue.number), externalIssueUrl: issue.html_url }
+        : {}),
+      status: 'pending',
+      context: {
+        github: { issueNumber: issue.number, issueId: issue.id, repoFullName: repository.full_name },
+      },
+      creationSource: 'github',
+      createdByAccountId: null,
+      createdByWorkerId: null,
+      parentTaskId: null,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (newTask) {
+    await dispatchNewTask(newTask, workspace);
+  }
+}
+
 async function handleIssuesEvent(event: GitHubIssuesEvent) {
   if (!event.installation) {
     return; // Ignore events without installation context
@@ -159,71 +214,45 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
     return;
   }
 
+  // Trigger label(s): the workspace's configured inbound label (github work
+  // tracker), else the defaults. Match is case-insensitive.
+  const configuredLabel = workspace.workTrackerConfig?.inboundLabel?.toLowerCase();
+  const triggerLabels = configuredLabel ? [configuredLabel] : DEFAULT_INBOUND_LABELS;
+  const hasTriggerLabel = issue.labels.some((l) => triggerLabels.includes(l.name.toLowerCase()));
+
   switch (action) {
-    case 'opened': {
-      // Create a new task from the issue
-      const hasBuilddLabel = issue.labels.some(
-        (l) => l.name.toLowerCase() === 'buildd' || l.name.toLowerCase() === 'ai'
-      );
-
-      // Only auto-create tasks for issues with 'buildd' or 'ai' label
-      if (!hasBuilddLabel) {
-        return;
-      }
-
-      const [newTask] = await db
-        .insert(tasks)
-        .values({
-          workspaceId: workspace.id,
-          title: issue.title,
-          description: issue.body || '',
-          externalId: `issue-${issue.id}`,
-          externalUrl: issue.html_url,
-          status: 'pending',
-          context: {
-            github: {
-              issueNumber: issue.number,
-              issueId: issue.id,
-              repoFullName: repository.full_name,
-            },
-          },
-          // Creator tracking - GitHub webhook creates tasks without a user account
-          creationSource: 'github',
-          createdByAccountId: null,
-          createdByWorkerId: null,
-          parentTaskId: null,
-        })
-        .onConflictDoNothing() // Don't create duplicate tasks
-        .returning();
-
-      // Dispatch to connected workers and GitHub Actions
-      if (newTask) {
-        await dispatchNewTask(newTask, workspace);
-      }
+    // Create on open OR when the trigger label is added to an existing issue.
+    case 'opened':
+    case 'labeled': {
+      if (!hasTriggerLabel) return;
+      await createTaskFromIssue(workspace, issue, repository);
       break;
     }
 
     case 'closed': {
-      // Mark task as completed if it exists
+      // An externally-closed issue cancels its linked task if still open. When
+      // buildd itself closed the issue after a merge, the task is already
+      // terminal, so this no-ops (the guard skips terminal statuses).
       await db
         .update(tasks)
-        .set({
-          status: 'completed',
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.externalId, `issue-${issue.id}`));
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(and(
+          eq(tasks.externalId, `issue-${issue.id}`),
+          not(inArray(tasks.status, TERMINAL_TASK_STATUSES)),
+        ));
       break;
     }
 
     case 'reopened': {
-      // Re-open the task
+      // Reopening resurrects a task that a prior close had cancelled — but never
+      // a task that reached completed/failed on its own.
       await db
         .update(tasks)
-        .set({
-          status: 'pending',
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.externalId, `issue-${issue.id}`));
+        .set({ status: 'pending', updatedAt: new Date() })
+        .where(and(
+          eq(tasks.externalId, `issue-${issue.id}`),
+          eq(tasks.status, 'cancelled'),
+        ));
       break;
     }
   }

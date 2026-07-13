@@ -451,7 +451,7 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls.length).toBe(0);
   });
 
-  it('handles issues closed - updates task to completed', async () => {
+  it('handles issues closed - cancels the linked task if non-terminal', async () => {
     mockWorkspacesFindFirst.mockReturnValue(
       Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
     );
@@ -468,7 +468,9 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(updateCalls.length).toBe(1);
-    expect(updateCalls[0].setValues.status).toBe('completed');
+    // An externally-closed issue cancels its open task (was 'completed' before the
+    // work-tracker rework); the WHERE guard skips already-terminal tasks.
+    expect(updateCalls[0].setValues.status).toBe('cancelled');
   });
 
   it('handles issues reopened - updates task to pending', async () => {
@@ -1519,5 +1521,80 @@ describe('POST /api/github/webhook', () => {
       const failUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
       expect(failUpdate).toBeDefined();
     });
+  });
+});
+
+// ── Inbound work-tracker: issues → tasks (spec §3) ───────────────────────────
+describe('inbound issues → tasks', () => {
+  beforeEach(resetAll);
+
+  function issuePayload(action: string, overrides: Record<string, any> = {}) {
+    return {
+      action,
+      issue: {
+        id: 555,
+        number: 7,
+        title: 'Fix the thing',
+        body: 'details',
+        state: action === 'closed' ? 'closed' : 'open',
+        html_url: 'https://github.com/acme/widgets/issues/7',
+        labels: overrides.labels ?? [{ name: 'buildd' }],
+      },
+      repository: { id: 1, full_name: 'acme/widgets' },
+      installation: { id: 12345 },
+    };
+  }
+
+  it('creates a work-tracker-linked task when a github-tracked issue is labeled', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    });
+    const res = await POST(createWebhookRequest('issues', issuePayload('labeled')));
+    expect(res.status).toBe(200);
+
+    const taskInsert = insertCalls.find((c) => c.table === schemaMock.tasks);
+    expect(taskInsert).toBeDefined();
+    expect(taskInsert!.values.externalId).toBe('issue-555');
+    // github tracker → linked so the outbound completion loop can fire on merge
+    expect(taskInsert!.values.externalIssueUrl).toBe('https://github.com/acme/widgets/issues/7');
+  });
+
+  it('is idempotent — no insert when a task already exists for the issue', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    });
+    mockTasksFindFirst.mockReturnValue({ id: 'existing' });
+    const res = await POST(createWebhookRequest('issues', issuePayload('labeled')));
+    expect(res.status).toBe(200);
+    expect(insertCalls.find((c) => c.table === schemaMock.tasks)).toBeUndefined();
+  });
+
+  it('does not create a task when the trigger label is absent', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    });
+    const res = await POST(createWebhookRequest('issues', issuePayload('labeled', { labels: [{ name: 'bug' }] })));
+    expect(res.status).toBe(200);
+    expect(insertCalls.find((c) => c.table === schemaMock.tasks)).toBeUndefined();
+  });
+
+  it('honors a custom inbound label from config', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github', inboundLabel: 'agent' },
+    });
+    // default 'buildd' label should NOT trigger when a custom label is configured
+    const res = await POST(createWebhookRequest('issues', issuePayload('labeled', { labels: [{ name: 'buildd' }] })));
+    expect(res.status).toBe(200);
+    expect(insertCalls.find((c) => c.table === schemaMock.tasks)).toBeUndefined();
+  });
+
+  it('cancels a linked task when its issue is closed', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    });
+    const res = await POST(createWebhookRequest('issues', issuePayload('closed')));
+    expect(res.status).toBe(200);
+    const cancel = updateCalls.find((c) => (c.setValues as any).status === 'cancelled' && c.table === schemaMock.tasks);
+    expect(cancel).toBeDefined();
   });
 });

@@ -373,6 +373,9 @@ export interface WorkspaceWorkTrackerConfig {
   provider: 'linear' | 'github';
   // Required for provider='linear'; omitted for provider='github' (uses the App).
   connectorId?: string;
+  // Inbound trigger label (provider='github'): an issue with this label creates a
+  // linked task. Defaults to 'buildd'/'ai' when unset. See work-tracker spec §3.
+  inboundLabel?: string;
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
