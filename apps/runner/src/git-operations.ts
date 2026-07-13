@@ -75,10 +75,43 @@ export async function setupWorktree(
       // Branch doesn't exist locally, that's fine
     }
 
+    // Warn if parent repo has sparse checkout enabled. Git worktrees get their
+    // own sparse-checkout config so this doesn't directly affect the worktree,
+    // but it's worth logging so the pattern is visible if issues recur.
+    try {
+      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000 }).trim();
+      if (sparsePatterns) {
+        console.warn(
+          `[Worker ${workerId}] Parent repo has sparse checkout enabled. ` +
+          `Worktrees are always fully checked out, but if @buildd/* imports still fail, ` +
+          `run: cd "${repoPath}" && git sparse-checkout disable && bun install`,
+        );
+      }
+    } catch {
+      // Non-zero exit means sparse checkout is not configured — normal state.
+    }
+
     // Create worktree with new branch — from baseBranch (retry) or default branch (fresh)
     const base = resolveWorktreeBase(defaultBranch, taskContext);
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
     execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+    // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
+    // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)
+    // rather than the workspace root. A fresh worktree has no node_modules at all, so
+    // module resolution from the worktree tree never finds the symlinks that exist in the
+    // parent repo — causing '@buildd/core/db' (and similar deep imports) to fail with
+    // "Cannot find module". Running bun install creates the links in-place.
+    console.log(`[Worker ${workerId}] Running bun install in worktree...`);
+    try {
+      execSync('bun install', { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const });
+      console.log(`[Worker ${workerId}] Workspace packages linked`);
+    } catch (err) {
+      console.warn(
+        `[Worker ${workerId}] bun install in worktree failed — @buildd/* imports may break:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return worktreePath;
