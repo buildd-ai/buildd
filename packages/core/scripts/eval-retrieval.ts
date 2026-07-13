@@ -26,6 +26,7 @@ import { workspaces } from '../db/schema';
 import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 import type { Corpus } from '../knowledge-store/types';
+import { compareMetrics, formatRegressionReport, DEFAULT_REGRESSION_THRESHOLD, type AggregateMetrics } from '../eval/regression';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 
@@ -34,6 +35,13 @@ import path from 'path';
 const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const DEFAULT_OUTPUT = path.join(SCRIPT_DIR, 'eval', 'baseline-results.json');
+// Committed regression baseline (metrics + query ids only) — see eval/regression.ts.
+const DEFAULT_BASELINE = path.join(SCRIPT_DIR, '..', 'eval', 'retrieval-baseline.json');
+
+interface RegressionBaseline {
+  threshold?: number;
+  overall: AggregateMetrics;
+}
 
 // ── Metric helpers ───────────────────────────────────────────────────────────
 
@@ -104,6 +112,13 @@ function recallAtK(results: Array<{ id: string; sourcePath: string | null }>, re
 function mean(xs: number[]): number {
   if (xs.length === 0) return 0;
   return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+// In --json mode, progress/summary logging goes to stderr so stdout carries
+// only the machine-readable results JSON.
+let JSON_MODE = false;
+function log(...args: unknown[]): void {
+  (JSON_MODE ? console.error : console.log)(...args);
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -192,7 +207,7 @@ async function main() {
   const args = process.argv.slice(2);
   const workspaceId = args.find(a => !a.startsWith('--'));
   if (!workspaceId) {
-    console.error('Usage: bun eval-retrieval.ts <workspaceId> [--k <n>] [--output <file>]');
+    console.error('Usage: bun eval-retrieval.ts <workspaceId> [--k <n>] [--output <file>] [--json] [--check-regression] [--baseline <file>] [--threshold <n>]');
     process.exit(1);
   }
 
@@ -200,6 +215,15 @@ async function main() {
   const k = kIdx !== -1 ? parseInt(args[kIdx + 1], 10) : 10;
   const outIdx = args.indexOf('--output');
   const outputFile = outIdx !== -1 ? args[outIdx + 1] : DEFAULT_OUTPUT;
+
+  // Additive machine-readable + regression-gate modes (default behaviour unchanged).
+  const jsonMode = args.includes('--json');
+  const checkRegression = args.includes('--check-regression');
+  const baseIdx = args.indexOf('--baseline');
+  const baselineFile = baseIdx !== -1 ? args[baseIdx + 1] : DEFAULT_BASELINE;
+  const thrIdx = args.indexOf('--threshold');
+  const cliThreshold = thrIdx !== -1 ? parseFloat(args[thrIdx + 1]) : undefined;
+  JSON_MODE = jsonMode;
 
   if (!process.env.DATABASE_URL) {
     console.error('[eval] DATABASE_URL is required');
@@ -234,7 +258,7 @@ async function main() {
 
   // ── Curated queries ──────────────────────────────────────────────────────
 
-  console.log('\n[eval] Running curated queries...');
+  log('\n[eval] Running curated queries...');
   for (const q of golden.curated) {
     const corpus = q.corpus as Corpus;
     const ns = resolveNamespace(corpus, workspaceId, teamId);
@@ -246,7 +270,7 @@ async function main() {
     const cnt = (countRes.rows[0] as { cnt: number }).cnt;
 
     if (cnt === 0) {
-      console.log(`  [skip] ${q.id} — namespace ${ns} empty`);
+      log(`  [skip] ${q.id} — namespace ${ns} empty`);
       allResults.push({
         queryId: q.id,
         corpus: q.corpus,
@@ -301,7 +325,7 @@ async function main() {
 
     const hit = topResults.find(r => r.relevant);
     const hitStr = hit ? `✓ rank ${hit.rank}` : '✗ miss';
-    console.log(`  ${q.id}: ${hitStr}  ndcg=${n10.toFixed(3)}  mrr=${mrr.toFixed(3)}`);
+    log(`  ${q.id}: ${hitStr}  ndcg=${n10.toFixed(3)}  mrr=${mrr.toFixed(3)}`);
 
     allResults.push({ queryId: q.id, corpus: q.corpus, query: q.query, mode: 'curated', recall5: r5, recall10: r10, mrr, ndcg10: n10, topResults });
   }
@@ -313,7 +337,7 @@ async function main() {
     const ns = resolveNamespace(corpus, workspaceId, teamId);
     const sampleSize = cfg.sampleSize;
 
-    console.log(`\n[eval] Sampling ${corpus} corpus (ns=${ns}, n=${sampleSize})...`);
+    log(`\n[eval] Sampling ${corpus} corpus (ns=${ns}, n=${sampleSize})...`);
 
     const sample = await db.execute(sql`
       SELECT source_id, content, lexical_text
@@ -325,7 +349,7 @@ async function main() {
     const rows = sample.rows as Array<{ source_id: string; content: string; lexical_text: string | null }>;
 
     if (rows.length === 0) {
-      console.log(`  [skip] ${corpus} namespace ${ns} empty`);
+      log(`  [skip] ${corpus} namespace ${ns} empty`);
       allResults.push({
         queryId: `${corpus}-sampled`,
         corpus,
@@ -369,7 +393,7 @@ async function main() {
     const mrr = mean(perQueryMrr);
     const n10 = mean(perQueryNdcg);
 
-    console.log(`  recall@5=${(r5 * 100).toFixed(1)}%  recall@${k}=${(r10 * 100).toFixed(1)}%  mrr=${mrr.toFixed(3)}  ndcg@${k}=${n10.toFixed(3)}  (n=${rows.length})`);
+    log(`  recall@5=${(r5 * 100).toFixed(1)}%  recall@${k}=${(r10 * 100).toFixed(1)}%  mrr=${mrr.toFixed(3)}  ndcg@${k}=${n10.toFixed(3)}  (n=${rows.length})`);
 
     allResults.push({
       queryId: `${corpus}-sampled`,
@@ -423,28 +447,53 @@ async function main() {
 
   // ── Print summary ────────────────────────────────────────────────────────
 
-  console.log('\n═══════════════════════════════════════════════════════════');
-  console.log('  Retrieval Eval — Phase 0 Baseline');
-  console.log(`  Pipeline: ${results.pipeline}`);
-  if (!embedder) console.log('  ⚠ VOYAGE_API_KEY not set — vector arm disabled; results reflect BM25 only');
-  console.log(`  Workspace: ${workspaceId}  k=${k}`);
-  console.log('───────────────────────────────────────────────────────────');
-  console.log(`  Overall (${ran.length} queries):  recall@5=${(results.overall.recallAt5 * 100).toFixed(1)}%  recall@${k}=${(results.overall.recallAt10 * 100).toFixed(1)}%  MRR=${results.overall.mrr.toFixed(3)}  NDCG@${k}=${results.overall.ndcg10.toFixed(3)}`);
-  console.log('───────────────────────────────────────────────────────────');
-  console.log('  By corpus:');
+  log('\n═══════════════════════════════════════════════════════════');
+  log('  Retrieval Eval — Phase 0 Baseline');
+  log(`  Pipeline: ${results.pipeline}`);
+  if (!embedder) log('  ⚠ VOYAGE_API_KEY not set — vector arm disabled; results reflect BM25 only');
+  log(`  Workspace: ${workspaceId}  k=${k}`);
+  log('───────────────────────────────────────────────────────────');
+  log(`  Overall (${ran.length} queries):  recall@5=${(results.overall.recallAt5 * 100).toFixed(1)}%  recall@${k}=${(results.overall.recallAt10 * 100).toFixed(1)}%  MRR=${results.overall.mrr.toFixed(3)}  NDCG@${k}=${results.overall.ndcg10.toFixed(3)}`);
+  log('───────────────────────────────────────────────────────────');
+  log('  By corpus:');
   for (const c of byCorpus) {
     if (c.queriesRun === 0) {
-      console.log(`  ${c.corpus.padEnd(10)} (${c.queriesSkipped} skipped — namespace empty)`);
+      log(`  ${c.corpus.padEnd(10)} (${c.queriesSkipped} skipped — namespace empty)`);
     } else {
-      console.log(`  ${c.corpus.padEnd(10)}  recall@5=${(c.recallAt5 * 100).toFixed(1)}%  recall@${k}=${(c.recallAt10 * 100).toFixed(1)}%  MRR=${c.mrr.toFixed(3)}  NDCG@${k}=${c.ndcg10.toFixed(3)}  (n=${c.queriesRun})`);
+      log(`  ${c.corpus.padEnd(10)}  recall@5=${(c.recallAt5 * 100).toFixed(1)}%  recall@${k}=${(c.recallAt10 * 100).toFixed(1)}%  MRR=${c.mrr.toFixed(3)}  NDCG@${k}=${c.ndcg10.toFixed(3)}  (n=${c.queriesRun})`);
     }
   }
-  console.log('═══════════════════════════════════════════════════════════');
+  log('═══════════════════════════════════════════════════════════');
 
   // ── Write JSON fixture ────────────────────────────────────────────────────
 
   writeFileSync(outputFile, JSON.stringify(results, null, 2) + '\n');
-  console.log(`\n[eval] Results written to ${outputFile}`);
+  log(`\n[eval] Results written to ${outputFile}`);
+
+  // ── Machine-readable output (stdout stays JSON-only in --json mode) ────────
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(results) + '\n');
+  }
+
+  // ── Regression gate (compare overall metrics vs committed baseline) ────────
+
+  if (checkRegression) {
+    if (!existsSync(baselineFile)) {
+      console.error(`[eval] --check-regression: baseline not found at ${baselineFile}`);
+      process.exit(1);
+    }
+    const baseline: RegressionBaseline = JSON.parse(readFileSync(baselineFile, 'utf8'));
+    const threshold = cliThreshold ?? baseline.threshold ?? DEFAULT_REGRESSION_THRESHOLD;
+    const report = compareMetrics(results.overall, baseline.overall, threshold);
+    // Always to stderr so it never pollutes --json stdout.
+    console.error('\n' + formatRegressionReport(report));
+    if (!report.pass) {
+      console.error(`\n[eval] REGRESSION GATE FAILED — ${report.regressions.length} metric(s) dropped >${(threshold * 100).toFixed(0)}% vs ${baselineFile}`);
+      process.exit(1);
+    }
+    console.error('[eval] Regression gate passed.');
+  }
 
   process.exit(0);
 }
