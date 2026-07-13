@@ -132,7 +132,11 @@ export async function PATCH(
     if (!ws.githubInstallationId) {
       return NextResponse.json({ error: 'github_app_not_installed' }, { status: 400 });
     }
-    config = { provider: 'github' };
+    // Optional inbound trigger label (defaults applied at webhook time when unset).
+    const inboundLabel = typeof wtcObj.inboundLabel === 'string' && wtcObj.inboundLabel.trim()
+      ? wtcObj.inboundLabel.trim()
+      : undefined;
+    config = { provider: 'github', ...(inboundLabel ? { inboundLabel } : {}) };
   } else {
     // Linear requires a connector enabled for this workspace.
     if (typeof wtcObj.connectorId !== 'string' || !wtcObj.connectorId) {
