@@ -39,6 +39,18 @@ remove via the dashboard or the `delete_schedule` MCP action.
 BUILDD_API_KEY=your_key WORKSPACE_ID=<workspace-uuid> bun run seed:knowledge-consolidation
 ```
 
+#### `knowledge-digest`
+Opts a workspace into the weekly workspace-digest agent task (synthesise the last
+7 days of merged PRs, completed tasks, and new memories into a concise digest,
+saved as a `type=summary` artifact that is auto-indexed — see
+`docs/design/workspace-knowledge-management.md` §6.2). Per-workspace and opt-in by
+design; idempotent per workspace. Not tracked by `seed:reset` — remove via the
+dashboard or the `delete_schedule` MCP action.
+
+```bash
+BUILDD_API_KEY=your_key WORKSPACE_ID=<workspace-uuid> bun run seed:knowledge-digest
+```
+
 #### `reset`
 Cleans up the most recently seeded data.
 
