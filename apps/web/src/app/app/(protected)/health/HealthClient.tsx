@@ -1,12 +1,68 @@
 'use client';
 
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow } from './page';
+import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
+
+// --- Runner health types (mirrors runner's DoctorReport) ---
+
+interface DoctorCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'error';
+  message: string;
+  detail?: string;
+  fixable?: boolean;
+}
+
+interface RunnerDoctorResult {
+  timestamp: string;
+  checks: DoctorCheck[];
+  summary: { ok: number; warn: number; error: number };
+}
+
+interface RunnerHistoryStats {
+  totalSessions: number;
+  totalCost: number;
+  avgDurationMs: number;
+  byStatus: Record<string, number>;
+}
+
+interface RunnerHealthState {
+  loading: boolean;
+  expanded: boolean;
+  doctor?: RunnerDoctorResult;
+  historyStats?: RunnerHistoryStats;
+  error?: string;
+}
+
+const STATUS_ICON: Record<DoctorCheck['status'], string> = {
+  ok: '✓',
+  warn: '⚠',
+  error: '✗',
+};
+
+const STATUS_CLASS: Record<DoctorCheck['status'], string> = {
+  ok: 'text-status-success',
+  warn: 'text-status-warning',
+  error: 'text-status-error',
+};
+
+function formatCost(usd: number): string {
+  if (usd === 0) return '$0';
+  if (usd < 0.01) return '<$0.01';
+  return `$${usd.toFixed(2)}`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.round(s / 60)}m`;
+}
 
 interface Props {
   initialRows: WatchedProjectRow[];
@@ -14,6 +70,7 @@ interface Props {
   runners: RunnerHeartbeat[];
   usageStats: UsageStats | null;
   schedules: ScheduleRow[];
+  recentFailures: RecentFailure[];
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
 }
@@ -105,6 +162,7 @@ export function HealthClient({
   runners,
   usageStats,
   schedules,
+  recentFailures,
   teamWorkspaces,
   wsFilter,
 }: Props) {
@@ -114,6 +172,54 @@ export function HealthClient({
   const [form, setForm] = useState<FormState>(blankForm(workspaces[0]?.id ?? ''));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
+
+  const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
+    setRunnerHealth(prev => {
+      const next = new Map(prev);
+      const existing = next.get(heartbeatId);
+      if (existing?.expanded && !existing.loading) {
+        // Toggle off
+        next.set(heartbeatId, { ...existing, expanded: false });
+        return next;
+      }
+      next.set(heartbeatId, { loading: true, expanded: true, ...(existing ?? {}) });
+      return next;
+    });
+
+    // If already loaded, just toggling — no refetch needed
+    const current = runnerHealth.get(heartbeatId);
+    if (current?.doctor || current?.error) return;
+
+    try {
+      const [doctorRes, historyRes] = await Promise.allSettled([
+        fetch(`/api/runners/${heartbeatId}/proxy?path=doctor`),
+        fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`),
+      ]);
+
+      const doctor = doctorRes.status === 'fulfilled' && doctorRes.value.ok
+        ? (await doctorRes.value.json()) as RunnerDoctorResult
+        : undefined;
+
+      const historyStats = historyRes.status === 'fulfilled' && historyRes.value.ok
+        ? (await historyRes.value.json()) as RunnerHistoryStats
+        : undefined;
+
+      const errMsg = !doctor && !historyStats ? 'Runner unreachable — check that it is running and accessible.' : undefined;
+
+      setRunnerHealth(prev => {
+        const next = new Map(prev);
+        next.set(heartbeatId, { loading: false, expanded: true, doctor, historyStats, error: errMsg });
+        return next;
+      });
+    } catch {
+      setRunnerHealth(prev => {
+        const next = new Map(prev);
+        next.set(heartbeatId, { loading: false, expanded: true, error: 'Failed to fetch health data.' });
+        return next;
+      });
+    }
+  }, [runnerHealth]);
 
   const refresh = () => startTransition(() => router.refresh());
 
@@ -269,25 +375,95 @@ export function HealthClient({
             <div className="divide-y divide-border-default">
               {runners.map((hb) => {
                 const online = isRunnerOnline(hb.lastHeartbeatAt);
+                const health = runnerHealth.get(hb.id);
                 return (
-                  <div key={hb.id} className="flex items-center gap-3 px-4 py-3">
-                    <span
-                      className={`glow-dot ${online ? 'glow-dot-success' : ''}`}
-                      style={!online ? { background: 'var(--text-muted)' } : undefined}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm text-text-primary truncate">
-                          {hb.accountName || 'Runner'}
+                  <div key={hb.id}>
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <span
+                        className={`glow-dot ${online ? 'glow-dot-success' : ''}`}
+                        style={!online ? { background: 'var(--text-muted)' } : undefined}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm text-text-primary truncate">
+                            {hb.accountName || 'Runner'}
+                          </p>
+                          <span className={`text-[10px] font-mono ${online ? 'text-status-success' : 'text-text-muted'}`}>
+                            {online ? 'online' : 'stale'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-text-muted">
+                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers · last beat {timeAgo(hb.lastHeartbeatAt)}
                         </p>
-                        <span className={`text-[10px] font-mono ${online ? 'text-status-success' : 'text-text-muted'}`}>
-                          {online ? 'online' : 'stale'}
-                        </span>
                       </div>
-                      <p className="text-xs text-text-muted">
-                        {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers · last beat {timeAgo(hb.lastHeartbeatAt)}
-                      </p>
+                      <button
+                        onClick={() => checkRunnerHealth(hb.id)}
+                        disabled={health?.loading}
+                        className="text-[11px] px-2.5 h-7 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
+                      >
+                        {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Check health'}
+                      </button>
                     </div>
+                    {health?.expanded && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
+                        {health.error && (
+                          <p className="pt-3 text-xs text-status-error">{health.error}</p>
+                        )}
+                        {health.doctor && (
+                          <div className="pt-3">
+                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">
+                              Doctor checks
+                              <span className="ml-2 font-normal normal-case text-text-muted">
+                                {health.doctor.summary.ok} ok
+                                {health.doctor.summary.warn > 0 && ` · ${health.doctor.summary.warn} warn`}
+                                {health.doctor.summary.error > 0 && ` · ${health.doctor.summary.error} error`}
+                              </span>
+                            </p>
+                            <div className="space-y-1">
+                              {health.doctor.checks.map((c) => (
+                                <div key={c.name} className="flex items-start gap-2">
+                                  <span className={`text-[11px] font-mono shrink-0 mt-0.5 ${STATUS_CLASS[c.status]}`}>
+                                    {STATUS_ICON[c.status]}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <span className="text-xs text-text-primary font-mono">{c.name}</span>
+                                    {c.message && (
+                                      <span className="text-xs text-text-muted ml-1.5">{c.message}</span>
+                                    )}
+                                    {c.detail && (
+                                      <p className="text-[11px] text-text-tertiary mt-0.5 break-words">{c.detail}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {health.historyStats && (
+                          <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
+                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">Session history</p>
+                            <div className="flex gap-4 flex-wrap">
+                              <div>
+                                <span className="text-xs text-text-muted">Sessions</span>
+                                <p className="text-sm font-medium text-text-primary tabular-nums">{health.historyStats.totalSessions}</p>
+                              </div>
+                              {health.historyStats.totalCost > 0 && (
+                                <div>
+                                  <span className="text-xs text-text-muted">Total cost</span>
+                                  <p className="text-sm font-medium text-text-primary tabular-nums">{formatCost(health.historyStats.totalCost)}</p>
+                                </div>
+                              )}
+                              {health.historyStats.avgDurationMs > 0 && (
+                                <div>
+                                  <span className="text-xs text-text-muted">Avg duration</span>
+                                  <p className="text-sm font-medium text-text-primary tabular-nums">{formatDuration(health.historyStats.avgDurationMs)}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -459,6 +635,38 @@ export function HealthClient({
               </>
             );
           })()}
+        </section>
+      )}
+
+      {/* Recent failures (24h) */}
+      {recentFailures.length > 0 && (
+        <section data-testid="health-section-recent-failures" className="mb-6">
+          <h2 className="section-label mb-3">Recent Failures (24h)</h2>
+          <div className="card divide-y divide-border-default">
+            {recentFailures.map((f) => (
+              <div key={f.workerId} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    {f.taskId ? (
+                      <a
+                        href={`/app/tasks/${f.taskId}`}
+                        className="text-sm text-text-primary hover:text-primary truncate block"
+                      >
+                        {f.taskTitle}
+                      </a>
+                    ) : (
+                      <p className="text-sm text-text-primary truncate">{f.taskTitle}</p>
+                    )}
+                    <p className="text-xs text-text-muted mt-0.5">{f.workspaceName} · {timeAgo(f.completedAt)}</p>
+                    {f.error && (
+                      <p className="text-xs text-status-error mt-1 truncate" title={f.error}>{f.error}</p>
+                    )}
+                  </div>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">failed</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 
