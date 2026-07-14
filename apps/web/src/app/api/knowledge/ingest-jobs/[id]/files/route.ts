@@ -10,6 +10,7 @@
  * happens at /complete.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
@@ -23,7 +24,7 @@ export const MAX_BATCH_TOTAL_BYTES = 4 * 1024 * 1024;
 export const MAX_BATCH_FILE_COUNT = 64;
 
 interface FilesBody {
-  files?: Array<{ path?: unknown; content?: unknown }>;
+  files?: Array<{ path?: unknown; content?: unknown; fileHash?: unknown }>;
   deletions?: unknown;
 }
 
@@ -52,14 +53,18 @@ export async function POST(
   if (body.files.length > MAX_BATCH_FILE_COUNT) {
     return NextResponse.json({ error: `files exceeds ${MAX_BATCH_FILE_COUNT} per batch` }, { status: 413 });
   }
-  const files: Array<{ path: string; content: string }> = [];
+  const files: Array<{ path: string; content: string; fileHash?: string }> = [];
   let totalBytes = 0;
   for (const f of body.files) {
     if (typeof f?.path !== 'string' || typeof f?.content !== 'string') {
       return NextResponse.json({ error: 'each file needs string path and content' }, { status: 400 });
     }
     totalBytes += Buffer.byteLength(f.content, 'utf8');
-    files.push({ path: f.path, content: f.content });
+    files.push({
+      path: f.path,
+      content: f.content,
+      ...(typeof f.fileHash === 'string' ? { fileHash: f.fileHash } : {}),
+    });
   }
   if (totalBytes > MAX_BATCH_TOTAL_BYTES) {
     return NextResponse.json({ error: `batch exceeds ${MAX_BATCH_TOTAL_BYTES} bytes` }, { status: 413 });
@@ -97,8 +102,13 @@ export async function POST(
       filesDeleted++;
     }
 
-    const sources: Record<'code' | 'docs', Array<{ path: string; content: string }>> = { code: [], docs: [] };
+    // Build per-corpus file lists, checking file_hash to skip unchanged files.
+    const sources: Record<'code' | 'docs', Array<{ path: string; content: string; fileHash?: string }>> = {
+      code: [],
+      docs: [],
+    };
     let filesSkipped = 0;
+    let skippedUnchanged = 0;
     for (const file of files) {
       const sizeBytes = Buffer.byteLength(file.content, 'utf8');
       if (!shouldIngestFile(file.path, { sizeBytes })) {
@@ -110,6 +120,31 @@ export async function POST(
         filesSkipped++;
         continue;
       }
+      // Hash-skip: if the caller supplied a fileHash and a chunk already exists
+      // for this path with the same file_hash, the file is unchanged — skip it.
+      if (file.fileHash) {
+        const ns = buildNamespace(job.workspaceId, corpus);
+        const existing = await db.execute(
+          sql`SELECT 1 FROM knowledge_chunks
+              WHERE namespace = ${ns}
+                AND source_path = ${file.path}
+                AND file_hash = ${file.fileHash}
+                AND is_current = true
+              LIMIT 1`,
+        );
+        if (existing.rows.length > 0) {
+          skippedUnchanged++;
+          // Bump updated_at so the sweep at job completion doesn't prune these chunks.
+          await db.execute(
+            sql`UPDATE knowledge_chunks
+                SET updated_at = NOW()
+                WHERE namespace = ${ns}
+                  AND source_path = ${file.path}
+                  AND file_hash = ${file.fileHash}`,
+          );
+          continue;
+        }
+      }
       sources[corpus].push(file);
     }
 
@@ -117,12 +152,13 @@ export async function POST(
     let chunksUpserted = 0;
     for (const corpus of ['code', 'docs'] as const) {
       if (sources[corpus].length === 0) continue;
-      const res = await ingestFiles(store, job.workspaceId, corpus, sources[corpus]);
+      const sourceFiles = sources[corpus].map(f => ({ ...f }));
+      const res = await ingestFiles(store, job.workspaceId, corpus, sourceFiles);
       filesIngested += res.files;
       chunksUpserted += res.chunks;
     }
 
-    return NextResponse.json({ filesIngested, chunksUpserted, filesSkipped, filesDeleted });
+    return NextResponse.json({ filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged });
   } catch (err) {
     console.error(`[knowledge-ingest] files batch failed for job ${id}:`, err);
     return NextResponse.json({ error: 'Batch ingest failed' }, { status: 500 });

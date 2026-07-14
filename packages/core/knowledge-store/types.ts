@@ -54,6 +54,11 @@ export interface UpsertChunk {
   metadata?: Record<string, unknown>;
   /** When the source event occurred (commit time, task completion time, etc.). Phase 1+. */
   sourceTs?: Date | null;
+  /**
+   * SHA-256 of the FULL source file content (same for all chunks of a file).
+   * Written to `file_hash` — lets the ingest route skip re-embedding unchanged files.
+   */
+  fileHash?: string | null;
   /** Agent-supplied entity refs for this chunk. Phase 2+. */
   entities?: EntityRef[];
   /** Agent-supplied directed relations. Phase 2+. */

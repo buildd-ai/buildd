@@ -7,6 +7,7 @@
 // child_process and must never enter a serverless bundle graph.
 
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
 
@@ -25,6 +26,8 @@ export interface FullIngestJob {
 export interface IngestFileEntry {
   path: string;
   content: string;
+  /** SHA-256 of the full file content. Server uses this to skip unchanged files. */
+  fileHash?: string;
 }
 
 export interface IngestBatchStats {
@@ -32,6 +35,8 @@ export interface IngestBatchStats {
   chunksUpserted: number;
   filesSkipped: number;
   filesDeleted: number;
+  /** Files skipped because their content hash matched what is already in the store. */
+  skippedUnchanged?: number;
 }
 
 export interface FullIngestCompletion {
@@ -190,16 +195,19 @@ export async function runFullIngestJob(
         skipped++;
         continue;
       }
-      entries.push({ path, content });
+      const fileHash = createHash('sha256').update(content).digest('hex');
+      entries.push({ path, content, fileHash });
     }
 
     let filesIngested = 0;
     let chunksUpserted = 0;
+    let skippedUnchanged = 0;
     for (const batch of planFileBatches(entries, caps)) {
       const res = await api.pushFiles(job.id, batch);
       filesIngested += res.filesIngested;
       chunksUpserted += res.chunksUpserted;
       skipped += res.filesSkipped;
+      skippedUnchanged += res.skippedUnchanged ?? 0;
     }
 
     // Precise code-graph enrichment (SCIP). Runs after files are ingested so
@@ -212,6 +220,7 @@ export async function runFullIngestJob(
       filesSent: entries.length,
       filesIngested,
       filesSkipped: skipped,
+      skippedUnchanged,
       chunksUpserted,
       durationMs: Date.now() - startedAt,
       ...(reader.resolvedSha ? { sha: reader.resolvedSha } : {}),

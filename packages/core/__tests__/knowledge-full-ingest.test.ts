@@ -114,6 +114,39 @@ describe('runFullIngestJob', () => {
     expect(typeof stats.durationMs).toBe('number');
   });
 
+  it('computes and attaches fileHash to each pushed entry', async () => {
+    const { api, pushed } = fakeApi();
+    const reader = fakeReader({ 'src/app.ts': 'export const app = 1;' });
+
+    await runFullIngestJob(job, reader, api);
+
+    const entry = pushed.flat()[0];
+    expect(typeof entry.fileHash).toBe('string');
+    expect(entry.fileHash).toMatch(/^[0-9a-f]{64}$/); // sha256 hex
+  });
+
+  it('accumulates skippedUnchanged from server responses into stats', async () => {
+    // Simulate a server that reports some files as hash-skipped
+    const { api, completions } = fakeApi({
+      pushFiles: async (_jobId, files) => ({
+        filesIngested: files.length - 1,
+        chunksUpserted: (files.length - 1) * 2,
+        filesSkipped: 0,
+        filesDeleted: 0,
+        skippedUnchanged: 1,
+      }),
+    });
+    const reader = fakeReader({
+      'src/app.ts': 'export const app = 1;',
+      'src/util.ts': 'export const util = 2;',
+    });
+
+    const result = await runFullIngestJob(job, reader, api);
+    expect(result.status).toBe('done');
+    const stats = completions[0].stats as Record<string, unknown>;
+    expect(stats.skippedUnchanged).toBe(1);
+  });
+
   it('skips files the reader rejects (binary/oversized) and counts them', async () => {
     const { api, pushed, completions } = fakeApi();
     const reader = fakeReader({

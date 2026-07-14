@@ -29,6 +29,8 @@ export interface SourceFile {
   sourceUrl?: string;
   /** Source timestamp (git commit time or mtime). Passed through to UpsertChunk for recency decay. */
   sourceTs?: Date;
+  /** SHA-256 of the full file content. Propagated to all chunks for hash-skip on re-ingest. */
+  fileHash?: string;
 }
 
 export interface IngestResult {
@@ -128,6 +130,7 @@ export async function fileToChunks(
       sourcePath: file.path,
       sourceUrl: file.sourceUrl ? `${file.sourceUrl}#L${piece.startLine}` : undefined,
       sourceTs: file.sourceTs,
+      fileHash: file.fileHash ?? null,
       metadata: {
         startLine: piece.startLine,
         endLine: piece.endLine,
