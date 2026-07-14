@@ -109,6 +109,12 @@ export interface SubagentTask {
   completedAt?: number;
   message?: string;
   isBackground?: boolean;  // SDK v0.2.49+: true when agent definition has `background: true`
+  // SDK v0.3.202+: agent identity for reconstructing depth-2+ agent trees.
+  // `agentId` is this subagent's SDK id; `parentAgentId` is its spawning agent
+  // (absent for direct children of the main worker). Read defensively — older
+  // CLIs don't stamp these, in which case the tree renders as a flat list.
+  agentId?: string;
+  parentAgentId?: string;
   // SDK v0.2.51+: cumulative progress metrics for background subagents
   progress?: {
     toolCount: number;
@@ -195,6 +201,10 @@ export interface LocalWorker {
   // Current prompt UUID (SDK v0.3.196 BaseHookInput.prompt_id) — correlates hook events
   // with SDK-emitted OTel spans at prompt grain (attribute: prompt.id).
   currentPromptId?: string;
+  // Command lifecycle counts (SDK v0.3.206 command_lifecycle frames) — tracks the
+  // terminal state of each queued message so cancelled/discarded steers surface.
+  // Lazily initialized on the first frame; absent on CLIs that never emit it.
+  commandLifecycle?: import('./command-lifecycle').CommandLifecycleTracker;
   // Model capabilities discovered via SDK v0.2.49+ supportedModels()
   modelCapabilities?: {
     model?: string;

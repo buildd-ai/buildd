@@ -166,7 +166,9 @@ export class WorkerSync {
         });
       }
 
-      // Collect active subagent progress for dashboard visibility
+      // Collect active subagent progress for dashboard visibility. agentId /
+      // parentAgentId (SDK v0.3.202+) let the task view reconstruct depth-2+
+      // agent trees; omitted on older CLIs, where the view stays a flat list.
       const activeProgress = worker.subagentTasks
         .filter(t => t.status === 'running' && t.progress)
         .map(t => ({
@@ -175,6 +177,8 @@ export class WorkerSync {
           toolCount: t.progress!.toolCount,
           durationMs: t.progress!.durationMs,
           cumulativeUsage: t.progress!.cumulativeUsage,
+          ...(t.agentId ? { agentId: t.agentId } : {}),
+          ...(t.parentAgentId ? { parentAgentId: t.parentAgentId } : {}),
         }));
 
       const update: Parameters<BuilddClient['updateWorker']>[1] = {

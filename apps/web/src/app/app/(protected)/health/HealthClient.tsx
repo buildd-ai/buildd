@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import { isRunnerOnline } from '@/lib/runner-heartbeats';
+import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
 import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure } from './page';
-import type { RunnerHeartbeat } from '@/lib/runner-heartbeats';
+import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 

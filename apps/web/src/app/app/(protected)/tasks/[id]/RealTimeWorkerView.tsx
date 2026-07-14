@@ -7,6 +7,7 @@ import WorkerActivityTimeline, { collapseWorkspacePath } from './WorkerActivityT
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
 import StatusBadge from '@/components/StatusBadge';
+import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
 
 
 type Milestone =
@@ -57,13 +58,9 @@ interface Props {
 }
 
 
-interface TaskProgressEntry {
-  taskId: string;
-  agentName: string | null;
-  toolCount: number;
-  durationMs: number;
-  cumulativeUsage: { inputTokens: number; outputTokens: number; costUsd: number } | null;
-}
+// Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent
+// trees can be reconstructed; see @/lib/agent-tree.
+type TaskProgressEntry = AgentProgressEntry;
 
 export default function RealTimeWorkerView({ initialWorker, statusColors }: Props) {
   const router = useRouter();
@@ -254,18 +251,22 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         </div>
       )}
 
-      {/* Subagent progress indicator */}
+      {/* Subagent progress indicator — nested by parentAgentId into an agent tree */}
       {taskProgress.length > 0 && isActive && (
         <div className="mb-3 p-2.5 bg-surface-3 rounded-md border border-border-default/50">
           <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Background Agents</div>
           <div className="space-y-1">
-            {taskProgress.map((tp) => (
+            {flattenAgentTree(buildAgentTree(taskProgress)).map((tp) => (
               <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-status-running animate-pulse" />
-                  <span className="text-text-secondary">{tp.agentName || tp.taskId.slice(0, 8)}</span>
+                <div
+                  className="flex items-center gap-2 min-w-0"
+                  style={{ paddingLeft: tp.depth > 0 ? `${tp.depth * 14}px` : undefined }}
+                >
+                  {tp.depth > 0 && <span className="text-text-muted select-none" aria-hidden>└</span>}
+                  <span className="w-1.5 h-1.5 rounded-full bg-status-running animate-pulse shrink-0" />
+                  <span className="text-text-secondary truncate">{tp.agentName || tp.taskId.slice(0, 8)}</span>
                 </div>
-                <div className="flex items-center gap-3 text-text-muted">
+                <div className="flex items-center gap-3 text-text-muted shrink-0">
                   <span>{tp.toolCount} tool{tp.toolCount !== 1 ? 's' : ''}</span>
                   <span>{Math.round(tp.durationMs / 1000)}s</span>
                   {tp.cumulativeUsage?.costUsd != null && tp.cumulativeUsage.costUsd > 0 && (
