@@ -112,45 +112,60 @@ export async function PATCH(
   }
 
   const wtcObj = wtc as Record<string, unknown>;
-  if (typeof wtcObj.connectorId !== 'string' || !wtcObj.connectorId) {
-    return NextResponse.json({ error: 'workTrackerConfig.connectorId is required' }, { status: 400 });
-  }
-  if (typeof wtcObj.provider !== 'string' || !wtcObj.provider) {
-    return NextResponse.json({ error: 'workTrackerConfig.provider is required' }, { status: 400 });
+  const provider = wtcObj.provider;
+  if (provider !== 'linear' && provider !== 'github') {
+    return NextResponse.json({ error: 'unsupported_provider' }, { status: 400 });
   }
 
-  const { connectorId, provider } = wtcObj as { connectorId: string; provider: string };
-
-  // Verify the connector is enabled for this workspace
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, id),
-    columns: { teamId: true },
+    columns: { teamId: true, githubInstallationId: true },
   });
   if (!ws) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const connectorRow = await db.query.connectors.findFirst({
-    where: and(eq(connectors.id, connectorId), eq(connectors.teamId, ws.teamId)),
-    columns: { id: true },
-  });
-  if (!connectorRow) {
-    return NextResponse.json({ error: 'Connector not found or does not belong to this team' }, { status: 403 });
-  }
+  let config: WorkspaceWorkTrackerConfig;
 
-  const linked = await db.query.connectorWorkspaces.findFirst({
-    where: and(
-      eq(connectorWorkspaces.connectorId, connectorId),
-      eq(connectorWorkspaces.workspaceId, id),
-      eq(connectorWorkspaces.enabled, true),
-    ),
-    columns: { connectorId: true },
-  });
-  if (!linked) {
-    return NextResponse.json({ error: 'Connector is not enabled for this workspace' }, { status: 422 });
-  }
+  if (provider === 'github') {
+    // GitHub uses the workspace's existing App installation — no connector.
+    if (!ws.githubInstallationId) {
+      return NextResponse.json({ error: 'github_app_not_installed' }, { status: 400 });
+    }
+    // Optional inbound trigger label (defaults applied at webhook time when unset).
+    const inboundLabel = typeof wtcObj.inboundLabel === 'string' && wtcObj.inboundLabel.trim()
+      ? wtcObj.inboundLabel.trim()
+      : undefined;
+    config = { provider: 'github', ...(inboundLabel ? { inboundLabel } : {}) };
+  } else {
+    // Linear requires a connector enabled for this workspace.
+    if (typeof wtcObj.connectorId !== 'string' || !wtcObj.connectorId) {
+      return NextResponse.json({ error: 'workTrackerConfig.connectorId is required' }, { status: 400 });
+    }
+    const connectorId = wtcObj.connectorId;
 
-  const config: WorkspaceWorkTrackerConfig = { connectorId, provider };
+    const connectorRow = await db.query.connectors.findFirst({
+      where: and(eq(connectors.id, connectorId), eq(connectors.teamId, ws.teamId)),
+      columns: { id: true },
+    });
+    if (!connectorRow) {
+      return NextResponse.json({ error: 'Connector not found or does not belong to this team' }, { status: 403 });
+    }
+
+    const linked = await db.query.connectorWorkspaces.findFirst({
+      where: and(
+        eq(connectorWorkspaces.connectorId, connectorId),
+        eq(connectorWorkspaces.workspaceId, id),
+        eq(connectorWorkspaces.enabled, true),
+      ),
+      columns: { connectorId: true },
+    });
+    if (!linked) {
+      return NextResponse.json({ error: 'Connector is not enabled for this workspace' }, { status: 422 });
+    }
+
+    config = { provider: 'linear', connectorId };
+  }
 
   try {
     await db.update(workspaces)

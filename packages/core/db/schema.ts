@@ -364,12 +364,18 @@ export interface ReleaseResult {
   releasePrUrl?: string;
 }
 
-// Work tracker connector configuration — links a workspace to an external issue tracker
-// via a connected MCP connector (e.g. Linear). provider is a detection hint for UI
-// labeling, auto-derived from the connector URL (e.g. 'linear.app' → 'linear').
+// Work tracker configuration — links a workspace to an external issue tracker.
+// `provider='linear'` reaches the tracker via an MCP connector (`connectorId`,
+// OAuth). `provider='github'` reaches it via the workspace's existing GitHub App
+// installation (no connector — `connectorId` omitted). See
+// docs/specs/work-tracker-integration.md.
 export interface WorkspaceWorkTrackerConfig {
-  connectorId: string;
-  provider: string;
+  provider: 'linear' | 'github';
+  // Required for provider='linear'; omitted for provider='github' (uses the App).
+  connectorId?: string;
+  // Inbound trigger label (provider='github'): an issue with this label creates a
+  // linked task. Defaults to 'buildd'/'ai' when unset. See work-tracker spec §3.
+  inboundLabel?: string;
 }
 
 // Webhook configuration for external agent dispatch (e.g., OpenClaw)
