@@ -43,6 +43,7 @@ import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { RecoveryManager } from './recovery';
+import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -2552,6 +2553,10 @@ If something is missing or incomplete, describe what and fix it now.`;
     if (msg.type === 'system' && (msg as any).subtype === 'task_started') {
       const event = msg as any;
       const isBackground = Boolean(event.is_background);
+      // SDK v0.3.202+: agent identity for depth-2+ trees. Fields read defensively
+      // (not in the installed SDK's typed surface yet); absent on older CLIs.
+      const agentId = event.agent_id ?? event.agentID ?? undefined;
+      const parentAgentId = event.parent_agent_id ?? event.parentAgentId ?? undefined;
       const subagentTask: SubagentTask = {
         taskId: event.task_id,
         toolUseId: event.tool_use_id,
@@ -2560,6 +2565,8 @@ If something is missing or incomplete, describe what and fix it now.`;
         startedAt: Date.now(),
         status: 'running',
         ...(isBackground ? { isBackground: true } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
       };
       worker.subagentTasks.push(subagentTask);
       // Keep last 100 subagent tasks
@@ -2614,8 +2621,38 @@ If something is missing or incomplete, describe what and fix it now.`;
           agentName: event.agent_name ?? null,
           cumulativeUsage: event.cumulative_usage ?? null,
         };
+        // Backfill agent identity if task_started didn't carry it (SDK v0.3.202+).
+        const agentId = event.agent_id ?? event.agentID;
+        const parentAgentId = event.parent_agent_id ?? event.parentAgentId;
+        if (agentId && !tracked.agentId) tracked.agentId = agentId;
+        if (parentAgentId && !tracked.parentAgentId) tracked.parentAgentId = parentAgentId;
       }
       this.emit({ type: 'worker_update', worker });
+    }
+
+    // SDK v0.3.206+: command_lifecycle — terminal state of each queued message
+    // (queued/started/completed/cancelled/discarded). Surfaces cancelled/discarded
+    // steers (which otherwise vanish silently) as milestones without the agent
+    // having to report progress manually. No-op on CLIs that never emit it.
+    // Accept both plausible envelopes: a system-message subtype or a top-level
+    // frame, since the exact shape isn't in the installed SDK's typed surface.
+    if (
+      (msg.type === 'system' && (msg as any).subtype === 'command_lifecycle') ||
+      (msg as any).type === 'command_lifecycle'
+    ) {
+      const event = msg as any;
+      if (!worker.commandLifecycle) worker.commandLifecycle = emptyCommandLifecycle();
+      const result = applyCommandLifecycle(worker.commandLifecycle, {
+        uuid: event.uuid ?? event.message_uuid,
+        state: event.state,
+        status: event.status,
+      });
+      if (result.changed && result.milestoneLabel) {
+        worker.currentAction = result.currentAction ?? worker.currentAction;
+        this.addMilestone(worker, { type: 'status', label: result.milestoneLabel, ts: Date.now() });
+        sessionLog(worker.id, 'info', 'command_lifecycle', `${result.state}`, worker.taskId);
+      }
+      if (result.changed) this.emit({ type: 'worker_update', worker });
     }
 
     if (msg.type === 'assistant') {
