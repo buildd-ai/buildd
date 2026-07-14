@@ -49,6 +49,29 @@ let insertCalls: Array<{ table: any; values: Row }> = [];
 let insertReturning: Row[] = [{ id: 'new-job-1' }];
 let selectResults: (table: any) => Row[] = () => [];
 let joinResults: (table: any) => Row[] = () => [];
+// Controls what the active-full-job guard check returns when querying
+// knowledgeIngestJobs for queued/running full jobs.
+let activeFullJobRows: Row[] = [];
+
+// Helper: returns a chainable query builder that supports .where().limit() pattern
+// used by the backfill/escalation guards.
+function makeSelectFrom(table: any) {
+  const rows = selectResults(table);
+  const whereResult = {
+    then: (res: any, rej: any) => Promise.resolve(rows).then(res, rej),
+    catch: (rej: any) => Promise.resolve(rows).catch(rej),
+    limit: (_n: number) => Promise.resolve(table === knowledgeIngestJobs ? activeFullJobRows : rows),
+    orderBy: (..._args: any[]) => ({
+      limit: (_n: number) => Promise.resolve(rows),
+    }),
+  };
+  return {
+    innerJoin: (_t2: any, _c: any) => ({
+      where: (_c2: any) => Promise.resolve(joinResults(table)),
+    }),
+    where: (_c: any) => whereResult,
+  };
+}
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -74,12 +97,7 @@ mock.module('@buildd/core/db', () => ({
       },
     }),
     select: (_cols: any) => ({
-      from: (table: any) => ({
-        innerJoin: (_t2: any, _c: any) => ({
-          where: (_c2: any) => Promise.resolve(joinResults(table)),
-        }),
-        where: (_c: any) => Promise.resolve(selectResults(table)),
-      }),
+      from: (table: any) => makeSelectFrom(table),
     }),
   },
 }));
@@ -147,6 +165,7 @@ function resetAll() {
   insertCalls = [];
   insertReturning = [{ id: 'new-job-1' }];
   selectResults = () => [];
+  activeFullJobRows = []; // default: no active full job (guard does not block)
   // Join queries dispatch on the FROM table: repo→installation lookup vs
   // worker→task lookup (A3 metadata enrichment).
   joinResults = (table: any) => (table === githubRepos ? [{ installationId: 9001 }] : []);
@@ -448,5 +467,73 @@ describe('runDiffIngestJob', () => {
     expect(stats.escalated).toBeUndefined();
     expect(stats.filesIngested).toBe(1);
     expect(stats.filesSkipped).toBe(1);
+  });
+
+  // ── Backfill enqueue guard ─────────────────────────────────────────────────
+
+  it('enqueues backfill when workspace has no code index and no active full job', async () => {
+    namespaces = [];
+    activeFullJobRows = []; // guard: no active full job
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    await runDiffIngestJob('job-1');
+
+    expect(insertCalls.length).toBe(1);
+    expect(insertCalls[0].values).toMatchObject({
+      workspaceId: 'ws-1',
+      trigger: 'backfill',
+      scope: 'full',
+      status: 'queued',
+    });
+  });
+
+  it('skips backfill insert when a full job is already queued for the same workspace+repo', async () => {
+    namespaces = []; // no code index → would trigger backfill
+    activeFullJobRows = [{ id: 'existing-full-job' }]; // but one is already active
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    await runDiffIngestJob('job-1');
+
+    // No new backfill insert because the guard found an existing active full job
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('skips backfill insert when a full job is already running for the same workspace+repo', async () => {
+    namespaces = [];
+    activeFullJobRows = [{ id: 'running-full-job', status: 'running' }];
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    await runDiffIngestJob('job-1');
+    expect(insertCalls.length).toBe(0);
+  });
+
+  // ── Escalation guard ───────────────────────────────────────────────────────
+
+  it('enqueues a full job on escalation when no active full job exists', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts`, status: 'modified' }));
+    const page2 = Array.from({ length: 10 }, (_, i) => ({ filename: `src/g${i}.ts`, status: 'modified' }));
+    prFilePages = [page1, page2];
+    activeFullJobRows = []; // guard: no active full job
+
+    await runDiffIngestJob('job-1');
+
+    expect(insertCalls.length).toBe(1);
+    expect(insertCalls[0].values.scope).toBe('full');
+  });
+
+  it('skips escalation insert when a full job is already active', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts`, status: 'modified' }));
+    const page2 = Array.from({ length: 10 }, (_, i) => ({ filename: `src/g${i}.ts`, status: 'modified' }));
+    prFilePages = [page1, page2];
+    activeFullJobRows = [{ id: 'existing-full-job' }]; // guard blocks insert
+
+    await runDiffIngestJob('job-1');
+
+    // Escalation stat is set but no new full job inserted
+    expect((finalUpdate()?.stats as any).escalated).toBe(true);
+    expect(insertCalls.length).toBe(0);
   });
 });

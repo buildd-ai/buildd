@@ -145,6 +145,7 @@ describe('fileToChunks — symbol chunking', () => {
       sourcePath: TS_FILE.path,
       sourceUrl: undefined,
       sourceTs: undefined,
+      fileHash: null,
       metadata: { startLine: piece.startLine, endLine: piece.endLine },
     }));
     expect(fallback).toEqual(expected);

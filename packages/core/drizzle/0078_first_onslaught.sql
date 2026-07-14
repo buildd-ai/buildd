@@ -1,0 +1,2 @@
+ALTER TABLE "knowledge_chunks" ADD COLUMN "file_hash" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "knowledge_ingest_jobs_active_full_idx" ON "knowledge_ingest_jobs" USING btree ("workspace_id","repo") WHERE "knowledge_ingest_jobs"."scope" = 'full' AND "knowledge_ingest_jobs"."status" IN ('queued', 'running');
