@@ -836,6 +836,17 @@ export class WorkerManager {
           if (existsSync(localRoleDir)) {
             resolvedPath = localRoleDir;
             console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
+            // Write .mcp.json from roleMcpConfig if the runner doesn't have one yet.
+            // The runner injects mcpSecrets into cleanEnv so Claude Code can expand
+            // ${VAR} references in the headers at spawn time.
+            const roleMcpConfig = (claimedWorker as any).roleMcpConfig as { mcpServers: Record<string, unknown> } | undefined;
+            if (roleMcpConfig?.mcpServers) {
+              const mcpJsonPath = join(localRoleDir, '.mcp.json');
+              if (!existsSync(mcpJsonPath)) {
+                writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: roleMcpConfig.mcpServers }, null, 2));
+                console.log(`[Worker ${claimedWorker.id}] Wrote .mcp.json to role dir (${Object.keys(roleMcpConfig.mcpServers).join(', ')})`);
+              }
+            }
           }
         }
         this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
@@ -1012,6 +1023,15 @@ export class WorkerManager {
       if (existsSync(localRoleDir)) {
         resolvedPath = localRoleDir;
         console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
+        // Write .mcp.json from roleMcpConfig if the runner doesn't have one yet.
+        const roleMcpConfig = (claimedWorker as any).roleMcpConfig as { mcpServers: Record<string, unknown> } | undefined;
+        if (roleMcpConfig?.mcpServers) {
+          const mcpJsonPath = join(localRoleDir, '.mcp.json');
+          if (!existsSync(mcpJsonPath)) {
+            writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: roleMcpConfig.mcpServers }, null, 2));
+            console.log(`[Worker ${claimedWorker.id}] Wrote .mcp.json to role dir (${Object.keys(roleMcpConfig.mcpServers).join(', ')})`);
+          }
+        }
       }
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
@@ -1019,7 +1039,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleMcpConfig?: { mcpServers: Record<string, unknown> } },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {

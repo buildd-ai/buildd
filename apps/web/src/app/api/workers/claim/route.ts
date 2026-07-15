@@ -1114,6 +1114,14 @@ export async function POST(req: NextRequest) {
           background: role.background ?? false,
           maxTurns: role.maxTurns ?? null,
         };
+      } else if (role) {
+        // MCP-registered role (no R2 storage): send mcpServers config so the runner
+        // can write .mcp.json to the local role dir. The runner resolves ${VAR}
+        // references at spawn time via mcpSecrets injected into cleanEnv.
+        const mcpServers = role.mcpServers as Record<string, unknown> | null;
+        if (mcpServers && typeof mcpServers === 'object' && Object.keys(mcpServers).length > 0) {
+          (cw as any).roleMcpConfig = { mcpServers };
+        }
       }
     }
   }
