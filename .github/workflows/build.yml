@@ -274,6 +274,7 @@ jobs:
           tags: tag:ci
 
       - name: Sync code and build on test machine
+        id: sync
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           rc=1
@@ -296,9 +297,22 @@ jobs:
             fi
             [ $attempt -lt 5 ] && echo "Attempt $attempt failed, retrying in 60s..." && sleep 60
           done
-          [ $rc -eq 0 ] || { echo "All SSH attempts failed"; exit 1; }
+          if [ $rc -ne 0 ]; then
+            echo "All SSH attempts failed. Probing Tailscale connectivity..."
+            if timeout 15 tailscale ping 100.82.109.19 2>&1 | grep -qi "pong"; then
+              echo "::error::SSH failed but machine IS reachable via Tailscale — check SSH/docker config on the test machine"
+              echo "machine_online=true" >> "$GITHUB_OUTPUT"
+              exit 1
+            else
+              echo "::warning::Test machine 100.82.109.19 not reachable in Tailscale (infrastructure outage, not a code issue). Integration tests skipped for this run."
+              echo "machine_online=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "machine_online=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify SDK native binary (post-build)
+        if: steps.sync.outputs.machine_online != 'false'
         # The integration tests have repeatedly failed with
         # "Claude Code native binary not found at /tmp/buildd-ci/node_modules/.bun/
         # @anthropic-ai+claude-agent-sdk-linux-arm64-musl@<ver>/.../claude" even
@@ -331,11 +345,13 @@ jobs:
           INNER
 
       - name: Run migrations on Neon preview branch
+        if: steps.sync.outputs.machine_online != 'false'
         run: cd packages/core && bun db:migrate
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Raise concurrency limits for CI
+        if: steps.sync.outputs.machine_online != 'false'
         run: |
           psql "$DATABASE_URL" <<'SQL'
             UPDATE accounts SET max_concurrent_workers = 50;
@@ -345,6 +361,7 @@ jobs:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Start preview server
+        if: steps.sync.outputs.machine_online != 'false'
         run: |
           # Pipe env vars to a file on the remote — avoids all escaping issues
           printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
@@ -386,7 +403,7 @@ jobs:
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
 
       - name: Verify SDK native binary (pre-runner)
-        if: needs.changes.outputs.runner == 'true'
+        if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.runner == 'true'
         # Same probe as post-build, but right before the runner spawns. If the
         # binary is here then but the runner reports it missing, the issue is
         # in how the runner process resolves the path, not in the install.
@@ -399,7 +416,7 @@ jobs:
           INNER
 
       - name: Start preview runner
-        if: needs.changes.outputs.runner == 'true'
+        if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.runner == 'true'
         run: |
           tailscale ssh ubuntu@100.82.109.19 << SCRIPT
             docker exec coder-ai-run-my-claude-workspace bash -c "
@@ -419,7 +436,7 @@ jobs:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
 
       - name: Integration tests
-        if: needs.changes.outputs.api == 'true'
+        if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.api == 'true'
         run: |
           bun test apps/web/tests/integration/concurrency.test.ts \
                apps/web/tests/integration/worker-state-machine.test.ts \
@@ -434,6 +451,7 @@ jobs:
           LOCAL_UI_URL: http://100.82.109.19:8767
 
       - name: E2E tests
+        if: steps.sync.outputs.machine_online != 'false'
         run: |
           set +e
           bun test tests/e2e/server-worker-flow.test.ts
