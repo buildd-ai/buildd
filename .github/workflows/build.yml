@@ -276,10 +276,10 @@ jobs:
       - name: Sync code and build on test machine
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          rc=0
+          rc=1
           for attempt in 1 2 3; do
             echo "Attempt $attempt/3: syncing and building on test machine..."
-            tailscale ssh ubuntu@100.82.109.19 << SCRIPT
+            if tailscale ssh ubuntu@100.82.109.19 << SCRIPT
               docker exec coder-ai-run-my-claude-workspace bash -c "
                 set -e
                 export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
@@ -290,9 +290,11 @@ jobs:
                 test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
               "
           SCRIPT
-            rc=$?
-            [ $rc -eq 0 ] && break
-            [ $attempt -lt 3 ] && echo "Attempt $attempt failed (exit $rc), retrying in 20s..." && sleep 20
+            then
+              rc=0
+              break
+            fi
+            [ $attempt -lt 3 ] && echo "Attempt $attempt failed, retrying in 20s..." && sleep 20
           done
           [ $rc -eq 0 ] || { echo "All SSH attempts failed"; exit 1; }
 
