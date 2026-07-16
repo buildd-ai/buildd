@@ -183,6 +183,7 @@ export class PgVectorStore implements KnowledgeStore {
       // Postgres text columns reject 0x00 outright (see stripNulBytes above).
       const clean = sanitizeChunkForInsert(chunk, rawLexicalText);
       const contentHash = sha256(clean.content);
+      const fileHash = chunk.fileHash ?? null;
       const sourceTs = chunk.sourceTs ?? null;
 
       // Write source_ts into metadata so recency scoring can read it on query
@@ -196,7 +197,7 @@ export class PgVectorStore implements KnowledgeStore {
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
              content, lexical_text, embedding, embedding_model, metadata, content_hash,
-             source_ts, updated_at)
+             file_hash, source_ts, updated_at)
           VALUES
             (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
              ${clean.sourcePath}, ${clean.sourceUrl},
@@ -205,6 +206,7 @@ export class PgVectorStore implements KnowledgeStore {
              ${activeEmbedder!.model},
              ${JSON.stringify(metadataWithTs)}::jsonb,
              ${contentHash},
+             ${fileHash},
              ${sourceTs ? sourceTs.toISOString() : null},
              NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
@@ -214,6 +216,7 @@ export class PgVectorStore implements KnowledgeStore {
             embedding_model = EXCLUDED.embedding_model,
             metadata        = EXCLUDED.metadata,
             content_hash    = EXCLUDED.content_hash,
+            file_hash       = EXCLUDED.file_hash,
             source_path     = EXCLUDED.source_path,
             source_url      = EXCLUDED.source_url,
             source_ts       = EXCLUDED.source_ts,
@@ -223,13 +226,14 @@ export class PgVectorStore implements KnowledgeStore {
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, metadata, content_hash, source_ts, updated_at)
+             content, lexical_text, metadata, content_hash, file_hash, source_ts, updated_at)
           VALUES
             (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
              ${clean.sourcePath}, ${clean.sourceUrl},
              ${clean.content}, ${clean.lexicalText},
              ${JSON.stringify(metadataWithTs)}::jsonb,
              ${contentHash},
+             ${fileHash},
              ${sourceTs ? sourceTs.toISOString() : null},
              NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
@@ -237,6 +241,7 @@ export class PgVectorStore implements KnowledgeStore {
             lexical_text = EXCLUDED.lexical_text,
             metadata     = EXCLUDED.metadata,
             content_hash = EXCLUDED.content_hash,
+            file_hash    = EXCLUDED.file_hash,
             source_path  = EXCLUDED.source_path,
             source_url   = EXCLUDED.source_url,
             source_ts    = EXCLUDED.source_ts,

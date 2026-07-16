@@ -15,7 +15,7 @@
  */
 import { db } from '@buildd/core/db';
 import { knowledgeIngestJobs, githubRepos, githubInstallations, workspaces, workers, tasks } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
   shouldIngestFile,
@@ -287,19 +287,39 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   // enqueue a full backfill job so the whole repo gets ingested.
   let backfillEnqueued = false;
   if (!hadCodeIndex) {
-    const inserted = await db
-      .insert(knowledgeIngestJobs)
-      .values({
-        workspaceId: job.workspaceId,
-        repo: job.repo,
-        trigger: 'backfill',
-        sha: job.sha,
-        scope: 'full',
-        status: 'queued',
-      })
-      .onConflictDoNothing()
-      .returning({ id: knowledgeIngestJobs.id });
-    backfillEnqueued = inserted.length > 0;
+    // Belt-and-braces: skip insert when a full job is already active for this
+    // workspace+repo (the unique partial index catches the same race at the DB
+    // layer, but an explicit check avoids a spurious conflict log entry).
+    const activeFull = await db
+      .select({ id: knowledgeIngestJobs.id })
+      .from(knowledgeIngestJobs)
+      .where(
+        and(
+          eq(knowledgeIngestJobs.workspaceId, job.workspaceId),
+          eq(knowledgeIngestJobs.repo, job.repo),
+          eq(knowledgeIngestJobs.scope, 'full'),
+          or(
+            eq(knowledgeIngestJobs.status, 'queued'),
+            eq(knowledgeIngestJobs.status, 'running'),
+          ),
+        ),
+      )
+      .limit(1);
+    if (activeFull.length === 0) {
+      const inserted = await db
+        .insert(knowledgeIngestJobs)
+        .values({
+          workspaceId: job.workspaceId,
+          repo: job.repo,
+          trigger: 'backfill',
+          sha: job.sha,
+          scope: 'full',
+          status: 'queued',
+        })
+        .onConflictDoNothing()
+        .returning({ id: knowledgeIngestJobs.id });
+      backfillEnqueued = inserted.length > 0;
+    }
   }
 
   return {
@@ -314,19 +334,40 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
  * (executor ships in stream A2).
  */
 async function escalateToFullJob(job: IngestJob, reason: string): Promise<DiffExecution> {
-  await db
-    .insert(knowledgeIngestJobs)
-    .values({
-      workspaceId: job.workspaceId,
-      repo: job.repo,
-      trigger: job.trigger,
-      sha: job.sha,
-      prNumber: job.prNumber,
-      scope: 'full',
-      status: 'queued',
-    })
-    .onConflictDoNothing()
-    .returning({ id: knowledgeIngestJobs.id });
+  // Skip insert when a full job is already active — the unique partial index
+  // (knowledge_ingest_jobs_active_full_idx) is the hard guard; this check avoids
+  // a spurious conflict log on every overlapping escalation.
+  const activeFull = await db
+    .select({ id: knowledgeIngestJobs.id })
+    .from(knowledgeIngestJobs)
+    .where(
+      and(
+        eq(knowledgeIngestJobs.workspaceId, job.workspaceId),
+        eq(knowledgeIngestJobs.repo, job.repo),
+        eq(knowledgeIngestJobs.scope, 'full'),
+        or(
+          eq(knowledgeIngestJobs.status, 'queued'),
+          eq(knowledgeIngestJobs.status, 'running'),
+        ),
+      ),
+    )
+    .limit(1);
+
+  if (activeFull.length === 0) {
+    await db
+      .insert(knowledgeIngestJobs)
+      .values({
+        workspaceId: job.workspaceId,
+        repo: job.repo,
+        trigger: job.trigger,
+        sha: job.sha,
+        prNumber: job.prNumber,
+        scope: 'full',
+        status: 'queued',
+      })
+      .onConflictDoNothing()
+      .returning({ id: knowledgeIngestJobs.id });
+  }
 
   return { stats: { escalated: true, reason }, changedFiles: [] };
 }

@@ -1110,6 +1110,8 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
   contentHash: text('content_hash'),
+  /** SHA-256 of the full source file content — same for every chunk of a file. Used to skip unchanged files on re-ingest. */
+  fileHash: text('file_hash'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   // Phase 1: recency + supersession
   sourceTs: timestamp('source_ts', { withTimezone: true }),
@@ -1225,6 +1227,11 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   idempotencyIdx: uniqueIndex('knowledge_ingest_jobs_ws_sha_scope_idx')
     .on(t.workspaceId, t.sha, t.scope)
     .where(sql`${t.status} != 'error'`),
+  // At most one active (queued or running) full job per workspace+repo — prevents
+  // concurrent diff webhooks from stacking multiple backfill/escalation jobs.
+  activeFullIdx: uniqueIndex('knowledge_ingest_jobs_active_full_idx')
+    .on(t.workspaceId, t.repo)
+    .where(sql`${t.scope} = 'full' AND ${t.status} IN ('queued', 'running')`),
 }));
 
 // Relations
