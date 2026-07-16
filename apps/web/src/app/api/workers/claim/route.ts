@@ -1114,14 +1114,6 @@ export async function POST(req: NextRequest) {
           background: role.background ?? false,
           maxTurns: role.maxTurns ?? null,
         };
-      } else if (role) {
-        // MCP-registered role (no R2 storage): send mcpServers config so the runner
-        // can write .mcp.json to the local role dir. The runner resolves ${VAR}
-        // references at spawn time via mcpSecrets injected into cleanEnv.
-        const mcpServers = role.mcpServers as Record<string, unknown> | null;
-        if (mcpServers && typeof mcpServers === 'object' && Object.keys(mcpServers).length > 0) {
-          (cw as any).roleMcpConfig = { mcpServers };
-        }
       }
     }
   }
@@ -1223,7 +1215,7 @@ export async function POST(req: NextRequest) {
         const workerSecrets = await db.query.secrets.findMany({
           where: and(
             eq(secrets.teamId, workspaceTeamId),
-            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token']),
             or(
               isNull(secrets.accountId),
               eq(secrets.accountId, account.id),
@@ -1255,25 +1247,9 @@ export async function POST(req: NextRequest) {
         if (decryptedOauthToken) {
           (cw as any).serverOauthToken = decryptedOauthToken;
         }
-        // Re-inject mcp_credential secrets as flat mcpSecrets env vars so the runner
-        // resolves ${VAR} references in role .mcp.json server configs. The connectors
-        // system handles HTTP single-header auth, but Cue requires two headers
-        // (x-api-key + x-tenant-id) that the current single-headerName connector
-        // schema cannot model. mcp_credential secrets remain the viable injection path
-        // until connectors gain a headers JSONB column.
-        const mcpCredSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential');
-        if (mcpCredSecrets.length > 0) {
-          const mcpSecretsMap: Record<string, string> = {};
-          await Promise.all(mcpCredSecrets.map(async (s) => {
-            if (!s.label) return;
-            const val = await provider.get(s.id).catch(() => null);
-            if (val) mcpSecretsMap[s.label] = val;
-          }));
-          if (Object.keys(mcpSecretsMap).length > 0) {
-            (cw as any).mcpSecrets = mcpSecretsMap;
-            console.log(`[claim] Injected ${Object.keys(mcpSecretsMap).length} mcp_credential secret(s) for worker ${cw.id}: ${Object.keys(mcpSecretsMap).join(', ')}`);
-          }
-        }
+        // NOTE: mcp_credential secrets are no longer injected as a flat `mcpSecrets`
+        // env map here. MCP servers now flow exclusively through connectors (below);
+        // stdio-connector env vars are resolved from mcp_credential secrets there.
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials

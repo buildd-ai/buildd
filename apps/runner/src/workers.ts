@@ -836,17 +836,6 @@ export class WorkerManager {
           if (existsSync(localRoleDir)) {
             resolvedPath = localRoleDir;
             console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-            // Write .mcp.json from roleMcpConfig if the runner doesn't have one yet.
-            // The runner injects mcpSecrets into cleanEnv so Claude Code can expand
-            // ${VAR} references in the headers at spawn time.
-            const roleMcpConfig = (claimedWorker as any).roleMcpConfig as { mcpServers: Record<string, unknown> } | undefined;
-            if (roleMcpConfig?.mcpServers) {
-              const mcpJsonPath = join(localRoleDir, '.mcp.json');
-              if (!existsSync(mcpJsonPath)) {
-                writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: roleMcpConfig.mcpServers }, null, 2));
-                console.log(`[Worker ${claimedWorker.id}] Wrote .mcp.json to role dir (${Object.keys(roleMcpConfig.mcpServers).join(', ')})`);
-              }
-            }
           }
         }
         this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
@@ -1023,15 +1012,6 @@ export class WorkerManager {
       if (existsSync(localRoleDir)) {
         resolvedPath = localRoleDir;
         console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-        // Write .mcp.json from roleMcpConfig if the runner doesn't have one yet.
-        const roleMcpConfig = (claimedWorker as any).roleMcpConfig as { mcpServers: Record<string, unknown> } | undefined;
-        if (roleMcpConfig?.mcpServers) {
-          const mcpJsonPath = join(localRoleDir, '.mcp.json');
-          if (!existsSync(mcpJsonPath)) {
-            writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: roleMcpConfig.mcpServers }, null, 2));
-            console.log(`[Worker ${claimedWorker.id}] Wrote .mcp.json to role dir (${Object.keys(roleMcpConfig.mcpServers).join(', ')})`);
-          }
-        }
       }
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
@@ -1039,7 +1019,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleMcpConfig?: { mcpServers: Record<string, unknown> } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1151,10 +1131,7 @@ export class WorkerManager {
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
     }
-    if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
-      worker.mcpSecrets = claimedWorker.mcpSecrets;
-      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s)`);
-    }
+
     if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
       (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
       console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
@@ -1529,14 +1506,6 @@ export class WorkerManager {
         cleanEnv.BUILDD_API_KEY = this.config.apiKey;
       }
 
-      // Inject MCP credential secrets (env vars for MCP server authentication)
-      if (worker.mcpSecrets) {
-        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
-          cleanEnv[envVar] = value;
-        }
-        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s)`);
-      }
-
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
@@ -1696,7 +1665,7 @@ export class WorkerManager {
         try {
           const roleEnv = await resolveRoleEnv(
             getRoleDir(worker.roleConfig.slug),
-            { ...process.env as Record<string, string>, ...(worker.mcpSecrets || {}) },
+            process.env as Record<string, string>,
           );
           Object.assign(cleanEnv, roleEnv);
           console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
