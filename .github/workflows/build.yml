@@ -277,8 +277,8 @@ jobs:
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           rc=1
-          for attempt in 1 2 3; do
-            echo "Attempt $attempt/3: syncing and building on test machine..."
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt/5: syncing and building on test machine..."
             if tailscale ssh ubuntu@100.82.109.19 << SCRIPT
               docker exec coder-ai-run-my-claude-workspace bash -c "
                 set -e
@@ -294,7 +294,7 @@ jobs:
               rc=0
               break
             fi
-            [ $attempt -lt 3 ] && echo "Attempt $attempt failed, retrying in 20s..." && sleep 20
+            [ $attempt -lt 5 ] && echo "Attempt $attempt failed, retrying in 60s..." && sleep 60
           done
           [ $rc -eq 0 ] || { echo "All SSH attempts failed"; exit 1; }
 
