@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // --- Mock modules before any imports of the module under test ---
@@ -61,7 +61,10 @@ const DOCTOR_RESPONSE = {
   summary: { ok: 1, warn: 0, error: 0 },
 };
 
+let originalFetch: typeof globalThis.fetch;
+
 beforeEach(() => {
+  originalFetch = globalThis.fetch;
   mockGetCurrentUser.mockReset();
   mockGetUserTeamIds.mockReset();
   mockGetUserWorkspaceIds.mockReset();
@@ -81,6 +84,10 @@ beforeEach(() => {
       where: mock(() => Promise.resolve([])),
     })),
   });
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
 });
 
 describe('GET /api/runners/[heartbeatId]/proxy', () => {
