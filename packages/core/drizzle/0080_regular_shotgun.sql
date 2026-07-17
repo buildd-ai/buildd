@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "decomposition_skipped" boolean DEFAULT false NOT NULL;
