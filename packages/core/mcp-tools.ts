@@ -129,10 +129,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
-    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku|claude-sonnet-5|claude-fable-5 or full model ID), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku|claude-sonnet-5|claude-fable-5 or full model ID), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
-    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
@@ -262,6 +262,7 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
   if (params.color) body.color = params.color;
   if (params.mcpServers && typeof params.mcpServers === 'object') body.mcpServers = params.mcpServers;
   if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') body.requiredEnvVars = params.requiredEnvVars;
+  if (Array.isArray(params.connectorRefs)) body.connectorRefs = params.connectorRefs;
   if (typeof params.isRole === 'boolean') body.isRole = params.isRole;
   if (typeof params.enabled === 'boolean') body.enabled = params.enabled;
   if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
@@ -1474,6 +1475,7 @@ export async function handleBuilddAction(
       if (params.color) skillBody.color = params.color;
       if (params.mcpServers && typeof params.mcpServers === 'object') skillBody.mcpServers = params.mcpServers;
       if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') skillBody.requiredEnvVars = params.requiredEnvVars;
+      if (Array.isArray(params.connectorRefs)) skillBody.connectorRefs = params.connectorRefs;
       if (typeof params.isRole === 'boolean') skillBody.isRole = params.isRole;
       if (params.slug) skillBody.slug = params.slug;
 
@@ -1580,6 +1582,7 @@ export async function handleBuilddAction(
         color: s.color ?? null,
         mcpServers: s.mcpServers ?? {},
         requiredEnvVars: s.requiredEnvVars ?? {},
+        connectorRefs: s.connectorRefs ?? [],
         isRole: s.isRole ?? false,
         enabled: s.enabled,
         repoUrl: s.repoUrl ?? null,
