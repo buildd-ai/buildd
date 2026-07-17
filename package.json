@@ -42,7 +42,7 @@
     "@neondatabase/serverless": "^1.0.0",
     "@types/bun": "latest",
     "playwright": "^1.45.0",
-    "typescript": "^5.4.0",
+    "typescript": "^7.0.0",
     "ws": "^8.19.0"
   }
 }
