@@ -16,6 +16,51 @@ export interface GitStats {
 }
 
 /**
+ * Install workspace dependencies into a freshly-created worktree so Bun's nested
+ * node_modules symlinks (@buildd/core, @buildd/shared, …) exist locally — without
+ * them, deep imports like '@buildd/core/db' fail with "Cannot find module".
+ *
+ * Runs ASYNCHRONOUSLY (execFile, not execSync): even a warm-cache install takes a
+ * few seconds, and a synchronous call would freeze the runner's single event loop
+ * for the whole duration — starving heartbeats, the 30s stale-check and the 10s
+ * server sync, which can get an active worker wrongly flagged stale.
+ *
+ * `--frozen-lockfile` keeps the common path fast and deterministic (no re-resolution,
+ * no lockfile mutation). If the branch's lockfile has drifted, frozen install fails,
+ * so we retry unfrozen — node_modules gets created either way. Both attempts are
+ * non-fatal: a total failure only warns (deep @buildd/* imports may then break, and
+ * the caller falls back to the main repo).
+ */
+async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<void> {
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const run = promisify(execFile);
+  const opts = { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const };
+
+  console.log(`[Worker ${workerId}] Running bun install in worktree (frozen lockfile)...`);
+  try {
+    await run('bun', ['install', '--frozen-lockfile'], opts);
+    console.log(`[Worker ${workerId}] Workspace packages linked`);
+    return;
+  } catch (err) {
+    console.warn(
+      `[Worker ${workerId}] Frozen bun install failed (lockfile may have drifted), retrying unfrozen:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  try {
+    await run('bun', ['install'], opts);
+    console.log(`[Worker ${workerId}] Workspace packages linked (unfrozen)`);
+  } catch (err) {
+    console.warn(
+      `[Worker ${workerId}] bun install in worktree failed — @buildd/* imports may break:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Set up an isolated git worktree for a worker session.
  * Worktrees live in .buildd-worktrees/ inside the repo.
  */
@@ -75,10 +120,34 @@ export async function setupWorktree(
       // Branch doesn't exist locally, that's fine
     }
 
+    // Warn if parent repo has sparse checkout enabled. Git worktrees get their
+    // own sparse-checkout config so this doesn't directly affect the worktree,
+    // but it's worth logging so the pattern is visible if issues recur.
+    try {
+      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000 }).trim();
+      if (sparsePatterns) {
+        console.warn(
+          `[Worker ${workerId}] Parent repo has sparse checkout enabled. ` +
+          `Worktrees are always fully checked out, but if @buildd/* imports still fail, ` +
+          `run: cd "${repoPath}" && git sparse-checkout disable && bun install`,
+        );
+      }
+    } catch {
+      // Non-zero exit means sparse checkout is not configured — normal state.
+    }
+
     // Create worktree with new branch — from baseBranch (retry) or default branch (fresh)
     const base = resolveWorktreeBase(defaultBranch, taskContext);
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
     execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+    // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
+    // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)
+    // rather than the workspace root. A fresh worktree has no node_modules at all, so
+    // module resolution from the worktree tree never finds the symlinks that exist in the
+    // parent repo — causing '@buildd/core/db' (and similar deep imports) to fail with
+    // "Cannot find module". Running bun install creates the links in-place.
+    await installWorkspaceDeps(worktreePath, workerId);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return worktreePath;

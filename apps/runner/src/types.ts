@@ -147,6 +147,11 @@ export interface LocalWorker {
   hasNewActivity: boolean;  // Blue dot
   startedAt: number;  // When worker was created (for cycle time tracking)
   lastActivity: number;
+  // True while a tool/subagent call is executing (set on PreToolUse, cleared on
+  // PostToolUse / PostToolUseFailure). Long silent tools (e.g. a bash that waits
+  // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
+  // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
+  toolInFlight?: boolean;
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;
