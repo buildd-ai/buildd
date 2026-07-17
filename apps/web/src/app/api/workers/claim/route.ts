@@ -273,11 +273,15 @@ export async function POST(req: NextRequest) {
   // This prevents downstream tasks from starting while an upstream PR is still open —
   // which was the root cause of the 6-overlapping-PR burst (PRs #1044-1049).
   // The mergedAt column on workers is set by the GitHub webhook when the PR merges.
+  // Exception: bypassDepsGate=true in task context lets a human override the gate
+  // (set by /api/tasks/[id]/start when forceOverride=true).
   claimableConditions.push(
     or(
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
+      // Human override: task was manually force-started, skip the dep-PR gate
+      sql`${tasks.context}->>'bypassDepsGate' = 'true'`,
       // All dependencies must be completed AND their PRs merged (if any were opened)
       sql`NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
