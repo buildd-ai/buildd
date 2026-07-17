@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Apply database migrations
+        run: cd packages/core && bun db:migrate
+
       # code corpus: all TypeScript/JS/etc. source files under packages/ and apps/.
       # Skips tests, migrations, and generated output directories.
       - name: Ingest code corpus (packages/)
