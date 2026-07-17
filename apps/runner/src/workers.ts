@@ -193,6 +193,7 @@ export function selectServerCredentials(claimed: {
 // An MCP connector resolved server-side at claim time (credentials already
 // decrypted). `transport` selects the SDK entry shape; `http` carries url/headers,
 // `stdio` carries command/args/env. Mirrors the claim route's ResolvedMcpConnector.
+// When `assertionMode` is true, the runner performs mint + exchange before connecting.
 export interface ResolvedMcpConnector {
   name: string;
   transport?: 'http' | 'stdio';
@@ -201,6 +202,11 @@ export interface ResolvedMcpConnector {
   args?: string[];
   headers?: Record<string, string>;
   env?: Record<string, string>;
+  // assertion-mode fields (assertionMode=true → runner performs mint+exchange before connecting)
+  assertionMode?: true;
+  mintApiUrl?: string;
+  audience?: string;
+  tokenEndpoint?: string;
 }
 
 type SdkMcpServerEntry =
@@ -220,6 +226,8 @@ export function buildMcpServerEntries(
   if (!connectors) return out;
   for (const c of connectors) {
     if (!c?.name) continue;
+    // Assertion-mode connectors require async mint+exchange — skip here; handled separately.
+    if (c.assertionMode) continue;
     // Default to http for back-compat with older claim payloads that omit transport.
     const transport = c.transport ?? 'http';
     if (transport === 'stdio') {
@@ -241,6 +249,10 @@ export function buildMcpServerEntries(
   }
   return out;
 }
+
+// Re-export for backward compat + direct use in this module.
+export { exchangeAssertionConnector } from './assertion-exchange.js';
+import { exchangeAssertionConnector } from './assertion-exchange.js';
 
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
@@ -1852,12 +1864,46 @@ export class WorkerManager {
       // and stdio (command/args/env) transports are supported. `buildd` is reserved.
       const claimConnectors = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
       if (claimConnectors && claimConnectors.length > 0) {
+        // Non-assertion connectors: build entries synchronously (credentials already decrypted).
         const entries = buildMcpServerEntries(claimConnectors);
         for (const [name, cfg] of Object.entries(entries)) {
           if (name === 'buildd') continue; // never override the buildd coordination server
           queryOptions.mcpServers[name] = cfg;
         }
-        console.log(`[Worker ${worker.id}] Merged ${Object.keys(entries).length} MCP connector(s) into query options`);
+
+        // Assertion-mode connectors: mint assertion → exchange at RS → mount with Bearer token.
+        // Performed async here so the MCP entry has a real access token before the SDK starts.
+        const assertionConns = claimConnectors.filter(c => c.assertionMode === true);
+        for (const c of assertionConns) {
+          if (c.name === 'buildd' || !c.url || !c.mintApiUrl || !c.tokenEndpoint) continue;
+          try {
+            const { accessToken, expiresAt } = await exchangeAssertionConnector(
+              { mintApiUrl: c.mintApiUrl, tokenEndpoint: c.tokenEndpoint },
+              this.config.apiKey,
+              worker.id,
+              worker.taskId,
+            );
+            queryOptions.mcpServers[c.name] = {
+              type: 'http',
+              url: c.url,
+              headers: { Authorization: `Bearer ${accessToken}` },
+            };
+            // Cache token + metadata for mid-task re-auth (§F.2).
+            worker.assertionTokenCache ??= new Map();
+            worker.assertionConnectors ??= [];
+            worker.assertionTokenCache.set(c.name, { accessToken, expiresAt });
+            if (!worker.assertionConnectors.find(a => a.name === c.name)) {
+              worker.assertionConnectors.push({ name: c.name, mintApiUrl: c.mintApiUrl, tokenEndpoint: c.tokenEndpoint });
+            }
+            console.log(`[Worker ${worker.id}] Assertion exchange succeeded for connector ${c.name} (expires ${new Date(expiresAt).toISOString()})`);
+          } catch (err) {
+            // Exchange failed — connector cannot be mounted. Log and continue (don't abort the task).
+            console.error(`[Worker ${worker.id}] Assertion exchange failed for connector ${c.name}:`, err);
+          }
+        }
+
+        const totalMounted = Object.keys(queryOptions.mcpServers).length - 1; // subtract 'buildd'
+        console.log(`[Worker ${worker.id}] Merged ${totalMounted} MCP connector(s) into query options`);
       }
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
@@ -1866,7 +1912,7 @@ export class WorkerManager {
       queryOptions.hooks = {
         PreToolUse: [{ hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] }],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
-        PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker)] }],
+        PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.hookFactory.createPermissionRequestHook(worker)] }],
