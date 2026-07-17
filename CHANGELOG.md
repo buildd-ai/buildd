@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Work-tracker outbound dispatch for GitHub issues via GitHub App — closes linked issues and posts completion comments without a separate connector (#1201)
 - Serialize concurrent agents to prevent PR collisions in orchestrator
 - Missions 'Awaiting review' group + 24h auto-archive for done missions (#1065)
 - Schedules section on Health page with duplicate-cron detection (#1061)
@@ -49,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deduplicate code corpus during knowledge ingest with hash-skip and backfill enqueue guard (#1220)
 - Fix all 5 seed bugs at 390px viewport (#1105)
 - Truncate long team names in TeamSwitcher header (#1094)
 - Activity feed NULLS-FIRST ordering + archived missions filling limit (re-fix)
