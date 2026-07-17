@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
-import { execFileSync } from 'child_process';
+import * as childProcess from 'node:child_process';
+const { execFileSync } = childProcess;
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {

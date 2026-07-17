@@ -14,7 +14,8 @@
 // symbol-extractor.ts, it touches child_process and must never be pulled into
 // a serverless bundle graph. Reach it only via dynamic import() from the runner.
 
-import { execFileSync } from 'child_process';
+import * as childProcess from 'node:child_process';
+const { execFileSync } = childProcess;
 import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
