@@ -360,7 +360,12 @@ export class WorkerSync {
         continue;
       }
 
-      if (worker.status === 'working') {
+      // Skip the soft-probe/stale-abort path while a tool/subagent call is in
+      // flight. Long silent tools (e.g. a bash waiting on CI) emit no SDK stream
+      // messages and would otherwise trip the adaptive timeout and get a HEALTHY
+      // session aborted mid-tool-call. The 30-min hard timeout above still fires
+      // regardless of toolInFlight, backstopping genuinely dead sessions.
+      if (worker.status === 'working' && !worker.toolInFlight) {
         if (now - worker.lastActivity > timeout) {
           // Graduated recovery: if session is still alive, try a soft probe first
           const session = this.ctx.sessions.get(worker.id);
@@ -398,7 +403,7 @@ export class WorkerSync {
   /**
    * Record a completed worker's cycle time and recalculate adaptive stale timeout.
    * Uses median of recent cycle times to set timeout at 50% of typical duration,
-   * bounded between 2 and 10 minutes.
+   * bounded between 5 and 10 minutes.
    */
   recordCycleTime(worker: LocalWorker) {
     const duration = (worker.completedAt || Date.now()) - worker.startedAt;
@@ -418,8 +423,10 @@ export class WorkerSync {
     const median = sorted[Math.floor(sorted.length / 2)];
 
     // Timeout = 50% of median cycle time (workers that go silent for half their
-    // typical total runtime are likely stuck), bounded [2 min, 10 min]
-    const newTimeout = Math.max(120_000, Math.min(600_000, Math.round(median * 0.5)));
+    // typical total runtime are likely stuck), bounded [5 min, 10 min]. The 5-min
+    // floor sits above common legit silent operations (CI polling, large installs)
+    // so healthy workers aren't probed/aborted during them.
+    const newTimeout = Math.max(300_000, Math.min(600_000, Math.round(median * 0.5)));
 
     // Only adjust on >20% change to prevent thrashing
     const currentTimeout = this.ctx.getAdaptiveStaleTimeout();

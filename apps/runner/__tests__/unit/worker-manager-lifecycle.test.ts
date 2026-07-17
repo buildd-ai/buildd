@@ -511,6 +511,155 @@ describe('WorkerManager — lifecycle', () => {
 
       expect(worker.status).toBe('done'); // Unchanged
     });
+
+    // ─── In-flight tool exemption (PR: don't abort healthy workers mid-tool) ───
+
+    function makeWorkingWorker(id: string, idleMs: number, extra?: Partial<LocalWorker>): LocalWorker {
+      return {
+        id,
+        taskId: 'task-1',
+        taskTitle: 'Test',
+        workspaceId: 'ws-1',
+        workspaceName: 'test',
+        branch: 'buildd/test',
+        status: 'working',
+        hasNewActivity: false,
+        startedAt: Date.now() - idleMs,
+        lastActivity: Date.now() - idleMs,
+        milestones: [],
+        currentAction: 'Running tool',
+        commits: [],
+        output: [],
+        toolCalls: [],
+        messages: [],
+        phaseText: null,
+        phaseStart: null,
+        phaseToolCount: 0,
+        phaseTools: [],
+        ...extra,
+      } as LocalWorker;
+    }
+
+    // Attach a fake live session so checkStale exercises the soft-probe path.
+    function attachSession(manager: any, workerId: string) {
+      const enqueue = mock(() => {});
+      manager.sessions.set(workerId, {
+        inputStream: { enqueue, end: () => {} },
+        abortController: { abort: () => {} },
+      });
+      return enqueue;
+    }
+
+    test('does NOT probe or abort a worker idle past timeout while a tool is in flight', async () => {
+      manager = new WorkerManager(makeConfig());
+      const workers = (manager as any).workers as Map<string, LocalWorker>;
+
+      // Idle 310s (> 300s default timeout) but a long tool call is running.
+      const worker = makeWorkingWorker('w-inflight', 310_000, { toolInFlight: true });
+      workers.set(worker.id, worker);
+      const enqueue = attachSession(manager, worker.id);
+
+      // Two ticks: neither should probe nor abort.
+      (manager as any).workerSync.checkStale();
+      (manager as any).workerSync.checkStale();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(enqueue).not.toHaveBeenCalled();
+      expect((manager as any).probedWorkers.has(worker.id)).toBe(false);
+      expect(worker.status).toBe('working');
+    });
+
+    test('probes then aborts a worker idle past timeout when NO tool is in flight', async () => {
+      manager = new WorkerManager(makeConfig());
+      const workers = (manager as any).workers as Map<string, LocalWorker>;
+
+      const worker = makeWorkingWorker('w-noinflight', 310_000); // no toolInFlight
+      workers.set(worker.id, worker);
+      const enqueue = attachSession(manager, worker.id);
+
+      // First tick: soft probe sent, still working.
+      (manager as any).workerSync.checkStale();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect((manager as any).probedWorkers.has(worker.id)).toBe(true);
+      expect(worker.status).toBe('working');
+
+      // Simulate no response — go idle again, next tick aborts.
+      worker.lastActivity = Date.now() - 310_000;
+      (manager as any).workerSync.checkStale();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(worker.status).toBe('error');
+    });
+
+    test('hard timeout (30min) aborts even while a tool is in flight', async () => {
+      manager = new WorkerManager(makeConfig());
+      const workers = (manager as any).workers as Map<string, LocalWorker>;
+
+      // Idle 31 min with a tool "in flight" — a genuinely dead session.
+      const worker = makeWorkingWorker('w-hard', 31 * 60_000, { toolInFlight: true });
+      workers.set(worker.id, worker);
+      attachSession(manager, worker.id);
+
+      (manager as any).workerSync.checkStale();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(worker.status).toBe('error');
+    });
+  });
+
+  describe('Activity bump hooks', () => {
+    test('PreToolUse hook bumps lastActivity and sets toolInFlight', async () => {
+      manager = new WorkerManager(makeConfig());
+      const worker = {
+        id: 'w-hook-pre', lastActivity: Date.now() - 100_000, currentPromptId: undefined,
+      } as unknown as LocalWorker;
+
+      const hook = (manager as any).hookFactory.createPermissionHook(worker);
+      await hook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} });
+
+      expect(worker.toolInFlight).toBe(true);
+      expect(Date.now() - worker.lastActivity).toBeLessThan(5_000);
+    });
+
+    test('PostToolUse hook bumps lastActivity and clears toolInFlight', async () => {
+      manager = new WorkerManager(makeConfig());
+      const worker = {
+        id: 'w-hook-post', lastActivity: Date.now() - 100_000, toolInFlight: true,
+      } as unknown as LocalWorker;
+
+      const hook = (manager as any).hookFactory.createTeamTrackingHook(worker);
+      await hook({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} });
+
+      expect(worker.toolInFlight).toBe(false);
+      expect(Date.now() - worker.lastActivity).toBeLessThan(5_000);
+    });
+
+    test('SubagentStart hook bumps lastActivity', async () => {
+      manager = new WorkerManager(makeConfig());
+      const worker = {
+        id: 'w-hook-sub', lastActivity: Date.now() - 100_000, milestones: [],
+      } as unknown as LocalWorker;
+
+      const hook = (manager as any).hookFactory.createSubagentStartHook(worker);
+      await hook({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'builder' });
+
+      expect(Date.now() - worker.lastActivity).toBeLessThan(5_000);
+    });
+  });
+
+  describe('Adaptive stale timeout floor', () => {
+    test('clamps computed timeout up to the 300s floor (not 120s)', () => {
+      manager = new WorkerManager(makeConfig());
+      // Start above the floor so the >20% change gate can fire downward.
+      (manager as any).adaptiveStaleTimeout = 600_000;
+
+      // Feed 3 short cycles: median*0.5 = 50s, which must clamp to 300s (not 120s).
+      const sync = (manager as any).workerSync;
+      for (let i = 0; i < 3; i++) {
+        sync.recordCycleTime({ startedAt: 0, completedAt: 100_000 } as LocalWorker);
+      }
+
+      expect((manager as any).adaptiveStaleTimeout).toBe(300_000);
+    });
   });
 
   describe('Eviction', () => {
