@@ -5,12 +5,14 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockArtifactsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTasksUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksDelete = mock(() => ({ where: mock(() => Promise.resolve()) }));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
+const mockTriggerEvent = mock(() => Promise.resolve());
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -39,11 +41,25 @@ mock.module('@buildd/core/db', () => ({
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
-      workers: { findMany: mockWorkersFindMany },
+      workers: { findFirst: mockWorkersFindFirst, findMany: mockWorkersFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
     },
     update: mockTasksUpdate,
     delete: mockTasksDelete,
+  },
+}));
+
+// Mock Pusher
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: {
+    workspace: (id: string) => `workspace-${id}`,
+    task: (id: string) => `task-${id}`,
+    worker: (id: string) => `worker-${id}`,
+    mission: (id: string) => `mission-${id}`,
+  },
+  events: {
+    WORKER_COMMAND: 'worker:command',
   },
 }));
 
@@ -310,13 +326,17 @@ describe('PATCH /api/tasks/[id]', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
     mockTasksUpdate.mockReset();
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
 
-    // Default: grant access
+    // Default: grant access, no active worker
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockWorkersFindFirst.mockResolvedValue(null);
   });
 
   it('returns 401 when no auth', async () => {
@@ -720,7 +740,7 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(capturedSetData.expiresAt).toBeNull();
   });
 
-  it('allows setting status to cancelled', async () => {
+  it('allows setting status to cancelled with no active worker', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'Test Task',
@@ -733,6 +753,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindFirst.mockResolvedValue(null); // no active worker
 
     const mockReturning = mock(() => [updatedTask]);
     const mockWhere = mock(() => ({ returning: mockReturning }));
@@ -748,8 +769,43 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.status).toBe('cancelled');
-    // cancelled should NOT check for active workers (mockWorkersFindMany not called)
-    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+    // No active worker → no Pusher abort event
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('pushes abort command to active worker on cancel', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    const updatedTask = { ...mockTask, status: 'cancelled' };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-456' }); // active worker found
+
+    const mockReturning = mock(() => [updatedTask]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockTasksUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { status: 'cancelled' },
+    });
+    const response = await callHandler(PATCH, request, 'task-123');
+
+    expect(response.status).toBe(200);
+    // Verify abort was pushed to the worker's Pusher channel
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'worker-worker-456',
+      'worker:command',
+      expect.objectContaining({ action: 'abort', reason: 'task_cancelled' })
+    );
   });
 
   it('rejects unknown status values', async () => {
