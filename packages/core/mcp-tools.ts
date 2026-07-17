@@ -398,6 +398,77 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
 }
 
 /**
+ * Mutating actions that must be blocked when the calling worker's task has
+ * been externally terminated (cancelled/failed by admin). This prevents a
+ * long-running worker that missed the abort signal from spawning orphan tasks,
+ * creating dangling PRs, or emitting stale side-effects.
+ *
+ * update_progress is intentionally excluded — the PATCH route already returns
+ * a 409 (abort) for terminated workers, and allowing progress updates to flow
+ * through (and surface the abort) is preferable to hard-blocking them here.
+ */
+const WRITE_FENCED_ACTIONS = new Set<string>([
+  'create_task',
+  'complete_task',
+  'create_pr',
+  'create_artifact',
+  'emit_event',
+]);
+
+/**
+ * Task statuses set by an external actor that indicate the worker should stop.
+ * 'completed' is excluded: the worker may be retrying its own complete_task
+ * in a race — the existing 409 path from the PATCH route handles that.
+ */
+const EXTERNALLY_TERMINAL_TASK_STATUSES = new Set<string>(['cancelled', 'failed']);
+
+/**
+ * Write fence: reject mutating actions when the calling worker's task has been
+ * externally terminated. Preserves the complete-vs-abort race carve-out —
+ * complete_task is allowed through if the worker is already completed or has
+ * deliverables (PR/artifact created before the cancel arrived).
+ *
+ * Fails open on API errors so a transient lookup failure never permanently
+ * blocks a live worker. The underlying API routes enforce their own state checks.
+ */
+async function checkWriteFence(
+  api: ApiFn,
+  action: string,
+  ctx: ActionContext,
+): Promise<ToolResult | null> {
+  if (!ctx.workerId) return null;
+  if (!WRITE_FENCED_ACTIONS.has(action)) return null;
+
+  let workerData: any;
+  try {
+    workerData = await api(`/api/workers/${ctx.workerId}`);
+  } catch {
+    return null;
+  }
+
+  const taskStatus = (workerData?.task?.status as string | undefined) ?? null;
+  if (!taskStatus || !EXTERNALLY_TERMINAL_TASK_STATUSES.has(taskStatus)) return null;
+
+  // complete_task carve-out: if the worker itself is already completed or already
+  // produced deliverables (a PR or artifact was attached before the cancel arrived),
+  // let complete_task through — this mirrors the sync abort path that skips the
+  // abort flag when actualStatus==='completed' || hasDeliverables.
+  if (action === 'complete_task') {
+    const workerStatus = workerData?.status as string | undefined;
+    const hasDeliverables = !!(workerData?.prUrl || workerData?.prNumber);
+    if (workerStatus === 'completed' || hasDeliverables) return null;
+  }
+
+  const taskId = (workerData?.task?.id || workerData?.taskId) as string | undefined;
+  return errorResult(
+    `**TASK ${taskStatus.toUpperCase()}: Action '${action}' blocked.** ` +
+    `Your task${taskId ? ` (${taskId})` : ''} is in state '${taskStatus}' — it was terminated externally. ` +
+    `Stop working on this task immediately. Do not create tasks, PRs, or artifacts. ` +
+    `If you need to record that the worker stopped, call complete_task with an error param.`
+  );
+}
+
+/**
  * Corpora eligible for entity-keyed supersession. Code/docs are deliberately
  * excluded: path-keyed supersession already covers them, and defines-sets from
  * regex extraction are too weak there to key replacement on.
@@ -537,6 +608,12 @@ export async function handleBuilddAction(
   // actions when they can see >1 workspace.
   const wsErr = await requireExplicitWorkspace(api, action, params, ctx);
   if (wsErr) return wsErr;
+
+  // Write fence: block mutating actions when the calling worker's task has been
+  // externally cancelled or failed. Prevents orphan task creation from a worker
+  // that finished a long evaluation without seeing the abort signal.
+  const fenceErr = await checkWriteFence(api, action, ctx);
+  if (fenceErr) return fenceErr;
 
   switch (action) {
     case 'list_tasks': {
