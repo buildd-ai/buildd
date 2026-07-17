@@ -6,7 +6,8 @@
 // NOT re-exported from knowledge-store/index.ts: this module touches
 // child_process and must never enter a serverless bundle graph.
 
-import { execFileSync } from 'child_process';
+import * as childProcess from 'node:child_process';
+const { execFileSync } = childProcess;
 import { createHash } from 'crypto';
 import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
