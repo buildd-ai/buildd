@@ -5,6 +5,7 @@ import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
+import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
 
@@ -46,6 +47,7 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
         <div className="flex h-screen overflow-hidden">
           {/* Desktop: collapsed icon sidebar */}
@@ -66,6 +68,7 @@ export default async function ProtectedLayout({
         {/* Mobile: bottom tab nav */}
         <MissionsBottomNav />
       </NeedsInputProvider>
+      </EscalationProvider>
     </AuthGuard>
   );
 }
