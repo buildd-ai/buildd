@@ -13,6 +13,8 @@
 > migrates from `authMode: 'header'` to `authMode: 'assertion'` and the static
 > API key path on the Cue server is deprecated.
 >
+> **Also supersedes:** `docs/design/id-jag-assertion-grant.md` (PR #1230 — parallel draft for the same feature; deleted in favour of this document).
+>
 > **Closes:** `docs/design/generic-mcp-connectors.md` §E for assertion-mode
 > connectors — no pause/reconnect banner required; re-auth is runner-side and
 > fully automatic. §E remains in force for `oauth`-mode connectors (user
@@ -721,7 +723,10 @@ for the spec author to resolve:
 1. **Replay store technology (Cue/dispatch-side).** Redis is the preferred
    backing store for multi-instance deployments. An in-process LRU is
    acceptable for development but creates a replay gap across instances in
-   production. Cue team to confirm deployment topology and choose accordingly.
+   production. For Cue deployments on Cloudflare Workers, a KV store with
+   per-entry TTL is required — in-process state is per-isolate and leaks
+   replay protection across the fleet. Cue team to confirm deployment topology
+   and choose accordingly.
 
 2. **`sub` stability.** Using `accountId:teamId` couples the assertion `sub`
    to buildd's internal UUIDs. If account merges or ID recycling ever occur,
@@ -746,3 +751,79 @@ for the spec author to resolve:
    registers `buildd.dev` as a trusted issuer, validates per §D, and creates a
    connector row with `authMode: 'assertion'`. Document this as a connector
    integration guide when the first external case arises.
+
+---
+
+## J. OAuth AS Metadata Update
+
+`apps/web/src/app/.well-known/oauth-authorization-server/route.ts` must be
+updated to advertise the JWKS endpoint and the jwt-bearer grant type:
+
+```ts
+return NextResponse.json({
+  issuer,
+  authorization_endpoint: `${issuer}/api/oauth/authorize`,
+  token_endpoint:          `${issuer}/api/oauth/token`,
+  registration_endpoint:   `${issuer}/api/oauth/register`,
+  logo_uri:                `${issuer}/logo.png`,
+  jwks_uri:                `${issuer}/api/.well-known/jwks.json`,                 // ← new
+  response_types_supported: ['code'],
+  grant_types_supported: [
+    'authorization_code',
+    'refresh_token',
+    'urn:ietf:params:oauth:grant-type:jwt-bearer',                               // ← new
+  ],
+  code_challenge_methods_supported:        ['S256'],
+  token_endpoint_auth_methods_supported:   ['none'],
+  scopes_supported: OAUTH_SCOPES,
+});
+```
+
+This is a non-breaking additive change. The `jwks_uri` points to buildd's JWKS
+endpoint (§B.1). Advertising `urn:ietf:params:oauth:grant-type:jwt-bearer`
+allows compliant OAuth clients and MCP servers to discover the grant type
+without out-of-band documentation.
+
+---
+
+## K. Non-Goals
+
+The following are explicitly out of scope for this spec:
+
+1. **Existing `authorization_code` / `refresh_token` flows** — unchanged.
+   `apps/web/src/lib/oauth/tokens.ts` HS256 signing is untouched; those tokens
+   serve claude.ai, not MCP-to-worker auth.
+
+2. **External (`mcpConnectors`) non-buildd-owned servers** — continue to use
+   resolved connector credentials (Bearer header or OAuth access token) injected
+   at claim time. The assertion flow applies only to connectors with
+   `authMode: 'assertion'` that implement a token endpoint per §D.
+
+3. **Per-workspace signing keys** — a single global signing key is sufficient.
+   Tenant isolation is enforced by the RS access token, not by issuing
+   per-workspace keys.
+
+4. **Runner-side key caching across tasks** — the runner is stateless between
+   claims. Each claim returns fresh `AssertionConnectorEntry` metadata; no
+   long-lived key material resides in the runner process.
+
+5. **Explicit assertion revocation** — assertions are short-lived (5 min) and
+   single-use (`jti`). Explicit revocation is not needed at this TTL. Worker
+   token revocation (§H.5) cuts off the ability to re-mint new assertions,
+   which is the effective revocation path.
+
+---
+
+## L. File Map
+
+| File | Change |
+|------|--------|
+| `packages/core/db/schema.ts` | Add `'assertion'` to `authMode`; add `assertionAudience` + `assertionTokenEndpoint` columns; add `'signing_key'` to `SecretPurpose` |
+| `packages/core/drizzle/` | Migration for new columns and `authMode` check constraint |
+| `packages/shared/src/types.ts` | Add `AssertionConnectorEntry` interface |
+| `apps/web/src/app/api/.well-known/jwks.json/route.ts` | New — serve public JWK set (§B.1) |
+| `apps/web/src/app/api/connectors/[id]/assertion/route.ts` | New — assertion mint API (§C) |
+| `apps/web/src/app/api/workers/claim/route.ts` | Detect `authMode='assertion'`; return `AssertionConnectorEntry` instead of decrypted token (§E.3) |
+| `apps/web/src/app/api/cron/jwks-rotation/route.ts` | New — weekly key rotation cron (§B.3) |
+| `apps/web/src/app/.well-known/oauth-authorization-server/route.ts` | Add `jwks_uri` + jwt-bearer grant type (§J) |
+| `apps/runner/src/workers.ts` | Exchange assertion at connect time; re-mint + re-exchange on 401 (§F) |
