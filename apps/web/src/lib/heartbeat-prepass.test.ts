@@ -163,6 +163,30 @@ describe('evaluateHeartbeatPrepass', () => {
     expect(result.action).toBe('skip_complete');
   });
 
+  it('returns skip_complete when all deliverables are terminal including cancelled (cancelled = "never happened")', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+      { title: 'Build feature A (duplicate)', mode: 'execution', status: 'cancelled', result: null },
+      { title: 'Build feature A (duplicate 2)', mode: 'execution', status: 'cancelled', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_complete');
+  });
+
+  it('does not skip_complete when cancelled tasks are the only deliverables (no real work done)', async () => {
+    // All cancelled — no completed work at all → should not auto-complete
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'cancelled', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    // Cancelled-only → deliverables.length > 0 but no completed → should NOT skip_complete
+    expect(result.action).not.toBe('skip_complete');
+  });
+
   it('does not skip_complete when some deliverable tasks are still active', async () => {
     tasksFindManyResult = [
       { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },

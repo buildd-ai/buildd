@@ -7,7 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
@@ -70,10 +70,7 @@ export async function GET(req: NextRequest) {
     });
 
     const missionsWithProgress = results.map(mission => {
-      const deliverableTasks = mission.tasks?.filter(isDeliverableTask) || [];
-      const totalTasks = deliverableTasks.length;
-      const completedTasks = deliverableTasks.filter(t => t.status === 'completed').length;
-      const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      const { totalTasks, completedTasks, progress } = computeMissionProgress(mission.tasks || []);
       const activeAgents = mission.tasks?.reduce((count, t) =>
         count + (t.workers?.filter((w: any) => w.status === 'running').length || 0), 0) || 0;
       const cronExpression = (mission as any).schedule?.cronExpression ?? null;
