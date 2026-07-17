@@ -193,6 +193,7 @@ export class HookFactory {
     worker: LocalWorker,
     mcpServersRef?: Record<string, any>,
     apiKey?: string,
+    exchanger: typeof exchangeAssertionConnector = exchangeAssertionConnector,
   ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
@@ -230,7 +231,7 @@ export class HookFactory {
 
           if (assertionConn) {
             try {
-              const { accessToken, expiresAt } = await exchangeAssertionConnector(
+              const { accessToken, expiresAt } = await exchanger(
                 assertionConn,
                 apiKey,
                 worker.id,

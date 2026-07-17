@@ -30,7 +30,11 @@ mock.module('../../src/worker-store', () => ({
   getWorker: () => null,
 }));
 
-// Controllable assertion-exchange mock
+import { HookFactory } from '../../src/hook-factory';
+import type { LocalWorker } from '../../src/types';
+
+// ─── Controllable assertion-exchange mock ─────────────────────────────────────
+
 let exchangeResult: { accessToken: string; expiresAt: number } = {
   accessToken: 'refreshed-tok',
   expiresAt: Date.now() + 600_000,
@@ -40,15 +44,6 @@ const mockExchange = mock(async () => {
   if (exchangeThrows) throw new Error('exchange failed');
   return exchangeResult;
 });
-const mockIsAuthError = mock((s: string) => /401|unauthorized/i.test(s));
-
-mock.module('../../src/assertion-exchange.js', () => ({
-  exchangeAssertionConnector: mockExchange,
-  isAuthError: mockIsAuthError,
-}));
-
-import { HookFactory } from '../../src/hook-factory';
-import type { LocalWorker } from '../../src/types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -120,7 +115,7 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
     };
 
     const factory = makeFactory();
-    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key');
+    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key', mockExchange as any);
     await hook(makeFailureInput('mcp__cue__search', 'HTTP 401 Unauthorized') as any);
 
     expect(mockExchange).toHaveBeenCalledTimes(1);
@@ -144,7 +139,7 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
     };
 
     const factory = makeFactory();
-    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key');
+    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key', mockExchange as any);
 
     // Must not throw even when exchange fails
     await expect(
@@ -164,7 +159,7 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
     };
 
     const factory = makeFactory();
-    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key');
+    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key', mockExchange as any);
     await hook(makeFailureInput('mcp__linear__search', 'HTTP 401 Unauthorized') as any);
 
     expect(mockExchange).not.toHaveBeenCalled();
@@ -178,7 +173,7 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
     };
 
     const factory = makeFactory();
-    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key');
+    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key', mockExchange as any);
     await hook(makeFailureInput('mcp__cue__search', 'Internal Server Error 500') as any);
 
     expect(mockExchange).not.toHaveBeenCalled();
@@ -201,7 +196,7 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
   test('hook is a no-op for non-PostToolUseFailure events', async () => {
     const worker = makeWorker();
     const factory = makeFactory();
-    const hook = factory.createMcpFailureHook(worker, {}, 'bld_key');
+    const hook = factory.createMcpFailureHook(worker, {}, 'bld_key', mockExchange as any);
 
     const result = await hook({ hook_event_name: 'PostToolUse', tool_name: 'mcp__cue__search' } as any);
     expect(result).toEqual({});
