@@ -186,8 +186,6 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
-  // Server-managed MCP credential secrets (label/env var name → decrypted value)
-  mcpSecrets?: Record<string, string>;
   // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
   codexCredential?: {
     accessToken: string;
