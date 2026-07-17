@@ -5,7 +5,7 @@
  * Override with setSecretsProvider() for custom backends (Vault, AWS Secrets Manager, etc.).
  */
 
-export type SecretPurpose = 'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential';
+export type SecretPurpose = 'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key';
 
 export interface SecretMetadata {
   teamId: string;
