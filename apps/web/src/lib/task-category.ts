@@ -9,6 +9,7 @@ const CATEGORY_KEYWORDS: Record<TaskCategoryValue, RegExp[]> = {
   test: [/\btest/i, /\bspec\b/i, /\bcoverage\b/i, /\be2e\b/i],
   infra: [/\bci\b/i, /\bdeploy/i, /\bdocker/i, /\bpipeline\b/i, /\binfra\b/i, /\bconfig\b/i],
   design: [/\bdesign\b/i, /\bui\b/i, /\bux\b/i, /\blayout\b/i, /\bstyle/i, /\bcss\b/i],
+  review: [/\breview\b/i, /\breviewer\b/i],
 };
 
 // Order matters — more specific categories first to avoid false positives

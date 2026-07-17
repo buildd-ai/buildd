@@ -16,6 +16,7 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 
 // Track DB operations for assertions
 let insertCalls: Array<{ table: any; values: any; conflict: string | null }> = [];
@@ -60,6 +61,7 @@ mock.module('@buildd/core/db', () => ({
       },
       workers: { findFirst: mockWorkersFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
+      missions: { findFirst: mockMissionsFindFirst },
     },
     insert: (table: any) => ({
       values: (values: any) => {
@@ -208,6 +210,24 @@ mock.module('@/lib/work-tracker', () => ({
   postLinearCompletionComment: mock(() => Promise.resolve()),
 }));
 
+// Merge-policy + reviewer mocks (Phase 2)
+const mockResolvePolicy = mock(() => ({ tier: 'auto-threshold' as const, threshold: { maxLines: 800, denyPaths: [] } }));
+mock.module('@/lib/merge-policy', () => ({
+  resolvePolicy: mockResolvePolicy,
+}));
+
+const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }));
+const mockPreflightEscalationCheck = mock(() => ({ shouldEscalate: false as const }));
+mock.module('@/lib/reviewer', () => ({
+  createReviewerTask: mockCreateReviewerTask,
+  preflightEscalationCheck: mockPreflightEscalationCheck,
+}));
+
+const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+mock.module('@/lib/auto-merge', () => ({
+  tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -296,8 +316,13 @@ function resetAll() {
   mockWorkspacesFindMany.mockReset();
   mockWorkersFindFirst.mockReset();
   mockTasksFindFirst.mockReset();
+  mockMissionsFindFirst.mockReset();
   mockResolveReleaseStrategy.mockReset();
   mockCountPendingTasksForMission.mockReset();
+  mockResolvePolicy.mockReset();
+  mockCreateReviewerTask.mockReset();
+  mockPreflightEscalationCheck.mockReset();
+  mockTryAutoMergeWorkerPr.mockReset();
 
   insertCalls = [];
   deleteCalls = [];
@@ -313,6 +338,7 @@ function resetAll() {
   mockWorkspacesFindMany.mockReturnValue([]);
   mockWorkersFindFirst.mockReturnValue(null);
   mockTasksFindFirst.mockReturnValue(null);
+  mockMissionsFindFirst.mockReturnValue(null);
   mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
   mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
   mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
@@ -320,6 +346,12 @@ function resetAll() {
   mockNotifyMissionPrReady.mockReturnValue(Promise.resolve());
   // Default: no pending tasks (all-terminal)
   mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+  // Phase 2 defaults
+  mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+  mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
+  mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-task-1' }));
+  mockTryAutoMergeWorkerPr.mockReturnValue(Promise.resolve());
+
   // Default: resolve based on workspace config
   mockResolveReleaseStrategy.mockImplementation((config: any) => {
     if (!config || !config.enabled) return { ok: false, reason: 'not_configured', message: 'not configured' };
@@ -757,7 +789,7 @@ describe('POST /api/github/webhook', () => {
       );
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
     it('blocks merge when a check run is still pending (CI completeness check)', async () => {
@@ -811,7 +843,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
     it('defers to check_suite when the repo has CI', async () => {
@@ -853,7 +885,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
     it('does nothing when autoMergeOnGreenCI is false, even if autoMergePR is true', async () => {
@@ -1070,19 +1102,22 @@ describe('POST /api/github/webhook', () => {
       expect(dispatchCall).toBeUndefined();
     });
 
-    it('blocks merge and notifies when the diff exceeds the line budget', async () => {
+    it('calls tryAutoMergeWorkerPr (which handles line-budget blocking internally)', async () => {
+      // The safety-rail logic (line budget, deny paths, notifyMissionPrReady on block)
+      // now lives in auto-merge.ts. At the webhook level, we verify that
+      // tryAutoMergeWorkerPr is invoked with the right gitConfig so the library
+      // can apply those checks. The detailed blocking tests live in auto-merge.test.ts.
       mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
-      mockTasksFindFirst.mockReturnValue({ missionId: 'm1', title: 'Big task' });
-      // Oversized diff → safety rail trips
-      mockGithubApi.mockReturnValue(Promise.resolve([{ filename: 'src/big.ts', additions: 500, deletions: 0 }]));
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
-      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toMatchObject({
+        gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 },
+      });
     });
 
     it('sets worker.mergedAt when PR merges (dependsOn gate prerequisite)', async () => {
@@ -1343,25 +1378,18 @@ describe('POST /api/github/webhook', () => {
       expect(jobInserts[0].values.sha).toBe('head-sha-81');
     });
 
-    it('excludes drizzle/meta and lockfile noise from the line budget', async () => {
+    it('calls tryAutoMergeWorkerPr regardless of drizzle/lockfile noise in diff', async () => {
+      // Noise-exclusion logic (drizzle meta + lockfile) lives in auto-merge.ts.
+      // The webhook's job is to invoke tryAutoMergeWorkerPr with the gitConfig so
+      // the library can apply the budget after exclusions. Verified in auto-merge.test.ts.
       mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
-      mockTasksFindFirst.mockReturnValue({ missionId: 'm1', title: 'Migration task' });
-      // Small real change + huge drizzle snapshot + lockfile — total would exceed limit, source lines don't
-      mockGithubApi.mockReturnValue(
-        Promise.resolve([
-          { filename: 'packages/core/db/schema.ts', additions: 5, deletions: 1 },
-          { filename: 'packages/core/drizzle/meta/0062_snapshot.json', additions: 5000, deletions: 0 },
-          { filename: 'bun.lockb', additions: 2000, deletions: 1800 },
-        ]),
-      );
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      // Source-only lines (6) < limit (10) → should auto-merge
-      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1520,6 +1548,135 @@ describe('POST /api/github/webhook', () => {
 
       const failUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
       expect(failUpdate).toBeDefined();
+    });
+  });
+
+  // ── Reviewer invocation (Phase 2) ──────────────────────────────────────────
+  describe('pull_request reviewer dispatch (agent-review policy)', () => {
+    function makePROpenedPayload(overrides: Record<string, any> = {}) {
+      return {
+        action: 'opened',
+        pull_request: {
+          number: 42,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc12345-feat', sha: 'sha-42' },
+          html_url: 'https://github.com/test-org/test-repo/pull/42',
+          ...overrides.pull_request,
+        },
+        repository: { full_name: 'test-org/test-repo', ...overrides.repository },
+        installation: { id: 5000, ...overrides.installation },
+      };
+    }
+
+    function withAgentReviewWorkspaceAndWorker() {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 'task-1',
+        branch: 'buildd/abc12345-feat',
+        prNumber: 42,
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws1',
+        gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      });
+      mockTasksFindFirst.mockReturnValue({
+        id: 'task-1',
+        title: 'Add feature X',
+        description: 'Build feature X',
+        missionId: 'mission-1',
+        pathManifest: ['apps/web/src/lib/feature-x.ts'],
+        context: { iteration: 0, maxIterations: 3 },
+      });
+      mockMissionsFindFirst.mockReturnValue({ mergePolicy: null });
+      mockResolvePolicy.mockReturnValue({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', escalateToPaths: [], maxConfidenceThreshold: 0.6 },
+      });
+      // PR files fetch — normal files (no schema)
+      mockGithubApi.mockReturnValue(Promise.resolve([
+        { filename: 'apps/web/src/lib/feature-x.ts', additions: 50, deletions: 5, status: 'added' },
+      ]));
+    }
+
+    it('creates reviewer task on PR open with agent-review policy', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({
+        prNumber: 42,
+        reviewerRole: 'reviewer',
+        originalTaskId: 'task-1',
+      });
+      // Auto-merge must NOT be called when reviewer is dispatched
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('skips reviewer task and escalates when pre-flight detects schema file', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockGithubApi.mockReturnValue(Promise.resolve([
+        { filename: 'packages/core/db/schema.ts', additions: 10, deletions: 2, status: 'modified' },
+      ]));
+      mockPreflightEscalationCheck.mockReturnValue({
+        shouldEscalate: true,
+        reason: 'PR touches schema migration file: packages/core/db/schema.ts',
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      // No reviewer task created — pre-flight escalated
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      // Auto-merge also not called
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      // Mission notification fired
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls through to normal auto-merge path when policy is auto-threshold', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 'task-1',
+        branch: 'buildd/abc12345-feat',
+        prNumber: 42,
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws1',
+        gitConfig: { autoMergePR: true },
+      });
+      mockTasksFindFirst.mockReturnValue({
+        id: 'task-1',
+        title: 'Fix bug',
+        description: null,
+        missionId: null,
+        mission: null,
+      });
+      mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+      mockGithubApi.mockReturnValue(Promise.resolve([]));
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch reviewer when PR has no worker', async () => {
+      // Worker not found
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
   });
 });
