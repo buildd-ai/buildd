@@ -38,6 +38,12 @@ export class HookFactory {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
 
+      // A tool call is starting. Mark it in-flight and count it as activity so a
+      // legitimately long, silent tool (e.g. a bash waiting on CI) is not treated
+      // as a stalled session by checkStale. Cleared on PostToolUse / failure.
+      worker.lastActivity = Date.now();
+      worker.toolInFlight = true;
+
       // Track prompt_id for OTEL trace correlation (SDK v0.3.196)
       const promptId = (input as any).prompt_id as string | undefined;
       if (promptId && promptId !== worker.currentPromptId) {
@@ -123,6 +129,10 @@ export class HookFactory {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUse') return {};
 
+      // Tool finished — clear the in-flight flag and record activity.
+      worker.lastActivity = Date.now();
+      worker.toolInFlight = false;
+
       const toolName = (input as any).tool_name;
       const toolInput = (input as any).tool_input as Record<string, unknown>;
 
@@ -179,6 +189,10 @@ export class HookFactory {
   createMcpFailureHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
+
+      // Tool failed — clear the in-flight flag (so it can't get stuck) and record activity.
+      worker.lastActivity = Date.now();
+      worker.toolInFlight = false;
 
       const toolName = (input as any).tool_name as string;
 
@@ -440,6 +454,9 @@ export class HookFactory {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStart') return {};
 
+      // A subagent spawn is activity — keep the parent alive across silent subagent runs.
+      worker.lastActivity = Date.now();
+
       const agentId = (input as any).agent_id as string;
       const agentType = (input as any).agent_type as string;
 
@@ -463,6 +480,9 @@ export class HookFactory {
   createSubagentStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
+
+      // A subagent completing is activity — keep the parent alive between stream messages.
+      worker.lastActivity = Date.now();
 
       const stopHookActive = (input as any).stop_hook_active as boolean;
       const lastAssistantMessage = (input as any).last_assistant_message as string | undefined;
