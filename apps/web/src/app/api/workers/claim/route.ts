@@ -38,6 +38,11 @@ type ResolvedMcpConnector = {
   args?: string[];
   headers?: Record<string, string>;
   env?: Record<string, string>;
+  // assertion-mode exchange metadata (assertionMode=true → runner performs mint+exchange)
+  assertionMode?: true;
+  mintApiUrl?: string;
+  audience?: string;
+  tokenEndpoint?: string;
 };
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -1455,6 +1460,21 @@ export async function POST(req: NextRequest) {
 
           if (connector.authMode === 'none') {
             mcpConnectors.push({ name, transport: 'http', url: connector.url });
+            continue;
+          }
+
+          // assertion-mode: return exchange metadata so the runner can mint+exchange
+          if (connector.authMode === 'assertion') {
+            if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
+            mcpConnectors.push({
+              name,
+              transport: 'http',
+              url: connector.url,
+              assertionMode: true,
+              mintApiUrl: `https://buildd.dev/api/connectors/${connector.id}/assertion`,
+              audience: connector.assertionAudience,
+              tokenEndpoint: connector.assertionTokenEndpoint,
+            });
             continue;
           }
 

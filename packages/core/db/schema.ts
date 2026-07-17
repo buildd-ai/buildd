@@ -16,7 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
-export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
+export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
@@ -1054,7 +1054,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -1548,6 +1548,9 @@ export const connectors = pgTable('connectors', {
   // OAuth client credentials (authMode='oauth')
   clientId: text('client_id'),
   encryptedClientSecret: text('encrypted_client_secret'),
+  // Assertion-mode fields (authMode='assertion')
+  assertionAudience: text('assertion_audience'),
+  assertionTokenEndpoint: text('assertion_token_endpoint'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
