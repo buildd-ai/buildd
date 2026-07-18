@@ -345,4 +345,59 @@ describe('POST /api/connectors', () => {
     const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
     expect(res.status).toBe(403);
   });
+
+  // Assertion-mode connector validation (spec §E.2 invariants)
+  it('returns 400 assertion_audience_required when assertion authMode has no assertionAudience', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({
+      name: 'Cue',
+      url: 'https://cue.buildd.dev/api/mcp',
+      authMode: 'assertion',
+      assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('assertion_audience_required');
+  });
+
+  it('returns 400 assertion_token_endpoint_required when assertion authMode has no assertionTokenEndpoint', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({
+      name: 'Cue',
+      url: 'https://cue.buildd.dev/api/mcp',
+      authMode: 'assertion',
+      assertionAudience: 'https://cue.buildd.dev/api/mcp',
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('assertion_token_endpoint_required');
+  });
+
+  it('creates assertion connector with audience and tokenEndpoint persisted', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return {
+        returning: mock(() => [{
+          id: 'conn-assert', name: 'cue', url: 'https://cue.buildd.dev/api/mcp',
+          authMode: 'assertion', teamId: 'team-1',
+          assertionAudience: 'https://cue.buildd.dev/api/mcp',
+          assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+        }]),
+      }; }),
+    });
+    const res = await POST(makePostReq({
+      name: 'cue',
+      url: 'https://cue.buildd.dev/api/mcp',
+      authMode: 'assertion',
+      assertionAudience: 'https://cue.buildd.dev/api/mcp',
+      assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+    }));
+    expect(res.status).toBe(201);
+    expect(captured.authMode).toBe('assertion');
+    expect(captured.assertionAudience).toBe('https://cue.buildd.dev/api/mcp');
+    expect(captured.assertionTokenEndpoint).toBe('https://cue.buildd.dev/api/oauth/token');
+    // Must not try to discover OAuth metadata for assertion connectors
+    expect(mockDiscoverOAuthMetadata).not.toHaveBeenCalled();
+  });
 });
