@@ -168,12 +168,14 @@ export async function POST(req: NextRequest) {
     command?: string;
     args?: string[];
     envMapping?: Record<string, string>;
-    authMode?: 'none' | 'header' | 'oauth';
+    authMode?: 'none' | 'header' | 'oauth' | 'assertion';
     headerName?: string;
     headerValue?: string;
     clientId?: string;
     clientSecret?: string;
     reuseIfExists?: boolean;
+    assertionAudience?: string;
+    assertionTokenEndpoint?: string;
   };
   try {
     body = await req.json();
