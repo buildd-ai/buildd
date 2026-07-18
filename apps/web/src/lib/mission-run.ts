@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
@@ -178,12 +178,46 @@ export async function runMission(
     triggerSource: 'manual',
   };
 
+  // Pre-filed task detection — fires on first organizer evaluation only.
+  // If the mission already has ≥1 non-orchestrator task linked before the organizer's
+  // first decomposition pass, persist decompositionSkipped=true and post a decision note.
+  // Subsequent runs read the persisted flag instead of re-querying.
+  let decompositionSkipped = mission.decompositionSkipped ?? false;
+  if (!decompositionSkipped && mission.orchestrationMode !== 'manual') {
+    const [preFiledRow] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(tasks)
+      .where(and(
+        eq(tasks.missionId, missionId),
+        not(eq(tasks.creationSource, 'orchestrator')),
+        not(eq(tasks.mode, 'planning')),
+      ));
+    const preFiledCount = preFiledRow?.count ?? 0;
+    if (preFiledCount > 0) {
+      decompositionSkipped = true;
+      await db
+        .update(missions)
+        .set({ decompositionSkipped: true, updatedAt: new Date() })
+        .where(eq(missions.id, missionId));
+      await db.insert(missionNotes).values({
+        missionId,
+        authorType: 'system',
+        type: 'decision',
+        title: 'Decomposition skipped — pre-filed tasks detected',
+        body: `Found ${preFiledCount} pre-filed task(s) linked to this mission before the organizer's first evaluation. Switching to coordinate-only mode: the organizer will coordinate existing tasks but will not create new ones except for retry children of failed tasks.`,
+        status: 'open',
+      });
+      console.log(`[runMission] Mission ${missionId}: ${preFiledCount} pre-filed task(s) detected — coordinate-only mode`);
+    }
+  }
+
   // Build rich mission context (pass cycle info so context builder can surface it)
   const missionContext = await buildMissionContext(missionId, {
     ...templateContext,
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
+    decompositionSkipped,
   });
 
   const taskTitle = `Mission: ${mission.title}`;
