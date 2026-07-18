@@ -21,53 +21,38 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          ENV_KEY: ${{ github.event.inputs.env_key }}
+          ENV_VALUE: ${{ github.event.inputs.env_value }}
         run: |
-          KEY="${{ github.event.inputs.env_key }}"
-          VALUE="${{ github.event.inputs.env_value }}"
-
-          echo "Setting $KEY in Vercel..."
+          echo "Setting $ENV_KEY in Vercel..."
 
           # Fetch existing env vars for this key
-          STATUS=$(curl -s -o /tmp/existing.json -w "%{http_code}" \
+          FETCH_STATUS=$(curl -s -o /tmp/existing.json -w "%{http_code}" \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}&keys=${KEY}")
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}&keys=${ENV_KEY}")
 
-          echo "Fetch existing status: $STATUS"
+          echo "Fetch existing status: $FETCH_STATUS"
 
           # Delete each existing entry for this key
-          if command -v jq &>/dev/null; then
-            IDS=$(jq -r '.envs[].id // empty' /tmp/existing.json 2>/dev/null || true)
-          else
-            IDS=$(python3 -c "
-          import json, sys
-          try:
-              data = json.load(open('/tmp/existing.json'))
-              for e in data.get('envs', []):
-                  print(e['id'])
-          except: pass
-          " 2>/dev/null || true)
-          fi
+          EXISTING_IDS=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('/tmp/existing.json'))
+    for e in data.get('envs', []):
+        print(e['id'])
+except Exception as e:
+    sys.stderr.write(str(e) + '\n')
+" 2>&1)
 
-          for ID in $IDS; do
+          for ID in $EXISTING_IDS; do
             echo "Deleting existing entry $ID..."
-            DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+            curl -s -o /dev/null -X DELETE \
               -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ID}?teamId=${VERCEL_ORG_ID}")
-            echo "Delete status: $DEL_STATUS"
+              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ID}?teamId=${VERCEL_ORG_ID}"
           done
 
-          # Create new env var for all environments
-          PAYLOAD=$(python3 - <<'PYEOF'
-          import json, os
-          data = {
-            "key": os.environ["KEY"],
-            "value": os.environ["VALUE"],
-            "type": "plain",
-            "target": ["production", "preview", "development"]
-          }
-          print(json.dumps(data))
-          PYEOF
-          )
+          # Build JSON payload and create env var
+          PAYLOAD=$(python3 -c "import json, os; print(json.dumps({'key': os.environ['ENV_KEY'], 'value': os.environ['ENV_VALUE'], 'type': 'plain', 'target': ['production', 'preview', 'development']}))")
 
           CREATE_STATUS=$(curl -s -o /tmp/create_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
@@ -77,23 +62,19 @@ jobs:
 
           echo "Create status: $CREATE_STATUS"
 
-          # Show non-sensitive parts of the response
-          if command -v jq &>/dev/null; then
-            jq '{key, type, target, id}' /tmp/create_resp.json 2>/dev/null || cat /tmp/create_resp.json
-          else
-            python3 -c "
-          import json
-          try:
-              d = json.load(open('/tmp/create_resp.json'))
-              print(json.dumps({k: d[k] for k in ['key','type','target','id','error','message'] if k in d}, indent=2))
-          except Exception as e:
-              print(e)
-          " 2>/dev/null || cat /tmp/create_resp.json
-          fi
+          python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/create_resp.json'))
+    safe = {k: d[k] for k in ['key','type','target','id','error','message'] if k in d}
+    print(json.dumps(safe, indent=2))
+except Exception as e:
+    print(e)
+"
 
           if [ "$CREATE_STATUS" != "200" ] && [ "$CREATE_STATUS" != "201" ]; then
             echo "ERROR: Vercel API returned HTTP $CREATE_STATUS"
             exit 1
           fi
 
-          echo "Successfully set $KEY in Vercel."
+          echo "Successfully set $ENV_KEY in Vercel."
