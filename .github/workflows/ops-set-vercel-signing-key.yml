@@ -19,30 +19,29 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      ENV_KEY: ${{ github.event.inputs.env_key }}
+      ENV_VALUE: ${{ github.event.inputs.env_value }}
     steps:
       - name: Set env var via Vercel API
         run: |
-          KEY="${{ github.event.inputs.env_key }}"
-          VALUE="${{ github.event.inputs.env_value }}"
-          echo "Setting $KEY..."
+          echo "Setting $ENV_KEY..."
 
-          # Delete existing entries for this key
           curl -s \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}&keys=${KEY}" \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}&keys=${ENV_KEY}" \
             -o /tmp/existing.json
 
-          python3 << 'EOF'
+          python3 -c "
 import json
 try:
     data = json.load(open('/tmp/existing.json'))
     ids = [e['id'] for e in data.get('envs', [])]
-    print(f"Found {len(ids)} existing entries to delete: {ids}")
+    print(f'Found {len(ids)} existing entries: {ids}')
     open('/tmp/existing_ids.txt', 'w').write('\n'.join(ids))
 except Exception as e:
-    print(f"No existing entries (or error): {e}")
+    print(f'No existing entries: {e}')
     open('/tmp/existing_ids.txt', 'w').write('')
-EOF
+"
 
           while IFS= read -r ID; do
             [ -z "$ID" ] && continue
@@ -52,15 +51,22 @@ EOF
               "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ID}?teamId=${VERCEL_ORG_ID}"
           done < /tmp/existing_ids.txt
 
-          # Create the env var
           STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"key\":\"$KEY\",\"value\":\"$VALUE\",\"type\":\"plain\",\"target\":[\"production\",\"preview\",\"development\"]}" \
+            -d "{\"key\":\"${ENV_KEY}\",\"value\":\"${ENV_VALUE}\",\"type\":\"plain\",\"target\":[\"production\",\"preview\",\"development\"]}" \
             "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}")
 
           echo "Status: $STATUS"
-          python3 -c "import json; d=json.load(open('/tmp/resp.json')); print({k:d[k] for k in ['key','type','target','id','error','message'] if k in d})"
+          python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/resp.json'))
+    safe = {k: d[k] for k in ['key','type','target','id','error','message'] if k in d}
+    print(json.dumps(safe, indent=2))
+except Exception as e:
+    print(e)
+"
 
           [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ] || { echo "FAILED: HTTP $STATUS"; exit 1; }
-          echo "Done: $KEY set successfully."
+          echo "Done."
