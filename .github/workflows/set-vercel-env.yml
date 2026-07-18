@@ -1,0 +1,97 @@
+name: Set Vercel Env Var (one-off)
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_key:
+        description: 'Environment variable name'
+        required: true
+        default: 'BUILDD_SIGNING_KEY_TEAM_ID'
+      env_value:
+        description: 'Environment variable value'
+        required: true
+        default: 'd2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5'
+      target_envs:
+        description: 'Comma-separated targets: production,preview,development'
+        required: true
+        default: 'production,preview,development'
+
+jobs:
+  set-env:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add or update Vercel env var
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          KEY="${{ github.event.inputs.env_key }}"
+          VALUE="${{ github.event.inputs.env_value }}"
+          TARGETS_CSV="${{ github.event.inputs.target_envs }}"
+
+          # Convert CSV to JSON array
+          TARGETS_JSON=$(echo "$TARGETS_CSV" | python3 -c "import sys,json; t=[x.strip() for x in sys.stdin.read().split(',')]; print(json.dumps(t))")
+
+          echo "Setting $KEY for targets: $TARGETS_CSV"
+
+          # Check if env var already exists
+          EXISTING=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID&keys=$KEY")
+
+          # Delete existing entries for this key if any, then create fresh
+          EXISTING_DATA=$(curl -s \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID&keys=$KEY")
+
+          echo "Existing env data: $EXISTING_DATA"
+
+          # Extract IDs and delete them
+          EXISTING_IDS=$(echo "$EXISTING_DATA" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          envs = data.get('envs', [])
+          for e in envs:
+              print(e['id'])
+          " 2>/dev/null || true)
+
+          for ID in $EXISTING_IDS; do
+            echo "Deleting existing env entry $ID..."
+            curl -s -X DELETE \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$ID?teamId=$VERCEL_ORG_ID"
+          done
+
+          # Create new env var
+          PAYLOAD=$(python3 -c "
+          import json
+          targets = $TARGETS_JSON
+          data = {
+            'key': '$KEY',
+            'value': '$VALUE',
+            'type': 'plain',
+            'target': targets
+          }
+          print(json.dumps(data))
+          ")
+
+          echo "Creating env var with payload: $PAYLOAD"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "Response ($HTTP_CODE): $BODY"
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "ERROR: Failed to set env var (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "Successfully set $KEY"
