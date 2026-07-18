@@ -21,6 +21,7 @@ import {
   type MissionHealth,
   type MissionGroup,
 } from '@/lib/mission-helpers';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 
 // --- Helpers ---
 
@@ -193,7 +194,7 @@ export default async function HomePage({
         const activeWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.workspaceId, wsIds),
-            inArray(workers.status, ['running', 'starting', 'waiting_input'])
+            inArray(workers.status, [...LIVE_WORKER_STATUSES])
           ),
           orderBy: desc(workers.createdAt),
           limit: 10,
@@ -317,7 +318,7 @@ export default async function HomePage({
               .where(
                 and(
                   inArray(tasks.missionId, missionIds),
-                  inArray(workers.status, ['running', 'starting', 'waiting_input'])
+                  inArray(workers.status, [...LIVE_WORKER_STATUSES])
                 )
               )
               .groupBy(tasks.missionId);

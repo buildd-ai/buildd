@@ -3,6 +3,7 @@ import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, wo
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
+import { LIVE_WORKER_STATUSES } from './task-timestamps';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -155,7 +156,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
     .where(
       and(
         eq(workers.workspaceId, workspaceId),
-        inArray(workers.status, ['running', 'starting', 'waiting_input']),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       )
     )
     .groupBy(tasks.roleSlug);

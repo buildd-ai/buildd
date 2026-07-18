@@ -2,19 +2,28 @@
 export const STALENESS_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
+ * The canonical set of worker statuses that indicate an active (live) worker.
+ * A worker is "live" when it is between turns (idle), starting up, actively
+ * executing (running), or blocked waiting for user input. Use this single
+ * source of truth in every DB query that joins workers to filter for active ones.
+ */
+export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
+
+/**
  * Derives the canonical display status for a task from its DB status and the
  * latest active worker's status. This is the single authoritative source for
  * what label/chip to show — callers must not fork their own logic.
  *
  * Rule: if there is an active running worker, the task always displays as
  * "running" regardless of the task.status column value (which may still be
- * "assigned" while the runner transitions).
+ * "assigned" while the runner transitions). An idle worker (between turns)
+ * is treated the same as running — the agent is still active.
  */
 export function deriveDisplayStatus(
   taskStatus: string,
   workerStatus?: string | null,
 ): string {
-  if (workerStatus === 'running' || workerStatus === 'starting') return 'running';
+  if (workerStatus === 'running' || workerStatus === 'starting' || workerStatus === 'idle') return 'running';
   if (workerStatus === 'waiting_input') return 'waiting_input';
   return taskStatus;
 }

@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import StatusBadge from '@/components/StatusBadge';
 import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 import { isSystemWorkspace } from '@buildd/shared';
 import DashboardStartTask from './DashboardStartTask';
 import OnboardingChecklist from './OnboardingChecklist';
@@ -126,7 +127,7 @@ export default async function DashboardPage() {
         activeWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.workspaceId, workspaceIds),
-            inArray(workers.status, ['running', 'starting', 'waiting_input'])
+            inArray(workers.status, [...LIVE_WORKER_STATUSES])
           ),
           orderBy: desc(workers.createdAt),
           limit: 10,
