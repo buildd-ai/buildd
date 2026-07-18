@@ -1,8 +1,9 @@
 // Cron endpoint: GET /api/cron/codex-token-refresh
 //
-// Proactively refreshes two credential types:
+// Proactively refreshes three credential types:
 //   1. Codex OAuth tokens expiring within 1 hour (OpenAI rotates refresh token on each use)
-//   2. MCP connector OAuth tokens expiring within 10 minutes (standard OAuth 2.1 refresh)
+//   2. Claude OAuth tokens expiring within 1 hour (Anthropic rotates refresh token on each use)
+//   3. MCP connector OAuth tokens expiring within 10 minutes (standard OAuth 2.1 refresh)
 //
 // Auth: Bearer token matching CRON_SECRET env var.
 // Recommended schedule: every 4 hours.
@@ -12,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { and, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
+import { refreshClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 
 export const maxDuration = 60;
@@ -57,6 +59,35 @@ export async function GET(req: NextRequest) {
     `[Cron] Codex token refresh: checked=${expiringCodex.length} refreshed=${codexRefreshed} locked=${codexLocked} errors=${codexErrors}`,
   );
 
+  // ── Claude credentials expiring within 1 hour ───────────────────────────────
+  const expiringClaude = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.purpose, 'claude_credential'),
+      isNotNull(secrets.tokenExpiresAt),
+      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+    ),
+    columns: { id: true },
+  });
+
+  const claudeResults: Record<string, string> = {};
+  let claudeRefreshed = 0;
+  let claudeLocked = 0;
+  let claudeErrors = 0;
+  let claudeNoCredential = 0;
+
+  for (const cred of expiringClaude) {
+    const outcome = await refreshClaudeCredential(cred.id);
+    claudeResults[cred.id] = outcome;
+    if (outcome === 'refreshed') claudeRefreshed++;
+    else if (outcome === 'locked') claudeLocked++;
+    else if (outcome === 'error') claudeErrors++;
+    else if (outcome === 'no_credential') claudeNoCredential++;
+  }
+
+  console.log(
+    `[Cron] Claude token refresh: checked=${expiringClaude.length} refreshed=${claudeRefreshed} locked=${claudeLocked} errors=${claudeErrors}`,
+  );
+
   // ── MCP connector credentials expiring within 10 minutes ───────────────────
   // Only query rows that have a tokenExpiresAt — header-auth secrets never set it.
   const expiringMcp = await db.query.secrets.findMany({
@@ -97,6 +128,14 @@ export async function GET(req: NextRequest) {
       errors: codexErrors,
       noCredential: codexNoCredential,
       secrets: codexResults,
+    },
+    claude: {
+      checked: expiringClaude.length,
+      refreshed: claudeRefreshed,
+      locked: claudeLocked,
+      errors: claudeErrors,
+      noCredential: claudeNoCredential,
+      secrets: claudeResults,
     },
     mcp: {
       checked: expiringMcp.length,

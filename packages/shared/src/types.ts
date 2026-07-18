@@ -835,6 +835,15 @@ export interface ClaimTasksResponse {
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
     serverOauthToken?: string;
+    /**
+     * Access token from a managed claude_credential (centrally refreshed).
+     * When set, the runner creates a per-worker CLAUDE_CONFIG_DIR and writes
+     * a credentials file with ONLY this access_token — no refresh_token —
+     * preventing in-session token rotation by workers.
+     */
+    claudeAccessToken?: string;
+    /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
+    claudeTokenExpiresAt?: string | null;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
