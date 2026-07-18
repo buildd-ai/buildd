@@ -346,6 +346,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           teamId: memTeamId ?? undefined,
           knowledgeStore,
           embedder,
+          api,
         });
       } else {
         throw new Error(`Unknown tool: ${name}`);
