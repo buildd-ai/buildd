@@ -4,6 +4,8 @@ import { NextRequest } from 'next/server';
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindMany = mock(() => [] as any[]);
+const mockTasksUpdate = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
@@ -48,22 +50,32 @@ mock.module('@/lib/pusher', () => ({
 }));
 
 // Mock database
+const mockDbUpdate = {
+  set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+};
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockTasksFindFirst },
+      workers: { findMany: mockWorkersFindMany },
     },
+    update: mock(() => mockDbUpdate),
   },
 }));
 
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...args: any[]) => ({ type: 'and', args }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', context: 'context', dependsOn: 'dependsOn', updatedAt: 'updatedAt' },
+  workers: { taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt' },
 }));
 
 // Import handler AFTER mocks
@@ -97,13 +109,15 @@ describe('POST /api/tasks/[id]/start', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
     mockTriggerEvent.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
 
-    // Default: grant access
+    // Default: grant access, no blocking dep workers
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockWorkersFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no session auth (API key not supported)', async () => {
@@ -322,5 +336,109 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.started).toBe(true);
     expect(data.targetLocalUiUrl).toBeNull();
+  });
+
+  it('returns 422 when a completed dependency has an unmerged PR', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: ['dep-task-1'],
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Test Workspace', repo: 'test/repo' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Simulate a worker with open PR on the completed dep task
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'worker-1',
+        taskId: 'dep-task-1',
+        prUrl: 'https://github.com/org/repo/pull/94',
+        prNumber: 94,
+        task: { id: 'dep-task-1', title: 'Spec task', status: 'completed' },
+      },
+    ]);
+
+    const request = createMockRequest();
+    const response = await callHandler(request, 'task-123');
+
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('unmerged_dep_pr');
+    expect(data.canForce).toBe(true);
+    expect(data.blockingDeps).toHaveLength(1);
+    expect(data.blockingDeps[0].prUrl).toBe('https://github.com/org/repo/pull/94');
+    expect(data.blockingDeps[0].prNumber).toBe(94);
+    // Should NOT have broadcast Pusher
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not gate when dep worker is not completed (status check handles it)', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: ['dep-task-1'],
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Test Workspace', repo: 'test/repo' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Worker has open PR but dep task is not yet completed — not a PR gate issue
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'worker-1',
+        taskId: 'dep-task-1',
+        prUrl: 'https://github.com/org/repo/pull/90',
+        prNumber: 90,
+        task: { id: 'dep-task-1', title: 'Still running task', status: 'in_progress' },
+      },
+    ]);
+
+    const request = createMockRequest();
+    const response = await callHandler(request, 'task-123');
+
+    // No PR gate — should proceed to broadcast (dep status check is at claim time)
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  it('bypasses gate and broadcasts when forceOverride is true', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: ['dep-task-1'],
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Test Workspace', repo: 'test/repo' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Has a blocking dep PR, but user sends forceOverride
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'worker-1',
+        taskId: 'dep-task-1',
+        prUrl: 'https://github.com/org/repo/pull/94',
+        prNumber: 94,
+        task: { id: 'dep-task-1', title: 'Spec task', status: 'completed' },
+      },
+    ]);
+
+    const request = createMockRequest({ body: { forceOverride: true } });
+    const response = await callHandler(request, 'task-123');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.started).toBe(true);
+    // Should have broadcast Pusher
+    expect(mockTriggerEvent).toHaveBeenCalled();
   });
 });

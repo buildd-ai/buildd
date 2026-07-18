@@ -37,6 +37,7 @@ interface RunnerHealthState {
   doctor?: RunnerDoctorResult;
   historyStats?: RunnerHistoryStats;
   error?: string;
+  pushOnlyResult?: { online: boolean; message: string };
 }
 
 const STATUS_ICON: Record<DoctorCheck['status'], string> = {
@@ -175,21 +176,55 @@ export function HealthClient({
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
 
   const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
+    const current = runnerHealth.get(heartbeatId);
+
+    if (current?.expanded && !current.loading) {
+      // Toggle off
+      setRunnerHealth(prev => {
+        const next = new Map(prev);
+        next.set(heartbeatId, { ...current, expanded: false });
+        return next;
+      });
+      return;
+    }
+
+    // Expand and fetch — always start fresh so errors are retryable
     setRunnerHealth(prev => {
       const next = new Map(prev);
-      const existing = next.get(heartbeatId);
-      if (existing?.expanded && !existing.loading) {
-        // Toggle off
-        next.set(heartbeatId, { ...existing, expanded: false });
-        return next;
-      }
-      next.set(heartbeatId, { loading: true, expanded: true, ...(existing ?? {}) });
+      // Preserve successful data (doctor/historyStats) on re-open; clear stale errors
+      next.set(heartbeatId, {
+        loading: true,
+        expanded: true,
+        doctor: current?.doctor,
+        historyStats: current?.historyStats,
+      });
       return next;
     });
 
-    // If already loaded, just toggling — no refetch needed
-    const current = runnerHealth.get(heartbeatId);
-    if (current?.doctor || current?.error) return;
+    // If we already have successful data, no need to refetch
+    if (current?.doctor) return;
+
+    const hb = runners.find(r => r.id === heartbeatId);
+
+    if (hb?.connectivity === 'push_only') {
+      // Push-only runner has no inbound HTTP server (headless/NAT). Evaluate
+      // heartbeat recency as the single source of truth instead of probing.
+      const online = isRunnerOnline(hb.lastHeartbeatAt);
+      const beat = timeAgo(hb.lastHeartbeatAt);
+      setRunnerHealth(prev => {
+        const next = new Map(prev);
+        next.set(heartbeatId, {
+          loading: false,
+          expanded: true,
+          pushOnlyResult: {
+            online,
+            message: online ? `last beat ${beat} — healthy` : `last beat ${beat} — stale`,
+          },
+        });
+        return next;
+      });
+      return;
+    }
 
     try {
       const [doctorRes, historyRes] = await Promise.allSettled([
@@ -219,7 +254,7 @@ export function HealthClient({
         return next;
       });
     }
-  }, [runnerHealth]);
+  }, [runners, runnerHealth]);
 
   const refresh = () => startTransition(() => router.refresh());
 
@@ -406,6 +441,11 @@ export function HealthClient({
                     </div>
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
+                        {health.pushOnlyResult && (
+                          <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
+                            Push-only runner · {health.pushOnlyResult.message}
+                          </p>
+                        )}
                         {health.error && (
                           <p className="pt-3 text-xs text-status-error">{health.error}</p>
                         )}

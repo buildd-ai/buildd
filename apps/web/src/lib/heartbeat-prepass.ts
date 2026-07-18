@@ -51,7 +51,10 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
   const deliverables = allTasks.filter(isDeliverableTask);
   const completedCount = deliverables.filter(t => t.status === 'completed').length;
   const failedCount = deliverables.filter(t => t.status === 'failed').length;
-  const activeCount = deliverables.filter(t => t.status !== 'completed' && t.status !== 'failed').length;
+  // Cancelled tasks are excluded: they're "never happened" and shouldn't appear active.
+  const activeCount = deliverables.filter(
+    t => t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled'
+  ).length;
 
   const prCount = allTasks.filter(t => {
     const result = t.result as Record<string, unknown> | null;
@@ -105,9 +108,13 @@ export async function evaluateHeartbeatPrepass(input: {
 
   // 3. All deliverables terminal → complete the mission in code, no LLM needed
   const deliverables = allTasks.filter(isDeliverableTask);
+  // Cancelled tasks are terminal (treated as "never happened") — they must not
+  // prevent auto-completion when all real work is done.
+  const nonCancelledDeliverables = deliverables.filter(t => t.status !== 'cancelled');
   if (
     deliverables.length > 0 &&
-    deliverables.every(t => t.status === 'completed' || t.status === 'failed')
+    nonCancelledDeliverables.length > 0 &&
+    nonCancelledDeliverables.every(t => t.status === 'completed' || t.status === 'failed')
   ) {
     return { action: 'skip_complete' };
   }

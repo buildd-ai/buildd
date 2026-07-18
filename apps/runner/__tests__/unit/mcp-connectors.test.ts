@@ -92,4 +92,20 @@ describe('buildMcpServerEntries', () => {
   test('returns an empty record for undefined input', () => {
     expect(buildMcpServerEntries(undefined)).toEqual({});
   });
+
+  test('skips assertion-mode connectors (resolved async at connect time)', () => {
+    const entries = buildMcpServerEntries([
+      {
+        name: 'cue',
+        assertionMode: true,
+        url: 'https://mcp.cue.example.com',
+        mintApiUrl: 'https://buildd.dev/api/connectors/c1/assertion',
+        tokenEndpoint: 'https://cue.example.com/token',
+      } as any,
+      { name: 'linear', transport: 'http', url: 'https://mcp.linear.app', headers: { Authorization: 'Bearer tok' } },
+    ]);
+    // Assertion connector must be excluded; static connector must be included.
+    expect(Object.keys(entries)).toEqual(['linear']);
+    expect(entries.linear).toEqual({ type: 'http', url: 'https://mcp.linear.app', headers: { Authorization: 'Bearer tok' } });
+  });
 });

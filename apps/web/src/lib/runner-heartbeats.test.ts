@@ -18,7 +18,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b }),
 }));
 
-const { isRunnerOnline, selectRelevantRunnerAccounts } = await import('./runner-heartbeats');
+const { isRunnerOnline, isPushOnlyRunner, selectRelevantRunnerAccounts } = await import('./runner-heartbeats');
 
 describe('selectRelevantRunnerAccounts', () => {
   const TEAM = 'team-a';
@@ -81,6 +81,26 @@ describe('selectRelevantRunnerAccounts', () => {
       { linkedAccountIds: new Set(['linked']), workedAccountIds: new Set(['worked']) },
     );
     expect([...result].sort()).toEqual(['linked', 'team-member', 'worked']);
+  });
+});
+
+describe('isPushOnlyRunner', () => {
+  it('returns true for headless:// sentinel URLs', () => {
+    expect(isPushOnlyRunner('headless://my-coder-workspace')).toBe(true);
+    expect(isPushOnlyRunner('headless://hostname.local')).toBe(true);
+  });
+
+  it('returns false for http:// URLs (debug mode with HTTP server)', () => {
+    expect(isPushOnlyRunner('http://localhost:8766')).toBe(false);
+    expect(isPushOnlyRunner('http://100.64.0.1:8766')).toBe(false);
+  });
+
+  it('returns false for https:// URLs (Tailscale or custom)', () => {
+    expect(isPushOnlyRunner('https://runner.example.com')).toBe(false);
+  });
+
+  it('returns false for empty string (degenerate case)', () => {
+    expect(isPushOnlyRunner('')).toBe(false);
   });
 });
 

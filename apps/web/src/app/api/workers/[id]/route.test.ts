@@ -75,7 +75,7 @@ mock.module('@buildd/core/db', () => ({
       if (table === 'teams') return mockTeamsUpdate();
       return mockWorkersUpdate();
     },
-    insert: (table: any) => mockTenantBudgetsInsert(),
+    insert: (table: any) => mockGenericInsert(table),
     select: mockSelect,
   },
 }));
@@ -102,8 +102,28 @@ const mockTeamsUpdate = mock(() => ({
 const mockTenantBudgetsInsert = mock(() => ({
   values: mock(() => ({
     onConflictDoUpdate: mock(() => Promise.resolve()),
+    returning: mock(() => Promise.resolve([])),
   })),
 }));
+
+// Track all db.insert calls for reviewer outcome assertions
+let lastInsertTable: any = null;
+let lastInsertValues: any = null;
+const mockGenericInsert = mock((table: any) => {
+  // Delegate tenant budget inserts to the existing mock so existing tests still work
+  // (schema mock returns an object for tenantBudgets, not a string)
+  if (table?.tenantId === 'tenantId') return mockTenantBudgetsInsert();
+  lastInsertTable = table;
+  return {
+    values: mock((values: any) => {
+      lastInsertValues = values;
+      return {
+        onConflictDoUpdate: mock(() => Promise.resolve()),
+        returning: mock(() => Promise.resolve([{ id: 'new-task-id', ...values }])),
+      };
+    }),
+  };
+});
 
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
@@ -173,6 +193,31 @@ mock.module('@buildd/core/routing-analytics', () => ({
 
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+}));
+
+// Phase 2: reviewer outcome mocks
+const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+mock.module('@/lib/auto-merge', () => ({
+  tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
+}));
+
+const mockDispatchNewTask = mock(() => Promise.resolve());
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+  dispatchUnblockedTask: mock(() => Promise.resolve()),
+  buildTaskPayload: mock((task: any) => task),
+}));
+
+mock.module('@/lib/reviewer', () => ({
+  createReviewerTask: mock(() => Promise.resolve({ id: 'reviewer-task-1' })),
+  preflightEscalationCheck: mock(() => ({ shouldEscalate: false })),
+  isSchemaTouchingFile: mock(() => false),
+  REVIEWER_TASK_OUTPUT_SCHEMA: {},
+}));
+
+const mockExecuteRelease = mock(() => Promise.resolve({ status: 'skipped', message: 'no release config' }));
+mock.module('@/lib/release-executor', () => ({
+  executeRelease: mockExecuteRelease,
 }));
 
 import { GET, PATCH } from './route';
@@ -2407,6 +2452,242 @@ describe('PATCH /api/workers/[id]', () => {
       // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
       expect(typeof callArgs.totalTurns).toBe('number');
       expect(callArgs.totalTurns).toBe(7);
+    });
+  });
+
+  // ── Reviewer outcome handling (BT-7, BT-8, BT-9) ─────────────────────────
+  describe('reviewer outcome handling', () => {
+    const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+
+    function setupReviewerTaskCompletion(verdict: 'approve' | 'request-changes' | 'escalate', opts: {
+      iteration?: number;
+      maxIterations?: number;
+    } = {}) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+
+      // Worker being updated (the reviewer worker)
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 3,
+        pendingInstructions: null,
+      });
+
+      // The reviewer task itself
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        return Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: opts.iteration ?? 0,
+            maxIterations: opts.maxIterations ?? 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        });
+      });
+
+      // Original worker for approve path
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          turns: 3,
+          pendingInstructions: null,
+        })
+        .mockResolvedValue({
+          id: 'original-worker',
+          workspaceId: 'ws-1',
+          taskId: 'original-task-1',
+          prNumber: 42,
+        });
+
+      // Workspace for approve path
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: { autoMergeMaxLines: 800, autoMergeDenyPaths: [] },
+      });
+
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+
+      // Reset insert tracking
+      lastInsertTable = null;
+      lastInsertValues = null;
+      mockGenericInsert.mockClear();
+      mockTryAutoMergeWorkerPr.mockReset();
+      mockTryAutoMergeWorkerPr.mockResolvedValue(undefined);
+      mockNotify.mockReset();
+      mockDispatchNewTask.mockReset();
+      mockDispatchNewTask.mockResolvedValue(undefined);
+    }
+
+    function makeReviewerPatchRequest(verdict: 'approve' | 'request-changes' | 'escalate', extra: Record<string, unknown> = {}) {
+      return createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          structuredOutput: {
+            verdict,
+            confidence: 0.9,
+            summary: 'Test summary',
+            feedback: verdict === 'request-changes' ? 'Fix the missing handler' : undefined,
+            escalationReason: verdict === 'escalate' ? 'PR touches schema' : undefined,
+            ...extra,
+          },
+        },
+      });
+    }
+
+    it('approve: calls tryAutoMergeWorkerPr and does not create retry task', async () => {
+      setupReviewerTaskCompletion('approve');
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toMatchObject({
+        prNumber: 42,
+        headSha: 'abc123',
+        repoFullName: 'org/repo',
+      });
+      // No retry task
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // Also need original task for the retry
+      mockTasksFindFirst
+        .mockResolvedValueOnce({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        })
+        .mockResolvedValueOnce({
+          id: 'original-task-1',
+          title: 'Build feature X',
+          description: 'Description',
+          missionId: 'mission-1',
+          pathManifest: ['apps/web/src/lib/feature-x.ts'],
+        });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+
+      // Verify retry task has baseBranch = workerBranch
+      expect(lastInsertValues).toBeDefined();
+      expect(lastInsertValues.context?.baseBranch).toBe('buildd/original-branch');
+      expect(lastInsertValues.context?.iteration).toBe(1);
+      // Retry task should not open a new branch — baseBranch is the existing branch
+    });
+
+    it('escalate: sends Pushover and does not create retry task', async () => {
+      setupReviewerTaskCompletion('escalate');
+
+      const res = await PATCH(makeReviewerPatchRequest('escalate'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      // Pushover fired
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][0]).toMatchObject({
+        title: expect.stringContaining('#42'),
+      });
+    });
+
+    it('request-changes: escalates when maxIterations exceeded', async () => {
+      setupReviewerTaskCompletion('request-changes', { iteration: 3, maxIterations: 3 });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // No retry task — escalated instead
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      // Pushover fired for escalation
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][0].title).toMatch(/escalated/i);
+    });
+
+    it('skips reviewer outcome for non-reviewer tasks', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'normal-task-1',
+        turns: 2,
+        pendingInstructions: null,
+      });
+      // Normal task (not a reviewer task)
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'normal-task-1',
+        category: 'feature',
+        context: {},
+        missionId: null,
+        outputRequirement: 'none',
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+      mockTryAutoMergeWorkerPr.mockReset();
+
+      const res = await PATCH(
+        createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'ok' } },
+        }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(200);
+      // tryAutoMergeWorkerPr must NOT fire for a normal task's completion
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
   });
 });

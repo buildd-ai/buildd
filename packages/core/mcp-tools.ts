@@ -129,15 +129,15 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
-    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku|claude-sonnet-5|claude-fable-5 or full model ID), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku|claude-sonnet-5|claude-fable-5 or full model ID), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
-    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission), dependsOnMission?: string (mission ID — this mission is BLOCKED until the upstream mission satisfies gateCondition; set to null to remove), gateCondition?: "merged" | "completed" (default "merged" — "merged" requires upstream PRs actually merged to target branch via webhook; "completed" requires upstream.status==="completed"), orchestrationMode?: "auto" | "manual" (default "auto" — "manual" keeps heartbeat config but suppresses ALL orchestrator initiative: no heartbeat evaluation, no task spawning, no retrigger. Tasks already in the mission still execute. Use "auto" to arm, "manual" to disarm. One-shot "Run now" always works in either mode.) } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission), dependsOnMission?: string (mission ID — this mission is BLOCKED until the upstream mission satisfies gateCondition; set to null to remove), gateCondition?: "merged" | "completed" (default "merged" — "merged" requires upstream PRs actually merged to target branch via webhook; "completed" requires upstream.status==="completed"), orchestrationMode?: "auto" | "manual" (default "auto" — "manual" keeps heartbeat config but suppresses ALL orchestrator initiative: no heartbeat evaluation, no task spawning, no retrigger. Tasks already in the mission still execute. Use "auto" to arm, "manual" to disarm. One-shot "Run now" always works in either mode. Precedence: manual=disarmed entirely; auto+pre-filed tasks=coordinate-only (organizer detected pre-filed task chain and will coordinate rather than decompose); auto+no pre-filed tasks=full decomposition.) } — manage team missions [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -262,6 +262,7 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
   if (params.color) body.color = params.color;
   if (params.mcpServers && typeof params.mcpServers === 'object') body.mcpServers = params.mcpServers;
   if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') body.requiredEnvVars = params.requiredEnvVars;
+  if (Array.isArray(params.connectorRefs)) body.connectorRefs = params.connectorRefs;
   if (typeof params.isRole === 'boolean') body.isRole = params.isRole;
   if (typeof params.enabled === 'boolean') body.enabled = params.enabled;
   if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
@@ -395,6 +396,77 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
     return errorResult(`Action '${action}' requires a worker or admin token. Trigger tokens can only use: ${triggerActions.join(', ')}`);
   }
   return null;
+}
+
+/**
+ * Mutating actions that must be blocked when the calling worker's task has
+ * been externally terminated (cancelled/failed by admin). This prevents a
+ * long-running worker that missed the abort signal from spawning orphan tasks,
+ * creating dangling PRs, or emitting stale side-effects.
+ *
+ * update_progress is intentionally excluded — the PATCH route already returns
+ * a 409 (abort) for terminated workers, and allowing progress updates to flow
+ * through (and surface the abort) is preferable to hard-blocking them here.
+ */
+const WRITE_FENCED_ACTIONS = new Set<string>([
+  'create_task',
+  'complete_task',
+  'create_pr',
+  'create_artifact',
+  'emit_event',
+]);
+
+/**
+ * Task statuses set by an external actor that indicate the worker should stop.
+ * 'completed' is excluded: the worker may be retrying its own complete_task
+ * in a race — the existing 409 path from the PATCH route handles that.
+ */
+const EXTERNALLY_TERMINAL_TASK_STATUSES = new Set<string>(['cancelled', 'failed']);
+
+/**
+ * Write fence: reject mutating actions when the calling worker's task has been
+ * externally terminated. Preserves the complete-vs-abort race carve-out —
+ * complete_task is allowed through if the worker is already completed or has
+ * deliverables (PR/artifact created before the cancel arrived).
+ *
+ * Fails open on API errors so a transient lookup failure never permanently
+ * blocks a live worker. The underlying API routes enforce their own state checks.
+ */
+async function checkWriteFence(
+  api: ApiFn,
+  action: string,
+  ctx: ActionContext,
+): Promise<ToolResult | null> {
+  if (!ctx.workerId) return null;
+  if (!WRITE_FENCED_ACTIONS.has(action)) return null;
+
+  let workerData: any;
+  try {
+    workerData = await api(`/api/workers/${ctx.workerId}`);
+  } catch {
+    return null;
+  }
+
+  const taskStatus = (workerData?.task?.status as string | undefined) ?? null;
+  if (!taskStatus || !EXTERNALLY_TERMINAL_TASK_STATUSES.has(taskStatus)) return null;
+
+  // complete_task carve-out: if the worker itself is already completed or already
+  // produced deliverables (a PR or artifact was attached before the cancel arrived),
+  // let complete_task through — this mirrors the sync abort path that skips the
+  // abort flag when actualStatus==='completed' || hasDeliverables.
+  if (action === 'complete_task') {
+    const workerStatus = workerData?.status as string | undefined;
+    const hasDeliverables = !!(workerData?.prUrl || workerData?.prNumber);
+    if (workerStatus === 'completed' || hasDeliverables) return null;
+  }
+
+  const taskId = (workerData?.task?.id || workerData?.taskId) as string | undefined;
+  return errorResult(
+    `**TASK ${taskStatus.toUpperCase()}: Action '${action}' blocked.** ` +
+    `Your task${taskId ? ` (${taskId})` : ''} is in state '${taskStatus}' — it was terminated externally. ` +
+    `Stop working on this task immediately. Do not create tasks, PRs, or artifacts. ` +
+    `If you need to record that the worker stopped, call complete_task with an error param.`
+  );
 }
 
 /**
@@ -537,6 +609,12 @@ export async function handleBuilddAction(
   // actions when they can see >1 workspace.
   const wsErr = await requireExplicitWorkspace(api, action, params, ctx);
   if (wsErr) return wsErr;
+
+  // Write fence: block mutating actions when the calling worker's task has been
+  // externally cancelled or failed. Prevents orphan task creation from a worker
+  // that finished a long evaluation without seeing the abort signal.
+  const fenceErr = await checkWriteFence(api, action, ctx);
+  if (fenceErr) return fenceErr;
 
   switch (action) {
     case 'list_tasks': {
@@ -1474,6 +1552,7 @@ export async function handleBuilddAction(
       if (params.color) skillBody.color = params.color;
       if (params.mcpServers && typeof params.mcpServers === 'object') skillBody.mcpServers = params.mcpServers;
       if (params.requiredEnvVars && typeof params.requiredEnvVars === 'object') skillBody.requiredEnvVars = params.requiredEnvVars;
+      if (Array.isArray(params.connectorRefs)) skillBody.connectorRefs = params.connectorRefs;
       if (typeof params.isRole === 'boolean') skillBody.isRole = params.isRole;
       if (params.slug) skillBody.slug = params.slug;
 
@@ -1580,6 +1659,7 @@ export async function handleBuilddAction(
         color: s.color ?? null,
         mcpServers: s.mcpServers ?? {},
         requiredEnvVars: s.requiredEnvVars ?? {},
+        connectorRefs: s.connectorRefs ?? [],
         isRole: s.isRole ?? false,
         enabled: s.enabled,
         repoUrl: s.repoUrl ?? null,

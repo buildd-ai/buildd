@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { triggerEvent, channels, events } from '@/lib/pusher';
 
 // GET /api/tasks/[id] - Get a single task.
 // Query params:
@@ -227,12 +228,33 @@ export async function PATCH(
       .where(eq(tasks.id, id))
       .returning();
 
-    // When a task is cancelled, fire the mission dormancy check so missions with all
-    // deliverables in terminal state auto-complete without waiting for the next heartbeat.
-    if (status === 'cancelled' && updated?.missionId) {
-      resolveCompletedTask(id, updated.workspaceId).catch((err) =>
-        console.error('[task-patch] cancel dormancy check failed:', err)
-      );
+    // When a task is cancelled, push an abort command to any active worker immediately
+    // so it stops within seconds rather than waiting for its next sync poll.
+    if (status === 'cancelled') {
+      const activeWorker = await db.query.workers.findFirst({
+        where: and(
+          eq(workers.taskId, id),
+          inArray(workers.status, ['running', 'waiting_input']),
+        ),
+        columns: { id: true },
+      });
+      if (activeWorker) {
+        triggerEvent(
+          channels.worker(activeWorker.id),
+          events.WORKER_COMMAND,
+          { action: 'abort', reason: 'task_cancelled', timestamp: Date.now() }
+        ).catch((err) =>
+          console.error('[task-patch] cancel abort push failed:', err)
+        );
+      }
+
+      // Fire mission dormancy check so missions with all deliverables in terminal
+      // state auto-complete without waiting for the next heartbeat.
+      if (updated?.missionId) {
+        resolveCompletedTask(id, updated.workspaceId).catch((err) =>
+          console.error('[task-patch] cancel dormancy check failed:', err)
+        );
+      }
     }
 
     return NextResponse.json(updated);

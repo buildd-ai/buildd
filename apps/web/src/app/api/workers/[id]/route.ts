@@ -24,6 +24,9 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { hasCodexCredential } from '@/lib/codex-credential';
+import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
+import { dispatchNewTask } from '@/lib/task-dispatch';
+import type { ReviewerTaskOutput } from '@/lib/reviewer';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -873,6 +876,12 @@ export async function PATCH(
         }
       });
 
+      // BT-7/8/9: Reviewer outcome handling — runs when a reviewer task completes.
+      await runStep('reviewer-outcome', async () => {
+        if (status !== 'completed') return;
+        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+      });
+
       // Notify on task completion/failure — routed to the OWNING team's channel.
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
@@ -1139,4 +1148,195 @@ export async function PATCH(
     instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
   });
+}
+
+// ── Reviewer outcome handling (BT-7, BT-8, BT-9) ────────────────────────────
+
+/**
+ * Called in the post-completion `runStep` sequence when a reviewer task finishes.
+ * Reads `context.reviewerFor` to identify this as a reviewer task, then
+ * dispatches the appropriate outcome: approve → auto-merge, request-changes →
+ * retry task on same branch, escalate → Pushover + mission note.
+ */
+async function handleReviewerOutcomeIfNeeded(
+  reviewerTaskId: string,
+  workspaceId: string,
+  structuredOutput: unknown,
+): Promise<void> {
+  const reviewerTask = await db.query.tasks.findFirst({
+    where: eq(tasks.id, reviewerTaskId),
+    columns: { id: true, category: true, context: true, missionId: true, title: true },
+  });
+
+  if (!reviewerTask) return;
+  const ctx = (reviewerTask.context ?? {}) as Record<string, unknown>;
+
+  // Only process tasks that are reviewer tasks (category='review' + reviewerFor in context)
+  if (reviewerTask.category !== 'review' || !ctx.reviewerFor) return;
+
+  const output = structuredOutput as ReviewerTaskOutput | null | undefined;
+  if (!output?.verdict) {
+    console.warn(`[reviewer] Task ${reviewerTaskId} completed without a verdict in structuredOutput`);
+    return;
+  }
+
+  const originalTaskId = ctx.reviewerFor as string;
+  const prNumber = ctx.prNumber as number;
+  const prUrl = ctx.prUrl as string;
+  const headSha = ctx.headSha as string;
+  const repoFullName = ctx.repoFullName as string;
+  const installationId = ctx.installationId as number;
+  const workerBranch = ctx.workerBranch as string;
+  const missionId = reviewerTask.missionId;
+
+  // iteration is stored in context, not as a column
+  const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
+  const maxIterations = typeof ctx.maxIterations === 'number' ? ctx.maxIterations : 3;
+
+  console.log(`[reviewer] Verdict for PR #${prNumber}: ${output.verdict} (confidence ${output.confidence})`);
+
+  // Audit event — every decision is persisted as a mission note
+  if (missionId) {
+    await db.insert(missionNotes).values({
+      missionId,
+      taskId: originalTaskId,
+      authorType: 'system',
+      type: output.verdict === 'approve'
+        ? 'reviewer_approved'
+        : output.verdict === 'request-changes'
+          ? 'reviewer_request_changes'
+          : 'reviewer_escalated',
+      title: output.verdict === 'approve'
+        ? `PR #${prNumber} approved by reviewer (confidence ${output.confidence.toFixed(2)})`
+        : output.verdict === 'request-changes'
+          ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
+          : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
+      body: output.feedback ?? output.escalationReason ?? output.summary,
+      status: 'open',
+    });
+  }
+
+  switch (output.verdict) {
+    case 'approve': {
+      // BT-7: Approve path — trigger auto-merge
+      const workspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+        columns: { id: true, gitConfig: true },
+      });
+
+      // Find original worker to get its id (needed for tryAutoMergeWorkerPr signature)
+      const originalWorker = await db.query.workers.findFirst({
+        where: and(
+          eq(workers.workspaceId, workspaceId),
+          eq(workers.prNumber, prNumber),
+        ),
+        columns: { id: true, taskId: true },
+      });
+
+      if (!workspace || !originalWorker) {
+        console.warn(`[reviewer] Cannot auto-merge PR #${prNumber}: missing workspace or worker`);
+        return;
+      }
+
+      await tryAutoMergeWorkerPr({
+        installationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        worker: { id: originalWorker.id, taskId: originalWorker.taskId },
+        gitConfig: workspace.gitConfig,
+      });
+      break;
+    }
+
+    case 'request-changes': {
+      // BT-8: Request-changes path — create retry task on the SAME branch
+      if (currentIteration >= maxIterations) {
+        // Iteration cap exceeded — escalate instead of retrying
+        console.log(`[reviewer] Iteration cap (${maxIterations}) reached for PR #${prNumber} — escalating`);
+        if (missionId) {
+          await db.insert(missionNotes).values({
+            missionId,
+            taskId: originalTaskId,
+            authorType: 'system',
+            type: 'reviewer_escalated',
+            title: `PR #${prNumber} escalated: max reviewer iterations (${maxIterations}) reached`,
+            body: `Reviewer requested changes ${maxIterations} times. Human review required.\n\nLast feedback: ${output.feedback ?? '(none)'}`,
+            status: 'open',
+          });
+        }
+        notify({
+          app: 'alerts',
+          title: `PR #${prNumber} escalated (retry cap)`,
+          message: `Reviewer requested changes ${maxIterations} times — needs a human.\nPR: ${prUrl}`,
+          url: prUrl,
+          urlTitle: 'View PR',
+        });
+        return;
+      }
+
+      // Fetch original task data for the retry
+      const originalTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, originalTaskId),
+        columns: { id: true, title: true, description: true, missionId: true, pathManifest: true },
+      });
+      if (!originalTask) {
+        console.warn(`[reviewer] Cannot create retry: original task ${originalTaskId} not found`);
+        return;
+      }
+
+      const retryTitle = originalTask.title
+        .replace(/^\[reviewer retry #?\d*\]\s*/i, '')
+        .trim();
+
+      const [retryTask] = await db
+        .insert(tasks)
+        .values({
+          workspaceId,
+          title: `[reviewer retry #${currentIteration + 1}] ${retryTitle}`,
+          description: originalTask.description,
+          missionId: originalTask.missionId,
+          parentTaskId: originalTaskId,
+          context: {
+            iteration: currentIteration + 1,
+            maxIterations,
+            failureContext: output.feedback ?? output.summary,
+            baseBranch: workerBranch, // MUST continue on same branch — no new branch
+            prNumber,
+            prUrl,
+            workerBranch,
+          },
+          pathManifest: originalTask.pathManifest,
+          release: 'false',
+          priority: 8,
+          status: 'pending',
+          creationSource: 'webhook',
+        })
+        .returning();
+
+      if (retryTask) {
+        const workspace = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, workspaceId),
+        });
+        if (workspace) {
+          await dispatchNewTask(retryTask, workspace);
+          console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber} (iteration ${currentIteration + 1}/${maxIterations})`);
+        }
+      }
+      break;
+    }
+
+    case 'escalate': {
+      // BT-9: Escalate path — notify human, no retry
+      notify({
+        app: 'alerts',
+        title: `PR #${prNumber} escalated by reviewer`,
+        message: output.escalationReason ?? output.summary,
+        url: prUrl,
+        urlTitle: 'View PR',
+      });
+      console.log(`[reviewer] Escalated PR #${prNumber}: ${output.escalationReason ?? output.summary}`);
+      break;
+    }
+  }
 }

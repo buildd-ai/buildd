@@ -16,7 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
-export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
+export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
@@ -556,6 +556,12 @@ export const missions = pgTable('missions', {
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
   orchestrationMode: text('orchestration_mode').default('auto').notNull().$type<'auto' | 'manual'>(),
+  // Set after the organizer's first evaluation detects pre-filed tasks linked to this mission.
+  // When true, the organizer operates in coordinate-only mode: it runs the coordination
+  // checklist (retry failures, PR conflict handling, completion detection) but does not
+  // decompose/create new build tasks on its own initiative. This prevents duplicate work when
+  // a creator files a task chain at the same time as an auto-decomposing mission.
+  decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
@@ -603,7 +609,7 @@ export const tasks = pgTable('tasks', {
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Task category for visual grouping
-  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design'>(),
+  category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -1054,7 +1060,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -1548,6 +1554,9 @@ export const connectors = pgTable('connectors', {
   // OAuth client credentials (authMode='oauth')
   clientId: text('client_id'),
   encryptedClientSecret: text('encrypted_client_secret'),
+  // Assertion-mode fields (authMode='assertion')
+  assertionAudience: text('assertion_audience'),
+  assertionTokenEndpoint: text('assertion_token_endpoint'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

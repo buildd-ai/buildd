@@ -38,6 +38,11 @@ type ResolvedMcpConnector = {
   args?: string[];
   headers?: Record<string, string>;
   env?: Record<string, string>;
+  // assertion-mode exchange metadata (assertionMode=true → runner performs mint+exchange)
+  assertionMode?: true;
+  mintApiUrl?: string;
+  audience?: string;
+  tokenEndpoint?: string;
 };
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -268,11 +273,15 @@ export async function POST(req: NextRequest) {
   // This prevents downstream tasks from starting while an upstream PR is still open —
   // which was the root cause of the 6-overlapping-PR burst (PRs #1044-1049).
   // The mergedAt column on workers is set by the GitHub webhook when the PR merges.
+  // Exception: bypassDepsGate=true in task context lets a human override the gate
+  // (set by /api/tasks/[id]/start when forceOverride=true).
   claimableConditions.push(
     or(
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
+      // Human override: task was manually force-started, skip the dep-PR gate
+      sql`${tasks.context}->>'bypassDepsGate' = 'true'`,
       // All dependencies must be completed AND their PRs merged (if any were opened)
       sql`NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
@@ -1114,14 +1123,6 @@ export async function POST(req: NextRequest) {
           background: role.background ?? false,
           maxTurns: role.maxTurns ?? null,
         };
-      } else if (role) {
-        // MCP-registered role (no R2 storage): send mcpServers config so the runner
-        // can write .mcp.json to the local role dir. The runner resolves ${VAR}
-        // references at spawn time via mcpSecrets injected into cleanEnv.
-        const mcpServers = role.mcpServers as Record<string, unknown> | null;
-        if (mcpServers && typeof mcpServers === 'object' && Object.keys(mcpServers).length > 0) {
-          (cw as any).roleMcpConfig = { mcpServers };
-        }
       }
     }
   }
@@ -1223,7 +1224,7 @@ export async function POST(req: NextRequest) {
         const workerSecrets = await db.query.secrets.findMany({
           where: and(
             eq(secrets.teamId, workspaceTeamId),
-            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token']),
             or(
               isNull(secrets.accountId),
               eq(secrets.accountId, account.id),
@@ -1255,25 +1256,9 @@ export async function POST(req: NextRequest) {
         if (decryptedOauthToken) {
           (cw as any).serverOauthToken = decryptedOauthToken;
         }
-        // Re-inject mcp_credential secrets as flat mcpSecrets env vars so the runner
-        // resolves ${VAR} references in role .mcp.json server configs. The connectors
-        // system handles HTTP single-header auth, but Cue requires two headers
-        // (x-api-key + x-tenant-id) that the current single-headerName connector
-        // schema cannot model. mcp_credential secrets remain the viable injection path
-        // until connectors gain a headers JSONB column.
-        const mcpCredSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential');
-        if (mcpCredSecrets.length > 0) {
-          const mcpSecretsMap: Record<string, string> = {};
-          await Promise.all(mcpCredSecrets.map(async (s) => {
-            if (!s.label) return;
-            const val = await provider.get(s.id).catch(() => null);
-            if (val) mcpSecretsMap[s.label] = val;
-          }));
-          if (Object.keys(mcpSecretsMap).length > 0) {
-            (cw as any).mcpSecrets = mcpSecretsMap;
-            console.log(`[claim] Injected ${Object.keys(mcpSecretsMap).length} mcp_credential secret(s) for worker ${cw.id}: ${Object.keys(mcpSecretsMap).join(', ')}`);
-          }
-        }
+        // NOTE: mcp_credential secrets are no longer injected as a flat `mcpSecrets`
+        // env map here. MCP servers now flow exclusively through connectors (below);
+        // stdio-connector env vars are resolved from mcp_credential secrets there.
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials
@@ -1455,6 +1440,21 @@ export async function POST(req: NextRequest) {
 
           if (connector.authMode === 'none') {
             mcpConnectors.push({ name, transport: 'http', url: connector.url });
+            continue;
+          }
+
+          // assertion-mode: return exchange metadata so the runner can mint+exchange
+          if (connector.authMode === 'assertion') {
+            if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
+            mcpConnectors.push({
+              name,
+              transport: 'http',
+              url: connector.url,
+              assertionMode: true,
+              mintApiUrl: `https://buildd.dev/api/connectors/${connector.id}/assertion`,
+              audience: connector.assertionAudience,
+              tokenEndpoint: connector.assertionTokenEndpoint,
+            });
             continue;
           }
 

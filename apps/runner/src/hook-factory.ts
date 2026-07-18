@@ -4,6 +4,7 @@ import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
+import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
 
 /**
  * Dependencies that the hook factory needs from WorkerManager.
@@ -185,8 +186,15 @@ export class HookFactory {
   }
 
   // Create a PostToolUseFailure hook that marks MCP calls as failed.
-  // Purely observational — returns {} and never blocks or modifies tool execution.
-  createMcpFailureHook(worker: LocalWorker): HookCallback {
+  // For assertion-mode connectors, also performs silent re-mint + re-exchange on
+  // 401 errors (spec §F.2) and updates the in-memory MCP server headers so the
+  // agent's next tool call retries with a fresh access token.
+  createMcpFailureHook(
+    worker: LocalWorker,
+    mcpServersRef?: Record<string, any>,
+    apiKey?: string,
+    exchanger: typeof exchangeAssertionConnector = exchangeAssertionConnector,
+  ): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUseFailure') return {};
 
@@ -195,6 +203,7 @@ export class HookFactory {
       worker.toolInFlight = false;
 
       const toolName = (input as any).tool_name as string;
+      const toolError = String((input as any).error ?? (input as any).tool_output ?? '');
 
       // Only care about MCP tool failures
       if (toolName?.startsWith('mcp__') && worker.pendingMcpCalls?.length) {
@@ -205,6 +214,42 @@ export class HookFactory {
           if (toolName.startsWith(expectedPrefix) && call.ok) {
             call.ok = false;
             break;
+          }
+        }
+
+        // §F.2: Silent re-auth for assertion-mode connectors on 401.
+        // Only attempt if we have the necessary context and the error looks like a 401.
+        if (
+          mcpServersRef &&
+          apiKey &&
+          worker.assertionConnectors?.length &&
+          isAuthError(toolError)
+        ) {
+          // Derive the MCP server name from the tool name (mcp__<name>__<tool>).
+          const serverName = toolName.split('__')[1];
+          const assertionConn = worker.assertionConnectors.find(a => a.name === serverName);
+
+          if (assertionConn) {
+            try {
+              const { accessToken, expiresAt } = await exchanger(
+                assertionConn,
+                apiKey,
+                worker.id,
+                worker.taskId,
+              );
+              // Update the in-memory MCP server entry so the next tool call uses the new token.
+              const entry = mcpServersRef[serverName];
+              if (entry?.type === 'http') {
+                entry.headers = { Authorization: `Bearer ${accessToken}` };
+              }
+              worker.assertionTokenCache ??= new Map();
+              worker.assertionTokenCache.set(serverName, { accessToken, expiresAt });
+              console.log(`[Worker ${worker.id}] Assertion re-auth succeeded for connector ${serverName}`);
+            } catch (err) {
+              // Re-exchange failed — log and let the tool error surface naturally to the agent.
+              // Do NOT set paused_connector_auth or emit connector:auth_expired (spec §F.2).
+              console.error(`[Worker ${worker.id}] Assertion re-auth failed for connector ${serverName}:`, err);
+            }
           }
         }
       }

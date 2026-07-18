@@ -13,13 +13,35 @@ const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertOnConflictDoNothing = mock(() => ({ returning: mockInsertReturning }));
 const mockInsertValues = mock(() => ({ onConflictDoNothing: mockInsertOnConflictDoNothing }));
 const mockInsert = mock(() => ({ values: mockInsertValues }));
-const mockSelectResult = mock(() => Promise.resolve([] as any[]));
-const mockSelectLimit = mock(() => mockSelectResult());
-const mockSelectOrderBy = mock(() => ({ limit: mockSelectLimit }));
-const mockSelectGroupBy = mock(() => ({ orderBy: mockSelectOrderBy }));
-const mockSelectWhere = mock(() => ({ groupBy: mockSelectGroupBy }));
-const mockSelectFrom = mock(() => ({ where: mockSelectWhere }));
-const mockSelect = mock(() => ({ from: mockSelectFrom }));
+
+// Select mock — chainable proxy so both `.where()` (direct await) and
+// `.where().groupBy().orderBy().limit()` (longer chain) work correctly.
+let selectCallCount = 0;
+const selectResults: any[][] = [];
+
+function makeSelectChain(p: Promise<any[]>): any {
+  return new Proxy(p, {
+    get(t: any, prop: string) {
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') return t[prop].bind(t);
+      return () => makeSelectChain(p);
+    },
+  });
+}
+const mockSelect = mock(() => {
+  const idx = selectCallCount++;
+  return makeSelectChain(Promise.resolve(selectResults[idx] ?? []));
+});
+
+// Update mock — chainable so both `.where()` (direct await) and `.where().returning()` work.
+const mockUpdate = mock(() => ({
+  set: () => ({
+    where: () => {
+      const p: any = Promise.resolve([]);
+      p.returning = () => Promise.resolve([]);
+      return p;
+    },
+  }),
+}));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -30,6 +52,7 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: mockInsert,
     select: mockSelect,
+    update: mockUpdate,
   },
 }));
 
@@ -38,6 +61,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
   not: (arg: any) => ({ arg, type: 'not' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {
@@ -46,9 +70,10 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  missions: { id: 'id' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId' },
+  missions: { id: 'id', workingBranch: 'workingBranch' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId', creationSource: 'creationSource' },
   workspaces: { id: 'id' },
+  missionNotes: { id: 'id' },
 }));
 
 import { runMission } from './mission-run';
@@ -72,6 +97,19 @@ describe('runMission', () => {
     mockDispatchNewTask.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
+    mockUpdate.mockReset();
+    mockUpdate.mockImplementation(() => ({
+      set: () => ({
+        where: () => {
+          const p: any = Promise.resolve([]);
+          p.returning = () => Promise.resolve([]);
+          return p;
+        },
+      }),
+    }));
+    // Reset select call counter and results
+    selectCallCount = 0;
+    selectResults.length = 0;
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
@@ -454,5 +492,152 @@ describe('runMission', () => {
     expect(result.skippedBlocked).toBe(true);
     expect(result.blockedReason).toContain('Specs Mission');
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  // ── Pre-filed task detection (decompositionSkipped) ──
+
+  it('detects pre-filed tasks and passes decompositionSkipped=true to buildMissionContext', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Pre-filed Mission',
+      priority: 0,
+      orchestrationMode: 'auto',
+      decompositionSkipped: false,
+      schedule: null,
+    });
+
+    // First select call: pre-filed count (2 non-orchestrator tasks exist)
+    selectResults[0] = [{ count: 2 }];
+    // Second select call: dominantRole (no dominant role yet)
+    selectResults[1] = [];
+
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-1', undefined, deps);
+
+    // buildMissionContext must be called with decompositionSkipped=true in templateContext
+    const contextArg = mockBuildMissionContext.mock.calls[0][1] as Record<string, unknown>;
+    expect(contextArg.decompositionSkipped).toBe(true);
+
+    // db.update() must have been called to persist the flag
+    expect(mockUpdate).toHaveBeenCalled();
+
+    // A mission note must have been inserted (missionNotes insert)
+    // The first db.insert() call is for missionNotes, second for tasks
+    expect(mockInsert).toHaveBeenCalledTimes(2);
+    const firstInsertArg = mockInsert.mock.calls[0][0];
+    // missionNotes is the mock symbol from schema mock
+    expect(firstInsertArg).toBeDefined();
+  });
+
+  it('does not detect pre-filed tasks when none exist — buildMissionContext gets decompositionSkipped=false/undefined', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-2',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Empty Mission',
+      priority: 0,
+      orchestrationMode: 'auto',
+      decompositionSkipped: false,
+      schedule: null,
+    });
+
+    // First select call: pre-filed count = 0 (no pre-filed tasks)
+    selectResults[0] = [{ count: 0 }];
+    // Second select call: dominantRole = []
+    selectResults[1] = [];
+
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-2', undefined, deps);
+
+    // buildMissionContext must NOT have decompositionSkipped=true
+    const contextArg = mockBuildMissionContext.mock.calls[0][1] as Record<string, unknown>;
+    expect(contextArg.decompositionSkipped).toBeFalsy();
+
+    // db.update() must NOT be called to persist (no detection fired)
+    expect(mockUpdate).not.toHaveBeenCalled();
+
+    // Only one insert: the planning task
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips detection and passes decompositionSkipped=true when already persisted on mission', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-3',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Already Skipped Mission',
+      priority: 0,
+      orchestrationMode: 'auto',
+      decompositionSkipped: true,  // already set
+      schedule: null,
+    });
+
+    // dominantRole select only (pre-filed detection is skipped)
+    selectResults[0] = [];
+
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-3', undefined, deps);
+
+    // buildMissionContext still gets decompositionSkipped=true (read from mission)
+    const contextArg = mockBuildMissionContext.mock.calls[0][1] as Record<string, unknown>;
+    expect(contextArg.decompositionSkipped).toBe(true);
+
+    // db.update() must NOT be called (no new detection — already persisted)
+    expect(mockUpdate).not.toHaveBeenCalled();
+
+    // Only one insert: the planning task (no note insert since it's already persisted)
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips pre-filed detection for manual-mode missions', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-4',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Manual Mission',
+      priority: 0,
+      orchestrationMode: 'manual',
+      decompositionSkipped: false,
+      schedule: null,
+    });
+
+    // dominantRole select only (detection skipped for manual mode)
+    selectResults[0] = [];
+
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    await runMission('obj-4', undefined, deps);
+
+    // buildMissionContext must NOT have decompositionSkipped=true for manual mode
+    const contextArg = mockBuildMissionContext.mock.calls[0][1] as Record<string, unknown>;
+    expect(contextArg.decompositionSkipped).toBeFalsy();
+
+    // db.update() must NOT be called
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

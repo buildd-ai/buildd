@@ -186,8 +186,6 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
-  // Server-managed MCP credential secrets (label/env var name → decrypted value)
-  mcpSecrets?: Record<string, string>;
   // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
   codexCredential?: {
     accessToken: string;
@@ -197,6 +195,10 @@ export interface LocalWorker {
   };
   // Role config from claim route (for role env resolution)
   roleConfig?: RoleConfig;
+  // Assertion connector metadata for mid-task re-auth (spec §F.2)
+  assertionConnectors?: Array<{ name: string; mintApiUrl: string; tokenEndpoint: string }>;
+  // Per-connector assertion access token cache (in-memory, per-session only)
+  assertionTokenCache?: Map<string, { accessToken: string; expiresAt: number }>;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)
