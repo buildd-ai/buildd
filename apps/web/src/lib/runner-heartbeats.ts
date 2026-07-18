@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, gt, inArray } from 'drizzle-orm';
-import { selectRelevantRunnerAccounts, type RunnerHeartbeat } from './runner-heartbeats-shared';
+import { isPushOnlyRunner, selectRelevantRunnerAccounts, type RunnerHeartbeat } from './runner-heartbeats-shared';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -9,6 +9,7 @@ import { selectRelevantRunnerAccounts, type RunnerHeartbeat } from './runner-hea
 // server-side callers that already depend on this module.
 export {
   isRunnerOnline,
+  isPushOnlyRunner,
   selectRelevantRunnerAccounts,
   type RunnerHeartbeat,
   type RunnerRelevanceCandidate,
@@ -77,5 +78,6 @@ export async function getRunnerHeartbeats(
       lastHeartbeatAt: hb.lastHeartbeatAt.toISOString(),
       activeWorkerCount: hb.activeWorkerCount,
       maxConcurrentWorkers: hb.maxConcurrentWorkers,
+      connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
     }));
 }
