@@ -26,6 +26,72 @@ import {
 export const MAX_DIFF_FILES = 100;
 export const MAX_DIFF_TOTAL_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Parse a GitHub repo URL or "owner/name" shorthand into "owner/name" form.
+ * Returns null when the input cannot be parsed (empty, malformed, etc.).
+ */
+export function extractGithubFullName(repoUrl: string): string | null {
+  const cleaned = repoUrl
+    .replace(/\.git$/, '')
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/^git@[^:]+:/, '');
+  const parts = cleaned.split('/');
+  if (parts.length >= 2 && parts[parts.length - 2] && parts[parts.length - 1]) {
+    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+  }
+  return null;
+}
+
+/**
+ * Enqueue a full ingest job for a workspace+repo pair (spec §1.2).
+ *
+ * Per-workspace lock: if a full job is already queued or running for this
+ * workspace+repo, skip the insert and return null. The partial unique index
+ * `knowledge_ingest_jobs_active_full_idx` on (workspace_id, repo) WHERE
+ * scope='full' AND status IN ('queued','running') is the DB-level guard;
+ * this application guard avoids spurious conflict log entries.
+ *
+ * Returns the new job's id, or null when the lock is held.
+ */
+export async function enqueueFullIngestJob(params: {
+  workspaceId: string;
+  /** "owner/name" */
+  repo: string;
+  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled';
+}): Promise<string | null> {
+  const activeFull = await db
+    .select({ id: knowledgeIngestJobs.id })
+    .from(knowledgeIngestJobs)
+    .where(
+      and(
+        eq(knowledgeIngestJobs.workspaceId, params.workspaceId),
+        eq(knowledgeIngestJobs.repo, params.repo),
+        eq(knowledgeIngestJobs.scope, 'full'),
+        or(
+          eq(knowledgeIngestJobs.status, 'queued'),
+          eq(knowledgeIngestJobs.status, 'running'),
+        ),
+      ),
+    )
+    .limit(1);
+
+  if (activeFull.length > 0) return null;
+
+  const inserted = await db
+    .insert(knowledgeIngestJobs)
+    .values({
+      workspaceId: params.workspaceId,
+      repo: params.repo,
+      trigger: params.trigger ?? 'repo_link',
+      scope: 'full',
+      status: 'queued',
+    })
+    .onConflictDoNothing()
+    .returning({ id: knowledgeIngestJobs.id });
+
+  return inserted[0]?.id ?? null;
+}
+
 type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
 
 export interface EnqueueMergedPrParams {
