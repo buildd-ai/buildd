@@ -16,28 +16,29 @@ jobs:
   set-env:
     runs-on: ubuntu-latest
     steps:
-      - name: Set Vercel env var via CLI (linked project)
+      - name: Set Vercel env var via CLI
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           KEY="${{ github.event.inputs.env_key }}"
           VALUE="${{ github.event.inputs.env_value }}"
 
+          # Strip any newlines the secret may contain
+          VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
+          export VERCEL_TOKEN
+
           echo "Installing Vercel CLI..."
           npm install -g vercel@latest --silent
 
-          # Create a linked project directory so vercel env commands work
+          # Create a linked project directory
           mkdir -p /tmp/vp/.vercel
           printf '{"projectId":"%s","orgId":"%s"}' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" \
             > /tmp/vp/.vercel/project.json
-
-          echo "Project config:"
-          cat /tmp/vp/.vercel/project.json
-
-          # Remove existing entries (ignore errors)
           cd /tmp/vp
+
+          # Remove existing entries (ignore errors if not found)
           vercel env rm "$KEY" production   --token "$VERCEL_TOKEN" --yes 2>&1 || true
           vercel env rm "$KEY" preview      --token "$VERCEL_TOKEN" --yes 2>&1 || true
           vercel env rm "$KEY" development  --token "$VERCEL_TOKEN" --yes 2>&1 || true
@@ -51,6 +52,6 @@ jobs:
           printf '%s' "$VALUE" | vercel env add "$KEY" development  --token "$VERCEL_TOKEN" --yes
 
           echo "Verifying..."
-          vercel env ls --token "$VERCEL_TOKEN" 2>&1 | grep -i "BUILDD_SIGNING" || echo "(not visible)"
+          vercel env ls --token "$VERCEL_TOKEN" 2>&1 | grep -i "BUILDD_SIGNING" || echo "(not listed — may need redeploy to activate)"
 
-          echo "Done!"
+          echo "Done! $KEY set for production, preview, and development."
