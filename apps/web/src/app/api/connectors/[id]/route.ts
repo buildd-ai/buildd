@@ -91,6 +91,8 @@ export async function PATCH(
     headerValue?: string;
     clientId?: string;
     clientSecret?: string;
+    assertionAudience?: string;
+    assertionTokenEndpoint?: string;
   };
   try {
     body = await req.json();
@@ -108,6 +110,8 @@ export async function PATCH(
     if (body.headerName !== undefined) updates.headerName = body.headerName;
     if (body.clientId !== undefined) updates.clientId = body.clientId;
     if (body.clientSecret !== undefined) updates.encryptedClientSecret = encrypt(body.clientSecret);
+    if (body.assertionAudience !== undefined) updates.assertionAudience = body.assertionAudience;
+    if (body.assertionTokenEndpoint !== undefined) updates.assertionTokenEndpoint = body.assertionTokenEndpoint;
 
     const targetUrl = body.url ?? connector.url;
     if (body.rediscover || body.url) {

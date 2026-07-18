@@ -185,6 +185,8 @@ export async function POST(req: NextRequest) {
     name, url, command, args, envMapping,
     authMode: rawAuthMode, headerName, headerValue,
     clientId: bodyClientId, clientSecret: bodyClientSecret, reuseIfExists,
+    assertionAudience: bodyAssertionAudience,
+    assertionTokenEndpoint: bodyAssertionTokenEndpoint,
   } = body;
 
   const transport: 'http' | 'stdio' = body.transport === 'stdio' ? 'stdio' : 'http';
@@ -205,10 +207,19 @@ export async function POST(req: NextRequest) {
   }
 
   // stdio auth is env-only → authMode forced to 'none'. http defaults to oauth.
-  const authMode: 'none' | 'header' | 'oauth' = transport === 'stdio' ? 'none' : (rawAuthMode ?? 'oauth');
+  const authMode: 'none' | 'header' | 'oauth' | 'assertion' = transport === 'stdio' ? 'none' : (rawAuthMode ?? 'oauth');
 
   if (authMode === 'header' && !headerName) {
     return NextResponse.json({ error: 'header_name_required' }, { status: 400 });
+  }
+
+  if (authMode === 'assertion') {
+    if (!bodyAssertionAudience) {
+      return NextResponse.json({ error: 'assertion_audience_required' }, { status: 400 });
+    }
+    if (!bodyAssertionTokenEndpoint) {
+      return NextResponse.json({ error: 'assertion_token_endpoint_required' }, { status: 400 });
+    }
   }
 
   try {
@@ -264,6 +275,8 @@ export async function POST(req: NextRequest) {
       discoveredMetadata: discoveredMetadata ?? null,
       clientId: clientId ?? null,
       encryptedClientSecret: encryptedClientSecret ?? null,
+      assertionAudience: authMode === 'assertion' ? (bodyAssertionAudience ?? null) : null,
+      assertionTokenEndpoint: authMode === 'assertion' ? (bodyAssertionTokenEndpoint ?? null) : null,
     }).returning();
 
     if (authMode === 'header' && headerValue) {
