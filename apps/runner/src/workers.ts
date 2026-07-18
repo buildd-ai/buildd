@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import {
@@ -1047,7 +1048,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1158,6 +1159,13 @@ export class WorkerManager {
     }
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
+    }
+    if (claimedWorker.claudeAccessToken) {
+      worker.claudeAccessToken = claimedWorker.claudeAccessToken;
+      worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
+        ? new Date(claimedWorker.claudeTokenExpiresAt)
+        : null;
+      console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
     }
 
     if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
@@ -1351,6 +1359,9 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
+    // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
+    // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
+    let claudeConfigDir: string | undefined;
     // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
@@ -1654,6 +1665,24 @@ export class WorkerManager {
         cleanEnv.CODEX_HOME = codexHome;
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = codexHome;
+      }
+
+      // Claude credential isolation: when the claim supplied a managed access_token
+      // (from claude_credential purpose), create a per-worker CLAUDE_CONFIG_DIR and
+      // write credentials.json with ONLY the access_token (no refresh_token).
+      // This prevents the SDK from calling the Anthropic refresh endpoint in-session,
+      // eliminating the token family revocation cascade from concurrent workers.
+      if (worker.claudeAccessToken) {
+        const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
+          worker.id,
+          worker.claudeAccessToken,
+          worker.claudeTokenExpiresAt ?? null,
+        );
+        claudeConfigDir = _cd;
+        cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+        // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
+        delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+        console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
       }
 
       // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
@@ -2464,6 +2493,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
+        }
+
+        // Clean up per-worker Claude config dir (access_token isolation).
+        if (claudeConfigDir) {
+          cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
         // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
