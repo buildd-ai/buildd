@@ -7,7 +7,10 @@ import {
 } from './knowledge-context';
 import type { QueryResult } from '@buildd/core/knowledge-store';
 
-function mockStore(byNs: Record<string, Array<Partial<QueryResult>>>): KnowledgeQuerier {
+function mockStore(
+  byNs: Record<string, Array<Partial<QueryResult>>>,
+  countByNs?: Record<string, number>,
+): KnowledgeQuerier {
   return {
     async query(ns) {
       return (byNs[ns] ?? []).map((r, i) => ({
@@ -22,6 +25,9 @@ function mockStore(byNs: Record<string, Array<Partial<QueryResult>>>): Knowledge
         score: 1,
       })) as QueryResult[];
     },
+    countNamespace: countByNs
+      ? async (ns) => countByNs[ns] ?? 0
+      : undefined,
   };
 }
 
@@ -62,6 +68,50 @@ describe('buildKnowledgeContext', () => {
     expect(seen).toContain('team-1:memory');
     expect(seen).toContain('ws-1:plan');
     expect(seen).toContain('ws-1:task');
+  });
+});
+
+describe('buildKnowledgeContext corpora hint', () => {
+  it('includes corpora hint when countNamespace is available', async () => {
+    const store = mockStore({}, {
+      'team-1:memory': 208,
+      'ws-1:code': 12431,
+      'ws-1:spec': 340,
+    });
+    const lines = await buildKnowledgeContext('fix auth bug', 'ws-1', 'team-1', store);
+    const text = lines.join('\n');
+    expect(text).toContain('knowledge:');
+    expect(text).toContain('memory 208');
+    expect(text).toContain('code indexed');
+    expect(text).toContain('spec 340');
+    expect(text).toContain('query_knowledge');
+  });
+
+  it('shows code not indexed when no code chunks', async () => {
+    const store = mockStore({}, {
+      'team-1:memory': 50,
+      'ws-1:code': 0,
+      'ws-1:spec': 0,
+    });
+    const text = (await buildKnowledgeContext('task', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('code not indexed');
+    expect(text).toContain('spec not indexed');
+  });
+
+  it('omits hint when countNamespace is not available', async () => {
+    const store: KnowledgeQuerier = {
+      async query() { return []; },
+    };
+    const text = (await buildKnowledgeContext('task', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).not.toContain('knowledge:');
+  });
+
+  it('hint appears even when no prior work is found', async () => {
+    const store = mockStore({}, { 'team-1:memory': 100, 'ws-1:code': 500, 'ws-1:spec': 0 });
+    const lines = await buildKnowledgeContext('fix bug', 'ws-1', 'team-1', store);
+    const text = lines.join('\n');
+    expect(text).toContain('knowledge:');
+    expect(text).toContain('memory 100');
   });
 });
 

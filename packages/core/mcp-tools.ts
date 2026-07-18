@@ -2774,6 +2774,15 @@ function knowledgeNamespace(ctx: { workspaceId?: string; teamId?: string }, corp
   return ctx.workspaceId ? buildNamespace(ctx.workspaceId, corpus) : null;
 }
 
+function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean }): string {
+  const superseded = r.isCurrent === false ? 'true' : 'false';
+  if (!r.createdAt) return `\n[superseded: ${superseded}]`;
+  const ageMs = Date.now() - r.createdAt.getTime();
+  const days = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+  const age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
+  return `\n[savedAt: ${age} · superseded: ${superseded}]`;
+}
+
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
   action: string,
@@ -2785,6 +2794,8 @@ export async function handleMemoryAction(
     teamId?: string;
     knowledgeStore?: KnowledgeStore;
     embedder?: Embedder | null;
+    /** Optional API fn — when present, knowledge_query events are emitted after each query_knowledge call. */
+    api?: ApiFn;
   },
 ): Promise<ToolResult> {
   switch (action) {
@@ -3002,6 +3013,27 @@ export async function handleMemoryAction(
         topK,
       });
 
+      // Fire-and-forget telemetry — never blocks or fails the query response.
+      if (ctx.api && ctx.workerId) {
+        const workerId = ctx.workerId;
+        const apiCall = ctx.api;
+        Promise.resolve(apiCall(`/api/workers/${workerId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            appendMilestones: [{
+              type: 'knowledge_query',
+              label: corpus,
+              ts: Date.now(),
+              metadata: {
+                query: (params.query as string)?.slice(0, 100),
+                topK,
+                hitCount: results.length,
+              },
+            }],
+          }),
+        })).catch(() => {});
+      }
+
       if (results.length === 0) {
         if (corpus === 'code' || corpus === 'docs') {
           return text(`No ${corpus} index for this workspace (namespace: ${ns}) — run ingestion first: WORKSPACE_ID=${ctx.workspaceId} bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
@@ -3009,9 +3041,10 @@ export async function handleMemoryAction(
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
-      const formatted = results.map((r, i) =>
-        `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}\n\n${r.content}`
-      ).join('\n\n---\n\n');
+      const formatted = results.map((r, i) => {
+        const freshness = corpus === 'memory' ? formatMemoryFreshness(r) : '';
+        return `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+      }).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }
