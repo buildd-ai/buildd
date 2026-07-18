@@ -195,6 +195,10 @@ export interface LocalWorker {
   };
   // Role config from claim route (for role env resolution)
   roleConfig?: RoleConfig;
+  // Assertion connector metadata for mid-task re-auth (spec §F.2)
+  assertionConnectors?: Array<{ name: string; mintApiUrl: string; tokenEndpoint: string }>;
+  // Per-connector assertion access token cache (in-memory, per-session only)
+  assertionTokenCache?: Map<string, { accessToken: string; expiresAt: number }>;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)

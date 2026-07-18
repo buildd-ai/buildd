@@ -809,6 +809,20 @@ export interface ClaimDiagnostics {
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
 }
 
+/**
+ * Claim payload shape for assertion-mode connectors (spec §E.3).
+ * The runner performs the mint + exchange flow before opening the MCP connection.
+ */
+export interface AssertionConnectorEntry {
+  name: string;
+  transport?: 'http';
+  url: string;
+  assertionMode: true;
+  mintApiUrl: string;
+  audience: string;
+  tokenEndpoint: string;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -823,8 +837,11 @@ export interface ClaimTasksResponse {
     serverOauthToken?: string;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
-    /** Active MCP connector configs resolved at claim time (URL + optional auth headers) */
-    mcpConnectors?: Array<{ name: string; url: string; headers?: Record<string, string> }>;
+    /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
+    mcpConnectors?: Array<
+      | { name: string; transport?: 'http' | 'stdio'; url?: string; command?: string; args?: string[]; headers?: Record<string, string>; env?: Record<string, string> }
+      | AssertionConnectorEntry
+    >;
     /** Decrypted Codex credential (only present for backend=codex tasks) */
     codexCredential?: {
       credentialType: 'oauth' | 'api_key';
