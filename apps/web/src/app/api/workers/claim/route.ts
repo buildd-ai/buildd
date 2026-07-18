@@ -31,6 +31,7 @@ function slugifyConnectorName(name: string): string {
 // A single MCP connector entry resolved at claim time. Superset of the http-only
 // shared type — the runner keys behaviour off `transport`.
 type ResolvedMcpConnector = {
+  id?: string;
   name: string;
   transport: 'http' | 'stdio';
   url?: string;
@@ -1439,7 +1440,7 @@ export async function POST(req: NextRequest) {
           if (!connector.url) continue;
 
           if (connector.authMode === 'none') {
-            mcpConnectors.push({ name, transport: 'http', url: connector.url });
+            mcpConnectors.push({ id: connector.id, name, transport: 'http', url: connector.url });
             continue;
           }
 
@@ -1447,6 +1448,7 @@ export async function POST(req: NextRequest) {
           if (connector.authMode === 'assertion') {
             if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
             mcpConnectors.push({
+              id: connector.id,
               name,
               transport: 'http',
               url: connector.url,
@@ -1474,6 +1476,7 @@ export async function POST(req: NextRequest) {
               const accessToken = tokenBlob.access_token as string | undefined;
               if (!accessToken) continue;
               mcpConnectors.push({
+                id: connector.id,
                 name,
                 transport: 'http',
                 url: connector.url,
@@ -1486,6 +1489,7 @@ export async function POST(req: NextRequest) {
             const decryptedValue = await connectorProvider.get(secretInfo.id);
             if (!decryptedValue) continue;
             mcpConnectors.push({
+              id: connector.id,
               name,
               transport: 'http',
               url: connector.url,

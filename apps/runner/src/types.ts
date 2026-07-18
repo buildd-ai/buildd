@@ -199,6 +199,9 @@ export interface LocalWorker {
   assertionConnectors?: Array<{ name: string; mintApiUrl: string; tokenEndpoint: string }>;
   // Per-connector assertion access token cache (in-memory, per-session only)
   assertionTokenCache?: Map<string, { accessToken: string; expiresAt: number }>;
+  // Connectors for which assertion re-exchange has failed (set by hook-factory §F.2).
+  // When set, handleMessage treats a 401 tool_result as exhausted → fires circuit breaker.
+  assertionReAuthFailed?: Set<string>;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)

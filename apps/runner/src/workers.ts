@@ -195,6 +195,7 @@ export function selectServerCredentials(claimed: {
 // `stdio` carries command/args/env. Mirrors the claim route's ResolvedMcpConnector.
 // When `assertionMode` is true, the runner performs mint + exchange before connecting.
 export interface ResolvedMcpConnector {
+  id?: string;
   name: string;
   transport?: 'http' | 'stdio';
   url?: string;
@@ -3011,6 +3012,44 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.pendingErrorTraces.push(...traces);
             for (const t of traces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
+            }
+          }
+
+          // 401 circuit breaker: detect auth failures from MCP connector tool results.
+          // For assertion-mode connectors, re-exchange runs silently via the PostToolUseFailure
+          // hook (§F.2 in assertion-grant spec); the breaker fires only when re-exchange has
+          // already been exhausted (assertionReAuthFailed flag set by hook-factory).
+          // For oauth/static connectors the breaker fires immediately.
+          if (
+            block.is_error === true &&
+            worker.mcpConnectors && worker.mcpConnectors.length > 0 &&
+            source?.startsWith('mcp__')
+          ) {
+            const is401 = /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i.test(text);
+            if (is401) {
+              const serverKey = source.split('__')[1];
+              const connector = worker.mcpConnectors.find((c: any) =>
+                c.name.toLowerCase().replace(/[^a-z0-9_]/g, '_') === serverKey
+              );
+              if (connector) {
+                const isAssertion = worker.assertionConnectors?.some((a: any) => a.name === connector.name);
+                const reAuthFailed = worker.assertionReAuthFailed?.has(connector.name);
+                // Skip circuit breaker for assertion connectors unless re-exchange has failed.
+                if (!isAssertion || reAuthFailed) {
+                  console.log(`[Worker ${worker.id}] 401 from connector "${connector.name}" (${connector.id}) — signaling API and aborting`);
+                  worker.error = `connector_auth_expired:${connector.id}`;
+                  this.buildd.updateWorker(worker.id, {
+                    event: 'connector_auth_expired',
+                    connectorId: connector.id,
+                    connectorUrl: connector.url,
+                    status: 'waiting_input',
+                  }).catch((err: unknown) => {
+                    console.warn(`[Worker ${worker.id}] connector_auth_expired sync failed:`, err);
+                  });
+                  const session = this.sessions.get(worker.id);
+                  if (session) session.abortController.abort();
+                }
+              }
             }
           }
         }
