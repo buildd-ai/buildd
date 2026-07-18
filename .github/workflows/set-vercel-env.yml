@@ -16,6 +16,26 @@ jobs:
   set-env:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify Vercel token and project
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          echo "Checking token validity..."
+          USER_RESP=$(curl -sf -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v2/user" || echo "FAILED")
+          if echo "$USER_RESP" | grep -q '"user"'; then
+            echo "Token valid"
+          else
+            echo "Token check failed: $USER_RESP"
+          fi
+
+          echo "Checking project existence..."
+          PROJ_RESP=$(curl -s \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_ORG_ID")
+          echo "Project response: $(echo "$PROJ_RESP" | jq -r '.name // .error.message // "unknown"')"
+
       - name: Add or update Vercel env var
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -25,43 +45,59 @@ jobs:
           KEY="${{ github.event.inputs.env_key }}"
           VALUE="${{ github.event.inputs.env_value }}"
 
-          echo "Setting $KEY = $VALUE"
+          echo "Setting $KEY"
 
           # Delete any existing entries for this key
-          EXISTING_DATA=$(curl -sf \
+          EXISTING_DATA=$(curl -s \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID&keys=$KEY" || echo '{"envs":[]}')
+            "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID&keys=$KEY")
 
-          echo "Existing: $EXISTING_DATA"
+          echo "Existing: $(echo "$EXISTING_DATA" | jq '.envs | length') entries"
 
-          echo "$EXISTING_DATA" | jq -r '.envs[].id' | while read ID; do
-            echo "Deleting $ID..."
+          echo "$EXISTING_DATA" | jq -r '.envs[].id // empty' | while read ID; do
+            echo "Deleting $ID"
             curl -sf -X DELETE \
               -H "Authorization: Bearer $VERCEL_TOKEN" \
               "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$ID?teamId=$VERCEL_ORG_ID" || true
           done
 
-          # Build JSON payload with jq and POST to Vercel
-          PAYLOAD=$(jq -n \
-            --arg k "$KEY" \
-            --arg v "$VALUE" \
-            '[{"key":$k,"value":$v,"type":"plain","target":["production","preview","development"]}]')
+          # Try single-object POST (no array wrapper)
+          echo "Attempting single-object POST..."
+          PAYLOAD=$(jq -cn --arg k "$KEY" --arg v "$VALUE" \
+            '{"key":$k,"value":$v,"type":"plain","target":["production","preview","development"]}')
 
-          echo "Payload: $PAYLOAD"
+          echo "Payload length: ${#PAYLOAD}"
 
-          HTTP_CODE=$(echo "$PAYLOAD" | curl -s -o /tmp/vercel_response.json -w "%{http_code}" \
+          HTTP=$(printf '%s' "$PAYLOAD" | curl -s -o /tmp/resp1.json -w "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             -H "Content-Type: application/json" \
-            -d @- \
+            --data-binary @- \
             "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID")
+          echo "Single-object response ($HTTP): $(cat /tmp/resp1.json)"
 
-          BODY=$(cat /tmp/vercel_response.json)
-          echo "Response ($HTTP_CODE): $BODY"
-
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-            echo "ERROR: Failed to set env var (HTTP $HTTP_CODE)"
-            exit 1
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Successfully set $KEY (single-object)"
+            exit 0
           fi
 
-          echo "Successfully set $KEY"
+          # Try array POST
+          echo "Attempting array POST..."
+          PAYLOAD2=$(jq -cn --arg k "$KEY" --arg v "$VALUE" \
+            '[{"key":$k,"value":$v,"type":"plain","target":["production","preview","development"]}]')
+
+          HTTP2=$(printf '%s' "$PAYLOAD2" | curl -s -o /tmp/resp2.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @- \
+            "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env?teamId=$VERCEL_ORG_ID")
+          echo "Array response ($HTTP2): $(cat /tmp/resp2.json)"
+
+          if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "201" ]; then
+            echo "Successfully set $KEY (array)"
+            exit 0
+          fi
+
+          echo "ERROR: Both formats failed"
+          exit 1
