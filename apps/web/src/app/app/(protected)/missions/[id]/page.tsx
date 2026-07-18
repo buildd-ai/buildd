@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
@@ -128,14 +129,13 @@ export default async function MissionDetailPage({
     teamWorkspaces = workspacesResult;
   }
 
-  const totalTasks = mission.tasks?.length || 0;
-  const completedTasks = mission.tasks?.filter((t) => t.status === 'completed').length || 0;
-  // Completed missions show 100% — the mission is done regardless of individual task outcomes
-  const progress = mission.status === 'completed'
-    ? 100
-    : totalTasks > 0
-      ? Math.round((completedTasks / totalTasks) * 100)
-      : 0;
+  // Raw count for "View all N tasks" links — includes housekeeping and cancelled
+  const allTasksCount = mission.tasks?.length || 0;
+  // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
+  // don't inflate the denominator and block the mission from reaching 100%.
+  const { totalTasks, completedTasks, progress: progressPct } = computeMissionProgress(mission.tasks || []);
+  // Completed missions always show 100% regardless of individual task outcomes.
+  const progress = mission.status === 'completed' ? 100 : progressPct;
 
   const activeAgents = mission.tasks
     ?.flatMap((t) => t.workers || [])
@@ -437,12 +437,12 @@ export default async function MissionDetailPage({
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="section-label">Timeline</h2>
-            {mission.status === 'completed' && totalTasks > 0 && (
+            {mission.status === 'completed' && allTasksCount > 0 && (
               <Link
                 href={`/app/tasks?mission=${id}`}
                 className="text-[12px] text-accent-text hover:underline"
               >
-                View all {totalTasks} tasks &rarr;
+                View all {allTasksCount} tasks &rarr;
               </Link>
             )}
           </div>
@@ -738,7 +738,7 @@ export default async function MissionDetailPage({
         </div>
 
       {/* View all tasks link — hidden for completed missions (shown in timeline header instead) */}
-      {totalTasks > 0 && mission.status !== 'completed' && (
+      {allTasksCount > 0 && mission.status !== 'completed' && (
         <div className="mb-6">
           <Link
             href={`/app/tasks?mission=${id}`}
@@ -747,7 +747,7 @@ export default async function MissionDetailPage({
             <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
             </svg>
-            <span>View all {totalTasks} tasks</span>
+            <span>View all {allTasksCount} tasks</span>
             <svg className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>

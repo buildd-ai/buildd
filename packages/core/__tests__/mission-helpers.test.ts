@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress } from '../mission-helpers';
 
 describe('isDeliverableTask', () => {
   it('returns true for a normal task with no special kind or title', () => {
@@ -87,5 +87,107 @@ describe('isDeliverableTask — progress calculation', () => {
       { kind: 'coordination', title: 'Orchestrate', status: 'pending' },
     ];
     expect(calcProgress(tasks)).toBe(100);
+  });
+});
+
+// ── computeMissionProgress ───────────────────────────────────────────────────
+
+describe('computeMissionProgress', () => {
+  type Task = Parameters<typeof computeMissionProgress>[0][number];
+
+  function makeTask(
+    status: string,
+    title = 'Do some work',
+    opts: { kind?: string; mode?: string } = {},
+  ): Task {
+    return { status, title, ...opts };
+  }
+
+  it('returns 0 progress with no tasks', () => {
+    expect(computeMissionProgress([])).toEqual({ totalTasks: 0, completedTasks: 0, progress: 0 });
+  });
+
+  it('reaches 100% when all non-cancelled deliverables are completed', () => {
+    const tasks = [
+      makeTask('completed'),
+      makeTask('cancelled'),
+      makeTask('cancelled'),
+      makeTask('cancelled'),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('counts failed tasks against progress (failed = unfinished intended work)', () => {
+    const tasks = [
+      makeTask('completed'),
+      makeTask('failed'),
+      makeTask('cancelled'),
+    ];
+    // cancelled excluded → 2 countable (completed + failed), 1 done → 50%
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(2);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(50);
+  });
+
+  it('returns 0 when only cancelled tasks exist (empty denominator)', () => {
+    const tasks = [makeTask('cancelled'), makeTask('cancelled')];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(0);
+    expect(result.completedTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
+
+  it('handles mixed statuses: in_progress counted but not completed', () => {
+    const tasks = [
+      makeTask('completed'),
+      makeTask('completed'),
+      makeTask('in_progress'),
+      makeTask('cancelled'),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(3);
+    expect(result.completedTasks).toBe(2);
+    expect(result.progress).toBe(67);
+  });
+
+  it('excludes planning/housekeeping tasks from denominator', () => {
+    const tasks = [
+      makeTask('completed'),
+      makeTask('completed', 'Mission: Organizer', { mode: 'planning' }),
+      makeTask('pending', 'Aggregate results: sprint 1'),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('excludes cancelled AND planning tasks together', () => {
+    const tasks = [
+      makeTask('completed', 'Implement feature A'),
+      makeTask('cancelled', 'Implement feature A (duplicate)'),
+      makeTask('cancelled', 'Implement feature A (duplicate 2)'),
+      makeTask('completed', 'Mission: Planner', { mode: 'planning' }),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('returns 0 when only planning tasks exist (none deliverable)', () => {
+    const tasks = [makeTask('completed', 'Mission: Planner', { mode: 'planning' })];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
+
+  it('rounds to nearest integer', () => {
+    const tasks = [makeTask('completed'), makeTask('completed'), makeTask('pending')];
+    expect(computeMissionProgress(tasks).progress).toBe(67);
   });
 });
