@@ -2903,9 +2903,10 @@ describe('entity catalog injection at claim time', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
-    // Knowledge hint may be present, but no entity catalog block when store errors
-    const providers = data.workers[0].resolvedContextProviders;
-    const block = providers ? (providers as string[]).join('\n') : '';
-    expect(block).not.toContain('## Known entities');
+    // Entity catalog block must be absent when the store errors.
+    // Note: knowledge context hint may still be present from buildKnowledgeContext —
+    // that is a separate feature and is not suppressed by entity store failures.
+    const providers: string[] = data.workers[0].resolvedContextProviders ?? [];
+    expect(providers.join('\n')).not.toContain('## Known entities');
   });
 });
