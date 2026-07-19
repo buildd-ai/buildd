@@ -17,11 +17,21 @@ export interface RunnerHeartbeat {
   lastHeartbeatAt: string;
   activeWorkerCount: number;
   maxConcurrentWorkers: number;
+  /** How the runner connects: push_only = no inbound HTTP (headless/NAT), reachable = has inbound HTTP server. */
+  connectivity: 'reachable' | 'push_only';
 }
 
 /** Runner is "online" when its last beat is within the past 2 minutes. */
 export function isRunnerOnline(lastHeartbeatAt: string | Date): boolean {
   return Date.now() - new Date(lastHeartbeatAt).getTime() < 2 * 60 * 1000;
+}
+
+/**
+ * Headless runners use a `headless://hostname` sentinel for localUiUrl instead of
+ * a real HTTP URL. They have no inbound HTTP server — heartbeats flow outbound only.
+ */
+export function isPushOnlyRunner(localUiUrl: string): boolean {
+  return localUiUrl.startsWith('headless://');
 }
 
 export interface RunnerRelevanceCandidate {

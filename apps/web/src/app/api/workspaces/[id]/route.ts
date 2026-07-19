@@ -5,6 +5,7 @@ import { eq, ilike } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
+import { enqueueFullIngestJob, extractGithubFullName } from '@/lib/knowledge-ingest';
 
 export async function GET(
   req: NextRequest,
@@ -143,7 +144,27 @@ export async function PATCH(
       updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
     }
 
+    // Read current repo before updating — needed to detect a change for auto-ingestion.
+    let previousRepo: string | null = null;
+    if (repoValue !== undefined) {
+      const current = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, id),
+        columns: { repo: true },
+      });
+      previousRepo = current?.repo ?? null;
+    }
+
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
+
+    // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec §1.1).
+    if (repoValue !== undefined && repoValue !== null && repoValue !== previousRepo) {
+      const fullName = extractGithubFullName(repoValue);
+      if (fullName) {
+        enqueueFullIngestJob({ workspaceId: id, repo: fullName, trigger: 'repo_link' }).catch(err =>
+          console.error(`[knowledge-ingest] repo-link enqueue failed for workspace ${id}:`, err)
+        );
+      }
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -152,17 +173,6 @@ export async function PATCH(
   }
 }
 
-function extractGithubFullName(repoUrl: string): string | null {
-  const cleaned = repoUrl
-    .replace(/\.git$/, '')
-    .replace(/^https?:\/\/[^/]+\//, '')
-    .replace(/^git@[^:]+:/, '');
-  const parts = cleaned.split('/');
-  if (parts.length >= 2 && parts[parts.length - 2] && parts[parts.length - 1]) {
-    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
-  }
-  return null;
-}
 
 export async function DELETE(
   req: NextRequest,

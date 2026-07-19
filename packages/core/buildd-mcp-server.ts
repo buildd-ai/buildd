@@ -10,6 +10,8 @@ import { z } from 'zod/v4';
 import {
   handleBuilddAction,
   handleMemoryAction,
+  handleRecallAction,
+  handleLearnAction,
   triggerActions,
   workerActions,
   adminActions,
@@ -196,6 +198,99 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
             readOnlyHint: false,
             destructiveHint: false,
             openWorldHint: true,
+          },
+        },
+      ),
+
+      // ── recall tool ───────────────────────────────────────────────────────
+      tool(
+        'recall',
+        'Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.',
+        {
+          query: z.string().optional(),
+          scope: z.enum(['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec']).optional(),
+          type: z.string().optional(),
+          files: z.array(z.string()).optional(),
+          limit: z.number().optional(),
+          id: z.string().optional(),
+        },
+        async (args) => {
+          try {
+            if (!memClient) {
+              return {
+                content: [{ type: 'text' as const, text: 'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY.' }],
+                isError: true,
+              };
+            }
+            const embedder = getVoyageEmbedder();
+            const ks = workspaceId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+            return await handleRecallAction(memClient, args as Record<string, unknown>, {
+              project: memoryProject,
+              workerId,
+              workspaceId,
+              teamId: resolvedTeamId,
+              knowledgeStore: ks,
+              embedder,
+            });
+          } catch (error) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` }],
+              isError: true,
+            };
+          }
+        },
+        {
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            openWorldHint: false,
+          },
+        },
+      ),
+
+      // ── learn tool ────────────────────────────────────────────────────────
+      tool(
+        'learn',
+        'Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.',
+        {
+          type: z.enum(['gotcha', 'pattern', 'decision', 'discovery', 'architecture']),
+          title: z.string(),
+          content: z.string(),
+          files: z.array(z.string()).optional(),
+          tags: z.array(z.string()).optional(),
+          scope: z.string().optional(),
+          supersedes: z.array(z.string()).optional(),
+        },
+        async (args) => {
+          try {
+            if (!memClient) {
+              return {
+                content: [{ type: 'text' as const, text: 'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY.' }],
+                isError: true,
+              };
+            }
+            const embedder = getVoyageEmbedder();
+            const ks = workspaceId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+            return await handleLearnAction(memClient, args as Record<string, unknown>, {
+              project: memoryProject,
+              workerId,
+              workspaceId,
+              teamId: resolvedTeamId,
+              knowledgeStore: ks,
+              embedder,
+            });
+          } catch (error) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` }],
+              isError: true,
+            };
+          }
+        },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: false,
           },
         },
       ),

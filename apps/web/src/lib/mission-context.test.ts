@@ -893,6 +893,83 @@ describe('buildMissionContext', () => {
     expect(result).not.toBeNull();
     expect(result!.description).not.toContain('System Feedback');
   });
+
+  // ── decompositionSkipped / coordinate-only mode ──
+
+  it('injects coordinate-only instructions when decompositionSkipped=true in templateContext', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-coord',
+      title: 'Pre-filed mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed tasks
+    mockFindMany.mockResolvedValueOnce([]); // active tasks
+    mockFindMany.mockResolvedValueOnce([]); // failed tasks
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-coord', { decompositionSkipped: true });
+
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('COORDINATE-ONLY MODE');
+    expect(result!.description).toContain('must NOT create new build tasks');
+    expect(result!.description).toContain('parentTaskId');
+    // decompositionSkipped must propagate into the context JSONB
+    expect(result!.context.decompositionSkipped).toBe(true);
+  });
+
+  it('does not inject coordinate-only instructions when decompositionSkipped is absent', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-normal',
+      title: 'Normal mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed tasks
+    mockFindMany.mockResolvedValueOnce([]); // active tasks
+    mockFindMany.mockResolvedValueOnce([]); // failed tasks
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-normal');
+
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('COORDINATE-ONLY MODE');
+    expect(result!.context.decompositionSkipped).toBeUndefined();
+  });
+
+  it('does not inject coordinate-only instructions when decompositionSkipped=false', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-false',
+      title: 'Normal mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed tasks
+    mockFindMany.mockResolvedValueOnce([]); // active tasks
+    mockFindMany.mockResolvedValueOnce([]); // failed tasks
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-false', { decompositionSkipped: false });
+
+    expect(result).not.toBeNull();
+    expect(result!.description).not.toContain('COORDINATE-ONLY MODE');
+    expect(result!.context.decompositionSkipped).toBeUndefined();
+  });
 });
 
 // ── getWorkspaceRoles ──

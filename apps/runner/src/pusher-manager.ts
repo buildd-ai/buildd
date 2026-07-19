@@ -260,9 +260,17 @@ export class PusherManager {
       case 'resume':
         console.log(`Resume requested for worker ${workerId}`);
         break;
-      case 'abort':
+      case 'abort': {
+        // Guard: ignore push abort if the worker already reached a terminal state
+        // locally (race with complete_task arriving just before cancel/kill push).
+        const w = this.callbacks.getWorkers().get(workerId);
+        if (w && (w.status === 'done' || w.status === 'error')) {
+          console.log(`[Worker ${workerId}] Push abort ignored: already in terminal state (${w.status})`);
+          break;
+        }
         await this.callbacks.abort(workerId);
         break;
+      }
       case 'message':
         if (command.text) {
           await this.callbacks.sendMessage(workerId, command.text);

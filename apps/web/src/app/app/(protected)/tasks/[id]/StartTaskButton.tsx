@@ -22,10 +22,11 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [loading, setLoading] = useState(false);
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
-  const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued'>('idle');
+  const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued' | 'gated'>('idle');
   const [countdown, setCountdown] = useState(0);
   const [error, setError] = useState('');
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
+  const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -102,7 +103,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     }
   }, [taskId]);
 
-  const handleStart = async () => {
+  const handleStart = async (forceOverride = false) => {
     setLoading(true);
     setError('');
     setStatus('starting');
@@ -113,11 +114,18 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           targetLocalUiUrl: selectedLocalUi || undefined,
+          ...(forceOverride ? { forceOverride: true } : {}),
         }),
       });
 
       if (!res.ok) {
         const data = await res.json();
+        // Dep-PR gate: show the blocking reason + "Start anyway" option
+        if (res.status === 422 && data.gateReason === 'unmerged_dep_pr') {
+          setBlockingDeps(data.blockingDeps || []);
+          setStatus('gated');
+          return;
+        }
         throw new Error(data.error || 'Failed to start task');
       }
 
@@ -176,6 +184,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setError('');
     setSelectedLocalUi('');
     setClaimedWorker(null);
+    setBlockingDeps([]);
   };
 
   const handleViewInDashboard = () => {
@@ -186,6 +195,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const handleRetry = () => {
     setStatus('idle');
     setError('');
+    setBlockingDeps([]);
   };
 
   return (
@@ -263,6 +273,56 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
                   >
                     Close
+                  </button>
+                </div>
+              </div>
+            ) : status === 'gated' ? (
+              <div className="p-6">
+                <div className="text-center mb-4">
+                  <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                  </div>
+                  <p className="text-text-primary font-medium mb-1">Blocked: dependency PR not merged</p>
+                  <p className="text-sm text-text-secondary mb-3">
+                    The following {blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until {blockingDeps.length === 1 ? 'it merges' : 'they merge'}.
+                  </p>
+                  <div className="space-y-2 text-left">
+                    {blockingDeps.map((dep, i) => (
+                      <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
+                        {dep.taskTitle && (
+                          <p className="text-text-secondary text-xs mb-1 truncate">{dep.taskTitle}</p>
+                        )}
+                        {dep.prUrl ? (
+                          <a
+                            href={dep.prUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary-400 hover:underline"
+                          >
+                            PR #{dep.prNumber ?? '?'} →
+                          </a>
+                        ) : (
+                          <span className="text-text-muted">No PR URL</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => handleStart(true)}
+                    disabled={loading}
+                    className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
+                  >
+                    Start anyway (bypass gate)
+                  </button>
+                  <button
+                    onClick={handleClose}
+                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
+                  >
+                    Cancel
                   </button>
                 </div>
               </div>
@@ -413,7 +473,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     Cancel
                   </button>
                   <button
-                    onClick={handleStart}
+                    onClick={() => handleStart()}
                     disabled={loading}
                     className="px-4 py-2 text-sm bg-status-success text-white rounded hover:opacity-90 disabled:opacity-50"
                   >

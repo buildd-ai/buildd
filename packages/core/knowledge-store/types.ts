@@ -85,6 +85,10 @@ export interface QueryResult {
   score: number;
   /** Graph proximity boost (1.0 for seed chunks, ≤1.0 for expanded neighbors). Phase 3+. */
   graphProximity?: number;
+  /** When this chunk was first ingested. Used for freshness display in memory results. */
+  createdAt?: Date | null;
+  /** False when the chunk has been superseded (is_current=false). True or absent = current. */
+  isCurrent?: boolean;
 }
 
 export interface QueryParams {
@@ -122,6 +126,8 @@ export interface KnowledgeStore {
   query(namespace: string, params: QueryParams): Promise<QueryResult[]>;
   delete(namespace: string, ids: string[]): Promise<void>;
   listNamespaces(): Promise<string[]>;
+  /** Count current (is_current=true) chunks in a namespace. Optional; used for corpora availability hints. */
+  countNamespace?(namespace: string): Promise<number>;
   /**
    * Entity-keyed supersession (optional). Mark other `is_current` chunks in the
    * namespace whose `role='defines'` entity set is IDENTICAL to `entityIds`,

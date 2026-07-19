@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import { deriveTimestampLabel, isStaleWorker } from '@/lib/task-timestamps';
+import { deriveTimestampLabel, isStaleWorker, deriveDisplayStatus } from '@/lib/task-timestamps';
 import LocalTime from './LocalTime';
 
 interface GridTask {
@@ -68,6 +68,7 @@ type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
 function getStatusDot(status: string): { color: string; pulse: boolean } {
   switch (status) {
     case 'completed': return { color: 'bg-status-success', pulse: false };
+    case 'running':
     case 'in_progress':
     case 'assigned': return { color: 'bg-status-info', pulse: true };
     case 'failed': return { color: 'bg-status-error', pulse: false };
@@ -85,7 +86,7 @@ function StatusBadge({ status }: { status: string }) {
       </span>
     );
   }
-  if (status === 'in_progress' || status === 'assigned') {
+  if (status === 'running' || status === 'in_progress' || status === 'assigned') {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-info/15 text-status-info">
         Running
@@ -125,8 +126,9 @@ function StandaloneIcon() {
 }
 
 function TaskRow({ task, isStandalone, now }: { task: GridTask; isStandalone?: boolean; now: number }) {
-  const dot = getStatusDot(task.status);
-  const isCompleted = task.status === 'completed';
+  const displayStatus = deriveDisplayStatus(task.status, task.workerStatus);
+  const dot = getStatusDot(displayStatus);
+  const isCompleted = displayStatus === 'completed';
   const stale = isStaleWorker(task.workerStatus, task.workerUpdatedAt, now);
   const tsLabel = taskTimestamp(task, now);
 
@@ -149,7 +151,7 @@ function TaskRow({ task, isStandalone, now }: { task: GridTask; isStandalone?: b
       ⏸ Paused{task.budgetResetsAt && <LocalTime iso={task.budgetResetsAt} prefix=" · ~" />}
     </span>
   ) : (
-    <StatusBadge status={task.status} />
+    <StatusBadge status={displayStatus} />
   );
 
   return (
@@ -226,7 +228,7 @@ function TaskRow({ task, isStandalone, now }: { task: GridTask; isStandalone?: b
             {task.missionTitle}
           </span>
         )}
-        <span className={`text-[12px] shrink-0 text-right hidden md:inline ${stale ? 'text-status-warning' : 'text-text-desc'} ${task.workerStatus === 'running' ? 'min-w-[160px]' : 'w-[70px]'}`}>
+        <span className={`text-[12px] shrink-0 text-right hidden md:inline ${stale ? 'text-status-warning' : 'text-text-desc'} ${displayStatus === 'running' ? 'min-w-[160px]' : 'w-[70px]'}`}>
           {stale && <span className="mr-1" title="No agent activity for 10+ minutes">⚠</span>}
           {tsLabel}
         </span>
@@ -327,14 +329,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   // Counts from unfiltered tasks
   const allCount = visibleTasks.length;
-  const activeCount = visibleTasks.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
+  const activeCount = visibleTasks.filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
   const completedCount = visibleTasks.filter(t => t.status === 'completed').length;
   const failedCount = visibleTasks.filter(t => t.status === 'failed').length;
 
   const filtered = useMemo(() => {
     let result = visibleTasks;
 
-    if (filter === 'active') result = result.filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status));
+    if (filter === 'active') result = result.filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status));
     else if (filter === 'completed') result = result.filter(t => t.status === 'completed');
     else if (filter === 'failed') result = result.filter(t => t.status === 'failed');
 
@@ -370,7 +372,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   const mobileRecentTasks = useMemo(() => {
     if (missionFilter) return [];
     return [...visibleTasks]
-      .filter(t => ['in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status))
+      .filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status))
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 5);
   }, [visibleTasks, missionFilter]);

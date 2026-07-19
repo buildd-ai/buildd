@@ -3,6 +3,7 @@ import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, wo
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
+import { LIVE_WORKER_STATUSES } from './task-timestamps';
 
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
@@ -155,7 +156,7 @@ export async function getWorkspaceRoles(workspaceId: string) {
     .where(
       and(
         eq(workers.workspaceId, workspaceId),
-        inArray(workers.status, ['running', 'starting', 'waiting_input']),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       )
     )
     .groupBy(tasks.roleSlug);
@@ -396,6 +397,26 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   const stuckFeedback = templateContext?.stuckPlanningFeedback as string | undefined;
   if (stuckFeedback) {
     descParts.push(`\n> **System Feedback**: ${stuckFeedback}`);
+  }
+
+  // Coordinate-only mode — injected when pre-filed tasks were detected at first evaluation.
+  // The organizer runs the coordination checklist but must NOT create new build tasks on its
+  // own initiative (only retry children for terminally-failed tasks are allowed).
+  const decompositionSkippedCtx = templateContext?.decompositionSkipped as boolean | undefined;
+  if (decompositionSkippedCtx) {
+    descParts.push(
+      '\n## COORDINATE-ONLY MODE — Pre-Filed Tasks Detected\n' +
+      'Pre-filed tasks were detected when this mission was first evaluated. ' +
+      '**You must NOT create new build tasks.** Your role is coordination:\n\n' +
+      '- [ ] Monitor the tasks listed in "Active Tasks" below\n' +
+      '- [ ] Retry any failed tasks by creating a child task with `parentTaskId=<original task id>` and `failureContext` describing what went wrong (include the exact error)\n' +
+      '- [ ] Check PR merge status — if a PR has merge conflicts, retry the originating task (create_task with parentTaskId + failureContext)\n' +
+      '- [ ] Report blocked tasks and notify via post_note if a human decision is needed\n' +
+      '- [ ] When ALL pre-filed tasks are terminal (completed/failed/cancelled), signal `missionComplete: true` in structuredOutput\n\n' +
+      'Do NOT create new tasks unless (a) a listed task failed terminally and needs a retry child with `parentTaskId`, ' +
+      'or (b) the mission description explicitly authorizes gap-filling. ' +
+      'Adding tasks beyond the pre-filed chain creates duplicates and wasted work.'
+    );
   }
 
   // Workspace state for organizer
@@ -669,6 +690,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     missionId: mission.id,
     missionTitle: mission.title,
     orchestrator: true,
+    ...(decompositionSkippedCtx ? { decompositionSkipped: true } : {}),
     workspaceState: workspaceState || { name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false },
     teamWorkspaces: projectWorkspaces.map(tw => ({ id: tw.id, name: tw.name, repo: tw.repo })),
     availableRoles: roles,

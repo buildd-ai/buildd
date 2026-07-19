@@ -1318,7 +1318,7 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers[0].taskId).toBe('task-1');
   });
 
-  it('injects mcp_credential secrets as mcpSecrets env vars when decryptable', async () => {
+  it('no longer flat-injects mcp_credential secrets as mcpSecrets (connectors are the only path)', async () => {
     // Set ENCRYPTION_KEY so secrets branch executes
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
@@ -1361,18 +1361,13 @@ describe('POST /api/workers/claim', () => {
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
     }));
 
-    // mcp_credential secrets surface as a flat `mcpSecrets` map so the runner
-    // can resolve ${VAR} references in role .mcp.json server configs (e.g. the
-    // Cue MCP which requires both x-api-key and x-tenant-id headers).
+    // Even if mcp_credential secrets exist, they must NOT surface as a flat
+    // `mcpSecrets` map — that legacy role-MCP env injection path was retired.
+    // The anthropic/oauth secrets query now only asks for those two purposes,
+    // so this row would never be returned; assert nothing leaks.
     mockSecretsFindMany.mockResolvedValue([
       { id: 'secret-1', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
-      { id: 'secret-2', purpose: 'mcp_credential', label: 'TENANT_ID' },
     ]);
-    mockSecretsProviderGet.mockImplementation((id: string) => {
-      if (id === 'secret-1') return Promise.resolve('the-api-key');
-      if (id === 'secret-2') return Promise.resolve('the-tenant-id');
-      return Promise.resolve(null);
-    });
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1383,10 +1378,7 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
-    expect(data.workers[0].mcpSecrets).toEqual({
-      DISPATCH_API_KEY: 'the-api-key',
-      TENANT_ID: 'the-tenant-id',
-    });
+    expect(data.workers[0].mcpSecrets).toBeUndefined();
 
     // Restore
     if (origKey !== undefined) {
@@ -2548,6 +2540,61 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
+
+    // §E.3: assertion-mode connector → returns AssertionConnectorEntry exchange metadata,
+    // not a bearer token. The runner performs mint+exchange at connect time.
+    it('injects assertion-mode connector as exchange metadata (no bearer token at claim time)', async () => {
+      setupConnectorClaim(['conn-assert']);
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-assert', teamId: 'team-1', name: 'cue', url: 'https://cue.buildd.dev/api/mcp',
+          authMode: 'assertion', headerName: null, transport: 'http', command: null, args: [], envMapping: {},
+          assertionAudience: 'https://cue.buildd.dev/api/mcp',
+          assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+        },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-assert', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([{
+        name: 'cue',
+        transport: 'http',
+        url: 'https://cue.buildd.dev/api/mcp',
+        assertionMode: true,
+        mintApiUrl: 'https://buildd.dev/api/connectors/conn-assert/assertion',
+        audience: 'https://cue.buildd.dev/api/mcp',
+        tokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+      }]);
+      // Must NOT contain an Authorization header (no bearer token at claim time)
+      expect(data.workers[0].mcpConnectors[0].headers).toBeUndefined();
+    });
+
+    // §E.3: assertion connector missing assertionAudience or assertionTokenEndpoint → omitted
+    it('omits assertion connector when assertionAudience is missing', async () => {
+      setupConnectorClaim(['conn-assert']);
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-assert', teamId: 'team-1', name: 'cue', url: 'https://cue.buildd.dev/api/mcp',
+          authMode: 'assertion', headerName: null, transport: 'http', command: null, args: [], envMapping: {},
+          assertionAudience: null,
+          assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+        },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-assert', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
   });
 
   it('does not gate claims when workspace.projects[] is empty (single-repo workspace)', async () => {
@@ -2856,6 +2903,10 @@ describe('entity catalog injection at claim time', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
-    expect(data.workers[0].resolvedContextProviders).toBeUndefined();
+    // Entity catalog block must be absent when the store errors.
+    // Note: knowledge context hint may still be present from buildKnowledgeContext —
+    // that is a separate feature and is not suppressed by entity store failures.
+    const providers: string[] = data.workers[0].resolvedContextProviders ?? [];
+    expect(providers.join('\n')).not.toContain('## Known entities');
   });
 });

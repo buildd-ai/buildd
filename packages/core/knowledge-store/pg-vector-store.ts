@@ -120,6 +120,7 @@ interface ChunkRow {
   content: string;
   metadata: Record<string, unknown>;
   source_ts?: string | null;
+  created_at?: string | null;
   is_current?: boolean;
   score?: number;
 }
@@ -689,7 +690,8 @@ export class PgVectorStore implements KnowledgeStore {
     if (sourceIds.length === 0) return [];
     const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
     const res = await db.execute(sql`
-      SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata
+      SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata,
+             created_at, is_current
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND source_id IN (${inList})
@@ -709,7 +711,7 @@ export class PgVectorStore implements KnowledgeStore {
       .map(id => {
         const row = byId.get(id);
         if (!row) return null;
-        return {
+        const result: QueryResult = {
           id: row.source_id,
           namespace: row.namespace,
           corpus: row.corpus,
@@ -719,8 +721,19 @@ export class PgVectorStore implements KnowledgeStore {
           content: row.content,
           metadata: row.metadata ?? {},
           score: scoreMap.get(id) ?? 0,
-        } satisfies QueryResult;
+          createdAt: row.created_at ? new Date(row.created_at) : null,
+          isCurrent: row.is_current ?? true,
+        };
+        return result;
       })
       .filter((r): r is QueryResult => r !== null);
+  }
+
+  async countNamespace(namespace: string): Promise<number> {
+    const db = await getDb();
+    const res = await db.execute(sql`
+      SELECT COUNT(*) AS cnt FROM knowledge_chunks WHERE namespace = ${namespace} AND is_current = true
+    `);
+    return Number((res.rows[0] as Record<string, unknown>)?.cnt ?? 0);
   }
 }

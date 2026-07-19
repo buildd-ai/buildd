@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, tasks, workers, workspaceSkills, taskSchedules, missions } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql, lt } from 'drizzle-orm';
+import { watchedProjects, watcherEvents, workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc, sql, lt, or } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -66,6 +66,17 @@ export interface RecentFailure {
   completedAt: string;
 }
 
+export interface CredentialHealthItem {
+  id: string;
+  purpose: string;
+  healthStatus: 'degraded' | 'revoked';
+  consecutiveAuthFailures: number;
+  lastFailureAt: string | null;
+  lastFailureMessage: string | null;
+  lastSuccessAt: string | null;
+  lastVerifiedAt: string | null;
+}
+
 export default async function HealthPage({
   searchParams,
 }: {
@@ -112,8 +123,8 @@ export default async function HealthPage({
 
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
-  // Parallel fetches: watched projects, runners, usage, schedules, recent failures
-  const [rows, runners, usageStats, scheduleRows, recentFailureRows] = await Promise.all([
+  // Parallel fetches: watched projects, runners, usage, schedules, recent failures, credential health
+  const [rows, runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows] = await Promise.all([
     // Watched projects
     db
       .select()
@@ -246,6 +257,44 @@ export default async function HealthPage({
         completedAt: w.completedAt ? w.completedAt.toISOString() : new Date().toISOString(),
       }));
     })().catch(() => [] as RecentFailure[]),
+
+    // Unhealthy backend credentials for this team
+    (async (): Promise<CredentialHealthItem[]> => {
+      const rows = await db.query.secrets.findMany({
+        where: and(
+          eq(secrets.teamId, activeTeamId),
+          or(
+            eq(secrets.healthStatus, 'revoked'),
+            eq(secrets.healthStatus, 'degraded'),
+          ),
+          or(
+            eq(secrets.purpose, 'oauth_token'),
+            eq(secrets.purpose, 'anthropic_api_key'),
+            eq(secrets.purpose, 'codex_credential'),
+          ),
+        ),
+        columns: {
+          id: true,
+          purpose: true,
+          healthStatus: true,
+          consecutiveAuthFailures: true,
+          lastFailureAt: true,
+          lastFailureMessage: true,
+          lastSuccessAt: true,
+          lastVerifiedAt: true,
+        },
+      });
+      return (rows as any[]).map((r: any) => ({
+        id: r.id,
+        purpose: r.purpose,
+        healthStatus: r.healthStatus as 'degraded' | 'revoked',
+        consecutiveAuthFailures: r.consecutiveAuthFailures,
+        lastFailureAt: r.lastFailureAt ? r.lastFailureAt.toISOString() : null,
+        lastFailureMessage: r.lastFailureMessage ?? null,
+        lastSuccessAt: r.lastSuccessAt ? r.lastSuccessAt.toISOString() : null,
+        lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
+      }));
+    })().catch(() => [] as CredentialHealthItem[]),
   ]);
 
   // Attach recent events to watched project rows
@@ -320,6 +369,7 @@ export default async function HealthPage({
       usageStats={usageStats}
       schedules={serializedSchedules}
       recentFailures={recentFailureRows ?? []}
+      credentialHealth={credentialHealthRows ?? []}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
     />

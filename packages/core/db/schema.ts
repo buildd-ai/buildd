@@ -16,7 +16,7 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
 });
 
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
-export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth']);
+export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
@@ -556,6 +556,12 @@ export const missions = pgTable('missions', {
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
   orchestrationMode: text('orchestration_mode').default('auto').notNull().$type<'auto' | 'manual'>(),
+  // Set after the organizer's first evaluation detects pre-filed tasks linked to this mission.
+  // When true, the organizer operates in coordinate-only mode: it runs the coordination
+  // checklist (retry failures, PR conflict handling, completion detection) but does not
+  // decompose/create new build tasks on its own initiative. This prevents duplicate work when
+  // a creator files a task chain at the same time as an auto-decomposing mission.
+  decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
@@ -1054,7 +1060,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -1066,6 +1072,14 @@ export const secrets = pgTable('secrets', {
   // smoke-tested against the real provider API, and the error string if it failed.
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
   lastVerificationError: text('last_verification_error'),
+  // Credential health — set by spawn-time auth failures and active verification.
+  // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;
+  // revoked: explicit revocation or ≥3 consecutive auth failures; unknown: never tested.
+  healthStatus: text('health_status').default('unknown').notNull().$type<'healthy' | 'degraded' | 'revoked' | 'unknown'>(),
+  lastFailureAt: timestamp('last_failure_at', { withTimezone: true }),
+  lastFailureMessage: text('last_failure_message'),
+  consecutiveAuthFailures: integer('consecutive_auth_failures').default(0).notNull(),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1207,7 +1221,7 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   /** "owner/name" — denormalized so jobs survive repo re-binding. */
   repo: text('repo').notNull(),
-  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled'>(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
   /** Merge SHA (diff jobs) or target SHA (full jobs). */
   sha: text('sha'),
   prNumber: integer('pr_number'),
@@ -1548,6 +1562,9 @@ export const connectors = pgTable('connectors', {
   // OAuth client credentials (authMode='oauth')
   clientId: text('client_id'),
   encryptedClientSecret: text('encrypted_client_secret'),
+  // Assertion-mode fields (authMode='assertion')
+  assertionAudience: text('assertion_audience'),
+  assertionTokenEndpoint: text('assertion_token_endpoint'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

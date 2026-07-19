@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 import ExternalLink from '@/components/ExternalLink';
 
 export const dynamic = 'force-dynamic';
@@ -131,7 +132,7 @@ export default async function RoleProfilePage({
   const activeWorker = await db.query.workers.findFirst({
     where: and(
       inArray(workers.workspaceId, wsIds),
-      inArray(workers.status, ['running', 'starting', 'waiting_input']),
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     ),
     with: {
       task: {

@@ -5,6 +5,7 @@ import { eq, and, lt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
@@ -220,7 +221,7 @@ export async function POST(req: NextRequest) {
     const orphanedWorkers = await db.query.workers.findMany({
       where: and(
         inArray(workers.accountId, staleAccountIds),
-        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       ),
       columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
     });

@@ -23,6 +23,6 @@ export function setSecretsProvider(provider: SecretsProvider): void {
   _provider = provider;
 }
 
-export type { SecretsProvider, SecretMetadata, SecretRecord, SecretPurpose } from './types';
+export type { SecretsProvider, SecretMetadata, SecretRecord, SecretPurpose, CredentialHealthStatus } from './types';
 export { setOAuthToken, getOAuthToken, deleteOAuthToken } from './oauth-token';
 export { encrypt, decrypt } from './crypto';
