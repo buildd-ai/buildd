@@ -2184,6 +2184,76 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  describe('provision-gate requeue policy', () => {
+    // Drives the resultMeta.provisionFailure.code policy in the failed-worker path:
+    // transient codes → requeue once (task → pending), permanent codes → escalate
+    // (task → failed), bounded by context.provisionRetryCount.
+    const setup = (opts: { code: string; taskContext?: Record<string, unknown> }) => {
+      mockAuthenticateApiKey.mockReset();
+      mockWorkersFindFirst.mockReset();
+      mockTasksUpdate.mockReset();
+      mockTasksFindFirst.mockReset();
+      mockTriggerEvent.mockReset();
+      mockWorkersUpdate.mockClear();
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [], branch: 'buildd/task-1',
+      });
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{
+          id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1', status: 'failed',
+        }]) })) })),
+      }));
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', missionId: null, context: opts.taskContext ?? {},
+        workspaceId: 'ws-1', workspace: { teamId: 'team-1' },
+      });
+
+      const updates: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { updates.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: `Provision failed [x]: blocked`,
+          resultMeta: { provisionFailure: { code: opts.code, phase: 'x', message: 'blocked' } },
+        },
+      });
+      return { req, updates };
+    };
+
+    it('requeues a transient provision failure (readiness) to pending, bumping the counter', async () => {
+      const { req, updates } = setup({ code: 'provision_readiness_failed' });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      const pending = updates.find((u) => u.status === 'pending');
+      expect(pending).toBeTruthy();
+      expect(pending.context.provisionRetryCount).toBe(1);
+    });
+
+    it('escalates a permanent provision failure (env missing) to failed — no requeue', async () => {
+      const { req, updates } = setup({ code: 'provision_env_missing' });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(updates.some((u) => u.status === 'pending')).toBe(false);
+      expect(updates.some((u) => u.status === 'failed')).toBe(true);
+    });
+
+    it('does not retry a transient failure past the bound (counter already 1 → failed)', async () => {
+      const { req, updates } = setup({ code: 'provision_readiness_failed', taskContext: { provisionRetryCount: 1 } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(updates.some((u) => u.status === 'pending')).toBe(false);
+      expect(updates.some((u) => u.status === 'failed')).toBe(true);
+    });
+  });
+
   describe('PATCH /api/workers/[id] - monthly budget tracking', () => {
     const monthKey = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`;
     // Completion fires unrelated notifies too; isolate the budget-threshold ones.
