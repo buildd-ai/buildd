@@ -5,6 +5,10 @@
     {
       "path": "/api/cron/codex-token-refresh",
       "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/task-archive",
+      "schedule": "0 6 * * 1"
     }
   ]
 }
