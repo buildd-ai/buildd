@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 
 const resolveTeamIds = resolveAccountTeamIds;
@@ -54,6 +54,7 @@ export async function GET(
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, creationSource: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
@@ -64,13 +65,7 @@ export async function GET(
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
-    const deliverableTasks = mission.tasks?.filter(isDeliverableTask) || [];
-    // Cancelled tasks are excluded from progress: they don't count as work to do
-    // or work done, so they don't inflate the denominator when duplicates are killed.
-    const countableTasks = deliverableTasks.filter(t => t.status !== 'cancelled');
-    const totalTasks = countableTasks.length;
-    const completedTasks = countableTasks.filter(t => t.status === 'completed').length;
-    const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(mission.tasks || []);
 
     // Extract config from schedule template
     const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -119,6 +114,7 @@ export async function GET(
       totalTasks,
       completedTasks,
       progress,
+      segments,
       skillSlugs: templateContext?.skillSlugs || [],
       outputSchema: templateContext?.outputSchema || null,
       model: templateContext?.model || null,
