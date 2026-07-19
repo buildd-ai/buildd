@@ -27,7 +27,8 @@ describe('buildCIRetryTask', () => {
     expect(t!.context.maxIterations).toBe(3);
     expect(t!.context.baseBranch).toBe('buildd/abc-fix');
     expect(t!.context.prNumber).toBe(42);
-    expect(t!.context.failureContext).toBe('Job "test" failed');
+    // failureContext is now a structured object, not a bare string
+    expect((t!.context.failureContext as any).summary).toBe('Job "test" failed');
   });
 
   it('does not double-prefix the title on subsequent retries', () => {
@@ -83,5 +84,46 @@ describe('buildCIRetryTask', () => {
     });
     expect(t!.context.verificationCommand).toBe('bun test');
     expect(t!.context.skillSlugs).toEqual(['x']);
+  });
+
+  // Spec §6.3 — retry-continuity fields
+  it('sets context.resumeBranch equal to worker.branch', () => {
+    const t = buildCIRetryTask(baseParams);
+    expect(t!.context.resumeBranch).toBe('buildd/abc-fix');
+  });
+
+  it('still sets context.baseBranch for backward compat', () => {
+    const t = buildCIRetryTask(baseParams);
+    expect(t!.context.baseBranch).toBe('buildd/abc-fix');
+  });
+
+  it('sets context.failureContext as a RetryFailureContext object with errorType ci_failure', () => {
+    const t = buildCIRetryTask(baseParams);
+    expect(typeof t!.context.failureContext).toBe('object');
+    const fc = t!.context.failureContext as any;
+    expect(fc.summary).toBe('Job "test" failed');
+    expect(fc.errorType).toBe('ci_failure');
+  });
+
+  it('copies context.lastCommitSha from parent task context when present', () => {
+    const t = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, context: { lastCommitSha: 'abc123sha' } },
+    });
+    expect(t!.context.lastCommitSha).toBe('abc123sha');
+  });
+
+  it('includes commitSha in failureContext when parent context has lastCommitSha', () => {
+    const t = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, context: { lastCommitSha: 'abc123sha' } },
+    });
+    const fc = t!.context.failureContext as any;
+    expect(fc.commitSha).toBe('abc123sha');
+  });
+
+  it('omits lastCommitSha from context when parent context lacks it', () => {
+    const t = buildCIRetryTask(baseParams);
+    expect(t!.context.lastCommitSha).toBeUndefined();
   });
 });

@@ -1733,6 +1733,39 @@ export class WorkerManager {
         }
       }
 
+      // Inject retry-continuity prompt section when resumeBranch is set
+      const resumeBranch = (task.context as any)?.resumeBranch as string | undefined;
+      if (resumeBranch) {
+        const lastCommitSha = (task.context as any)?.lastCommitSha as string | undefined;
+        const rawFailureCtx = (task.context as any)?.failureContext;
+        const failureSummary: string | undefined =
+          typeof rawFailureCtx === 'string'
+            ? rawFailureCtx
+            : (rawFailureCtx as any)?.summary;
+
+        const sha = lastCommitSha ?? `origin/${resumeBranch}`;
+        const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
+        const decideStep = failureSummary ? '4' : '3';
+        const logStep = failureSummary ? '5' : '4';
+        const retryContinuitySection = [
+          '',
+          '## Prior Attempt — Assess Before Starting',
+          '',
+          'A previous agent attempt left commits on this branch. Before editing any file:',
+          '',
+          `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
+          `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,
+          `2. Run \`git diff origin/${defaultBranch}...origin/${resumeBranch}\` to see what the prior attempt changed relative to base.`,
+          ...failureLine,
+          `${decideStep}. Explicitly decide: **continue/salvage** (fix what failed, keep prior commits) or **restart** (reset to base, start clean).`,
+          `${logStep}. Log your decision via \`update_progress\` **before** making any file edits.`,
+          '',
+          'Do not skip this assessment step. The decision and its rationale must appear in the progress log.',
+        ].join('\n');
+
+        systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
+      }
+
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
       const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
