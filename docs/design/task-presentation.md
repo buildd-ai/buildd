@@ -1,7 +1,7 @@
 # Unified Task Presentation
 
 **Status:** Proposed
-**Related:** `apps/web/src/lib/task-timestamps.ts` (PR #1163), Knowledge Layer Elevation mission
+**Related:** `apps/web/src/lib/task-timestamps.ts` (PR #1163), Knowledge Layer Elevation mission, `docs/design/mission-state-progress.md`
 
 ---
 
