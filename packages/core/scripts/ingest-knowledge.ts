@@ -148,10 +148,15 @@ async function main() {
     process.exit(0);
   }
 
-  const root = path.resolve(dirArg);
+  // walkStart: the directory to walk (dirArg resolved).
+  // root: repo root (process.cwd()) so chunk source_paths are full repo-relative
+  // (packages/core/..., apps/web/...) rather than subdir-relative (core/..., web/...).
+  // This makes deleteBySource reliable when a CI-ingested file is later touched via a PR diff.
+  const walkStart = path.resolve(dirArg);
+  const root = process.cwd();
 
   const all: string[] = [];
-  await walk(root, root, all);
+  await walk(walkStart, walkStart, all);
 
   const keep = (f: string) => !(SKIP_TESTS && TEST_FILE_RE.test(path.basename(f)));
   const docFiles = all.filter(f => DOC_EXT.has(path.extname(f).toLowerCase())).filter(keep);

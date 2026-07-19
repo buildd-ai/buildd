@@ -1,7 +1,7 @@
 # Design Spec — Buildd App (Brutalist / Editorial direction)
 
 **Status**: Reference spec — build against this, confirm parity when done
-**Primary target**: the **web dashboard** (`apps/web/`), responsive — desktop + mobile. The native iOS app (`docs/plan-ios-app-mvp.md`) shares this system; web has far more surface area.
+**Primary target**: the **web dashboard** (`apps/web/`), responsive — desktop + mobile. The native iOS app (`docs/plans/ios-app-mvp.md`) shares this system; web has far more surface area.
 **Direction**: brutalist/editorial — IBM Plex Mono, warm paper + ink, **single copper accent (`#c8956a`, buildd brand)**, square corners, hard offset shadows, corner-bracket panels.
 **Intensity**: **Evolution** — restyle tokens + shared primitives (cascades to all ~40 web pages); stay pragmatic in dense tables/forms/markdown where rounding or softer treatment aids legibility. Not a mono-everything maximalist rebuild.
 **Code source of truth (web)**: `apps/web/src/app/globals.css` CSS variables. The Pencil tokens mirror them.
@@ -146,7 +146,7 @@ Vertical stack, paper background, `clip: true`:
    - `03 SHIPPED TODAY` — shipped table.
 4. **Tab bar** — Feed active.
 
-### Data mapping (existing API — see `plan-ios-app-mvp.md`)
+### Data mapping (existing API — see `../plans/ios-app-mvp.md`)
 
 | Section | Source | Notes |
 |---------|--------|-------|

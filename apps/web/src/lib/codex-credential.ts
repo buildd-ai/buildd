@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
+import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
 
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const PURPOSE = 'codex_credential' as const;
@@ -539,6 +540,12 @@ export async function verifyCodexCredential(secretId: string): Promise<VerifyRes
       updatedAt: sql`NOW()`,
     })
     .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+
+  if (verified) {
+    await recordCredentialAuthSuccess(secretId);
+  } else if (error) {
+    await recordCredentialAuthFailure(secretId, error);
+  }
 
   return { verified, error };
 }

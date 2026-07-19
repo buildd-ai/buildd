@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
-import { deriveDisplayStatus } from '@/lib/task-timestamps';
+import { deriveDisplayStatus, LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -106,13 +106,13 @@ export default async function TasksPage({
             }
           }
 
-          // Query active workers (running, starting, waiting_input) to enrich task status and timestamps
+          // Query active workers to enrich task status and timestamps
           const taskIds = recentTasks.map(t => t.id);
           const activeWorkers = taskIds.length > 0
             ? await db.query.workers.findMany({
                 where: and(
                   inArray(workers.taskId, taskIds),
-                  inArray(workers.status, ['running', 'starting', 'waiting_input']),
+                  inArray(workers.status, [...LIVE_WORKER_STATUSES]),
                 ),
                 columns: {
                   taskId: true,

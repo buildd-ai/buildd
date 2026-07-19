@@ -161,6 +161,27 @@ describe('PATCH /api/connectors/[id]', () => {
     const data = await res.json();
     expect(data.connector.name).toBe('Updated');
   });
+
+  it('updates assertionAudience and assertionTokenEndpoint on assertion connector', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return {
+        where: mock(() => ({ returning: mock(() => [{
+          id: 'conn-1', authMode: 'assertion',
+          assertionAudience: 'https://cue.buildd.dev/api/mcp',
+          assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+        }]) })),
+      }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, {
+      assertionAudience: 'https://cue.buildd.dev/api/mcp',
+      assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
+    }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.assertionAudience).toBe('https://cue.buildd.dev/api/mcp');
+    expect(captured.assertionTokenEndpoint).toBe('https://cue.buildd.dev/api/oauth/token');
+  });
 });
 
 describe('DELETE /api/connectors/[id]', () => {

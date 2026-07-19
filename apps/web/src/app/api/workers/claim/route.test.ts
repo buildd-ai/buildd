@@ -2195,7 +2195,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+        { id: 'conn-1', name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
       ]);
     });
 
@@ -2250,7 +2250,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+        { id: 'conn-1', name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
       ]);
     });
 
@@ -2269,7 +2269,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+        { id: 'conn-1', name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
       ]);
     });
 
@@ -2311,7 +2311,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'header-mcp', transport: 'http', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
+        { id: 'conn-hdr', name: 'header-mcp', transport: 'http', url: 'https://header.example.com', headers: { 'X-API-Key': 'secret-header-value' } },
       ]);
     });
 
@@ -2357,7 +2357,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'oauth-mcp', transport: 'http', url: 'https://oauth.example.com', headers: { Authorization: 'Bearer fresh-token' } },
+        { id: 'conn-oauth', name: 'oauth-mcp', transport: 'http', url: 'https://oauth.example.com', headers: { Authorization: 'Bearer fresh-token' } },
       ]);
     });
 
@@ -2441,7 +2441,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'shared-mcp', transport: 'http', url: 'https://shared.example.com', headers: { 'X-API-Key': 'owner-secret' } },
+        { id: 'conn-shared', name: 'shared-mcp', transport: 'http', url: 'https://shared.example.com', headers: { 'X-API-Key': 'owner-secret' } },
       ]);
       // Credential lookup is keyed on the OWNER team (connector.teamId), not the
       // task's workspace team (team-1) — §1b invariant.
@@ -2472,7 +2472,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([
-        { name: 'github', transport: 'http', url: 'https://owned.example.com' },
+        { id: 'conn-own', name: 'github', transport: 'http', url: 'https://owned.example.com' },
       ]);
     });
 
@@ -2562,6 +2562,7 @@ describe('POST /api/workers/claim', () => {
 
       expect(res.status).toBe(200);
       expect(data.workers[0].mcpConnectors).toEqual([{
+        id: 'conn-assert',
         name: 'cue',
         transport: 'http',
         url: 'https://cue.buildd.dev/api/mcp',
@@ -2903,6 +2904,10 @@ describe('entity catalog injection at claim time', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
-    expect(data.workers[0].resolvedContextProviders).toBeUndefined();
+    // Entity catalog block must be absent when the store errors.
+    // Note: knowledge context hint may still be present from buildKnowledgeContext —
+    // that is a separate feature and is not suppressed by entity store failures.
+    const providers: string[] = data.workers[0].resolvedContextProviders ?? [];
+    expect(providers.join('\n')).not.toContain('## Known entities');
   });
 });

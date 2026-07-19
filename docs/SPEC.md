@@ -191,7 +191,7 @@ shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
   (Agent SDK) and `codex-backend.ts` (Codex SDK), behind a common event-adapter
   interface. Backend resolution: `task.backend → role.defaultBackend → workspace
   default → 'claude'`. Codex invariants (events, multi-turn, resume, threads) are
-  specified in `docs/codex-backend-spec.md`.
+  specified in `docs/specs/codex-backend-spec.md`.
 - **Server-managed credentials** — runners need not hold local creds. The claim
   response delivers the resolved `oauth_token` / `api_key` from `secrets`; runners
   poll and back off on failure.
@@ -300,7 +300,7 @@ brutalist UI.
 - **`codex_credentials` table** — dropped (migration 0047); use `secrets`.
 
 **Planned, not in this repo:** iOS app (`buildd-ios`, separate repo;
-`buildd-mobile.pen` design + `docs/plan-ios-app-mvp.md`).
+`buildd-mobile.pen` design + `docs/plans/ios-app-mvp.md`).
 
 ---
 
@@ -309,13 +309,14 @@ brutalist UI.
 | Doc | Subject | Status |
 |-----|---------|--------|
 | `SPEC.md` (this file) | Canonical product/architecture spec | Live |
-| `codex-backend-spec.md` | Codex backend invariants | Implemented |
+| `specs/` (+ `specs/INDEX.md`) | Per-capability contracts (linted) | Live |
+| `specs/codex-backend-spec.md` | Codex backend invariants | Implemented |
 | `credentials-architecture.md` | Unified `secrets` scoping + refresh | Implemented |
 | `knowledge-store.md` | Hybrid retrieval design | Implemented |
 | `design/workspace-knowledge-management.md` | Per-PR ingestion, code graph, consolidation | Draft |
 | `testing.md`, `testing-strategy.md` | TDD, test layers, fixtures | Implemented |
-| `plan-remove-objectives.md` | Objectives→Mission port | Partial/historical |
-| `plan-ios-app-mvp.md` | iOS MVP | Planned (separate repo) |
+| `plans/archive/remove-objectives.md` | Objectives→Mission port | Shipped/historical |
+| `plans/ios-app-mvp.md` | iOS MVP | Planned (separate repo) |
 
 ---
 
@@ -352,4 +353,4 @@ This file is the input; docs/site are outputs. To keep it from rotting:
    store (separate dev-loop pipeline; see the skill) and diffs *claims vs. reality*,
    filing drift as tasks.
 3. `buildd-docs` and `buildd-site` are reconciled *against this file*, never the
-   reverse. Open drift items live in `docs/doc-drift-punchlist.md`.
+   reverse. Open drift items live in `docs/reports/doc-drift-punchlist.md`.

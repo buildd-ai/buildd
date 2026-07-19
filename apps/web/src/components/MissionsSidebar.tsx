@@ -7,6 +7,7 @@ import UserAvatarMenu from './UserAvatarMenu';
 import TeamSwitcherRail from './TeamSwitcherRail';
 import { isNavActive } from '@/lib/nav-active';
 import { NAV_ITEMS } from '@/lib/nav-config';
+import { useEscalation } from './EscalationProvider';
 
 interface SidebarTeam {
   id: string;
@@ -23,6 +24,7 @@ interface MissionsSidebarProps {
 export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null }: MissionsSidebarProps) {
   const pathname = usePathname();
   const connectionsActive = isNavActive(pathname, '/app/settings');
+  const { count: escalationCount } = useEscalation();
 
   return (
     <div className="hidden md:flex w-14 flex-col items-center py-4 bg-[var(--chrome-sidebar)] border-r border-border-default flex-shrink-0">
@@ -35,6 +37,7 @@ export default function MissionsSidebar({ userInitial = 'M', teams = [], current
 
       {NAV_ITEMS.map((item) => {
         const active = isNavActive(pathname, item.href);
+        const showEscalationBadge = item.href === '/app/home' && escalationCount > 0;
         return (
           <Link
             key={item.href}
@@ -43,10 +46,15 @@ export default function MissionsSidebar({ userInitial = 'M', teams = [], current
               active ? '' : 'hover:bg-accent-soft'
             }`}
           >
-            <span className={`w-5 h-5 transition-colors ${
+            <span className={`relative w-5 h-5 transition-colors ${
               active ? 'text-accent-text' : 'text-text-muted group-hover:text-text-secondary'
             }`}>
               {item.icon}
+              {showEscalationBadge && (
+                <span className="absolute -top-1 -right-1.5 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-error text-white">
+                  {escalationCount}
+                </span>
+              )}
             </span>
             <span className="pointer-events-none absolute left-[52px] top-1/2 -translate-y-1/2 bg-card text-text-primary border border-border-strong text-[11px] font-medium px-2.5 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-50">
               {item.label}

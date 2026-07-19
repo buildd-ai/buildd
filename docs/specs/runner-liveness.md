@@ -1,3 +1,10 @@
+---
+title: Runner Liveness
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Runner Liveness
 
 **Capability statement**: The buildd coordination layer MUST detect when a

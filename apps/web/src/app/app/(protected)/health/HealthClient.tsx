@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure } from './page';
+import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure, CredentialHealthItem } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -72,6 +72,7 @@ interface Props {
   usageStats: UsageStats | null;
   schedules: ScheduleRow[];
   recentFailures: RecentFailure[];
+  credentialHealth: CredentialHealthItem[];
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
 }
@@ -164,6 +165,7 @@ export function HealthClient({
   usageStats,
   schedules,
   recentFailures,
+  credentialHealth,
   teamWorkspaces,
   wsFilter,
 }: Props) {
@@ -675,6 +677,67 @@ export function HealthClient({
               </>
             );
           })()}
+        </section>
+      )}
+
+      {/* Credential Health */}
+      {credentialHealth.length > 0 && (
+        <section data-testid="health-section-credential-health" className="mb-6">
+          <h2 className="section-label mb-3">Backend Credentials</h2>
+          <div className="card divide-y divide-border-default">
+            {credentialHealth.map((cred) => {
+              const purposeLabel =
+                cred.purpose === 'oauth_token' ? 'Claude OAuth token'
+                : cred.purpose === 'anthropic_api_key' ? 'Anthropic API key'
+                : cred.purpose === 'codex_credential' ? 'Codex credential'
+                : cred.purpose;
+              const isRevoked = cred.healthStatus === 'revoked';
+              return (
+                <div key={cred.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-text-primary">{purposeLabel}</p>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          isRevoked
+                            ? 'bg-status-error/10 text-status-error'
+                            : 'bg-status-warning/10 text-status-warning'
+                        }`}>
+                          {isRevoked ? 'revoked' : 'degraded'}
+                        </span>
+                        {cred.consecutiveAuthFailures > 0 && (
+                          <span className="text-[10px] text-text-muted">
+                            {cred.consecutiveAuthFailures} consecutive failure{cred.consecutiveAuthFailures !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                      {cred.lastFailureAt && (
+                        <p className="text-xs text-text-muted mt-0.5">
+                          Last failure: {timeAgo(cred.lastFailureAt)}
+                          {cred.lastFailureMessage && (
+                            <span className={`ml-1 ${isRevoked ? 'text-status-error' : 'text-status-warning'}`}>
+                              — {cred.lastFailureMessage.slice(0, 100)}
+                            </span>
+                          )}
+                        </p>
+                      )}
+                      {cred.lastVerifiedAt && (
+                        <p className="text-xs text-text-muted mt-0.5">
+                          Last verified: {timeAgo(cred.lastVerifiedAt)}
+                        </p>
+                      )}
+                    </div>
+                    <a
+                      href="/app/settings?section=agent-backends"
+                      className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
+                    >
+                      Fix in Settings
+                    </a>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
 

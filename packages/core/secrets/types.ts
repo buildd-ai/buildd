@@ -15,6 +15,8 @@ export interface SecretMetadata {
   label?: string;
 }
 
+export type CredentialHealthStatus = 'healthy' | 'degraded' | 'revoked' | 'unknown';
+
 export interface SecretRecord {
   id: string;
   teamId: string;
@@ -22,6 +24,13 @@ export interface SecretRecord {
   workspaceId: string | null;
   purpose: SecretPurpose;
   label: string | null;
+  healthStatus: CredentialHealthStatus;
+  lastFailureAt: Date | null;
+  lastFailureMessage: string | null;
+  consecutiveAuthFailures: number;
+  lastSuccessAt: Date | null;
+  lastVerifiedAt?: Date | null;
+  lastVerificationError?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

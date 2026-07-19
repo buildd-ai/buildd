@@ -28,7 +28,7 @@ docs to match SPEC.md.
 - After a schema (`packages/core/db/schema.ts`) or API-route change that alters the
   domain model — update SPEC.md §2/§4 in the same PR.
 - Before refreshing `buildd-docs` or `buildd-site`.
-- Periodic drift audit (regenerate `docs/doc-drift-punchlist.md`).
+- Periodic drift audit (regenerate `docs/reports/doc-drift-punchlist.md`).
 
 ## The loop (proven pipeline)
 

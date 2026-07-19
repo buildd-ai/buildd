@@ -108,4 +108,6 @@ export const events = {
   TASK_RETRY_CAP: 'task:retry_cap',
   // Mission feed events
   MISSION_NOTE_POSTED: 'mission:note_posted',
+  // Connector auth expiry (mid-task 401 circuit breaker)
+  WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
 } as const;

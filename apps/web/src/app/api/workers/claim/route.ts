@@ -8,10 +8,12 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
+import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
+import { resolveClaudeCredential, refreshClaudeCredential, getClaudeSecretId } from '@/lib/claude-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
@@ -31,6 +33,7 @@ function slugifyConnectorName(name: string): string {
 // A single MCP connector entry resolved at claim time. Superset of the http-only
 // shared type — the runner keys behaviour off `transport`.
 type ResolvedMcpConnector = {
+  id?: string;
   name: string;
   transport: 'http' | 'stdio';
   url?: string;
@@ -91,7 +94,7 @@ export async function POST(req: NextRequest) {
   const activeWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, account.id),
-      inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     ),
   });
 
@@ -1439,7 +1442,7 @@ export async function POST(req: NextRequest) {
           if (!connector.url) continue;
 
           if (connector.authMode === 'none') {
-            mcpConnectors.push({ name, transport: 'http', url: connector.url });
+            mcpConnectors.push({ id: connector.id, name, transport: 'http', url: connector.url });
             continue;
           }
 
@@ -1447,6 +1450,7 @@ export async function POST(req: NextRequest) {
           if (connector.authMode === 'assertion') {
             if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
             mcpConnectors.push({
+              id: connector.id,
               name,
               transport: 'http',
               url: connector.url,
@@ -1474,6 +1478,7 @@ export async function POST(req: NextRequest) {
               const accessToken = tokenBlob.access_token as string | undefined;
               if (!accessToken) continue;
               mcpConnectors.push({
+                id: connector.id,
                 name,
                 transport: 'http',
                 url: connector.url,
@@ -1486,6 +1491,7 @@ export async function POST(req: NextRequest) {
             const decryptedValue = await connectorProvider.get(secretInfo.id);
             if (!decryptedValue) continue;
             mcpConnectors.push({
+              id: connector.id,
               name,
               transport: 'http',
               url: connector.url,
@@ -1574,6 +1580,58 @@ export async function POST(req: NextRequest) {
         }
       } catch (err) {
         console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
+      }
+    }
+  }
+
+  // Attach managed Claude OAuth credential (claude_credential purpose) for Claude-backend tasks.
+  //
+  // Workers receive ONLY the access_token — never the refresh_token. This prevents
+  // in-session token rotation: when the SDK has no refresh_token in the credentials
+  // file, it cannot call Anthropic's token endpoint, eliminating the "token family
+  // revocation" cascade that occurs when multiple workers rotate concurrently.
+  //
+  // Server-side refresh (with a 60-minute optimistic DB lock) ensures the access_token
+  // is fresh at claim time. The cron job proactively refreshes tokens before they expire.
+  if (process.env.ENCRYPTION_KEY) {
+    for (const cw of claimedWorkers) {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      // Only inject for Claude-backend tasks; Codex tasks already handled above.
+      if ((task as any)?.backend === 'codex') continue;
+
+      const wsId = task?.workspaceId;
+      const teamId = (task as any)?.workspace?.teamId;
+      if (!wsId || !teamId) continue;
+
+      try {
+        let cred = await resolveClaudeCredential({ teamId, workspaceId: wsId });
+        if (cred) {
+          // Claim-gate refresh: if the access_token is within 10 minutes of expiry,
+          // refresh server-side before handing it to the runner.
+          const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
+          if (cred.tokenExpiresAt && new Date(cred.tokenExpiresAt) < tenMinutesFromNow) {
+            const secretId = await getClaudeSecretId({ teamId, workspaceId: wsId });
+            if (secretId) {
+              const refreshResult = await refreshClaudeCredential(secretId);
+              if (refreshResult === 'refreshed') {
+                const refreshed = await resolveClaudeCredential({ teamId, workspaceId: wsId });
+                if (refreshed) cred = refreshed;
+                console.log(`[claim] Claude credential refreshed at claim time for workspace ${wsId}`);
+              } else if (refreshResult === 'error') {
+                console.warn(`[claim] Claude credential refresh failed for workspace ${wsId} — omitting`);
+                cred = null;
+              }
+              // 'locked' = concurrent refresh in progress — proceed with existing token.
+            }
+          }
+        }
+        if (cred) {
+          (cw as any).claudeAccessToken = cred.accessToken;
+          (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
+          console.log(`[claim] Attached claude_credential access_token for workspace ${wsId}`);
+        }
+      } catch (err) {
+        console.warn(`[claim] Failed to fetch Claude credential for workspace ${wsId}:`, err);
       }
     }
   }

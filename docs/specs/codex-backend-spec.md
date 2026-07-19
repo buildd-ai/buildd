@@ -1,3 +1,11 @@
+---
+title: Codex Backend Behavioral Spec
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
+
 # Codex backend — behavioral spec
 
 **Status:** living spec. Describes how the Codex worker backend *behaves* and the invariants that must hold. This is the regression contract: when you change the Codex backend, the statements here must stay true (or this doc changes in the same PR). It is **not** a build plan — the implementation shipped via PRs #869/#870/#871/#873/#874/#875.

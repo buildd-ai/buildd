@@ -120,6 +120,7 @@ interface ChunkRow {
   content: string;
   metadata: Record<string, unknown>;
   source_ts?: string | null;
+  updated_at?: string | null;
   is_current?: boolean;
   score?: number;
 }
@@ -689,7 +690,8 @@ export class PgVectorStore implements KnowledgeStore {
     if (sourceIds.length === 0) return [];
     const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
     const res = await db.execute(sql`
-      SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata
+      SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata,
+             updated_at, is_current
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND source_id IN (${inList})
@@ -709,7 +711,7 @@ export class PgVectorStore implements KnowledgeStore {
       .map(id => {
         const row = byId.get(id);
         if (!row) return null;
-        return {
+        const result: QueryResult = {
           id: row.source_id,
           namespace: row.namespace,
           corpus: row.corpus,
@@ -719,8 +721,66 @@ export class PgVectorStore implements KnowledgeStore {
           content: row.content,
           metadata: row.metadata ?? {},
           score: scoreMap.get(id) ?? 0,
-        } satisfies QueryResult;
+          createdAt: row.updated_at ? new Date(row.updated_at) : null,
+          isCurrent: row.is_current ?? true,
+        };
+        return result;
       })
       .filter((r): r is QueryResult => r !== null);
+  }
+
+  async countNamespace(namespace: string): Promise<number> {
+    const db = await getDb();
+    const res = await db.execute(sql`
+      SELECT COUNT(*) AS cnt FROM knowledge_chunks WHERE namespace = ${namespace} AND is_current = true
+    `);
+    return Number((res.rows[0] as Record<string, unknown>)?.cnt ?? 0);
+  }
+
+  /**
+   * Check for near-duplicates before writing. Returns raw cosine similarity
+   * (no recency scoring) so callers can compare against fixed thresholds.
+   */
+  async nearDupeCheck(
+    namespace: string,
+    content: string,
+    topK = 5,
+  ): Promise<Array<{ id: string; similarity: number; content: string; sourceUrl: string | null }>> {
+    const corpus = namespace.split(':')[1] as Corpus;
+    const activeEmbedder = this._selectEmbedder(corpus);
+    if (!activeEmbedder) return [];
+
+    try {
+      const [embedding] = await activeEmbedder.embed([content]);
+      const embeddingStr = vectorToString(embedding);
+      const db = await getDb();
+
+      const res = await db.execute(sql`
+        SELECT source_id AS id,
+               1 - (embedding <=> ${embeddingStr}::vector) AS similarity,
+               content,
+               source_url
+        FROM knowledge_chunks
+        WHERE namespace = ${namespace}
+          AND embedding IS NOT NULL
+          AND is_current = true
+        ORDER BY embedding <=> ${embeddingStr}::vector
+        LIMIT ${topK}
+      `);
+
+      return (res.rows as Array<{
+        id: string;
+        similarity: string | number;
+        content: string;
+        source_url: string | null;
+      }>).map(r => ({
+        id: r.id,
+        similarity: Number(r.similarity),
+        content: r.content,
+        sourceUrl: r.source_url,
+      }));
+    } catch {
+      return [];
+    }
   }
 }

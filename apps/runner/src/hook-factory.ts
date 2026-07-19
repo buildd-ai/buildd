@@ -246,8 +246,10 @@ export class HookFactory {
               worker.assertionTokenCache.set(serverName, { accessToken, expiresAt });
               console.log(`[Worker ${worker.id}] Assertion re-auth succeeded for connector ${serverName}`);
             } catch (err) {
-              // Re-exchange failed — log and let the tool error surface naturally to the agent.
-              // Do NOT set paused_connector_auth or emit connector:auth_expired (spec §F.2).
+              // Re-exchange failed — mark so handleMessage can fire the circuit breaker
+              // when it processes the tool_result (spec §F.2: exhausted → connector:auth_expired).
+              worker.assertionReAuthFailed ??= new Set();
+              worker.assertionReAuthFailed.add(serverName);
               console.error(`[Worker ${worker.id}] Assertion re-auth failed for connector ${serverName}:`, err);
             }
           }

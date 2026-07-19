@@ -3,6 +3,10 @@ import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
+const mockConnectorsFindFirst = mock(() => Promise.resolve(null));
+const mockSecretsUpdate = mock(() => ({
+  set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+}));
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
@@ -56,6 +60,7 @@ mock.module('@/lib/pusher', () => ({
     WORKER_PROGRESS: 'worker:progress',
     WORKER_COMPLETED: 'worker:completed',
     WORKER_FAILED: 'worker:failed',
+    WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
   },
 }));
 
@@ -68,11 +73,13 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
+      connectors: { findFirst: mockConnectorsFindFirst },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts') return mockAccountsUpdate();
       if (table === 'teams') return mockTeamsUpdate();
+      if (table === 'secrets') return mockSecretsUpdate();
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockGenericInsert(table),
@@ -135,6 +142,8 @@ mock.module('@buildd/core/db/schema', () => ({
   teams: 'teams',
   tenantBudgets: { tenantId: 'tenantId', teamId: 'teamId' },
   missionNotes: 'missionNotes',
+  connectors: 'connectors',
+  secrets: 'secrets',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -2688,6 +2697,255 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       // tryAutoMergeWorkerPr must NOT fire for a normal task's completion
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('connector_auth_expired event', () => {
+    const baseWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockConnectorsFindFirst.mockReset();
+      mockSecretsUpdate.mockReset();
+      mockSecretsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+    });
+
+    it('marks the connector secret as expired when connector is found', async () => {
+      const mockSetFn = mock(() => ({ where: mock(() => Promise.resolve()) }));
+      mockSecretsUpdate.mockReturnValue({ set: mockSetFn });
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretsUpdate).toHaveBeenCalled();
+      expect(mockSetFn).toHaveBeenCalledWith(
+        expect.objectContaining({ lastVerificationError: 'mid_task_401' })
+      );
+    });
+
+    it('emits WORKER_CONNECTOR_AUTH_EXPIRED Pusher event with correct shape', async () => {
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const calls = mockTriggerEvent.mock.calls;
+      const connectorAuthCall = calls.find((c: any[]) => c[1] === 'worker:connector-auth-expired');
+      expect(connectorAuthCall).toBeTruthy();
+      expect(connectorAuthCall[0]).toBe('workspace-ws-1');
+      expect(connectorAuthCall[2]).toMatchObject({
+        workerId: 'worker-1',
+        connectorId: 'conn-1',
+        connectorName: 'GitHub',
+      });
+    });
+
+    it('skips secret update and Pusher event when connector is not found', async () => {
+      mockConnectorsFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_auth_expired',
+          connectorId: 'conn-unknown',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
+      const calls = mockTriggerEvent.mock.calls;
+      const connectorAuthCall = calls.find((c: any[]) => c[1] === 'worker:connector-auth-expired');
+      expect(connectorAuthCall).toBeUndefined();
+    });
+
+    it('ignores event field when connectorId is missing', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { event: 'connector_auth_expired', status: 'waiting_input' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockConnectorsFindFirst).not.toHaveBeenCalled();
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  // Spec §6.2 — retry-continuity failure capture
+  describe('failure capture (retry-continuity)', () => {
+    it('writes resumeBranch, lastCommitSha, and structured failureContext on permanent failure', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/abc-fix-login',
+        lastCommitSha: 'abc123sha',
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: null,
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'TypeScript compilation failed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate.context.resumeBranch).toBe('buildd/abc-fix-login');
+      expect(failedUpdate.context.lastCommitSha).toBe('abc123sha');
+      expect(typeof failedUpdate.context.failureContext).toBe('object');
+      expect(failedUpdate.context.failureContext.summary).toBe('TypeScript compilation failed');
+      expect(failedUpdate.context.failureContext.errorType).toBe('runtime_error');
+      expect(failedUpdate.context.failureContext.commitSha).toBe('abc123sha');
+    });
+
+    it('writes resumeBranch and retryCount together on auto-retry (mission task)', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/abc-mission-task',
+        lastCommitSha: 'def456sha',
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: 'mission-1',
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Runtime error in tests' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Mission task: auto-retry → status becomes pending
+      const pendingUpdate = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(pendingUpdate).toBeDefined();
+      expect(pendingUpdate.context.retryCount).toBe(1);
+      expect(pendingUpdate.context.resumeBranch).toBe('buildd/abc-mission-task');
+      expect(pendingUpdate.context.lastCommitSha).toBe('def456sha');
+      expect(pendingUpdate.context.failureContext.errorType).toBe('runtime_error');
+    });
+
+    it('omits lastCommitSha from context when worker has none', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/no-commits-branch',
+        lastCommitSha: null,
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: null,
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Aborted on startup' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate.context.resumeBranch).toBe('buildd/no-commits-branch');
+      expect(failedUpdate.context.lastCommitSha).toBeUndefined();
+      expect(failedUpdate.context.failureContext.commitSha).toBeUndefined();
     });
   });
 });

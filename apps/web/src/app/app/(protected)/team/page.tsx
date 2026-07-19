@@ -6,6 +6,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 import { TeamGrid } from './TeamGrid';
 
 export const dynamic = 'force-dynamic';
@@ -132,7 +133,7 @@ export default async function TeamPage() {
   const activeWorkers = await db.query.workers.findMany({
     where: and(
       inArray(workers.workspaceId, wsIds),
-      inArray(workers.status, ['running', 'starting', 'waiting_input']),
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     ),
     with: {
       task: {

@@ -186,6 +186,11 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // Managed Claude access token (from claude_credential purpose). When set, the runner
+  // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
+  // access_token — no refresh_token — preventing in-session token rotation.
+  claudeAccessToken?: string;
+  claudeTokenExpiresAt?: Date | null;
   // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
   codexCredential?: {
     accessToken: string;
@@ -199,6 +204,9 @@ export interface LocalWorker {
   assertionConnectors?: Array<{ name: string; mintApiUrl: string; tokenEndpoint: string }>;
   // Per-connector assertion access token cache (in-memory, per-session only)
   assertionTokenCache?: Map<string, { accessToken: string; expiresAt: number }>;
+  // Connectors for which assertion re-exchange has failed (set by hook-factory §F.2).
+  // When set, handleMessage treats a 401 tool_result as exhausted → fires circuit breaker.
+  assertionReAuthFailed?: Set<string>;
   // Prompt suggestions for follow-up actions (populated on completion)
   promptSuggestions?: string[];
   // Last assistant message text (captured via Stop hook's last_assistant_message)

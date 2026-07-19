@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import {
@@ -25,6 +26,7 @@ import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowl
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
+import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
@@ -195,6 +197,7 @@ export function selectServerCredentials(claimed: {
 // `stdio` carries command/args/env. Mirrors the claim route's ResolvedMcpConnector.
 // When `assertionMode` is true, the runner performs mint + exchange before connecting.
 export interface ResolvedMcpConnector {
+  id?: string;
   name: string;
   transport?: 'http' | 'stdio';
   url?: string;
@@ -1047,7 +1050,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1159,6 +1162,13 @@ export class WorkerManager {
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
     }
+    if (claimedWorker.claudeAccessToken) {
+      worker.claudeAccessToken = claimedWorker.claudeAccessToken;
+      worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
+        ? new Date(claimedWorker.claudeTokenExpiresAt)
+        : null;
+      console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
+    }
 
     if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
       (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
@@ -1226,6 +1236,53 @@ export class WorkerManager {
     const { warnings } = checkMcpPreFlight(mcpJsonPath, process.env as Record<string, string | undefined>);
     for (const warning of warnings) {
       console.warn(`[Worker ${worker.id}] ${warning}`);
+    }
+
+    // Provision gate: prove the environment is runnable BEFORE the agent starts
+    // consuming budget (the SDK loop begins in startSession). Enforcement is
+    // opt-in — only a declared .buildd/env.yaml blocks; auto-detected plans never
+    // fail a runner that didn't opt in. We skip the `install` phase here because
+    // setupWorktree already ran the runner's own tolerant install; readiness is
+    // what proves the tree usable. See docs/design/reliable-env-provisioning.md.
+    try {
+      const gate = await runProvisionGate({
+        root: sessionCwd,
+        env: process.env,
+        skipPhases: ['install'],
+      });
+      if (gate.enforced) {
+        for (const s of gate.steps) {
+          console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
+        }
+        if (!gate.ok) {
+          const reason = gate.reason ?? 'Provision failed';
+          console.warn(`[Worker ${worker.id}] ${reason} — not starting agent (no budget spent)`);
+          worker.status = 'error';
+          worker.error = reason;
+          worker.currentAction = 'Environment not ready';
+          worker.hasNewActivity = true;
+          worker.completedAt = Date.now();
+          this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
+
+          await this.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: reason,
+          }).catch(updateErr => {
+            console.error(`[Worker ${worker.id}] Failed to report provision failure to server:`, updateErr);
+          });
+
+          this.emit({ type: 'worker_update', worker });
+
+          if (worker.worktreePath) {
+            cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+          }
+          return worker; // gate blocked — do NOT start the agent session
+        }
+        this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
+      }
+    } catch (gateErr) {
+      // A gate that itself errors must never block a task — fail open, log, proceed.
+      console.warn(`[Worker ${worker.id}] Provision gate errored (proceeding):`, gateErr instanceof Error ? gateErr.message : gateErr);
     }
 
     // Start SDK session (async, runs in background)
@@ -1351,6 +1408,9 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
+    // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
+    // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
+    let claudeConfigDir: string | undefined;
     // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
@@ -1656,6 +1716,24 @@ export class WorkerManager {
         if (session) (session as any).codexHome = codexHome;
       }
 
+      // Claude credential isolation: when the claim supplied a managed access_token
+      // (from claude_credential purpose), create a per-worker CLAUDE_CONFIG_DIR and
+      // write credentials.json with ONLY the access_token (no refresh_token).
+      // This prevents the SDK from calling the Anthropic refresh endpoint in-session,
+      // eliminating the token family revocation cascade from concurrent workers.
+      if (worker.claudeAccessToken) {
+        const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
+          worker.id,
+          worker.claudeAccessToken,
+          worker.claudeTokenExpiresAt ?? null,
+        );
+        claudeConfigDir = _cd;
+        cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+        // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
+        delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+        console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
+      }
+
       // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
       // is known-expired. The claim route (criterion D) already attempts a refresh
       // and clears the credential on unrecoverable failure — this is a second guard
@@ -1731,6 +1809,39 @@ export class WorkerManager {
         } else {
           systemPrompt.append = `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
         }
+      }
+
+      // Inject retry-continuity prompt section when resumeBranch is set
+      const resumeBranch = (task.context as any)?.resumeBranch as string | undefined;
+      if (resumeBranch) {
+        const lastCommitSha = (task.context as any)?.lastCommitSha as string | undefined;
+        const rawFailureCtx = (task.context as any)?.failureContext;
+        const failureSummary: string | undefined =
+          typeof rawFailureCtx === 'string'
+            ? rawFailureCtx
+            : (rawFailureCtx as any)?.summary;
+
+        const sha = lastCommitSha ?? `origin/${resumeBranch}`;
+        const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
+        const decideStep = failureSummary ? '4' : '3';
+        const logStep = failureSummary ? '5' : '4';
+        const retryContinuitySection = [
+          '',
+          '## Prior Attempt — Assess Before Starting',
+          '',
+          'A previous agent attempt left commits on this branch. Before editing any file:',
+          '',
+          `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
+          `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,
+          `2. Run \`git diff origin/${defaultBranch}...origin/${resumeBranch}\` to see what the prior attempt changed relative to base.`,
+          ...failureLine,
+          `${decideStep}. Explicitly decide: **continue/salvage** (fix what failed, keep prior commits) or **restart** (reset to base, start clean).`,
+          `${logStep}. Log your decision via \`update_progress\` **before** making any file edits.`,
+          '',
+          'Do not skip this assessment step. The decision and its rationale must appear in the progress log.',
+        ].join('\n');
+
+        systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
@@ -2466,6 +2577,11 @@ If something is missing or incomplete, describe what and fix it now.`;
           cleanupCodexAuth(worker.id, codexHome);
         }
 
+        // Clean up per-worker Claude config dir (access_token isolation).
+        if (claudeConfigDir) {
+          cleanupClaudeConfigDir(worker.id, claudeConfigDir);
+        }
+
         // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
         // leave the repo dirty: delete it if we created it, restore the original
         // verbatim if we appended to a pre-existing one. Best-effort.
@@ -3011,6 +3127,44 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.pendingErrorTraces.push(...traces);
             for (const t of traces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
+            }
+          }
+
+          // 401 circuit breaker: detect auth failures from MCP connector tool results.
+          // For assertion-mode connectors, re-exchange runs silently via the PostToolUseFailure
+          // hook (§F.2 in assertion-grant spec); the breaker fires only when re-exchange has
+          // already been exhausted (assertionReAuthFailed flag set by hook-factory).
+          // For oauth/static connectors the breaker fires immediately.
+          if (
+            block.is_error === true &&
+            worker.mcpConnectors && worker.mcpConnectors.length > 0 &&
+            source?.startsWith('mcp__')
+          ) {
+            const is401 = /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i.test(text);
+            if (is401) {
+              const serverKey = source.split('__')[1];
+              const connector = worker.mcpConnectors.find((c: any) =>
+                c.name.toLowerCase().replace(/[^a-z0-9_]/g, '_') === serverKey
+              );
+              if (connector) {
+                const isAssertion = worker.assertionConnectors?.some((a: any) => a.name === connector.name);
+                const reAuthFailed = worker.assertionReAuthFailed?.has(connector.name);
+                // Skip circuit breaker for assertion connectors unless re-exchange has failed.
+                if (!isAssertion || reAuthFailed) {
+                  console.log(`[Worker ${worker.id}] 401 from connector "${connector.name}" (${connector.id}) — signaling API and aborting`);
+                  worker.error = `connector_auth_expired:${connector.id}`;
+                  this.buildd.updateWorker(worker.id, {
+                    event: 'connector_auth_expired',
+                    connectorId: connector.id,
+                    connectorUrl: connector.url,
+                    status: 'waiting_input',
+                  }).catch((err: unknown) => {
+                    console.warn(`[Worker ${worker.id}] connector_auth_expired sync failed:`, err);
+                  });
+                  const session = this.sessions.get(worker.id);
+                  if (session) session.abortController.abort();
+                }
+              }
             }
           }
         }
