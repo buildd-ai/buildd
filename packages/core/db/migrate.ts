@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { config } from '../config';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { planMigrations } from './migrate-plan';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = join(__dirname, '..', 'drizzle');
@@ -37,20 +38,30 @@ async function main() {
       `);
 
       // Fetch ALL applied migration timestamps (not just the last).
-      // The built-in Drizzle migrator only looks at the most recent entry,
-      // which means a failed migration N can prevent N-1's tracking row from
-      // being recorded. We record after each migration instead.
       const rows = await db.session.all(
         sql`SELECT created_at FROM ${sql.identifier(SCHEMA)}.${sql.identifier(TABLE)}`
       );
-      const applied = new Set((rows as { created_at: string | number }[]).map((r) => Number(r.created_at)));
-
       const migrations = readMigrationFiles({ migrationsFolder });
-      let ran = 0;
 
-      for (const migration of migrations) {
-        if (applied.has(migration.folderMillis)) continue;
+      // A missing tracking row does NOT mean a migration never ran — it can
+      // mean it ran but the tracking insert was lost (the exact bug this file
+      // was rewritten to fix). Only migrations newer than the high-water mark
+      // are safe to execute blind; anything older with a missing row is
+      // backfilled instead of replayed. See migrate-plan.ts.
+      const { toRun, toBackfill } = planMigrations(
+        migrations,
+        rows as { created_at: string | number }[]
+      );
 
+      for (const migration of toBackfill) {
+        console.log(`Backfilling tracking row for already-applied migration: ${migration.folderMillis}`);
+        await db.session.execute(
+          sql`INSERT INTO ${sql.identifier(SCHEMA)}.${sql.identifier(TABLE)} (hash, created_at)
+              VALUES (${migration.hash}, ${migration.folderMillis})`
+        );
+      }
+
+      for (const migration of toRun) {
         for (const stmt of migration.sql) {
           await db.session.execute(sql.raw(stmt));
         }
@@ -61,15 +72,19 @@ async function main() {
               VALUES (${migration.hash}, ${migration.folderMillis})`
         );
 
-        applied.add(migration.folderMillis);
-        ran++;
         console.log(`Applied: ${migration.folderMillis}`);
       }
 
-      console.log(`Migrations complete! (${ran} applied)`);
+      console.log(`Migrations complete! (${toRun.length} applied, ${toBackfill.length} backfilled)`);
       process.exit(0);
     } catch (err: any) {
       const msg: string = err?.message || String(err);
+      // neon-http query errors often carry the real Postgres detail on nested
+      // properties rather than in `message` — surface everything we can so a
+      // failure like this doesn't show a bare query with no cause again.
+      const detail = [err?.cause?.message, err?.detail, err?.hint, err?.position]
+        .filter(Boolean)
+        .join(' | ');
       const isTransient =
         msg.includes('endpoint is disabled') ||
         msg.includes('connect ECONNREFUSED') ||
@@ -80,7 +95,7 @@ async function main() {
         console.log(`Attempt ${attempt}/${maxAttempts} failed (${msg}), retrying in ${retryDelayMs / 1000}s...`);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       } else {
-        console.error('Migration failed:', msg);
+        console.error('Migration failed:', msg, detail ? `| ${detail}` : '');
         process.exit(1);
       }
     }
