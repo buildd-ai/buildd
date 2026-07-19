@@ -1,3 +1,10 @@
+---
+title: Team Namespace Scoping
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Team Namespace Scoping
 
 How "team" organizes workspaces and missions in the dashboard. Today team is a

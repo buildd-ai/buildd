@@ -13,6 +13,7 @@ import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context'
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
@@ -197,7 +198,7 @@ export async function GET(req: NextRequest) {
       const activeWorkerRows = await db.query.workers.findMany({
         where: and(
           inArray(workers.accountId, uniqueAccountIds),
-          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
+          inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         ),
         columns: { id: true, accountId: true },
       });
@@ -717,7 +718,7 @@ export async function GET(req: NextRequest) {
         const orphanedWorkers = await db.query.workers.findMany({
           where: and(
             inArray(workers.accountId, staleAccountIds),
-            inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+            inArray(workers.status, [...LIVE_WORKER_STATUSES]),
           ),
           columns: { id: true, taskId: true },
         });

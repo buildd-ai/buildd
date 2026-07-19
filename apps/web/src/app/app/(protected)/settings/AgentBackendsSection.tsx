@@ -115,6 +115,8 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
         <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
         <div className="border-t border-border-default" />
+        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
+        <div className="border-t border-border-default" />
         <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
       </div>
     </section>
@@ -239,12 +241,20 @@ interface SecretMeta {
   accountId: string | null;
   workspaceId: string | null;
   createdAt: string | null;
+  healthStatus?: 'healthy' | 'degraded' | 'revoked' | 'unknown';
+  lastFailureAt?: string | null;
+  lastFailureMessage?: string | null;
+  consecutiveAuthFailures?: number;
+  lastSuccessAt?: string | null;
+  lastVerifiedAt?: string | null;
+  lastVerificationError?: string | null;
 }
 
 function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -342,6 +352,26 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     }
   }
 
+  async function verify() {
+    if (!matching.length) return;
+    setVerifying(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/secrets/${matching[0].id}/verify`, { method: 'POST' });
+      const data = await res.json();
+      if (data.verified) {
+        setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
+      } else {
+        setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
+      }
+      await load();
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   const placeholder = purpose === 'oauth_token'
     ? 'sk-ant-oat01-… (output of `claude setup-token`)'
     : 'sk-ant-api03-… (Anthropic API key)';
@@ -399,9 +429,19 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       ) : matching.length > 0 ? (
         <div className="space-y-3">
           <div className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-            </span>
+            {matching[0].healthStatus === 'revoked' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-error/10 text-status-error border border-status-error/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-error" /> Revoked — re-auth required
+              </span>
+            ) : matching[0].healthStatus === 'degraded' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Degraded — auth failures detected
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
+              </span>
+            )}
             <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
           </div>
 
@@ -412,9 +452,26 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
             {matching[0].createdAt && (
               <div>Connected: {new Date(matching[0].createdAt).toLocaleString()}</div>
             )}
+            {matching[0].lastVerifiedAt && (
+              <div>
+                Last verified: {new Date(matching[0].lastVerifiedAt).toLocaleString()}
+                {matching[0].lastVerificationError
+                  ? <span className="text-status-error"> — failed: {matching[0].lastVerificationError}</span>
+                  : <span className="text-status-success"> — passed</span>}
+              </div>
+            )}
+            {(matching[0].healthStatus === 'revoked' || matching[0].healthStatus === 'degraded') && matching[0].lastFailureAt && (
+              <div className="text-status-error">
+                Last failure: {new Date(matching[0].lastFailureAt).toLocaleString()}
+                {matching[0].lastFailureMessage && ` — ${matching[0].lastFailureMessage.slice(0, 120)}`}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={verify} disabled={busy || verifying} className="text-sm font-medium text-status-info disabled:opacity-50">
+              {verifying ? 'Verifying…' : 'Verify'}
+            </button>
             {!replaceOpen && (
               <button onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }} className="text-sm font-medium text-text-secondary">
                 Replace credential
@@ -445,6 +502,243 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+    </div>
+  );
+}
+
+// ── Claude connected account (managed OAuth credential) ────────────────────────
+//
+// Stores ~/.claude/.credentials.json content as a managed credential. The server
+// refreshes tokens centrally (with a rotation lock) and gives workers only the
+// access_token — preventing the token family revocation cascade that occurs when
+// multiple workers independently call Anthropic's refresh endpoint.
+
+interface ClaudeCredentialStatus {
+  connected: boolean;
+  expired: boolean;
+  lastRefreshedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
+  scope: 'team' | 'workspace' | null;
+}
+
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[] }) {
+  const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteValue, setPasteValue] = useState('');
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const allTeams = scope === 'all_teams';
+  const base = `/api/workspaces/${accessWorkspaceId}/claude-credential`;
+  const q = `?scope=${scope}`;
+
+  const load = useCallback(async () => {
+    if (!accessWorkspaceId || scope === 'all_teams') { setStatus(null); return; }
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}${q}`);
+      setStatus(res.ok ? await res.json() : null);
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to load connected account status' });
+    } finally {
+      setLoading(false);
+    }
+  }, [base, q, accessWorkspaceId, scope]);
+
+  useEffect(() => {
+    setPasteOpen(false);
+    setPasteValue('');
+    setPasteError(null);
+    void load();
+  }, [load]);
+
+  function validate(raw: string): string | null {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return 'Must be valid JSON'; }
+    if (!parsed || typeof parsed !== 'object') return 'Must be a JSON object';
+    const root = parsed as Record<string, unknown>;
+    if (typeof root.access_token !== 'string' || typeof root.refresh_token !== 'string') {
+      return '.credentials.json must contain access_token and refresh_token';
+    }
+    return null;
+  }
+
+  async function connect() {
+    const err = validate(pasteValue);
+    if (err) { setPasteError(err); return; }
+    setBusy(true);
+    setPasteError(null);
+    setMsg(null);
+    try {
+      if (allTeams) {
+        const results = await Promise.all(
+          teamTargets.map((t) =>
+            fetch(`/api/workspaces/${t.workspaceId}/claude-credential`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ credentialsJson: pasteValue, scope: 'team' }),
+            }).then((r) => r.ok).catch(() => false),
+          ),
+        );
+        const ok = results.filter(Boolean).length;
+        setPasteValue('');
+        setMsg({
+          type: ok > 0 ? 'success' : 'error',
+          text: `Connected account saved for ${ok} of ${teamTargets.length} teams.`,
+        });
+        return;
+      }
+      const res = await fetch(base, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentialsJson: pasteValue, scope }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to connect');
+      setStatus(data);
+      setPasteValue('');
+      setPasteOpen(false);
+      setMsg({ type: 'success', text: 'Claude account connected (managed refresh enabled).' });
+    } catch (e) {
+      setPasteError(e instanceof Error ? e.message : 'Failed to connect');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refresh() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}/refresh${q}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'refreshed') { setMsg({ type: 'success', text: 'Token refreshed.' }); await load(); }
+      else if (data.status === 'locked') setMsg({ type: 'success', text: 'Token was refreshed recently.' });
+      else if (data.status === 'error') setMsg({ type: 'error', text: 'Refresh failed — the credential may be invalid.' });
+      else setMsg({ type: 'error', text: 'No credential to refresh.' });
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to refresh token' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke() {
+    if (!confirm('Remove this Claude connected account?')) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}${q}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+      setStatus({ connected: false, expired: false, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
+      setMsg({ type: 'success', text: 'Credential removed.' });
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to remove credential' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-text-primary">Claude — connected account <span className="text-xs font-normal text-status-info">(recommended)</span></h3>
+        <p className="text-xs text-text-secondary mt-0.5">
+          Paste the contents of <code className="bg-surface-3 px-1 rounded text-[11px]">~/.claude/.credentials.json</code> from a machine
+          where you&apos;ve authenticated with Claude. Tokens are refreshed server-side — workers never rotate them directly.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-text-tertiary">Loading…</div>
+      ) : status?.connected ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            {status.expired ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs refresh
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
+              </span>
+            )}
+            <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
+          </div>
+
+          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+            {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
+            {status.lastVerifiedAt && (
+              <div>
+                Last verified: {new Date(status.lastVerifiedAt).toLocaleString()}
+                {status.lastVerificationError
+                  ? <span className="text-status-error"> — failed: {status.lastVerificationError}</span>
+                  : <span className="text-status-success"> — passed</span>}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
+              {busy ? 'Refreshing…' : 'Refresh now'}
+            </button>
+            <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+            {!pasteOpen && (
+              <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
+                Replace credential
+              </button>
+            )}
+          </div>
+
+          {pasteOpen && (
+            <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
+              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {allTeams ? (
+            <span className="text-xs text-text-muted">Paste once — applies the same connected account to all {teamTargets.length} teams you manage.</span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
+              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
+            </span>
+          )}
+          <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+        </div>
+      )}
+
+      {msg && (
+        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
+      )}
+    </div>
+  );
+}
+
+function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">Paste .credentials.json</div>
+        {onCancel && <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>}
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={'{\n  "access_token": "...",\n  "refresh_token": "...",\n  "expires_at": 1700000000\n}'}
+        rows={6}
+        className="w-full px-3 py-2 rounded-lg border bg-surface font-mono text-xs resize-y"
+      />
+      {error && <div className="text-sm text-status-error">{error}</div>}
+      <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+      </button>
     </div>
   );
 }

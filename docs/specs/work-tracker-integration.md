@@ -1,3 +1,10 @@
+---
+title: Work Tracker Integration
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Work-tracker integration
 
 > **Status: partially shipped — this doc makes it first-class + multi-provider.**

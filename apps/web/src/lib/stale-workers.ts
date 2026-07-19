@@ -3,6 +3,7 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -183,7 +184,7 @@ export async function cleanupStaleWorkers(accountId: string) {
     const orphanedByHeartbeat = await db.query.workers.findMany({
       where: and(
         eq(workers.accountId, accountId),
-        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         lt(workers.updatedAt, heartbeatCutoff),
       ),
       columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },

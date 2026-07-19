@@ -186,6 +186,11 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // Managed Claude access token (from claude_credential purpose). When set, the runner
+  // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
+  // access_token — no refresh_token — preventing in-session token rotation.
+  claudeAccessToken?: string;
+  claudeTokenExpiresAt?: Date | null;
   // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
   codexCredential?: {
     accessToken: string;

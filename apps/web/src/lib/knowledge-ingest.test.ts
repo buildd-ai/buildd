@@ -139,7 +139,7 @@ mock.module('@buildd/core/knowledge-store', () => ({
 }));
 
 // Import AFTER mocks
-import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES } from './knowledge-ingest';
+import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, extractGithubFullName } from './knowledge-ingest';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const baseJob = {
@@ -535,5 +535,86 @@ describe('runDiffIngestJob', () => {
     // Escalation stat is set but no new full job inserted
     expect((finalUpdate()?.stats as any).escalated).toBe(true);
     expect(insertCalls.length).toBe(0);
+  });
+});
+
+// ── enqueueFullIngestJob ─────────────────────────────────────────────────────
+describe('enqueueFullIngestJob', () => {
+  beforeEach(resetAll);
+
+  it('inserts a queued full job and returns its id', async () => {
+    activeFullJobRows = []; // no active full job — lock is free
+    insertReturning = [{ id: 'full-job-1' }];
+
+    const id = await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'owner/repo' });
+
+    expect(id).toBe('full-job-1');
+    expect(insertCalls.length).toBe(1);
+    expect(insertCalls[0].table).toBe(knowledgeIngestJobs);
+    expect(insertCalls[0].values).toMatchObject({
+      workspaceId: 'ws-1',
+      repo: 'owner/repo',
+      scope: 'full',
+      status: 'queued',
+      trigger: 'repo_link',
+    });
+  });
+
+  it('uses provided trigger value when supplied', async () => {
+    activeFullJobRows = [];
+    insertReturning = [{ id: 'full-job-2' }];
+
+    await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'owner/repo', trigger: 'manual' });
+
+    expect(insertCalls[0].values.trigger).toBe('manual');
+  });
+
+  it('returns null and skips insert when a full job is already queued (lock held)', async () => {
+    activeFullJobRows = [{ id: 'existing-full-job', status: 'queued' }];
+
+    const id = await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'owner/repo' });
+
+    expect(id).toBeNull();
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('returns null and skips insert when a full job is already running (lock held)', async () => {
+    activeFullJobRows = [{ id: 'running-full-job', status: 'running' }];
+
+    const id = await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'owner/repo' });
+
+    expect(id).toBeNull();
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('returns null when onConflictDoNothing wins the race (concurrent insert)', async () => {
+    activeFullJobRows = []; // guard passes
+    insertReturning = []; // but DB index prevents the insert
+
+    const id = await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'owner/repo' });
+
+    expect(id).toBeNull();
+    expect(insertCalls.length).toBe(1); // insert attempted but lost the race
+  });
+});
+
+// ── extractGithubFullName ────────────────────────────────────────────────────
+describe('extractGithubFullName', () => {
+  it('parses HTTPS URLs', () => {
+    expect(extractGithubFullName('https://github.com/owner/repo')).toBe('owner/repo');
+    expect(extractGithubFullName('https://github.com/owner/repo.git')).toBe('owner/repo');
+  });
+
+  it('parses SSH URLs', () => {
+    expect(extractGithubFullName('git@github.com:owner/repo.git')).toBe('owner/repo');
+  });
+
+  it('passes through owner/name shorthand', () => {
+    expect(extractGithubFullName('owner/repo')).toBe('owner/repo');
+  });
+
+  it('returns null for unrecognisable input', () => {
+    expect(extractGithubFullName('')).toBeNull();
+    expect(extractGithubFullName('repo-only')).toBeNull();
   });
 });

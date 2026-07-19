@@ -68,10 +68,10 @@ describe('CredentialCache', () => {
     expect(cache.get('')).toBeUndefined();
   });
 
-  test('default TTL is ~3h', () => {
+  test('default TTL is 50min (below 1h OAuth access-token lifetime)', () => {
     const cache = new CredentialCache();
     expect(cache.ttl).toBe(DEFAULT_SERVER_CRED_TTL_MS);
-    expect(DEFAULT_SERVER_CRED_TTL_MS).toBe(3 * 60 * 60 * 1000);
+    expect(DEFAULT_SERVER_CRED_TTL_MS).toBe(50 * 60 * 1000);
   });
 });
 

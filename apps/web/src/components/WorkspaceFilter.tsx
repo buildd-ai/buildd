@@ -211,8 +211,39 @@ export function WorkspaceFilter({ workspaces, selectedId }: WorkspaceFilterProps
     </div>
   );
 
+  const wsNavLinks = selectedId
+    ? [
+        { label: 'Configure', href: `/app/workspaces/${selectedId}/config` },
+        { label: 'Runners', href: `/app/workspaces/${selectedId}/runners` },
+        { label: 'Schedules', href: `/app/workspaces/${selectedId}/schedules` },
+        { label: 'Memory', href: `/app/workspaces/${selectedId}/memory` },
+      ]
+    : null;
+
   const newWorkspaceFooter = (
     <div className={`border-t border-border-default ${isMobile ? 'pb-[env(safe-area-inset-bottom)]' : ''}`}>
+      {wsNavLinks && (
+        <div className="border-b border-border-default">
+          <div className={`font-mono uppercase tracking-widest text-text-muted ${isMobile ? 'px-5 pt-3 pb-1 text-[9px]' : 'px-3 pt-2 pb-0.5 text-[8px]'}`}>
+            {options.find((o) => o.id === selectedId)?.label ?? 'Workspace'}
+          </div>
+          {wsNavLinks.map(({ label, href }) => (
+            <Link
+              key={href}
+              href={href}
+              onClick={close}
+              className={`w-full flex items-center gap-2 font-mono text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors ${
+                isMobile ? 'px-5 py-2.5 text-sm' : 'px-3 py-1.5 text-xs'
+              }`}
+            >
+              <svg className="w-2.5 h-2.5 shrink-0 text-text-muted" fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                <path strokeLinecap="square" strokeLinejoin="miter" d="M2 5h6M5 2l3 3-3 3" />
+              </svg>
+              {label}
+            </Link>
+          ))}
+        </div>
+      )}
       <Link
         href="/app/workspaces/new"
         onClick={close}
@@ -239,21 +270,24 @@ export function WorkspaceFilter({ workspaces, selectedId }: WorkspaceFilterProps
         aria-label="Filter by workspace"
         onClick={() => setOpen((prev) => !prev)}
         onKeyDown={handleKeyDown}
-        className={`h-8 px-2.5 flex items-center gap-1.5 font-mono text-xs border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
+        className={`px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
           open ? 'shadow-sm text-text-primary' : ''
         }`}
       >
-        <span className="truncate max-w-[120px]">{selectedLabel}</span>
-        <svg
-          className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2.5}
-          aria-hidden="true"
-        >
-          <path strokeLinecap="square" strokeLinejoin="miter" d="M19 9l-7 7-7-7" />
-        </svg>
+        <span className="text-[8px] uppercase tracking-widest text-text-muted leading-tight">WORKSPACE</span>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate max-w-[120px] text-xs">{selectedLabel}</span>
+          <svg
+            className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2.5}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="square" strokeLinejoin="miter" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
       </button>
 
       {/* Mobile: bottom sheet */}

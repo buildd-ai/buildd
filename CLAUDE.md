@@ -200,6 +200,18 @@ Some workflows exist as GitHub Actions only and must NOT be registered as routab
 - **Competitive landscape**: `.claude/skills/competitive-landscape/` — Market analysis
 - **SDK changelog monitor**: `.claude/skills/sdk-changelog-monitor/` — Track SDK releases
 
+## Specs & Docs Layout
+
+Keep the `docs/` namespace clean — each folder means exactly one thing:
+
+- **`docs/SPEC.md`** — canonical product/architecture spec (single source of truth). Code is truth → SPEC.md is its written form → doc/site repos are outputs.
+- **`docs/specs/*.md`** — living per-capability **contracts**, format defined by `docs/specs/SPEC-FORMAT.md`. Every file carries lifecycle frontmatter (`title / status / owner / last_verified`). Retire by setting `status: superseded` + `superseded_by`, not by deleting.
+- **`docs/design/*.md`** — design proposals (pre-implementation).
+- **`docs/plans/*.md`** — ephemeral rollout plans; move to `docs/plans/archive/` once shipped.
+- **`docs/reports/*.md`** — generated audit/drift outputs; rebuildable, may be stale. Never a source of truth.
+
+**After touching any `docs/specs/` file**, run `bun run specs:check` — it validates frontmatter + code-surface paths, guards against duplicate active specs, and regenerates `docs/specs/INDEX.md`. CI (`specs:lint`) and a pre-commit hook (`.githooks/pre-commit`, auto-registered on `bun install`) enforce this; a stale INDEX or missing frontmatter fails the build.
+
 ## Docs
 
 - **Testing guides**: `docs/testing.md` and `docs/testing-strategy.md`

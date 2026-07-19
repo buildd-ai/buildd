@@ -93,10 +93,15 @@ describe('classifyClaimError', () => {
     });
 
     test('parses the reset time from the error string', () => {
+      // parseResetDelay uses noon UTC as "now" so "8pm" is always 8 hours away —
+      // deterministic regardless of when CI runs.
+      const noonUtc = new Date('2026-01-01T12:00:00.000Z');
+      const delay = parseResetDelay('8pm', noonUtc);
+      expect(delay).toBeGreaterThan(5 * 60 * 1000);
+
       const res = classifyClaimError("you've hit your session limit · resets 8pm (utc)");
       expect(res).not.toBeNull();
-      // Should pause until 8pm UTC, which is well beyond a 5-min fallback
-      expect(res!.pauseMs).toBeGreaterThan(5 * 60 * 1000);
+      expect(res!.pauseMs).toBeGreaterThan(0);
     });
 
     test('"hit your session" variant is also caught', () => {

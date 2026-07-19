@@ -20,6 +20,11 @@ describe('deriveDisplayStatus', () => {
     expect(deriveDisplayStatus('assigned', 'starting')).toBe('running');
   });
 
+  it('returns running when worker is idle (between turns)', () => {
+    expect(deriveDisplayStatus('assigned', 'idle')).toBe('running');
+    expect(deriveDisplayStatus('in_progress', 'idle')).toBe('running');
+  });
+
   it('returns waiting_input when worker is waiting', () => {
     expect(deriveDisplayStatus('assigned', 'waiting_input')).toBe('waiting_input');
     expect(deriveDisplayStatus('in_progress', 'waiting_input')).toBe('waiting_input');
@@ -35,6 +40,11 @@ describe('deriveDisplayStatus', () => {
   it('active-worker overrides task chip — assigned+running => running', () => {
     expect(deriveDisplayStatus('assigned', 'running')).toBe('running');
     expect(deriveDisplayStatus('assigned', 'running')).not.toBe('assigned');
+  });
+
+  it('idle worker overrides task chip — assigned+idle => running not assigned', () => {
+    expect(deriveDisplayStatus('assigned', 'idle')).toBe('running');
+    expect(deriveDisplayStatus('assigned', 'idle')).not.toBe('assigned');
   });
 });
 
@@ -128,6 +138,24 @@ describe('deriveTimestampLabel — waiting_input', () => {
       now,
     });
     expect(label).toBe('needs input · 45m');
+  });
+});
+
+describe('deriveTimestampLabel — idle worker (between turns)', () => {
+  const now = 1_000_000_000_000;
+
+  it('shows running label for assigned task with idle worker', () => {
+    const label = deriveTimestampLabel({
+      taskStatus: 'assigned',
+      workerStatus: 'idle',
+      taskCreatedAt: new Date(now - 2 * HR).toISOString(),
+      taskUpdatedAt: new Date(now - 5 * MIN).toISOString(),
+      workerStartedAt: new Date(now - 58 * MIN).toISOString(),
+      workerUpdatedAt: new Date(now - 2 * MIN).toISOString(),
+      now,
+    });
+    expect(label).toBe('running 58m · active 2m ago');
+    expect(label).not.toContain('queued');
   });
 });
 

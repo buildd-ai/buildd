@@ -7,6 +7,7 @@ import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
+import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
 
@@ -48,6 +49,7 @@ export default async function ProtectedLayout({
 
   return (
     <AuthGuard>
+      <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
         <ConnectorReconnectProvider workspaceIds={workspaceIds}>
           <div className="flex h-screen overflow-hidden">
@@ -72,6 +74,7 @@ export default async function ProtectedLayout({
           <MissionsBottomNav />
         </ConnectorReconnectProvider>
       </NeedsInputProvider>
+      </EscalationProvider>
     </AuthGuard>
   );
 }

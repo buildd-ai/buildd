@@ -27,6 +27,9 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
+import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { secrets as secretsTable } from '@buildd/core/db/schema';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -624,6 +627,22 @@ export async function PATCH(
         if (shouldAutoRetry) {
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
+
+        // Capture branch coordinates from the failing worker for retry continuity.
+        // Written for both auto-retry and permanent-failure paths so that CI retry
+        // and reviewer-loop retry can read resumeBranch from the task record.
+        if (worker.branch) {
+          taskCtxForRetry = {
+            ...taskCtxForRetry,
+            resumeBranch: worker.branch,
+            ...(worker.lastCommitSha ? { lastCommitSha: worker.lastCommitSha } : {}),
+            failureContext: {
+              summary: body.error ?? worker.error ?? 'Worker failed without an error message',
+              errorType: 'runtime_error',
+              ...(worker.lastCommitSha ? { commitSha: worker.lastCommitSha } : {}),
+            },
+          };
+        }
       }
 
       const taskUpdate: Record<string, unknown> = {
@@ -633,6 +652,9 @@ export async function PATCH(
           claimedBy: null,
           claimedAt: null,
           expiresAt: null,
+          context: taskCtxForRetry,
+        } : status === 'failed' ? {
+          // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
           context: taskCtxForRetry,
         } : {}),
       };
@@ -956,6 +978,61 @@ export async function PATCH(
               });
             }
           }
+        }
+      });
+
+      // Credential health tracking: update health state on auth failure or success.
+      await runStep('credential-health', async () => {
+        const taskForHealth = await db.query.tasks.findFirst({
+          where: eq(tasks.id, taskId),
+          columns: { backend: true, workspaceId: true },
+          with: { workspace: { columns: { teamId: true } } },
+        });
+        const teamId = (taskForHealth?.workspace as { teamId?: string } | undefined)?.teamId;
+        if (!teamId) return;
+
+        const backend = (taskForHealth as any)?.backend as string | undefined;
+        const workspaceId = taskForHealth?.workspaceId ?? null;
+
+        if (status === 'failed' && error) {
+          const severity = classifyAuthErrorSeverity(error);
+          if (severity !== 'none') {
+            let secretId: string | null = null;
+            if (!backend || backend === 'claude') {
+              secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+            } else if (backend === 'codex') {
+              const codexRow = await db.query.secrets.findFirst({
+                where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+                columns: { id: true },
+              });
+              secretId = codexRow?.id ?? null;
+            }
+
+            if (secretId) {
+              const result = await recordCredentialAuthFailure(secretId, error);
+              if (result?.becameRevoked) {
+                void notifyTeam(teamId, 'credentialExpired', {
+                  title: '🔑 Credential revoked — action required',
+                  message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
+                  url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
+                  urlTitle: 'Open settings',
+                  priority: 1,
+                });
+              }
+            }
+          }
+        } else if (status === 'completed') {
+          let secretId: string | null = null;
+          if (!backend || backend === 'claude') {
+            secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+          } else if (backend === 'codex') {
+            const codexRow = await db.query.secrets.findFirst({
+              where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+              columns: { id: true },
+            });
+            secretId = codexRow?.id ?? null;
+          }
+          if (secretId) await recordCredentialAuthSuccess(secretId);
         }
       });
     }
@@ -1310,6 +1387,16 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
+      // Fetch the prior attempt's worker to get lastCommitSha for retry continuity
+      const priorWorker = await db.query.workers.findFirst({
+        where: and(
+          eq(workers.workspaceId, workspaceId),
+          eq(workers.prNumber, prNumber),
+        ),
+        columns: { lastCommitSha: true },
+      });
+      const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
+
       const retryTitle = originalTask.title
         .replace(/^\[reviewer retry #?\d*\]\s*/i, '')
         .trim();
@@ -1325,8 +1412,14 @@ async function handleReviewerOutcomeIfNeeded(
           context: {
             iteration: currentIteration + 1,
             maxIterations,
-            failureContext: output.feedback ?? output.summary,
             baseBranch: workerBranch, // MUST continue on same branch — no new branch
+            resumeBranch: workerBranch,
+            ...(reviewerLastCommitSha ? { lastCommitSha: reviewerLastCommitSha } : {}),
+            failureContext: {
+              summary: output.feedback ?? output.summary ?? 'Reviewer requested changes',
+              errorType: 'reviewer_request_changes',
+              ...(reviewerLastCommitSha ? { commitSha: reviewerLastCommitSha } : {}),
+            },
             prNumber,
             prUrl,
             workerBranch,

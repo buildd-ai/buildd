@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Lint specs (frontmatter + dead paths + index)
+        run: bun run scripts/check-specs.ts --check
+
       - name: Check migrations are up to date
         id: migration_check
         run: |

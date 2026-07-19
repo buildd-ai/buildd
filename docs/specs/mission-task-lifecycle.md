@@ -1,3 +1,10 @@
+---
+title: Mission & Task Lifecycle
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Mission and Task Lifecycle
 
 **Capability statement**: The buildd coordination layer MUST enforce the defined

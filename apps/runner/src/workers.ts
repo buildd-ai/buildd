@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
 import {
@@ -1048,7 +1049,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1159,6 +1160,13 @@ export class WorkerManager {
     }
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
+    }
+    if (claimedWorker.claudeAccessToken) {
+      worker.claudeAccessToken = claimedWorker.claudeAccessToken;
+      worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
+        ? new Date(claimedWorker.claudeTokenExpiresAt)
+        : null;
+      console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
     }
 
     if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
@@ -1352,6 +1360,9 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
+    // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
+    // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
+    let claudeConfigDir: string | undefined;
     // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
@@ -1657,6 +1668,24 @@ export class WorkerManager {
         if (session) (session as any).codexHome = codexHome;
       }
 
+      // Claude credential isolation: when the claim supplied a managed access_token
+      // (from claude_credential purpose), create a per-worker CLAUDE_CONFIG_DIR and
+      // write credentials.json with ONLY the access_token (no refresh_token).
+      // This prevents the SDK from calling the Anthropic refresh endpoint in-session,
+      // eliminating the token family revocation cascade from concurrent workers.
+      if (worker.claudeAccessToken) {
+        const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
+          worker.id,
+          worker.claudeAccessToken,
+          worker.claudeTokenExpiresAt ?? null,
+        );
+        claudeConfigDir = _cd;
+        cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+        // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
+        delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+        console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
+      }
+
       // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
       // is known-expired. The claim route (criterion D) already attempts a refresh
       // and clears the credential on unrecoverable failure — this is a second guard
@@ -1732,6 +1761,39 @@ export class WorkerManager {
         } else {
           systemPrompt.append = `Use these skills for this task: ${skillSlugs.join(', ')}. Invoke them with the Skill tool as needed.`;
         }
+      }
+
+      // Inject retry-continuity prompt section when resumeBranch is set
+      const resumeBranch = (task.context as any)?.resumeBranch as string | undefined;
+      if (resumeBranch) {
+        const lastCommitSha = (task.context as any)?.lastCommitSha as string | undefined;
+        const rawFailureCtx = (task.context as any)?.failureContext;
+        const failureSummary: string | undefined =
+          typeof rawFailureCtx === 'string'
+            ? rawFailureCtx
+            : (rawFailureCtx as any)?.summary;
+
+        const sha = lastCommitSha ?? `origin/${resumeBranch}`;
+        const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
+        const decideStep = failureSummary ? '4' : '3';
+        const logStep = failureSummary ? '5' : '4';
+        const retryContinuitySection = [
+          '',
+          '## Prior Attempt — Assess Before Starting',
+          '',
+          'A previous agent attempt left commits on this branch. Before editing any file:',
+          '',
+          `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
+          `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,
+          `2. Run \`git diff origin/${defaultBranch}...origin/${resumeBranch}\` to see what the prior attempt changed relative to base.`,
+          ...failureLine,
+          `${decideStep}. Explicitly decide: **continue/salvage** (fix what failed, keep prior commits) or **restart** (reset to base, start clean).`,
+          `${logStep}. Log your decision via \`update_progress\` **before** making any file edits.`,
+          '',
+          'Do not skip this assessment step. The decision and its rationale must appear in the progress log.',
+        ].join('\n');
+
+        systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
@@ -2465,6 +2527,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
+        }
+
+        // Clean up per-worker Claude config dir (access_token isolation).
+        if (claudeConfigDir) {
+          cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
         // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never

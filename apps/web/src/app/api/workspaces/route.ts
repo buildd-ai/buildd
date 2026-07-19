@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
+import { enqueueFullIngestJob, extractGithubFullName } from '@/lib/knowledge-ingest';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -241,6 +242,16 @@ export async function POST(req: NextRequest) {
     // Invalidate cache if workspace is open (affects heartbeat queries)
     if (workspace.accessMode === 'open') {
       await invalidateOpenWorkspacesCache();
+    }
+
+    // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was provided.
+    if (repoUrl) {
+      const fullName = extractGithubFullName(repoUrl);
+      if (fullName) {
+        enqueueFullIngestJob({ workspaceId: workspace.id, repo: fullName, trigger: 'repo_link' }).catch(err =>
+          console.error(`[knowledge-ingest] repo-link enqueue failed for new workspace ${workspace.id}:`, err)
+        );
+      }
     }
 
     return NextResponse.json(workspace);

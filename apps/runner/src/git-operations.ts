@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveWorktreeBase } from './worktree-utils';
+import { resolveWorktreeBase, BranchFetchResult } from './worktree-utils';
 
 export interface GitStats {
   commitCount?: number;
@@ -136,10 +136,46 @@ export async function setupWorktree(
       // Non-zero exit means sparse checkout is not configured — normal state.
     }
 
-    // Create worktree with new branch — from baseBranch (retry) or default branch (fresh)
-    const base = resolveWorktreeBase(defaultBranch, taskContext);
+    // Create worktree with new branch — from resumeBranch/baseBranch (retry) or default branch (fresh)
+    // fetchBranch uses already-fetched remote tracking refs (git fetch origin ran above)
+    const fetchBranch = async (candidate: string): Promise<BranchFetchResult> => {
+      try {
+        const countStr = execSync(
+          `git rev-list --count "origin/${defaultBranch}..origin/${candidate}"`,
+          { ...execOpts, timeout: 10000 },
+        ).trim();
+        const count = parseInt(countStr, 10);
+        if (!isNaN(count) && count > 50) {
+          return 'diverged';
+        }
+        return 'ok';
+      } catch {
+        // Command fails when origin/<candidate> ref doesn't exist
+        return 'missing';
+      }
+    };
+    const base = await resolveWorktreeBase({
+      defaultBranch,
+      context: taskContext,
+      fetchBranch,
+      log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
+    });
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
     execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+    // Register the repo's shared git hooks in this worktree. The package.json
+    // `prepare` script also sets this during `bun install`, but that install is
+    // best-effort (see installWorkspaceDeps) — doing it explicitly here guarantees
+    // commit-time gates (e.g. spec lint) fire even if install never runs. Guarded
+    // on .githooks existing so other repos the runner clones are unaffected.
+    if (existsSync(join(worktreePath, '.githooks'))) {
+      try {
+        execSync('git config core.hooksPath .githooks', { ...execOpts, cwd: worktreePath });
+        console.log(`[Worker ${workerId}] Registered .githooks (core.hooksPath)`);
+      } catch (err) {
+        console.warn(`[Worker ${workerId}] Failed to register .githooks:`, err instanceof Error ? err.message : err);
+      }
+    }
 
     // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
     // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)

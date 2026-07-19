@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missions, workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc } from 'drizzle-orm';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, isNotNull, isNull } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -11,6 +11,8 @@ import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-h
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import ExternalLink from '@/components/ExternalLink';
+import MergeConfirmButton from '@/components/MergeConfirmButton';
+import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
@@ -21,6 +23,7 @@ import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import AiFeedback from '@/components/AiFeedback';
+import { StatusChip } from '@/components/StatusChip';
 import PrioritySelector from './PrioritySelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
@@ -128,6 +131,52 @@ export default async function MissionDetailPage({
     roles = rolesResult;
     teamWorkspaces = workspacesResult;
   }
+
+  // Fetch reviewer verdict notes for BT-16 (verdict chips)
+  const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
+  const reviewerNotes = allMissionTaskIds.length > 0
+    ? await db.query.missionNotes.findMany({
+        where: and(
+          inArray(missionNotes.taskId, allMissionTaskIds),
+          inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
+        ),
+        columns: { taskId: true, type: true, title: true, body: true, createdAt: true },
+        orderBy: desc(missionNotes.createdAt),
+      })
+    : [];
+
+  // Map taskId → latest reviewer note
+  const reviewerNoteMap = new Map<string, { type: string; title: string; body: string | null; createdAt: Date }>();
+  for (const note of reviewerNotes) {
+    if (note.taskId && !reviewerNoteMap.has(note.taskId)) {
+      reviewerNoteMap.set(note.taskId, note);
+    }
+  }
+
+  // BT-13: count tasks awaiting merge (completed + has PR + not yet merged)
+  const awaitingMerge = (mission.tasks || []).filter(t => {
+    if (t.status !== 'completed') return false;
+    const latestWorker = (t.workers as any[])?.[0];
+    return latestWorker?.prUrl && !latestWorker?.mergedAt;
+  }).length;
+
+  // BT-21: resolve effective merge policy tier for mission header chip
+  const workspaceForPolicy = mission.workspaceId
+    ? await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: { id: true, gitConfig: true },
+      })
+    : null;
+  const effectivePolicy = resolvePolicy(
+    workspaceForPolicy ?? { gitConfig: null },
+    { mergePolicy: (mission as any).mergePolicy ?? null },
+  );
+  const policyTierLabel: Record<string, string> = {
+    'auto-threshold': 'Auto',
+    'agent-review': 'Agent Review',
+    'human': 'Human Gate',
+  };
+  const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
   // Raw count for "View all N tasks" links — includes housekeeping and cancelled
   const allTasksCount = mission.tasks?.length || 0;
@@ -307,6 +356,19 @@ export default async function MissionDetailPage({
                   isOverdue={heartbeatOverdue}
                 />
               )}
+              {/* BT-21: Policy chip on mission header */}
+              {mission.workspaceId && (
+                <Link
+                  href={`/app/settings/workspace/${mission.workspaceId}`}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  title={`Merge policy: ${policyLabel}`}
+                >
+                  <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 5v14m-7-7l7 7 7-7" />
+                  </svg>
+                  {policyLabel}
+                </Link>
+              )}
             </span>
           }
         />
@@ -334,10 +396,13 @@ export default async function MissionDetailPage({
                 }}
               />
             </div>
+            {/* BT-13: 'awaiting merge' count in progress display */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
               {mission.status === 'completed'
                 ? `${totalTasks} tasks · ${completedTasks} completed`
-                : `${completedTasks} of ${totalTasks} tasks complete`}
+                : awaitingMerge > 0
+                  ? `${completedTasks}/${totalTasks} done · ${awaitingMerge} awaiting merge`
+                  : `${completedTasks} of ${totalTasks} tasks complete`}
             </div>
           </div>
         )}
@@ -638,6 +703,20 @@ export default async function MissionDetailPage({
                                       );
                                     })()}
 
+                                    {/* BT-14: tier badge + wait duration on awaiting-merge rows */}
+                                    {isDone && latestWorker?.prUrl && !latestWorker?.mergedAt && (() => {
+                                      const waitMins = latestWorker.completedAt
+                                        ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
+                                        : 0;
+                                      return (
+                                        <StatusChip
+                                          policyTier={effectivePolicy.tier}
+                                          waitingMinutes={waitMins}
+                                          className="hidden sm:inline-flex"
+                                        />
+                                      );
+                                    })()}
+
                                     {isRunning && (
                                       <span className="flex items-center gap-1 max-w-[100px] sm:max-w-[45%]">
                                         <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse shrink-0" />
@@ -702,11 +781,132 @@ export default async function MissionDetailPage({
                                   </p>
                                 </div>
                               )}
+
+                              {/* BT-16: Agent-review verdict chips */}
+                              {(() => {
+                                const reviewNote = reviewerNoteMap.get(task.id);
+                                if (!reviewNote) return null;
+                                const noteType = reviewNote.type;
+
+                                if (noteType === 'reviewer_approved') {
+                                  return (
+                                    <div className="pl-7 pb-1 mt-1">
+                                      <div className="flex items-start gap-2 bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
+                                        <span className="text-status-success text-[11px] font-semibold shrink-0">🤖 Approved</span>
+                                        <span className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+
+                                if (noteType === 'reviewer_request_changes') {
+                                  return (
+                                    <div className="pl-7 pb-1 mt-1">
+                                      <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
+                                        <div className="flex items-center gap-1.5 mb-0.5">
+                                          <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
+                                        </div>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</p>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+
+                                if (noteType === 'reviewer_escalated') {
+                                  const prWorker = latestWorker;
+                                  return (
+                                    <div className="pl-7 pb-1 mt-1">
+                                      <div className="bg-status-error/5 border border-status-error/20 rounded px-2.5 py-2">
+                                        <div className="flex items-center gap-1.5 mb-1">
+                                          <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
+                                        </div>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed mb-2">{reviewNote.body ?? reviewNote.title}</p>
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          {prWorker?.prUrl && (
+                                            <ExternalLink
+                                              href={prWorker.prUrl}
+                                              className="text-[11px] text-accent-text hover:underline"
+                                            >
+                                              PR #{prWorker.prNumber} ↗
+                                            </ExternalLink>
+                                          )}
+                                          {prWorker?.prNumber && !prWorker?.mergedAt && (
+                                            <MergeConfirmButton
+                                              prNumber={prWorker.prNumber}
+                                              prUrl={prWorker.prUrl ?? ''}
+                                            />
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+
+                                return null;
+                              })()}
                             </div>
                           );
                         })}
                       </div>
                     )}
+
+                    {/* BT-18: Gate chip — PRs awaiting merge in this cycle */}
+                    {(() => {
+                      const awaitingPrs = cycle.tasks
+                        .filter(t => t.status === 'completed')
+                        .map(t => ({ task: t, worker: (t.workers as any[])?.[0] }))
+                        .filter(({ worker }) => worker?.prUrl && !worker?.mergedAt);
+                      if (awaitingPrs.length === 0) return null;
+                      return (
+                        <div className="mt-2 mb-1 ml-7 border border-border-strong rounded-[8px] px-3 py-2.5 bg-surface-2">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-[11px] font-semibold text-text-secondary">
+                              ⏸ {awaitingPrs.length} PR{awaitingPrs.length > 1 ? 's' : ''} awaiting merge
+                            </span>
+                            <span className="text-[10px] font-mono text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
+                              {policyLabel}
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {awaitingPrs.map(({ task: t, worker: w }) => {
+                              const reviewNote = reviewerNoteMap.get(t.id);
+                              const reviewStatus = reviewNote?.type === 'reviewer_approved'
+                                ? '✓ Approved'
+                                : reviewNote?.type === 'reviewer_request_changes'
+                                  ? '↩ Changes requested'
+                                  : reviewNote?.type === 'reviewer_escalated'
+                                    ? '⚠ Escalated'
+                                    : effectivePolicy.tier === 'agent-review'
+                                      ? '🤖 Auto-reviewing…'
+                                      : null;
+                              return (
+                                <div key={t.id} className="flex items-center justify-between gap-2 text-[11px]">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {w.prUrl && (
+                                      <ExternalLink href={w.prUrl} className="text-accent-text hover:underline shrink-0">
+                                        PR #{w.prNumber}
+                                      </ExternalLink>
+                                    )}
+                                    {reviewStatus && (
+                                      <span className="text-text-muted truncate">{reviewStatus}</span>
+                                    )}
+                                  </div>
+                                  {w.prNumber && !w.mergedAt && (
+                                    <MergeConfirmButton
+                                      prNumber={w.prNumber}
+                                      prUrl={w.prUrl ?? ''}
+                                      className="shrink-0"
+                                      disabled={effectivePolicy.tier === 'agent-review' && !reviewNote}
+                                      disabledReason="Awaiting agent review"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* No tasks spawned */}
                     {cycle.evaluation && cycle.tasks.length === 0 && (

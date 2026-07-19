@@ -110,7 +110,7 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
 }
 
 /** Parse a reset time like "5pm" or "2am" into ms from now (assumes UTC). */
-export function parseResetDelay(timeStr: string): number {
+export function parseResetDelay(timeStr: string, now: Date = new Date()): number {
   const hourMatch = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
   if (!hourMatch) return 60 * 60 * 1000;
 
@@ -119,7 +119,6 @@ export function parseResetDelay(timeStr: string): number {
   if (ampm === 'pm' && hour < 12) hour += 12;
   if (ampm === 'am' && hour === 12) hour = 0;
 
-  const now = new Date();
   const target = new Date(now);
   target.setUTCHours(hour, 0, 0, 0);
   if (target.getTime() <= now.getTime()) {

@@ -52,4 +52,27 @@ describe('DEFAULT_ROLES', () => {
       expect(role.content.length).toBeGreaterThan(20);
     }
   });
+
+  it('Builder prompt includes query_knowledge pull gate for errors and code', () => {
+    const c = bySlug.builder.content;
+    expect(c).toContain('query_knowledge');
+    expect(c).toContain('corpus');
+    // Must gate on both memory (error diagnosis) and code (before editing)
+    expect(c).toContain('memory');
+    expect(c).toContain('code');
+  });
+
+  it('Organizer prompt includes query_knowledge pull gate for spec and memory', () => {
+    const c = bySlug.organizer.content;
+    expect(c).toContain('query_knowledge');
+    expect(c).toContain('spec');
+    expect(c).toContain('memory');
+  });
+
+  it('every role prompt includes the universal save-dedup gate', () => {
+    for (const role of DEFAULT_ROLES) {
+      // Every role must gate memory saves with a prior dedup query
+      expect(role.content).toContain('query_knowledge');
+    }
+  });
 });
