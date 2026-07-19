@@ -26,6 +26,7 @@ import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowl
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight } from './env-scan';
+import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
@@ -1235,6 +1236,53 @@ export class WorkerManager {
     const { warnings } = checkMcpPreFlight(mcpJsonPath, process.env as Record<string, string | undefined>);
     for (const warning of warnings) {
       console.warn(`[Worker ${worker.id}] ${warning}`);
+    }
+
+    // Provision gate: prove the environment is runnable BEFORE the agent starts
+    // consuming budget (the SDK loop begins in startSession). Enforcement is
+    // opt-in — only a declared .buildd/env.yaml blocks; auto-detected plans never
+    // fail a runner that didn't opt in. We skip the `install` phase here because
+    // setupWorktree already ran the runner's own tolerant install; readiness is
+    // what proves the tree usable. See docs/design/reliable-env-provisioning.md.
+    try {
+      const gate = await runProvisionGate({
+        root: sessionCwd,
+        env: process.env,
+        skipPhases: ['install'],
+      });
+      if (gate.enforced) {
+        for (const s of gate.steps) {
+          console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
+        }
+        if (!gate.ok) {
+          const reason = gate.reason ?? 'Provision failed';
+          console.warn(`[Worker ${worker.id}] ${reason} — not starting agent (no budget spent)`);
+          worker.status = 'error';
+          worker.error = reason;
+          worker.currentAction = 'Environment not ready';
+          worker.hasNewActivity = true;
+          worker.completedAt = Date.now();
+          this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
+
+          await this.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error: reason,
+          }).catch(updateErr => {
+            console.error(`[Worker ${worker.id}] Failed to report provision failure to server:`, updateErr);
+          });
+
+          this.emit({ type: 'worker_update', worker });
+
+          if (worker.worktreePath) {
+            cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
+          }
+          return worker; // gate blocked — do NOT start the agent session
+        }
+        this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
+      }
+    } catch (gateErr) {
+      // A gate that itself errors must never block a task — fail open, log, proceed.
+      console.warn(`[Worker ${worker.id}] Provision gate errored (proceeding):`, gateErr instanceof Error ? gateErr.message : gateErr);
     }
 
     // Start SDK session (async, runs in background)
