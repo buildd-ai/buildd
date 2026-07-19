@@ -79,11 +79,13 @@ jobs:
             exit 0
           fi
 
-          # Use Vercel CLI to redeploy (already installed above)
+          # Promote the existing deployment to production with updated env vars.
+          # `vercel promote` reuses the cached build artifacts (no rebuild) so runtime
+          # env vars (like BUILDD_SIGNING_KEY_TEAM_ID) are injected fresh by Vercel.
           cd /tmp/vp
-          echo "Redeploying https://$PROD_URL to production..."
-          vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN"
-          echo "Redeploy triggered!"
+          echo "Promoting https://$PROD_URL to production..."
+          vercel promote "https://$PROD_URL" --token "$VERCEL_TOKEN" --yes
+          echo "Promote triggered!"
 
       - name: Verify JWKS endpoint
         if: ${{ github.event.inputs.redeploy == 'true' }}
