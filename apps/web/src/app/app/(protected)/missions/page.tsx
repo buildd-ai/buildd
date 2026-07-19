@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { MissionGrid } from './MissionGrid';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
@@ -59,7 +60,7 @@ export default async function MissionsPage({
       .from(workers)
       .where(and(
         inArray(workers.accountId, accountIds),
-        inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
       ));
     activeSeats = row?.count ?? 0;
   }

@@ -8,6 +8,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
+import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest) {
   const activeWorkers = await db.query.workers.findMany({
     where: and(
       eq(workers.accountId, account.id),
-      inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input'])
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     ),
   });
 
