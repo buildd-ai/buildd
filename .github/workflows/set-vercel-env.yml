@@ -82,7 +82,7 @@ jobs:
           # Use Vercel CLI to redeploy (already installed above)
           cd /tmp/vp
           echo "Redeploying https://$PROD_URL to production..."
-          vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN" --yes
+          vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN"
           echo "Redeploy triggered!"
 
       - name: Verify JWKS endpoint
