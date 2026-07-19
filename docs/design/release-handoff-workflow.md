@@ -1,7 +1,6 @@
 # Release Handoff Workflow — Design Spec
 
 > **Status:** Proposed — review artifact before implementation begins.
-> **Task:** d24283d7 · Branch: `buildd/d24283d7-recon-spec-audit-release-code-`
 
 ---
 

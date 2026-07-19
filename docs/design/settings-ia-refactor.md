@@ -401,12 +401,8 @@ still claim tasks normally.
 ## 7. Background & references
 
 **Recon 1 — Settings/account page IA: current route + component reality**
-Internal task ID: `e3834347-fc15-4780-9b2e-36fd905dc3b0`
-Share URL: `/app/tasks/e3834347-fc15-4780-9b2e-36fd905dc3b0`
 
 **Recon 2 — Accounts vs Secrets: can API Keys collapse into Agent Backends?**
-Internal task ID: `d5e7642e-afa5-419e-b631-a0c459bb7fc6`
-Share URL: `/app/tasks/d5e7642e-afa5-419e-b631-a0c459bb7fc6`
 
 **Related spec:** `docs/credentials-architecture.md` — the authoritative pattern
 for credential storage that underlies the Agent Backends / Runner Tokens split

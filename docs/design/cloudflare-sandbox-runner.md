@@ -1,7 +1,6 @@
 # Cloudflare Sandbox Runner — Design Spec
 
-> **Status:** Proposed — awaiting Max's approval before any implementation begins.
-> **Task:** e5c71f4f · Branch: `buildd/e5c71f4f-spec-cloudflare-sandbox-runner`
+> **Status:** Proposed — awaiting approval before any implementation begins.
 > **Scope:** Spec only. No implementation. Evaluates Cloudflare as a second runner substrate alongside Coder.
 
 ---
@@ -586,4 +585,4 @@ For the CF substrate itself:
 
 ---
 
-*Spec authored by builder agent · Task e5c71f4f · 2026-07-07*
+*Spec authored by builder agent · 2026-07-07*
