@@ -6,6 +6,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
+
+/** Backend-auth purposes whose (re)store should recover auth-failed tasks. */
+const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential']);
 
 /**
  * Purposes whose value is a raw credential string (not a JSON blob). Values pasted
@@ -145,7 +149,18 @@ export async function POST(req: NextRequest) {
       label,
     });
 
-    return NextResponse.json({ id });
+    // Storing a healthy backend credential recovers tasks that failed on the old
+    // (revoked/expired) one — self-heal instead of a manual re-run slog. Best-effort.
+    let requeued = 0;
+    if (CLAUDE_CREDENTIAL_PURPOSES.has(purpose)) {
+      try {
+        requeued = (await requeueAuthFailedTasks(targetTeamId)).requeued.length;
+      } catch (err) {
+        console.warn('[secrets] requeue-on-recovery failed (non-fatal):', err);
+      }
+    }
+
+    return NextResponse.json({ id, requeued });
   } catch (error) {
     console.error('Create secret error:', error);
     return NextResponse.json({ error: 'Failed to create secret' }, { status: 500 });

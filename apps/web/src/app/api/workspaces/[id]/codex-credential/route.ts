@@ -8,6 +8,7 @@ import {
   normalizeCodexAuthJson,
   type CodexScope,
 } from '@/lib/codex-credential';
+import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -68,6 +69,12 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const scope = buildScope(access.teamId, id, typeof body.scope === 'string' ? body.scope : null);
   await storeCodexCredential(scope, normalized.value);
+  // Recover Codex tasks that failed on the old (revoked/expired) credential. Best-effort.
+  try {
+    await requeueAuthFailedTasks(access.teamId);
+  } catch (err) {
+    console.warn('[codex-credential] requeue-on-recovery failed (non-fatal):', err);
+  }
   const status = await getCodexStatus(scope);
   return NextResponse.json(status);
 }

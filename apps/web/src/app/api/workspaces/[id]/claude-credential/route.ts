@@ -8,6 +8,7 @@ import {
   normalizeClaudeCredentialsJson,
   type ClaudeScope,
 } from '@/lib/claude-credential';
+import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -57,6 +58,12 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const scope = buildScope(access.teamId, id, typeof body.scope === 'string' ? body.scope : null);
   await storeClaudeCredential(scope, normalized.value);
+  // Recover tasks that failed on the old (revoked/expired) credential. Best-effort.
+  try {
+    await requeueAuthFailedTasks(access.teamId);
+  } catch (err) {
+    console.warn('[claude-credential] requeue-on-recovery failed (non-fatal):', err);
+  }
   const status = await getClaudeStatus(scope);
   return NextResponse.json(status);
 }
