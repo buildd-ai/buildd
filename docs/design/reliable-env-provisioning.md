@@ -94,7 +94,7 @@ Buildd already has the agent-native primitives general tools lack: the `secrets`
 
 ## Open questions
 
-- **Caching / warm base:** how much of provisioning can be cached across worktrees on the same runner to keep the phase fast? (The install is already the slow part.)
+- **Caching / warm base:** *(partly done)* the gate now has a **warm cache** — because it runs before the agent modifies the tree, an env-independent manifest's pass is a pure function of (base commit + manifest), so repeat tasks off the same base on a runner reuse it (skipping a possibly-expensive readiness probe) with a 10-min TTL; only passes, only env-independent manifests, keyed by commit. **Still open:** the `bun install` cost itself — bun already hardlinks from its global cache, so a custom install/node_modules cache is deferred (past `node_modules`-sharing incidents make it high-risk for modest gain).
 - **Auto-detection fidelity:** how far can we get with zero manifest before a repo *must* declare one?
 - **Failure taxonomy:** *(partly answered)* a provision block now emits a stable `ProvisionFailureCode` (`provision_toolchain_missing` / `_install_failed` / `_env_missing` / `_setup_failed` / `_readiness_failed`) + failing phase, carried to the worker record as `resultMeta.provisionFailure`. **Still open:** how the organizer/server *acts* on each code — retry-once (e.g. flaky readiness) vs. escalate (missing secret) vs. mark blocked — and where a bounded retry counter lives so a broken manifest can't loop.
 - **Relationship to `gitConfig.sandbox`:** does provisioning run inside or outside the sandbox boundary?
