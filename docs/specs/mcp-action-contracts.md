@@ -1,3 +1,10 @@
+---
+title: MCP Action Contracts
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # MCP Action Contracts
 
 **Capability statement**: The buildd MCP server at `/api/mcp` MUST expose exactly

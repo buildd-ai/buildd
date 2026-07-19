@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Spec hygiene gate. Fast (pure file I/O, sub-second) so it runs on every commit.
+# Blocks the commit if any spec lacks lifecycle frontmatter, cites a dead
+# code-surface path, or if docs/specs/INDEX.md is stale.
+#
+# Registered via `git config core.hooksPath .githooks` (done automatically by the
+# package.json `prepare` script on `bun install`). Bypass in a pinch with
+# `git commit --no-verify`.
+set -euo pipefail
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-commit: bun not found, skipping spec lint" >&2
+  exit 0
+fi
+
+# Never block a commit in a checkout that doesn't ship this linter (e.g. a
+# different repo the runner cloned, or a partial checkout). No script → no gate.
+if [ ! -f scripts/check-specs.ts ]; then
+  exit 0
+fi
+
+if ! bun run scripts/check-specs.ts --check; then
+  echo "" >&2
+  echo "✖ spec lint failed. Fix the errors above, or run 'bun run specs:check'" >&2
+  echo "  to regenerate docs/specs/INDEX.md, then re-stage and commit." >&2
+  exit 1
+fi
