@@ -63,14 +63,14 @@ export async function GET(req: NextRequest) {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, status: true, kind: true, title: true, creationSource: true },
-          with: { workers: { columns: { id: true, status: true } } },
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
       },
     });
 
     const missionsWithProgress = results.map(mission => {
-      const { totalTasks, completedTasks, progress } = computeMissionProgress(mission.tasks || []);
+      const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(mission.tasks || []);
       const activeAgents = mission.tasks?.reduce((count, t) =>
         count + (t.workers?.filter((w: any) => w.status === 'running').length || 0), 0) || 0;
       const cronExpression = (mission as any).schedule?.cronExpression ?? null;
@@ -83,6 +83,7 @@ export async function GET(req: NextRequest) {
         totalTasks,
         completedTasks,
         progress,
+        segments,
         activeAgents,
         cronExpression,
         lastRunAt,

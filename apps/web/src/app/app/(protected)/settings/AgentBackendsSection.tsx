@@ -380,7 +380,11 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     try {
       const res = await fetch(`/api/secrets/${matching[0].id}/verify`, { method: 'POST' });
       const data = await res.json();
-      if (data.verified) {
+      if (data.revoked) {
+        // Reads OK but a worker run reported the OAuth session revoked. GET /v1/models
+        // can't detect that, so don't show a green pass — direct the user to re-auth.
+        setMsg({ type: 'error', text: 'Token reads OK, but a worker run reported it revoked (logged out / signed in elsewhere). Generate a fresh `claude setup-token` and paste it again.' });
+      } else if (data.verified) {
         setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
       } else {
         setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });

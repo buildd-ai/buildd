@@ -1461,6 +1461,75 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
+  // Defense-in-depth: if a team ever has more than one oauth_token row (legacy
+  // duplicate), the resolver must NOT hand a revoked leftover to the worker while
+  // a healthy credential exists. It prefers non-revoked, then most recent.
+  it('prefers a healthy oauth_token over a revoked duplicate', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // Two team-wide oauth_token rows: a newer REVOKED one and an older HEALTHY one.
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'oauth-revoked', purpose: 'oauth_token', label: null, healthStatus: 'revoked', updatedAt: new Date('2026-07-19T18:00:00Z') },
+      { id: 'oauth-healthy', purpose: 'oauth_token', label: null, healthStatus: 'healthy', updatedAt: new Date('2026-07-19T11:00:00Z') },
+    ]);
+    // provider.get must be called with the HEALTHY row's id, not the revoked one.
+    mockSecretsProviderGet.mockImplementation((id: string) =>
+      Promise.resolve(id === 'oauth-healthy' ? 'healthy-token' : 'revoked-token'));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers[0].serverOauthToken).toBe('healthy-token');
+    expect(mockSecretsProviderGet).toHaveBeenCalledWith('oauth-healthy');
+    expect(mockSecretsProviderGet).not.toHaveBeenCalledWith('oauth-revoked');
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
   it('attaches serverApiKey when an anthropic_api_key secret exists for the team', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';

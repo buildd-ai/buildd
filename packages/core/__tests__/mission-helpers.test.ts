@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, type MissionSegmentState } from '../mission-helpers';
 
 describe('isDeliverableTask', () => {
   it('returns true for a normal task with no special kind or title', () => {
@@ -104,7 +104,11 @@ describe('computeMissionProgress', () => {
   }
 
   it('returns 0 progress with no tasks', () => {
-    expect(computeMissionProgress([])).toEqual({ totalTasks: 0, completedTasks: 0, progress: 0 });
+    const result = computeMissionProgress([]);
+    expect(result.totalTasks).toBe(0);
+    expect(result.completedTasks).toBe(0);
+    expect(result.progress).toBe(0);
+    expect(result.segments).toEqual([]);
   });
 
   it('reaches 100% when all non-cancelled deliverables are completed', () => {
@@ -189,5 +193,131 @@ describe('computeMissionProgress', () => {
   it('rounds to nearest integer', () => {
     const tasks = [makeTask('completed'), makeTask('completed'), makeTask('pending')];
     expect(computeMissionProgress(tasks).progress).toBe(67);
+  });
+});
+
+// ── computeMissionProgress — segments ────────────────────────────────────────
+
+describe('computeMissionProgress — segments', () => {
+  type TaskInput = Parameters<typeof computeMissionProgress>[0][number];
+
+  function makeTaskWithWorkers(
+    id: string,
+    status: string,
+    workers: Array<{ status: string; prUrl?: string | null; mergedAt?: string | null }> = [],
+    opts: { kind?: string } = {},
+  ): TaskInput {
+    return { id, status, title: 'Do some work', workers, ...opts };
+  }
+
+  it('returns an empty segments array when no countable tasks', () => {
+    const result = computeMissionProgress([]);
+    expect(result.segments).toEqual([]);
+  });
+
+  it('cancelled tasks are excluded from segments', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'cancelled'),
+      makeTaskWithWorkers('b', 'completed'),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].taskId).toBe('b');
+  });
+
+  it('solid — completed with merged PR', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{ status: 'completed', prUrl: 'https://github.com/pr/1', mergedAt: '2025-01-01' }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('solid');
+  });
+
+  it('solid — completed with no PR at all', () => {
+    const tasks = [makeTaskWithWorkers('a', 'completed', [{ status: 'completed', prUrl: null }])];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('solid');
+  });
+
+  it('solid — completed with no workers', () => {
+    const tasks = [makeTaskWithWorkers('a', 'completed', [])];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('solid');
+  });
+
+  it('half — completed with open (unmerged) PR', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{ status: 'completed', prUrl: 'https://github.com/pr/2', mergedAt: null }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('half');
+  });
+
+  it('ghost — task has a live worker (running)', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'in_progress', [{ status: 'running', prUrl: null }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('ghost');
+  });
+
+  it('ghost — task has a live worker (waiting_input)', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'in_progress', [{ status: 'waiting_input', prUrl: null }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('ghost');
+  });
+
+  it('ghost — live worker takes precedence over completed status', () => {
+    // Shouldn't happen in practice but the live-worker signal wins
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{ status: 'running', prUrl: null }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('ghost');
+  });
+
+  it('notch — failed task', () => {
+    const tasks = [makeTaskWithWorkers('a', 'failed')];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('notch');
+  });
+
+  it('empty — pending task with no workers', () => {
+    const tasks = [makeTaskWithWorkers('a', 'pending')];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('empty');
+  });
+
+  it('progress percentages unchanged when segments are added', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed'),
+      makeTaskWithWorkers('b', 'completed'),
+      makeTaskWithWorkers('c', 'pending'),
+      makeTaskWithWorkers('d', 'cancelled'),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.progress).toBe(67);
+    expect(result.totalTasks).toBe(3);
+    expect(result.completedTasks).toBe(2);
+    expect(result.segments).toHaveLength(3);
+  });
+
+  it('mixed segment states in one mission', () => {
+    const tasks = [
+      makeTaskWithWorkers('solid-id', 'completed', [{ status: 'completed', prUrl: 'p', mergedAt: '2025-01-01' }]),
+      makeTaskWithWorkers('half-id', 'completed', [{ status: 'completed', prUrl: 'p', mergedAt: null }]),
+      makeTaskWithWorkers('ghost-id', 'in_progress', [{ status: 'running', prUrl: null }]),
+      makeTaskWithWorkers('empty-id', 'pending'),
+      makeTaskWithWorkers('notch-id', 'failed'),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    const stateMap = Object.fromEntries(segments.map(s => [s.taskId, s.state]));
+    expect(stateMap['solid-id']).toBe('solid');
+    expect(stateMap['half-id']).toBe('half');
+    expect(stateMap['ghost-id']).toBe('ghost');
+    expect(stateMap['empty-id']).toBe('empty');
+    expect(stateMap['notch-id']).toBe('notch');
   });
 });
