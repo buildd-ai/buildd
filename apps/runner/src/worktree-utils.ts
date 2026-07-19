@@ -13,6 +13,13 @@ export interface ResolveWorktreeBaseOptions {
   fetchBranch?: (branch: string) => Promise<BranchFetchResult>;
   /** If provided, log messages about fallbacks. */
   log?: (msg: string) => void;
+  /**
+   * Called when a resume candidate was requested but could not be used
+   * (missing/diverged on remote) and we fell back to `defaultBranch`. Lets the
+   * caller clear stale resume state so downstream prompt-building doesn't
+   * reference a branch that no longer exists.
+   */
+  onFallback?: (info: { candidate: string; reason: 'missing' | 'diverged' }) => void;
 }
 
 /**
@@ -29,7 +36,7 @@ export interface ResolveWorktreeBaseOptions {
 export async function resolveWorktreeBase(
   opts: ResolveWorktreeBaseOptions,
 ): Promise<string> {
-  const { defaultBranch, context, fetchBranch, log } = opts;
+  const { defaultBranch, context, fetchBranch, log, onFallback } = opts;
 
   // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry field)
   const candidate =
@@ -52,14 +59,102 @@ export async function resolveWorktreeBase(
   const result = await fetchBranch(candidate);
   if (result === 'missing') {
     log?.(`[worktree] resumeBranch ${candidate} not found on remote — falling back to ${defaultBranch}`);
+    onFallback?.({ candidate, reason: 'missing' });
     return `origin/${defaultBranch}`;
   }
   if (result === 'diverged') {
     log?.(`[worktree] resumeBranch ${candidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
+    onFallback?.({ candidate, reason: 'diverged' });
     return `origin/${defaultBranch}`;
   }
 
   return `origin/${candidate}`;
+}
+
+/**
+ * Retry-continuity fields carried on a task context when a prior attempt left
+ * commits on a resume branch. When the runner cannot use that branch (it is gone
+ * from the remote or diverged) it starts fresh — these fields must be cleared so
+ * prompt-building never references a branch that no longer exists.
+ */
+export const RESUME_CONTEXT_FIELDS = ['resumeBranch', 'lastCommitSha', 'failureContext'] as const;
+
+/**
+ * Strip retry-continuity fields from a task context in place. Called on fallback
+ * to a fresh base so {@link buildRetryContinuitySection} yields no resume
+ * instructions and the worker starts clean.
+ */
+export function clearResumeContext(
+  context: Record<string, unknown> | undefined | null,
+): void {
+  if (!context) return;
+  for (const field of RESUME_CONTEXT_FIELDS) {
+    delete context[field];
+  }
+}
+
+export interface RetryContinuityOptions {
+  /** The prior attempt's branch, from `context.resumeBranch`. */
+  resumeBranch?: unknown;
+  /** The prior attempt's tip commit, from `context.lastCommitSha`. */
+  lastCommitSha?: unknown;
+  /** The prior attempt's failure context (string or `{ summary }`). */
+  failureContext?: unknown;
+  /** The workspace default branch (e.g. `dev`/`main`) — required, always in scope. */
+  defaultBranch: string;
+}
+
+/**
+ * Build the "Prior Attempt — Assess Before Starting" prompt section for a
+ * resumed task.
+ *
+ * Returns `null` when there is no usable resume branch (fresh start) so callers
+ * can simply skip appending — this is what a fallback-to-default run produces
+ * once {@link clearResumeContext} has stripped the stale `resumeBranch`.
+ *
+ * All inputs are explicit — importantly `defaultBranch` — so the returned text
+ * never references an out-of-scope variable (the historical crash: `defaultBranch`
+ * was undefined in the session-building scope, throwing a ReferenceError on every
+ * resume).
+ */
+export function buildRetryContinuitySection(
+  opts: RetryContinuityOptions,
+): string | null {
+  const resumeBranch =
+    typeof opts.resumeBranch === 'string' && opts.resumeBranch.length > 0
+      ? opts.resumeBranch
+      : undefined;
+  if (!resumeBranch) return null;
+
+  const lastCommitSha =
+    typeof opts.lastCommitSha === 'string' && opts.lastCommitSha.length > 0
+      ? opts.lastCommitSha
+      : undefined;
+  const rawFailureCtx = opts.failureContext;
+  const failureSummary: string | undefined =
+    typeof rawFailureCtx === 'string'
+      ? rawFailureCtx
+      : (rawFailureCtx as { summary?: string } | undefined | null)?.summary;
+
+  const sha = lastCommitSha ?? `origin/${resumeBranch}`;
+  const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
+  const decideStep = failureSummary ? '4' : '3';
+  const logStep = failureSummary ? '5' : '4';
+  return [
+    '',
+    '## Prior Attempt — Assess Before Starting',
+    '',
+    'A previous agent attempt left commits on this branch. Before editing any file:',
+    '',
+    `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
+    `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,
+    `2. Run \`git diff origin/${opts.defaultBranch}...origin/${resumeBranch}\` to see what the prior attempt changed relative to base.`,
+    ...failureLine,
+    `${decideStep}. Explicitly decide: **continue/salvage** (fix what failed, keep prior commits) or **restart** (reset to base, start clean).`,
+    `${logStep}. Log your decision via \`update_progress\` **before** making any file edits.`,
+    '',
+    'Do not skip this assessment step. The decision and its rationale must appear in the progress log.',
+  ].join('\n');
 }
 
 /**
