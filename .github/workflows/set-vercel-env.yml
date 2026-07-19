@@ -57,47 +57,53 @@ jobs:
 
           echo "Done! $KEY set for production, preview, and development."
 
-      - name: Promote production deployment
+      - name: Deploy from main branch
         if: ${{ github.event.inputs.redeploy == 'true' }}
         env:
           VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
 
-          echo "Fetching latest production deployment..."
-          LATEST=$(curl -sf \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1")
+          # Get main branch SHA
+          SHA=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/git/ref/heads/main" \
+            | jq -r '.object.sha // empty')
+          echo "Main branch SHA: $SHA"
 
-          DEPLOY_ID=$(echo "$LATEST" | jq -r '.deployments[0].uid // empty')
-          DEPLOY_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
-          echo "Latest production deployment: $DEPLOY_ID ($DEPLOY_URL)"
-
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "Could not find deployment ID, skipping promote"
+          if [ -z "$SHA" ]; then
+            echo "Could not get main branch SHA, skipping deploy"
             exit 0
           fi
 
-          # Promote the existing deployment to pick up new runtime env vars without rebuilding.
-          # Vercel injects env vars at request time for serverless functions, so the promoted
-          # deployment will see BUILDD_SIGNING_KEY_TEAM_ID immediately.
-          echo "Promoting deployment $DEPLOY_ID to production..."
+          # Get GitHub repo ID
+          REPO_ID=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}" \
+            | jq -r '.id // empty')
+          echo "GitHub repo ID: $REPO_ID"
+
+          # Create a new Vercel deployment from main — env vars set above are
+          # baked into this build, so BUILDD_SIGNING_KEY_TEAM_ID will be present.
+          echo "Creating new production deployment from main ($SHA)..."
           RESULT=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"target":"production"}' \
-            "https://api.vercel.com/v10/deployments/$DEPLOY_ID/promote?teamId=$VERCEL_ORG_ID")
+            -d "{\"name\":\"buildd\",\"target\":\"production\",\"gitSource\":{\"type\":\"github\",\"repoId\":\"$REPO_ID\",\"ref\":\"main\",\"sha\":\"$SHA\"}}" \
+            "https://api.vercel.com/v13/deployments?teamId=$VERCEL_ORG_ID")
 
           HTTP=$(echo "$RESULT" | tail -1)
           BODY=$(echo "$RESULT" | head -n -1)
-          echo "Promote response ($HTTP): $BODY"
+          echo "Deploy response ($HTTP):"
+          echo "$BODY" | jq -r '{id:.id, url:.url, state:.readyState, error:.error.message} // "unexpected format"' 2>/dev/null || echo "$BODY"
 
-          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || [ "$HTTP" = "204" ]; then
-            echo "Deployment promoted successfully."
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Deployment created successfully."
           else
-            echo "WARNING: Promote returned HTTP $HTTP — may need manual redeploy in Vercel dashboard."
+            echo "WARNING: Deploy API returned HTTP $HTTP — may need manual redeploy in Vercel dashboard."
           fi
 
       - name: Verify JWKS endpoint
