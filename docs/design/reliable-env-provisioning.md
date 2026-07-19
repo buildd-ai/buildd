@@ -1,6 +1,6 @@
 # Reliable Environment Provisioning
 
-**Status:** Phases 1–2 shipped (2026-07-18) — verifier core + `buildd env verify` CLI + auto-detection, and the runner provision gate. Phases 3–4 (CI check, secret contract) not yet implemented.
+**Status:** Phases 1–3 shipped (2026-07-18) — verifier core + `buildd env verify` CLI + auto-detection, the runner provision gate, and the CI bootstrappability check. Phase 4 (secret contract) not yet implemented.
 **Owner:** max
 **Related:** `apps/runner/src/git-operations.ts` (worktree setup), `apps/web/src/lib/role-config.ts` (env mapping → R2), the `secrets` table, `docs/credentials-architecture.md`.
 
@@ -89,7 +89,7 @@ Buildd already has the agent-native primitives general tools lack: the `secrets`
 
 1. **Verifier core** ✅ *shipped* — `apps/runner/src/env-verify.ts`: manifest parser (`Bun.YAML`), step planner, injectable executor, and `buildd env verify` CLI (`--json` for machines). Auto-detection from lockfiles (bun/pnpm/yarn/npm/uv/poetry/cargo/go) so existing repos get value with zero config. Fails fast, exits nonzero, blames the earliest phase. Dogfooded via this repo's `.buildd/env.yaml`.
 2. **Runner integration** ✅ *shipped* — `WorkerManager.claimAndStart` runs `runProvisionGate` at the seam between worktree-ready and the agent's budget-consuming SDK loop. On failure the worker is marked failed with a structured `Provision failed [<phase>]: …` reason and the agent never starts (**zero budget spent**). Two safety properties: **enforcement is opt-in** — only a declared `.buildd/env.yaml` blocks; auto-detected plans stay advisory (CLI/CI only), so no existing workspace regresses. And the gate is **non-blocking** (async `exec`, never stalls the runner's other workers) and **skips the `install` phase** (the runner already ran its own tolerant install; readiness proves the tree usable). A gate that itself errors fails *open*. *Requeue policy note:* a blocked task is marked failed (diagnosable), not auto-requeued — retry-vs-escalate is the failure-taxonomy open question below; auto-requeue on a broken manifest would loop.
-3. **CI check** — run the verifier on PRs to catch bootstrappability regressions.
+3. **CI check** ✅ *shipped* — `.github/workflows/build.yml` runs `bun run env:verify` on every PR. Because the job's own `bun install` is non-frozen, the manifest's `bun install --frozen-lockfile` is what actually catches lockfile drift here; it also fails on a broken/unparseable manifest, a missing declared toolchain, or a broken readiness command — before any of it reaches an agent. Root `env:verify` script added for humans too.
 4. **Secret contract** — wire `env.required` to the `secrets` table scoping precedence; surface missing/expired secrets as a first-class provision failure.
 
 ## Open questions

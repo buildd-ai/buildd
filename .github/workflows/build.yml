@@ -29,6 +29,14 @@ jobs:
       - name: Lint specs (frontmatter + dead paths + index)
         run: bun run scripts/check-specs.ts --check
 
+      # Bootstrappability gate: the repo's own .buildd/env.yaml must be satisfiable.
+      # Catches a broken/unparseable manifest, lockfile drift (the manifest declares
+      # `bun install --frozen-lockfile`, which the non-frozen install above does not
+      # enforce), a missing declared toolchain, or a broken readiness command —
+      # before any of it ever reaches an agent. Same contract the runner gate uses.
+      - name: Verify env contract (buildd env verify)
+        run: bun run env:verify
+
       - name: Check migrations are up to date
         id: migration_check
         run: |
