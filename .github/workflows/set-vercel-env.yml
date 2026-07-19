@@ -89,7 +89,7 @@ jobs:
 
           cd /tmp/vp
           echo "Triggering redeploy via Vercel CLI..."
-          vercel redeploy "https://$LATEST_URL" --token "$VERCEL_TOKEN" --yes 2>&1
+          vercel redeploy "https://$LATEST_URL" --token "$VERCEL_TOKEN" 2>&1
           echo "Redeploy triggered."
 
       - name: Verify JWKS endpoint
