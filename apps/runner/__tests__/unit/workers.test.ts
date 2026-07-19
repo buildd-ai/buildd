@@ -7,8 +7,9 @@
  * Run: bun test __tests__/unit
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, it, expect } from 'bun:test';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { buildRetryContinuitySection } from '../../src/workers';
 
 // MessageStream: Async queue for multi-turn message passing
 // Mirrors implementation in workers.ts
@@ -222,5 +223,105 @@ describe('MessageStream', () => {
     expect(result2.done).toBe(false);
     expect((result1.value.message.content as any)[0].text).toBe('one');
     expect((result2.value.message.content as any)[0].text).toBe('two');
+  });
+});
+
+// Spec §6 — prompt injection
+describe('buildRetryContinuitySection', () => {
+  it('returns undefined when context is undefined', () => {
+    expect(buildRetryContinuitySection({ context: undefined, defaultBranch: 'dev' })).toBeUndefined();
+  });
+
+  it('returns undefined when context has no resumeBranch', () => {
+    expect(buildRetryContinuitySection({ context: { baseBranch: 'buildd/abc' }, defaultBranch: 'dev' })).toBeUndefined();
+  });
+
+  it('returns undefined when resumeBranch is empty string', () => {
+    expect(buildRetryContinuitySection({ context: { resumeBranch: '' }, defaultBranch: 'dev' })).toBeUndefined();
+  });
+
+  it('returns a section containing the salvage-vs-restart instruction when resumeBranch is set', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc-fix-login' },
+      defaultBranch: 'dev',
+    });
+    expect(section).toBeDefined();
+    expect(section).toContain('## Prior Attempt — Assess Before Starting');
+    expect(section).toContain('continue/salvage');
+    expect(section).toContain('restart');
+    expect(section).toContain('buildd/abc-fix-login');
+  });
+
+  it('includes git log command referencing resumeBranch', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc-fix-login' },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('git log --oneline origin/buildd/abc-fix-login..HEAD');
+  });
+
+  it('includes git diff command referencing defaultBranch and resumeBranch', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc-fix-login' },
+      defaultBranch: 'main',
+    });
+    expect(section).toContain('git diff origin/main...origin/buildd/abc-fix-login');
+  });
+
+  it('uses lastCommitSha in the fallback git log command when present', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc', lastCommitSha: 'deadbeef' },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('deadbeef~1');
+  });
+
+  it('falls back to origin/resumeBranch in git log when lastCommitSha is absent', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc' },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('origin/buildd/abc~1');
+  });
+
+  it('includes prior failure summary when failureContext is a structured object', () => {
+    const section = buildRetryContinuitySection({
+      context: {
+        resumeBranch: 'buildd/abc',
+        failureContext: { summary: 'TypeScript compilation failed', errorType: 'ci_failure' },
+      },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('TypeScript compilation failed');
+    expect(section).toContain('3. The prior attempt failed with:');
+  });
+
+  it('includes prior failure summary when failureContext is a bare string (backward compat)', () => {
+    const section = buildRetryContinuitySection({
+      context: {
+        resumeBranch: 'buildd/abc',
+        failureContext: 'Job "test" failed',
+      },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('Job "test" failed');
+  });
+
+  it('omits the failure line when failureContext is absent', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc' },
+      defaultBranch: 'dev',
+    });
+    expect(section).not.toContain('The prior attempt failed with:');
+    // Step numbering: without failure line, decide step is 3 not 4
+    expect(section).toContain('3. Explicitly decide:');
+  });
+
+  it('uses step 4 for decision when failureContext is present', () => {
+    const section = buildRetryContinuitySection({
+      context: { resumeBranch: 'buildd/abc', failureContext: { summary: 'Tests failed' } },
+      defaultBranch: 'dev',
+    });
+    expect(section).toContain('4. Explicitly decide:');
   });
 });
