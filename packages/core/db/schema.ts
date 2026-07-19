@@ -1091,6 +1091,20 @@ export const secrets = pgTable('secrets', {
 }, (t) => ({
   teamIdx: index('secrets_team_idx').on(t.teamId),
   accountPurposeLabelIdx: uniqueIndex('secrets_account_purpose_label_idx').on(t.accountId, t.purpose, t.label),
+  // Backend-auth credentials are singletons per scope: at most one row per
+  // (team, account, workspace, purpose, label). NULLS NOT DISTINCT so team-wide
+  // rows (account/workspace/label all NULL) collide instead of piling up — the
+  // legacy index above treats NULLs as distinct, which let duplicate team-wide
+  // oauth_token/codex rows accumulate and be picked nondeterministically at claim.
+  // Partial (auth purposes only) so it never touches rotation-style secrets like
+  // signing_key, which intentionally keep multiple rows.
+  // NOTE: drizzle-kit (0.45.2) can't express `NULLS NOT DISTINCT`, so the generated
+  // migration SQL is hand-edited to add it (see the migration that creates this
+  // index). Without NULLS NOT DISTINCT, team-wide rows (NULL account/workspace/label)
+  // would not collide and duplicates could still accumulate.
+  scopedAuthCredentialIdx: uniqueIndex('secrets_scoped_auth_credential_idx')
+    .on(t.teamId, t.accountId, t.workspaceId, t.purpose, t.label)
+    .where(sql`${t.purpose} in ('oauth_token','anthropic_api_key','codex_credential','claude_credential')`),
 }));
 
 

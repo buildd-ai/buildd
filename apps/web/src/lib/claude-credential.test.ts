@@ -59,6 +59,7 @@ import {
   getClaudeStatus,
   deleteClaudeCredential,
   refreshClaudeCredential,
+  verifyClaudeCredential,
 } from './claude-credential';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -347,5 +348,60 @@ describe('refreshClaudeCredential', () => {
 
     const result = await refreshClaudeCredential('secret-1');
     expect(result).toBe('error');
+  });
+});
+
+describe('verifyClaudeCredential', () => {
+  beforeEach(() => {
+    mockFindFirst.mockReset();
+    mockUpdate.mockReset();
+    mockUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('does NOT clear a revoked oauth_token when GET /v1/models passes (200)', async () => {
+    // A revoked setup token still returns 200 on the access check — verify must not
+    // launder it back to healthy. It reports `revoked: true` and preserves the state.
+    mockFindFirst.mockResolvedValue({
+      encryptedValue: 'enc:sk-ant-oat01-token',
+      purpose: 'oauth_token',
+      healthStatus: 'revoked',
+    });
+    global.fetch = mock(async () => ({ ok: true, status: 200, json: async () => ({}) })) as any;
+
+    const result = await verifyClaudeCredential('secret-1');
+    expect(result.verified).toBe(true);
+    expect(result.revoked).toBe(true);
+  });
+
+  it('verifies a healthy oauth_token normally (no revoked flag) on 200', async () => {
+    mockFindFirst.mockResolvedValue({
+      encryptedValue: 'enc:sk-ant-oat01-token',
+      purpose: 'oauth_token',
+      healthStatus: 'healthy',
+    });
+    global.fetch = mock(async () => ({ ok: true, status: 200, json: async () => ({}) })) as any;
+
+    const result = await verifyClaudeCredential('secret-1');
+    expect(result.verified).toBe(true);
+    expect(result.revoked).toBeFalsy();
+  });
+
+  it('reports failure with detail on a non-200 response', async () => {
+    mockFindFirst.mockResolvedValue({
+      encryptedValue: 'enc:sk-ant-oat01-token',
+      purpose: 'oauth_token',
+      healthStatus: 'unknown',
+    });
+    global.fetch = mock(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: { message: 'invalid bearer token' } }),
+    })) as any;
+
+    const result = await verifyClaudeCredential('secret-1');
+    expect(result.verified).toBe(false);
+    expect(result.error).toContain('401');
   });
 });
