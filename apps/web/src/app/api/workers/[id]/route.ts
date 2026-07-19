@@ -1021,11 +1021,22 @@ export async function PATCH(
             if (!backend || backend === 'claude') {
               secretId = await getActiveClaudeSecretId(teamId, workspaceId);
             } else if (backend === 'codex') {
-              const codexRow = await db.query.secrets.findFirst({
-                where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
-                columns: { id: true },
-              });
-              secretId = codexRow?.id ?? null;
+              // For Codex tasks, detect whether the failure was actually caused by
+              // a Claude/Anthropic auth error (leaked Claude creds, misconfiguration)
+              // rather than a Codex/OpenAI auth error. Attributing a Claude error to
+              // the Codex credential falsely marks it revoked/degraded.
+              const isClaudeOriginError = /access token could not be refreshed|logged out or signed in to another account|invalid authentication credentials|anthropic/i.test(error);
+              if (isClaudeOriginError) {
+                // Attribute to the Claude credential so the Codex credential health is unaffected.
+                console.warn(`[workers PATCH] Codex task ${taskId} failed with a Claude auth error — attributing to Claude credential, not Codex`);
+                secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+              } else {
+                const codexRow = await db.query.secrets.findFirst({
+                  where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+                  columns: { id: true },
+                });
+                secretId = codexRow?.id ?? null;
+              }
             }
 
             if (secretId) {

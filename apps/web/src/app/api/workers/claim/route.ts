@@ -1211,6 +1211,10 @@ export async function POST(req: NextRequest) {
         const workspaceTeamId = task?.workspace?.teamId;
 
         if (!workspaceTeamId) continue;
+        // Codex tasks use OpenAI credentials, not Anthropic. Skip injecting
+        // Anthropic secrets so they don't reach the Codex CLI subprocess and
+        // cause spurious Claude auth errors if the team's Claude token is bad.
+        if (task?.backend === 'codex') continue;
 
         const workerSecrets = await db.query.secrets.findMany({
           where: and(
