@@ -20,6 +20,7 @@ import {
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
+import { buildRetryContinuitySection } from './worktree-utils';
 import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
@@ -1813,36 +1814,19 @@ export class WorkerManager {
         }
       }
 
-      // Inject retry-continuity prompt section when resumeBranch is set
-      const resumeBranch = (task.context as any)?.resumeBranch as string | undefined;
-      if (resumeBranch) {
-        const lastCommitSha = (task.context as any)?.lastCommitSha as string | undefined;
-        const rawFailureCtx = (task.context as any)?.failureContext;
-        const failureSummary: string | undefined =
-          typeof rawFailureCtx === 'string'
-            ? rawFailureCtx
-            : (rawFailureCtx as any)?.summary;
-
-        const sha = lastCommitSha ?? `origin/${resumeBranch}`;
-        const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
-        const decideStep = failureSummary ? '4' : '3';
-        const logStep = failureSummary ? '5' : '4';
-        const retryContinuitySection = [
-          '',
-          '## Prior Attempt — Assess Before Starting',
-          '',
-          'A previous agent attempt left commits on this branch. Before editing any file:',
-          '',
-          `1. Run \`git log --oneline origin/${resumeBranch}..HEAD\` to see what this attempt has already done.`,
-          `   (If the worktree is already on \`${resumeBranch}\`, run \`git log --oneline ${sha}~1..HEAD\` instead.)`,
-          `2. Run \`git diff origin/${defaultBranch}...origin/${resumeBranch}\` to see what the prior attempt changed relative to base.`,
-          ...failureLine,
-          `${decideStep}. Explicitly decide: **continue/salvage** (fix what failed, keep prior commits) or **restart** (reset to base, start clean).`,
-          `${logStep}. Log your decision via \`update_progress\` **before** making any file edits.`,
-          '',
-          'Do not skip this assessment step. The decision and its rationale must appear in the progress log.',
-        ].join('\n');
-
+      // Inject retry-continuity prompt section when a usable resumeBranch is set.
+      // If the prior attempt's branch was gone/diverged on remote, setupWorktree
+      // has already cleared the resume fields from task.context (fresh start), so
+      // this returns null and no "prior attempt" instructions are appended.
+      // `defaultBranch` is derived here (not in this method's scope previously —
+      // referencing it threw a ReferenceError on every resume).
+      const retryContinuitySection = buildRetryContinuitySection({
+        resumeBranch: (task.context as any)?.resumeBranch,
+        lastCommitSha: (task.context as any)?.lastCommitSha,
+        failureContext: (task.context as any)?.failureContext,
+        defaultBranch: gitConfig?.defaultBranch || 'main',
+      });
+      if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
 

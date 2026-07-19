@@ -19,6 +19,7 @@ import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledg
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { findBlockingPr } from '@buildd/core/path-overlap';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
+import { dependenciesSatisfied } from './deps-gate';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -271,11 +272,12 @@ export async function POST(req: NextRequest) {
     )`
   );
 
-  // Exclude tasks whose dependencies haven't completed yet.
-  // "Done" = task.status='completed' AND (no PR opened, OR PR is merged).
-  // This prevents downstream tasks from starting while an upstream PR is still open —
-  // which was the root cause of the 6-overlapping-PR burst (PRs #1044-1049).
-  // The mergedAt column on workers is set by the GitHub webhook when the PR merges.
+  // Exclude tasks whose dependencies haven't been satisfied yet.
+  // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
+  // dep with an open PR keeps blocking (root cause of the 6-overlapping-PR burst,
+  // PRs #1044-1049). A cancelled dep is intentionally non-blocking — cancelling a
+  // dead/abandoned dependency deliberately unblocks its dependents. failed /
+  // pending / in_progress deps still block. See dependenciesSatisfied().
   // Exception: bypassDepsGate=true in task context lets a human override the gate
   // (set by /api/tasks/[id]/start when forceOverride=true).
   claimableConditions.push(
@@ -285,22 +287,8 @@ export async function POST(req: NextRequest) {
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
       // Human override: task was manually force-started, skip the dep-PR gate
       sql`${tasks.context}->>'bypassDepsGate' = 'true'`,
-      // All dependencies must be completed AND their PRs merged (if any were opened)
-      sql`NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
-        WHERE NOT EXISTS (
-          SELECT 1 FROM ${tasks} t2
-          WHERE t2.id = dep_id::uuid
-          AND t2.status = 'completed'
-          AND NOT EXISTS (
-            -- Block if the dep task has any worker with an open (unmerged) PR
-            SELECT 1 FROM ${workers} w
-            WHERE w.task_id = t2.id
-            AND w.pr_url IS NOT NULL
-            AND w.merged_at IS NULL
-          )
-        )
-      )`
+      // Every dependency must be satisfied (completed+merged, or cancelled)
+      dependenciesSatisfied()
     )
   );
 
