@@ -27,8 +27,17 @@ export interface ServerCredential {
   fetchedAt: number;
 }
 
-/** Default freshness window for a cached server credential (~3h). */
-export const DEFAULT_SERVER_CRED_TTL_MS = 3 * 60 * 60 * 1000;
+/**
+ * Default freshness window for a cached server credential (50 min).
+ *
+ * Claude OAuth access tokens typically live ~1h. Caching beyond that causes
+ * stale token reuse when the same team claims a second worker after the token
+ * has expired. 50 min stays safely within the 1h window while giving a margin
+ * for clock skew. Teams using the managed claude_credential flow are not
+ * affected (their access_token is isolated per-worker; cred cache only carries
+ * the legacy oauth_token / anthropic_api_key).
+ */
+export const DEFAULT_SERVER_CRED_TTL_MS = 50 * 60 * 1000;
 
 function resolveTtl(): number {
   const raw = process.env.SERVER_CRED_TTL_MS;
