@@ -65,48 +65,40 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
+          export VERCEL_TOKEN
 
-          echo "Fetching latest production deployment ID..."
-          LATEST=$(curl -sf \
+          echo "Installing Vercel CLI..."
+          npm install -g vercel@latest --silent
+
+          mkdir -p /tmp/vp/.vercel
+          printf '{"projectId":"%s","orgId":"%s"}' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" \
+            > /tmp/vp/.vercel/project.json
+
+          echo "Fetching latest production deployment URL..."
+          LATEST_URL=$(curl -sf \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1")
+            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1" \
+            | jq -r '.deployments[0].url // empty')
 
-          DEPLOY_ID=$(echo "$LATEST" | jq -r '.deployments[0].uid // empty')
-          echo "Latest production deployment: $DEPLOY_ID"
+          echo "Latest production deployment: $LATEST_URL"
 
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "Could not find deployment ID, skipping redeploy"
+          if [ -z "$LATEST_URL" ]; then
+            echo "Could not find deployment URL, skipping redeploy"
             exit 0
           fi
 
-          echo "Triggering redeploy..."
-          RESULT=$(curl -s -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-raw '{"target":"production"}' \
-            "https://api.vercel.com/v13/deployments/$DEPLOY_ID/redeploy?teamId=$VERCEL_ORG_ID")
+          cd /tmp/vp
+          echo "Triggering redeploy via Vercel CLI..."
+          vercel redeploy "https://$LATEST_URL" --token "$VERCEL_TOKEN" --yes 2>&1
+          echo "Redeploy triggered."
 
-          NEW_URL=$(echo "$RESULT" | jq -r '.url // .error.message // "unknown"')
-          echo "Redeploy triggered: $NEW_URL"
-
-      - name: Bootstrap JWKS signing key
-        env:
-          VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      - name: Verify JWKS endpoint
+        if: ${{ github.event.inputs.redeploy == 'true' }}
         run: |
-          echo "Waiting 60s for deployment to complete..."
-          sleep 60
+          echo "Waiting 90s for deployment to complete..."
+          sleep 90
 
-          echo "Calling JWKS rotation cron to bootstrap signing key..."
-          RESULT=$(curl -s -w "\n%{http_code}" \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "https://buildd.dev/api/cron/jwks-rotation")
-          HTTP=$(echo "$RESULT" | tail -1)
-          BODY=$(echo "$RESULT" | head -n -1)
-          echo "Cron response ($HTTP): $BODY"
-
+          # The JWKS endpoint auto-bootstraps the first signing key when BUILDD_SIGNING_KEY_TEAM_ID is set.
           echo "Verifying JWKS endpoint..."
           JWKS=$(curl -s "https://buildd.dev/api/.well-known/jwks.json")
           echo "JWKS: $JWKS"
@@ -117,6 +109,6 @@ jobs:
           if [ "$KEY_COUNT" -gt "0" ]; then
             echo "JWKS endpoint is working correctly!"
           else
-            echo "WARNING: JWKS endpoint returned no keys. Deployment may still be in progress."
+            echo "WARNING: JWKS endpoint returned no keys (deployment may still be in progress)."
             echo "Re-check: curl https://buildd.dev/api/.well-known/jwks.json"
           fi
