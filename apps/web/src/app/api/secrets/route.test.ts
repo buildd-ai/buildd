@@ -27,6 +27,13 @@ mock.module('@buildd/core/secrets', () => ({
   }),
 }));
 
+// POST calls requeueAuthFailedTasks after storing a Claude credential; stub it so
+// the test doesn't reach the real DB (it's best-effort/try-caught in the route anyway).
+const mockRequeue = mock(() => Promise.resolve({ requeued: [], skippedOverCap: 0 }));
+mock.module('@/lib/credential-recovery', () => ({
+  requeueAuthFailedTasks: mockRequeue,
+}));
+
 import { POST } from './route';
 
 function createPostRequest(body: any): NextRequest {
