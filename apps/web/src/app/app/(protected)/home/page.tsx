@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne } from 'drizzle-orm';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -8,6 +8,9 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/team-access';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
+import { resolvePolicy } from '@/lib/merge-policy';
+import MergeConfirmButton from '@/components/MergeConfirmButton';
+import ExternalLink from '@/components/ExternalLink';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -123,6 +126,19 @@ export default async function HomePage({
   }[] = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+
+  let escalationInbox: {
+    workerId: string;
+    taskId: string;
+    taskTitle: string;
+    workspaceId: string;
+    workspaceName: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    policyTier: string;
+    escalationReason: string | null;
+    waitingMinutes: number | null;
+  }[] = [];
 
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -397,6 +413,74 @@ export default async function HomePage({
             };
           });
 
+        // Escalation inbox (BT-15): PRs needing human action
+        {
+          const openPrWorkers = await db.query.workers.findMany({
+            where: and(
+              inArray(workers.workspaceId, wsIds),
+              isNotNull(workers.prUrl),
+              isNull(workers.mergedAt),
+            ),
+            columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, completedAt: true },
+            with: { task: { columns: { id: true, title: true, missionId: true } } },
+          });
+
+          if (openPrWorkers.length > 0) {
+            const openTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
+            const escalatedNotes = openTaskIds.length > 0
+              ? await db.query.missionNotes.findMany({
+                  where: and(
+                    inArray(missionNotes.taskId, openTaskIds),
+                    eq(missionNotes.type, 'reviewer_escalated'),
+                  ),
+                  columns: { taskId: true, body: true, title: true },
+                })
+              : [];
+            const escalatedMap = new Map<string, string>();
+            for (const n of escalatedNotes) {
+              if (n.taskId && !escalatedMap.has(n.taskId)) {
+                escalatedMap.set(n.taskId, n.body ?? n.title);
+              }
+            }
+
+            const wsRowsForInbox = await db.query.workspaces.findMany({
+              where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
+              columns: { id: true, name: true, gitConfig: true },
+            });
+            const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
+
+            escalationInbox = openPrWorkers
+              .filter(w => {
+                if (w.taskId && escalatedMap.has(w.taskId)) return true;
+                const ws = wsInboxMap.get(w.workspaceId);
+                if (!ws) return false;
+                return resolvePolicy(ws).tier === 'human';
+              })
+              .map(w => {
+                const ws = wsInboxMap.get(w.workspaceId);
+                const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
+                const reason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
+                  ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null);
+                const waitingMinutes = w.completedAt
+                  ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
+                  : null;
+                return {
+                  workerId: w.id,
+                  taskId: w.taskId ?? '',
+                  taskTitle: (w.task as any)?.title ?? '',
+                  workspaceId: w.workspaceId,
+                  workspaceName: ws?.name ?? '',
+                  prNumber: w.prNumber,
+                  prUrl: w.prUrl,
+                  policyTier: policy.tier,
+                  escalationReason: reason,
+                  waitingMinutes,
+                };
+              })
+              .slice(0, 10);
+          }
+        }
+
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
@@ -583,6 +667,79 @@ export default async function HomePage({
                 </div>
               )}
             </div>
+
+            {/* Escalation Inbox (BT-15) — PRs requiring human action */}
+            {escalationInbox.length > 0 && (
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="section-label">Needs Your Review</div>
+                  <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-status-error text-white">
+                    {escalationInbox.length}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {escalationInbox.map((item) => {
+                    const tierLabel =
+                      item.policyTier === 'human' ? 'Human Gate'
+                      : item.policyTier === 'agent-review' ? 'Agent Review'
+                      : 'Auto';
+                    return (
+                      <div
+                        key={item.workerId}
+                        className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                              <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                {tierLabel}
+                              </span>
+                              {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                <span className="text-[10px] text-text-muted">
+                                  Waiting {item.waitingMinutes < 60
+                                    ? `${item.waitingMinutes}m`
+                                    : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                </span>
+                              )}
+                            </div>
+                            <Link
+                              href={`/app/tasks/${item.taskId}`}
+                              className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                            >
+                              {item.taskTitle}
+                            </Link>
+                            {item.workspaceName && (
+                              <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                            )}
+                          </div>
+                        </div>
+                        {item.escalationReason && (
+                          <p className="text-[12px] text-text-secondary line-clamp-2 mb-2">
+                            {item.escalationReason}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 flex-wrap mt-2">
+                          {item.prUrl && (
+                            <ExternalLink
+                              href={item.prUrl}
+                              className="text-[12px] text-accent-text hover:underline"
+                            >
+                              PR #{item.prNumber} ↗
+                            </ExternalLink>
+                          )}
+                          {item.prNumber && (
+                            <MergeConfirmButton
+                              prNumber={item.prNumber}
+                              prUrl={item.prUrl ?? ''}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (

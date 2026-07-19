@@ -3,19 +3,22 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useNeedsInput } from './NeedsInputProvider';
+import { useEscalation } from './EscalationProvider';
 import { isNavActive } from '@/lib/nav-active';
 import { NAV_ITEMS } from '@/lib/nav-config';
 
 export default function MissionsBottomNav() {
   const pathname = usePathname();
   const { count: needsInputCount } = useNeedsInput();
+  const { count: escalationCount } = useEscalation();
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-center justify-around h-14">
         {NAV_ITEMS.map((tab) => {
           const active = isNavActive(pathname, tab.href);
-          const showBadge = tab.href === '/app/tasks' && needsInputCount > 0;
+          const showBadge = (tab.href === '/app/tasks' && needsInputCount > 0) || (tab.href === '/app/home' && escalationCount > 0);
+          const badgeCount = tab.href === '/app/home' ? escalationCount : needsInputCount;
 
           return (
             <Link
@@ -28,8 +31,8 @@ export default function MissionsBottomNav() {
               <span className={`relative w-[22px] h-[22px] ${active ? 'opacity-100' : 'opacity-35'}`}>
                 {tab.icon}
                 {showBadge && (
-                  <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-warning text-white">
-                    {needsInputCount}
+                  <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold rounded-full bg-status-error text-white">
+                    {badgeCount}
                   </span>
                 )}
               </span>
