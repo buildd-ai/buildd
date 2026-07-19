@@ -53,26 +53,25 @@ describe('DEFAULT_ROLES', () => {
     }
   });
 
-  it('Builder prompt includes query_knowledge pull gate for errors and code', () => {
+  it('Builder prompt uses recall (not buildd_memory query_knowledge) for pull gates', () => {
     const c = bySlug.builder.content;
-    expect(c).toContain('query_knowledge');
-    expect(c).toContain('corpus');
+    // Migrated from buildd_memory query_knowledge → recall
+    expect(c).toContain('recall');
     // Must gate on both memory (error diagnosis) and code (before editing)
-    expect(c).toContain('memory');
-    expect(c).toContain('code');
+    expect(c).toContain('scope=code');
   });
 
-  it('Organizer prompt includes query_knowledge pull gate for spec and memory', () => {
+  it('Organizer prompt uses recall for spec and memory pull gates', () => {
     const c = bySlug.organizer.content;
-    expect(c).toContain('query_knowledge');
-    expect(c).toContain('spec');
-    expect(c).toContain('memory');
+    // Migrated from buildd_memory query_knowledge → recall
+    expect(c).toContain('recall');
+    expect(c).toContain('scope=spec');
   });
 
-  it('every role prompt includes the universal save-dedup gate', () => {
+  it('every role prompt includes a recall-based save-dedup gate', () => {
     for (const role of DEFAULT_ROLES) {
-      // Every role must gate memory saves with a prior dedup query
-      expect(role.content).toContain('query_knowledge');
+      // Every role must gate memory saves with a prior recall dedup check
+      expect(role.content).toContain('recall');
     }
   });
 });

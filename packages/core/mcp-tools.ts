@@ -93,11 +93,14 @@ export const adminActions = [
   'release_status',
   'send_agent_message',
   'spec_compare',
+  'consolidate_knowledge',
+  'memory_delete',
 ] as const;
 
 export const allActions = [...workerActions, ...adminActions] as const;
 
-export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'delete', 'query_knowledge', 'consolidate_knowledge'] as const;
+// delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)
+export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'query_knowledge'] as const;
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
@@ -152,6 +155,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates via buildd_memory update with supersedes. [admin]',
+    memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
   const lines = actions
@@ -167,9 +172,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    delete: '{ id (required) }',
     query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (find_duplicates cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (archive audit marker) } — knowledge-consolidation support for the weekly consolidation task. find_duplicates surfaces near-duplicate chunk PAIRS (same namespace, embedding cosine > threshold) for YOU to judge; find_decayed surfaces old zero-hit task/artifact chunks; archive flips the listed chunks to is_current=false (audit-recoverable — nothing is deleted; superseded chunks stay queryable via history). Merge memory duplicates via save/update with supersedes (memory service is the source of truth); use archive for task-corpus losers and decayed noise.',
   };
 
   const lines = actions
@@ -2966,7 +2969,7 @@ export async function handleLearnAction(
 }
 
 export async function handleMemoryAction(
-  memoryClient: MemoryClient,
+  memoryClient: MemoryClient | null,
   action: string,
   params: Record<string, unknown>,
   ctx: {
@@ -2980,15 +2983,24 @@ export async function handleMemoryAction(
     api?: ApiFn;
   },
 ): Promise<ToolResult> {
+  // consolidate_knowledge and query_knowledge operate directly on the PgVectorStore
+  // and do not call memoryClient — null is acceptable for those ops.
+  const clientRequired = ['context', 'search', 'save', 'get', 'update', 'delete'];
+  if (clientRequired.includes(action) && !memoryClient) {
+    return errorResult('Memory service not configured — ensure MEMORY_API_URL is set');
+  }
+  // Safe non-null ref for client-requiring cases (guarded above).
+  const mc = memoryClient as MemoryClient;
+
   switch (action) {
     case 'context': {
       const project = (params.project as string) || ctx.project;
-      const data = await memoryClient.getContext(project);
+      const data = await mc.getContext(project);
       return text(data.markdown || '(No memories yet)');
     }
 
     case 'search': {
-      const data = await memoryClient.search({
+      const data = await mc.search({
         query: params.query as string | undefined,
         type: params.type as string | undefined,
         project: (params.project as string) || ctx.project,
@@ -3005,7 +3017,7 @@ export async function handleMemoryAction(
       const ids = data.results.map(r => r.id);
       let fetched: any[] = [];
       try {
-        const batchData = await memoryClient.batch(ids);
+        const batchData = await mc.batch(ids);
         fetched = batchData.memories || [];
       } catch {
         fetched = [];
@@ -3038,7 +3050,7 @@ export async function handleMemoryAction(
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
-      const data = await memoryClient.save({
+      const data = await mc.save({
         type: params.type as string,
         title: params.title as string,
         content: params.content as string,
@@ -3090,7 +3102,7 @@ export async function handleMemoryAction(
 
     case 'get': {
       if (!params.id) throw new Error('id is required');
-      const data = await memoryClient.get(params.id as string);
+      const data = await mc.get(params.id as string);
       const m = data.memory;
       const meta = [
         `Type: ${m.type}`,
@@ -3120,7 +3132,7 @@ export async function handleMemoryAction(
       const updateSupersedes = parseSupersedesParam(params.supersedes);
       if (updateSupersedes.error) throw new Error(updateSupersedes.error);
 
-      const data = await memoryClient.update(params.id as string, updateFields);
+      const data = await mc.update(params.id as string, updateFields);
 
       // Mirror update into KnowledgeStore (team-scoped)
       let updateEntityBinding: EntityBinding | null = null;
@@ -3162,7 +3174,7 @@ export async function handleMemoryAction(
 
     case 'delete': {
       if (!params.id) throw new Error('id is required');
-      await memoryClient.delete(params.id as string);
+      await mc.delete(params.id as string);
 
       // Remove from KnowledgeStore (team-scoped)
       if (ctx.teamId && ctx.knowledgeStore) {

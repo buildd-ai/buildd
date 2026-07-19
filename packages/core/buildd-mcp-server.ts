@@ -142,6 +142,24 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
         async (args) => {
           try {
             const params = (args.params || {}) as Record<string, unknown>;
+
+            // Admin-only knowledge management ops (moved from buildd_memory)
+            if (args.action === 'consolidate_knowledge' || args.action === 'memory_delete') {
+              if (!memClient && args.action === 'memory_delete') {
+                return { content: [{ type: 'text' as const, text: 'Memory service not configured.' }], isError: true };
+              }
+              const embedder = getVoyageEmbedder();
+              const ks = workspaceId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+              return await handleMemoryAction(memClient, args.action === 'memory_delete' ? 'delete' : 'consolidate_knowledge', params, {
+                project: memoryProject,
+                workerId,
+                workspaceId,
+                teamId: resolvedTeamId,
+                knowledgeStore: ks,
+                embedder,
+              });
+            }
+
             return await handleBuilddAction(api, args.action, params, ctx);
           } catch (error) {
             return {
@@ -162,7 +180,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
       // ── buildd_memory tool ────────────────────────────────────────────
       tool(
         'buildd_memory',
-        `Search, save, and manage shared team memories (code patterns, gotchas, decisions). Actions: ${filteredMemoryActions.join(', ')}. save/update also accept supersedes: string[] — memory IDs the new entry replaces; superseded entries drop out of default knowledge retrieval.`,
+        `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${filteredMemoryActions.join(', ')}. save/update also accept supersedes: string[] — memory IDs the new entry replaces; superseded entries drop out of default knowledge retrieval.`,
         {
           action: z.enum(filteredMemoryActions as [string, ...string[]]),
           params: z.record(z.string(), z.unknown()).optional(),
