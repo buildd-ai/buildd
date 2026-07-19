@@ -63,30 +63,49 @@ jobs:
           VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
 
-          echo "Fetching latest successful production deployment..."
-          LATEST=$(curl -sf \
+          # Get the current HEAD SHA on main
+          MAIN_SHA=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/buildd-ai/buildd/git/refs/heads/main" \
+            | jq -r '.object.sha')
+          echo "main SHA: $MAIN_SHA"
+
+          # Trigger a new production deployment from main via Vercel API.
+          # A fresh deployment will pick up the env var we just set.
+          echo "Triggering Vercel deployment from main..."
+          DEPLOY_RESP=$(curl -sf -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&state=READY&limit=1")
+            -H "Content-Type: application/json" \
+            -d "{
+              \"name\": \"buildd\",
+              \"target\": \"production\",
+              \"gitSource\": {
+                \"type\": \"github\",
+                \"org\": \"buildd-ai\",
+                \"repo\": \"buildd\",
+                \"ref\": \"main\",
+                \"sha\": \"$MAIN_SHA\"
+              }
+            }" \
+            "https://api.vercel.com/v13/deployments?teamId=$VERCEL_ORG_ID&forceNew=1")
 
-          PROD_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
-          echo "Latest ready production deployment URL: $PROD_URL"
+          DEPLOY_ID=$(echo "$DEPLOY_RESP" | jq -r '.id // empty')
+          DEPLOY_URL=$(echo "$DEPLOY_RESP" | jq -r '.url // empty')
+          echo "Deployment ID: $DEPLOY_ID"
+          echo "Deployment URL: $DEPLOY_URL"
 
-          if [ -z "$PROD_URL" ]; then
-            echo "Could not find production deployment URL, skipping redeploy"
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "Deployment response:"
+            echo "$DEPLOY_RESP" | jq '{id, url, error, readyState}' 2>/dev/null || echo "$DEPLOY_RESP"
+            echo "Failed to create deployment — env var is set; it will take effect on the next regular deploy."
             exit 0
           fi
 
-          # Redeploy the existing deployment with the latest env vars.
-          # `vercel redeploy` creates a new deployment from the same build artifacts
-          # and injects the current env vars — no full rebuild needed.
-          # Note: --yes is not supported by redeploy; in non-TTY CI it proceeds automatically.
-          cd /tmp/vp
-          echo "Redeploying https://$PROD_URL with updated env vars..."
-          vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN"
-          echo "Redeploy triggered!"
+          echo "Deployment triggered! Waiting for it to become ready..."
 
       - name: Verify JWKS endpoint
         if: ${{ github.event.inputs.redeploy == 'true' }}
