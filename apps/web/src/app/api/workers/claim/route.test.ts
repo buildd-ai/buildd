@@ -1526,6 +1526,80 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
+  // Regression: Codex-backend tasks must NOT receive Anthropic secrets
+  // (serverOauthToken / serverApiKey). The Codex CLI uses Claude Code internally,
+  // so injecting the team's Claude token caused spurious Claude auth failures
+  // (and false "revoked" health marks on the Codex credential) when that token expired.
+  it('does not attach Anthropic secrets (serverOauthToken/serverApiKey) for codex-backend tasks', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Codex task',
+        backend: 'codex',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    // Team has both Claude secrets — they must NOT be delivered for Codex tasks.
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'oauth-secret-1', purpose: 'oauth_token', label: null },
+      { id: 'apikey-secret-1', purpose: 'anthropic_api_key', label: null },
+    ]);
+    mockSecretsProviderGet.mockResolvedValue('some-claude-credential');
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    // Anthropic credentials must be absent for Codex-backend tasks.
+    expect(data.workers[0].serverOauthToken).toBeUndefined();
+    expect(data.workers[0].serverApiKey).toBeUndefined();
+
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
   it('does not include mcpSecrets when no mcp_credential secrets exist', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
