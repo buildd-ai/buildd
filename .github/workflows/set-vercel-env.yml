@@ -4,63 +4,119 @@ on:
   workflow_dispatch:
     inputs:
       env_key:
-        description: 'Env var name'
+        description: 'Environment variable name'
         required: true
         default: 'BUILDD_SIGNING_KEY_TEAM_ID'
       env_value:
-        description: 'Env var value'
+        description: 'Environment variable value'
         required: true
         default: 'd2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5'
+      redeploy:
+        description: 'Trigger redeploy after setting env var'
+        required: false
+        default: 'true'
 
 jobs:
   set-env:
     runs-on: ubuntu-latest
-    env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
     steps:
-      - name: Set env var via Vercel API
+      - name: Set Vercel env var via CLI
+        env:
+          VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           KEY="${{ github.event.inputs.env_key }}"
           VALUE="${{ github.event.inputs.env_value }}"
-          echo "Setting $KEY..."
 
-          # Delete existing entries for this key
-          curl -s \
+          # Strip any newlines the secret may contain
+          VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
+          export VERCEL_TOKEN
+
+          echo "Installing Vercel CLI..."
+          npm install -g vercel@latest --silent
+
+          # Create a linked project directory
+          mkdir -p /tmp/vp/.vercel
+          printf '{"projectId":"%s","orgId":"%s"}' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" \
+            > /tmp/vp/.vercel/project.json
+          cd /tmp/vp
+
+          # Remove existing entries (ignore errors if not found)
+          vercel env rm "$KEY" production   --token "$VERCEL_TOKEN" --yes 2>&1 || true
+          vercel env rm "$KEY" preview      --token "$VERCEL_TOKEN" --yes 2>&1 || true
+          vercel env rm "$KEY" development  --token "$VERCEL_TOKEN" --yes 2>&1 || true
+
+          # Add for each environment
+          echo "Adding $KEY for production..."
+          printf '%s' "$VALUE" | vercel env add "$KEY" production   --token "$VERCEL_TOKEN" --yes
+          echo "Adding $KEY for preview..."
+          printf '%s' "$VALUE" | vercel env add "$KEY" preview      --token "$VERCEL_TOKEN" --yes
+          echo "Adding $KEY for development..."
+          printf '%s' "$VALUE" | vercel env add "$KEY" development  --token "$VERCEL_TOKEN" --yes
+
+          echo "Done! $KEY set for production, preview, and development."
+
+      - name: Promote production deployment
+        if: ${{ github.event.inputs.redeploy == 'true' }}
+        env:
+          VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
+
+          echo "Fetching latest production deployment..."
+          LATEST=$(curl -sf \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}&keys=${KEY}" \
-            -o /tmp/existing.json
+            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1")
 
-          python3 << 'EOF'
-import json
-try:
-    data = json.load(open('/tmp/existing.json'))
-    ids = [e['id'] for e in data.get('envs', [])]
-    print(f"Found {len(ids)} existing entries to delete: {ids}")
-    open('/tmp/existing_ids.txt', 'w').write('\n'.join(ids))
-except Exception as e:
-    print(f"No existing entries (or error): {e}")
-    open('/tmp/existing_ids.txt', 'w').write('')
-EOF
+          DEPLOY_ID=$(echo "$LATEST" | jq -r '.deployments[0].uid // empty')
+          DEPLOY_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
+          echo "Latest production deployment: $DEPLOY_ID ($DEPLOY_URL)"
 
-          while IFS= read -r ID; do
-            [ -z "$ID" ] && continue
-            echo "Deleting $ID..."
-            curl -s -o /dev/null -X DELETE \
-              -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ID}?teamId=${VERCEL_ORG_ID}"
-          done < /tmp/existing_ids.txt
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "Could not find deployment ID, skipping promote"
+            exit 0
+          fi
 
-          # Create the env var
-          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
+          # Promote the existing deployment to pick up new runtime env vars without rebuilding.
+          # Vercel injects env vars at request time for serverless functions, so the promoted
+          # deployment will see BUILDD_SIGNING_KEY_TEAM_ID immediately.
+          echo "Promoting deployment $DEPLOY_ID to production..."
+          RESULT=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"key\":\"$KEY\",\"value\":\"$VALUE\",\"type\":\"plain\",\"target\":[\"production\",\"preview\",\"development\"]}" \
-            "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env?teamId=${VERCEL_ORG_ID}")
+            -d '{"target":"production"}' \
+            "https://api.vercel.com/v10/deployments/$DEPLOY_ID/promote?teamId=$VERCEL_ORG_ID")
 
-          echo "Status: $STATUS"
-          python3 -c "import json; d=json.load(open('/tmp/resp.json')); print({k:d[k] for k in ['key','type','target','id','error','message'] if k in d})"
+          HTTP=$(echo "$RESULT" | tail -1)
+          BODY=$(echo "$RESULT" | head -n -1)
+          echo "Promote response ($HTTP): $BODY"
 
-          [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ] || { echo "FAILED: HTTP $STATUS"; exit 1; }
-          echo "Done: $KEY set successfully."
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || [ "$HTTP" = "204" ]; then
+            echo "Deployment promoted successfully."
+          else
+            echo "WARNING: Promote returned HTTP $HTTP — may need manual redeploy in Vercel dashboard."
+          fi
+
+      - name: Verify JWKS endpoint
+        if: ${{ github.event.inputs.redeploy == 'true' }}
+        run: |
+          echo "Waiting 90s for deployment to complete..."
+          sleep 90
+
+          # The JWKS endpoint auto-bootstraps the first signing key when BUILDD_SIGNING_KEY_TEAM_ID is set.
+          echo "Verifying JWKS endpoint..."
+          JWKS=$(curl -s "https://buildd.dev/api/.well-known/jwks.json")
+          echo "JWKS: $JWKS"
+
+          KEY_COUNT=$(echo "$JWKS" | jq '.keys | length' 2>/dev/null || echo "0")
+          echo "Key count: $KEY_COUNT"
+
+          if [ "$KEY_COUNT" -gt "0" ]; then
+            echo "JWKS endpoint is working correctly!"
+          else
+            echo "WARNING: JWKS endpoint returned no keys (deployment may still be in progress)."
+            echo "Re-check: curl https://buildd.dev/api/.well-known/jwks.json"
+          fi
