@@ -120,7 +120,7 @@ interface ChunkRow {
   content: string;
   metadata: Record<string, unknown>;
   source_ts?: string | null;
-  created_at?: string | null;
+  updated_at?: string | null;
   is_current?: boolean;
   score?: number;
 }
@@ -691,7 +691,7 @@ export class PgVectorStore implements KnowledgeStore {
     const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
     const res = await db.execute(sql`
       SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata,
-             created_at, is_current
+             updated_at, is_current
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND source_id IN (${inList})
@@ -721,7 +721,7 @@ export class PgVectorStore implements KnowledgeStore {
           content: row.content,
           metadata: row.metadata ?? {},
           score: scoreMap.get(id) ?? 0,
-          createdAt: row.created_at ? new Date(row.created_at) : null,
+          createdAt: row.updated_at ? new Date(row.updated_at) : null,
           isCurrent: row.is_current ?? true,
         };
         return result;
