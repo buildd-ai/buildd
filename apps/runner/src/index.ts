@@ -65,7 +65,7 @@ if (
 ) {
   const { runEnvVerify, formatReport, reportToJson } = await import('./env-verify');
   const root = process.env.BUILDD_ENV_ROOT || process.cwd();
-  const report = runEnvVerify({ root });
+  const report = await runEnvVerify({ root });
   console.log(process.argv.includes('--json') ? reportToJson(report) : formatReport(report));
   process.exit(report.ok ? 0 : 1);
 }

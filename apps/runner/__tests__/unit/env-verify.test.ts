@@ -6,7 +6,10 @@ import {
   planSteps,
   executeSteps,
   runEnvVerify,
+  runProvisionGate,
+  MANIFEST_PATH,
   type EnvManifest,
+  type FsProbe,
   type CommandRunner,
   type CommandOutcome,
 } from '../../src/env-verify';
@@ -143,69 +146,152 @@ function fakeRunner(failOn: RegExp | null = null): CommandRunner {
 }
 
 describe('executeSteps', () => {
-  it('passes env-check when all vars are present', () => {
+  it('passes env-check when all vars are present', async () => {
     const steps = planSteps({ env: { required: ['A', 'B'] } });
-    const [r] = executeSteps(steps, { root: '/r', env: { A: '1', B: '2' }, runCommand: fakeRunner(), now });
+    const [r] = await executeSteps(steps, { root: '/r', env: { A: '1', B: '2' }, runCommand: fakeRunner(), now });
     expect(r.status).toBe('ok');
   });
 
-  it('fails env-check and names the missing vars', () => {
+  it('fails env-check and names the missing vars', async () => {
     const steps = planSteps({ env: { required: ['A', 'B', 'C'] } });
-    const [r] = executeSteps(steps, { root: '/r', env: { A: '1' }, runCommand: fakeRunner(), now });
+    const [r] = await executeSteps(steps, { root: '/r', env: { A: '1' }, runCommand: fakeRunner(), now });
     expect(r.status).toBe('fail');
     expect(r.message).toContain('B');
     expect(r.message).toContain('C');
     expect(r.message).not.toContain(' A');
   });
 
-  it('treats empty-string env vars as missing', () => {
+  it('treats empty-string env vars as missing', async () => {
     const steps = planSteps({ env: { required: ['A'] } });
-    const [r] = executeSteps(steps, { root: '/r', env: { A: '' }, runCommand: fakeRunner(), now });
+    const [r] = await executeSteps(steps, { root: '/r', env: { A: '' }, runCommand: fakeRunner(), now });
     expect(r.status).toBe('fail');
   });
 
-  it('tool-check passes when `command -v` exits 0', () => {
+  it('tool-check passes when `command -v` exits 0', async () => {
     const steps = planSteps({ toolchain: { runtime: 'bun@1.3' } });
-    const [r] = executeSteps(steps, { root: '/r', env: {}, runCommand: fakeRunner(), now });
+    const [r] = await executeSteps(steps, { root: '/r', env: {}, runCommand: fakeRunner(), now });
     expect(r.status).toBe('ok');
   });
 
-  it('tool-check fails when the tool is not on PATH', () => {
+  it('tool-check fails when the tool is not on PATH', async () => {
     const steps = planSteps({ toolchain: { runtime: 'ghc' } });
-    const [r] = executeSteps(steps, { root: '/r', env: {}, runCommand: fakeRunner(/command -v ghc/), now });
+    const [r] = await executeSteps(steps, { root: '/r', env: {}, runCommand: fakeRunner(/command -v ghc/), now });
     expect(r.status).toBe('fail');
     expect(r.message).toContain('ghc');
   });
 
-  it('stops at the first failure and marks later steps skipped', () => {
+  it('stops at the first failure and marks later steps skipped', async () => {
     const m: EnvManifest = {
       install: { command: 'bun install' },
       readiness: { command: 'tsc' },
     };
-    const results = executeSteps(planSteps(m), {
+    const results = await executeSteps(planSteps(m), {
       root: '/r', env: {}, runCommand: fakeRunner(/bun install/), now,
     });
     expect(results.map((r) => r.status)).toEqual(['fail', 'skip']);
-    expect(results[1].message).toContain('skipped');
+    expect(results[1].message).toContain('earlier phase failed');
   });
 
-  it('summarizes a failing command with its exit code and last error line', () => {
-    const results = executeSteps(planSteps({ install: { command: 'bun install' } }), {
+  it('summarizes a failing command with its exit code and last error line', async () => {
+    const results = await executeSteps(planSteps({ install: { command: 'bun install' } }), {
       root: '/r', env: {}, runCommand: fakeRunner(/bun install/), now,
     });
     expect(results[0].message).toContain('exit 1');
     expect(results[0].message).toContain('last line of error');
+  });
+
+  it('skips phases named in skipPhases without running or failing them', async () => {
+    const m: EnvManifest = {
+      install: { command: 'bun install --frozen-lockfile' },
+      readiness: { command: 'tsc' },
+    };
+    // fakeRunner would FAIL install, but it's skipped → install never runs, readiness passes.
+    const results = await executeSteps(planSteps(m), {
+      root: '/r', env: {}, runCommand: fakeRunner(/bun install/), skipPhases: ['install'], now,
+    });
+    const install = results.find((r) => r.phase === 'install')!;
+    const readiness = results.find((r) => r.phase === 'readiness')!;
+    expect(install.status).toBe('skip');
+    expect(install.message).toContain('handled by runner');
+    expect(readiness.status).toBe('ok');
   });
 });
 
 // ─── runEnvVerify (integration of the pure pieces, no real shell) ────────────
 
 describe('runEnvVerify', () => {
-  it('reports ok with source "none" when there is nothing to verify', () => {
+  it('reports ok with source "none" when there is nothing to verify', async () => {
     // /nonexistent has no manifest and no lockfiles → resolveManifest returns none.
-    const report = runEnvVerify({ root: '/nonexistent-repo-xyz', runCommand: fakeRunner(), now });
+    const report = await runEnvVerify({ root: '/nonexistent-repo-xyz', runCommand: fakeRunner(), now });
     expect(report.source).toBe('none');
     expect(report.ok).toBe(true);
     expect(report.steps).toHaveLength(0);
+  });
+});
+
+// ─── runProvisionGate (runner integration decision) ──────────────────────────
+
+/**
+ * In-memory filesystem probe — decouples these tests from the real `fs`, which
+ * other runner unit tests mock globally (Bun's mock.module leaks across files).
+ * `files` maps repo-relative paths → contents; a declared manifest lives at
+ * MANIFEST_PATH.
+ */
+function fakeFs(files: Record<string, string>): FsProbe {
+  return {
+    exists: (rel) => rel in files,
+    read: (rel) => files[rel] ?? '',
+  };
+}
+
+describe('runProvisionGate', () => {
+  it('does NOT enforce when no manifest is declared (auto-detect stays advisory)', async () => {
+    const gate = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs({}), runCommand: fakeRunner(), now });
+    expect(gate.enforced).toBe(false);
+    expect(gate.ok).toBe(true);
+    expect(gate.steps).toHaveLength(0);
+  });
+
+  it('does NOT enforce for an auto-detected plan (lockfile only, no manifest)', async () => {
+    const gate = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ 'bun.lock': '' }), runCommand: fakeRunner(/anything/), now,
+    });
+    // resolveManifest → source 'auto-detected' → gate must not block.
+    expect(gate.enforced).toBe(false);
+    expect(gate.ok).toBe(true);
+  });
+
+  it('enforces and passes a declared manifest whose steps succeed', async () => {
+    const gate = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: echo ok\n' }),
+      runCommand: fakeRunner(), now,
+    });
+    expect(gate.enforced).toBe(true);
+    expect(gate.ok).toBe(true);
+  });
+
+  it('enforces and BLOCKS with a structured reason when a declared step fails', async () => {
+    const gate = await runProvisionGate({
+      root: '/r', env: {},
+      fs: fakeFs({ [MANIFEST_PATH]: 'env:\n  required: [MISSING_VAR_XYZ]\nreadiness:\n  command: echo later\n' }),
+      runCommand: fakeRunner(), now,
+    });
+    expect(gate.enforced).toBe(true);
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toContain('Provision failed [env]');
+    expect(gate.reason).toContain('MISSING_VAR_XYZ');
+    // downstream readiness never ran
+    expect(gate.steps.find((s) => s.phase === 'readiness')!.status).toBe('skip');
+  });
+
+  it('honors skipPhases so the runner-owned install is not re-run', async () => {
+    const gate = await runProvisionGate({
+      root: '/r', env: {},
+      fs: fakeFs({ [MANIFEST_PATH]: 'install:\n  command: bun install --frozen-lockfile\nreadiness:\n  command: echo ready\n' }),
+      // install would fail via fakeRunner, but skipPhases drops it → gate passes on readiness.
+      runCommand: fakeRunner(/bun install/), skipPhases: ['install'], now,
+    });
+    expect(gate.ok).toBe(true);
+    expect(gate.steps.find((s) => s.phase === 'install')!.status).toBe('skip');
   });
 });

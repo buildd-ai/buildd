@@ -26,9 +26,12 @@
  * command runner is injectable so tests never shell out.
  */
 
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+const pexec = promisify(exec);
 
 // ─── Manifest shape ──────────────────────────────────────────────────────────
 
@@ -132,15 +135,30 @@ export interface ResolvedManifest {
   source: 'manifest' | 'auto-detected' | 'none';
 }
 
+/**
+ * Filesystem probe — injectable so callers (and tests) don't depend on the real
+ * `fs`. Paths are relative to the repo root. Defaults to the real filesystem.
+ */
+export interface FsProbe {
+  exists: (relPath: string) => boolean;
+  read: (relPath: string) => string;
+}
+
+function realFsProbe(root: string): FsProbe {
+  return {
+    exists: (rel) => existsSync(join(root, rel)),
+    read: (rel) => readFileSync(join(root, rel), 'utf-8'),
+  };
+}
+
 /** Load the declared manifest, else auto-detect, else nothing. */
-export function resolveManifest(root: string): ResolvedManifest {
-  const manifestFile = join(root, MANIFEST_PATH);
-  if (existsSync(manifestFile)) {
-    const parsed = parseManifest(readFileSync(manifestFile, 'utf-8'));
+export function resolveManifest(root: string, fs: FsProbe = realFsProbe(root)): ResolvedManifest {
+  if (fs.exists(MANIFEST_PATH)) {
+    const parsed = parseManifest(fs.read(MANIFEST_PATH));
     if (parsed) return { manifest: parsed, source: 'manifest' };
     // Malformed manifest: fall through to auto-detect but say so via 'none' vs 'auto'.
   }
-  const auto = autoDetectManifest(root);
+  const auto = autoDetectManifest(root, fs.exists);
   if (auto) return { manifest: auto, source: 'auto-detected' };
   return { manifest: null, source: 'none' };
 }
@@ -256,29 +274,41 @@ export interface CommandOutcome {
 export type CommandRunner = (
   command: string,
   opts: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv },
-) => CommandOutcome;
+) => CommandOutcome | Promise<CommandOutcome>;
 
 export interface ExecuteOptions {
   root: string;
   env?: NodeJS.ProcessEnv;
   runCommand?: CommandRunner;
+  /**
+   * Phases to skip (their steps report `skip` and neither run nor fail). The
+   * runner passes `['install']` because it already ran its own tolerant install
+   * (installWorkspaceDeps) — re-running a frozen install here would falsely fail
+   * on lockfile drift the runner deliberately tolerates. Readiness still proves
+   * the tree is usable.
+   */
+  skipPhases?: PhaseKind[];
+  /** Filesystem probe injection for tests; defaults to the real fs at `root`. */
+  fs?: FsProbe;
   /** Monotonic clock injection for tests; defaults to wall clock. */
   now?: () => number;
 }
 
-const defaultRunCommand: CommandRunner = (command, opts) => {
+// Async so a slow readiness probe (tsc, lint) never blocks the runner's single
+// event loop while other workers are streaming. `exec` runs the command through
+// a shell (the manifest declares shell strings) and captures both streams.
+const defaultRunCommand: CommandRunner = async (command, opts) => {
   try {
-    const stdout = execSync(command, {
+    const { stdout, stderr } = await pexec(command, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs,
       encoding: 'utf-8',
-      stdio: 'pipe',
       env: opts.env,
     });
-    return { code: 0, stdout, stderr: '' };
+    return { code: 0, stdout: stdout ?? '', stderr: stderr ?? '' };
   } catch (err: any) {
     return {
-      code: typeof err?.status === 'number' ? err.status : 1,
+      code: typeof err?.code === 'number' ? err.code : 1,
       stdout: err?.stdout?.toString?.() ?? '',
       stderr: err?.stderr?.toString?.() ?? err?.message ?? String(err),
     };
@@ -298,14 +328,19 @@ function failMessage(out: CommandOutcome): string {
  * assume earlier ones passed — running install before the runtime exists is
  * noise). Returns a structured report; never throws.
  */
-export function executeSteps(steps: Step[], opts: ExecuteOptions): StepResult[] {
+export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise<StepResult[]> {
   const env = opts.env ?? process.env;
   const run = opts.runCommand ?? defaultRunCommand;
   const now = opts.now ?? (() => Date.now());
+  const skip = new Set(opts.skipPhases ?? []);
   const results: StepResult[] = [];
   let aborted = false;
 
   for (const step of steps) {
+    if (skip.has(step.phase)) {
+      results.push({ phase: step.phase, label: step.label, status: 'skip', message: 'skipped (handled by runner)' });
+      continue;
+    }
     if (aborted) {
       results.push({ phase: step.phase, label: step.label, status: 'skip', message: 'skipped (earlier phase failed)' });
       continue;
@@ -320,12 +355,12 @@ export function executeSteps(steps: Step[], opts: ExecuteOptions): StepResult[] 
         ? { phase: step.phase, label: step.label, status: 'fail', message: `missing: ${missing.join(', ')}` }
         : { phase: step.phase, label: step.label, status: 'ok', message: 'all required vars present' };
     } else if (step.kind === 'tool-check') {
-      const out = run(`command -v ${step.tool}`, { cwd: opts.root, timeoutMs: 10_000, env });
+      const out = await run(`command -v ${step.tool}`, { cwd: opts.root, timeoutMs: 10_000, env });
       result = out.code === 0
         ? { phase: step.phase, label: step.label, status: 'ok', message: 'found' }
         : { phase: step.phase, label: step.label, status: 'fail', message: `\`${step.tool}\` not on PATH` };
     } else {
-      const out = run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
+      const out = await run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
       result = out.code === 0
         ? { phase: step.phase, label: step.label, status: 'ok', message: 'ok' }
         : { phase: step.phase, label: step.label, status: 'fail', message: failMessage(out) };
@@ -341,16 +376,57 @@ export function executeSteps(steps: Step[], opts: ExecuteOptions): StepResult[] 
 
 /**
  * Top-level entry: resolve the manifest, plan, execute, and report. This is what
- * the CLI and the runner's provision phase both call.
+ * the CLI calls (and what the provision gate builds on).
  */
-export function runEnvVerify(opts: ExecuteOptions): VerifyReport {
-  const { manifest, source } = resolveManifest(opts.root);
+export async function runEnvVerify(opts: ExecuteOptions): Promise<VerifyReport> {
+  const { manifest, source } = resolveManifest(opts.root, opts.fs);
   if (!manifest) {
     return { source, steps: [], ok: true };
   }
-  const steps = executeSteps(planSteps(manifest), opts);
+  const steps = await executeSteps(planSteps(manifest), opts);
   const ok = steps.every((s) => s.status !== 'fail');
   return { source, steps, ok };
+}
+
+// ─── Provision gate (runner integration) ─────────────────────────────────────
+
+export interface ProvisionGateResult {
+  source: ResolvedManifest['source'];
+  /** True only when the repo DECLARED a manifest — the only case that blocks. */
+  enforced: boolean;
+  /** Passed, or nothing to enforce. When false AND enforced, block the agent. */
+  ok: boolean;
+  steps: StepResult[];
+  /** Structured failure reason for the worker record, set when blocking. */
+  reason?: string;
+}
+
+/** `Provision failed [readiness]: exit 1: <detail>` — a diagnosable worker error. */
+function provisionReason(step: StepResult): string {
+  return `Provision failed [${step.phase}]: ${step.message}`;
+}
+
+/**
+ * The runner's readiness gate: prove a claimed task's environment is runnable
+ * before the agent starts consuming budget. Enforcement is OPT-IN — only a
+ * declared `.buildd/env.yaml` blocks. Auto-detected plans (no manifest) never
+ * fail a runner that didn't opt in; they remain a CLI/CI convenience. See
+ * docs/design/reliable-env-provisioning.md.
+ */
+export async function runProvisionGate(opts: ExecuteOptions): Promise<ProvisionGateResult> {
+  const { manifest, source } = resolveManifest(opts.root, opts.fs);
+  if (source !== 'manifest' || !manifest) {
+    return { source, enforced: false, ok: true, steps: [] };
+  }
+  const steps = await executeSteps(planSteps(manifest), opts);
+  const firstFail = steps.find((s) => s.status === 'fail');
+  return {
+    source,
+    enforced: true,
+    ok: !firstFail,
+    steps,
+    reason: firstFail ? provisionReason(firstFail) : undefined,
+  };
 }
 
 // ─── Reporting ───────────────────────────────────────────────────────────────
