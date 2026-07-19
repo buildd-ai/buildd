@@ -57,7 +57,7 @@ jobs:
 
           echo "Done! $KEY set for production, preview, and development."
 
-      - name: Promote production deployment
+      - name: Redeploy production
         if: ${{ github.event.inputs.redeploy == 'true' }}
         env:
           VERCEL_TOKEN_RAW: ${{ secrets.VERCEL_TOKEN }}
@@ -66,57 +66,47 @@ jobs:
         run: |
           VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
 
-          echo "Fetching latest production deployment..."
+          # Find the latest READY production deployment URL (skip cancelled/failed artifacts)
+          echo "Fetching latest READY production deployment..."
           LATEST=$(curl -sf \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1")
+            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&state=READY&limit=1")
 
-          DEPLOY_ID=$(echo "$LATEST" | jq -r '.deployments[0].uid // empty')
-          DEPLOY_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
-          echo "Latest production deployment: $DEPLOY_ID ($DEPLOY_URL)"
+          PROD_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
+          echo "Latest READY deployment: $PROD_URL"
 
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "Could not find deployment ID, skipping promote"
+          if [ -z "$PROD_URL" ]; then
+            echo "No READY production deployment found — env var is set and will take effect on next deploy."
             exit 0
           fi
 
-          # Promote the existing deployment to pick up new runtime env vars without rebuilding.
-          # Vercel injects env vars at request time for serverless functions, so the promoted
-          # deployment will see BUILDD_SIGNING_KEY_TEAM_ID immediately.
-          echo "Promoting deployment $DEPLOY_ID to production..."
-          RESULT=$(curl -s -w "\n%{http_code}" -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"target":"production"}' \
-            "https://api.vercel.com/v10/deployments/$DEPLOY_ID/promote?teamId=$VERCEL_ORG_ID")
-
-          HTTP=$(echo "$RESULT" | tail -1)
-          BODY=$(echo "$RESULT" | head -n -1)
-          echo "Promote response ($HTTP): $BODY"
-
-          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || [ "$HTTP" = "204" ]; then
-            echo "Deployment promoted successfully."
+          # `vercel redeploy` creates a new deployment from the existing build artifacts
+          # and injects the current env vars — no full source rebuild.
+          # Install Vercel CLI (already installed in previous step but install is idempotent)
+          cd /tmp/vp
+          echo "Redeploying https://$PROD_URL to pick up new env vars..."
+          if vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN" 2>&1; then
+            echo "Redeploy triggered successfully!"
           else
-            echo "WARNING: Promote returned HTTP $HTTP — may need manual redeploy in Vercel dashboard."
+            echo "Redeploy did not exit cleanly — env var is set and will take effect on the next regular deploy to production."
           fi
 
       - name: Verify JWKS endpoint
         if: ${{ github.event.inputs.redeploy == 'true' }}
         run: |
-          echo "Waiting 90s for deployment to complete..."
+          echo "Waiting 90s for deployment to become active..."
           sleep 90
 
-          # The JWKS endpoint auto-bootstraps the first signing key when BUILDD_SIGNING_KEY_TEAM_ID is set.
-          echo "Verifying JWKS endpoint..."
-          JWKS=$(curl -s "https://buildd.dev/api/.well-known/jwks.json")
-          echo "JWKS: $JWKS"
-
-          KEY_COUNT=$(echo "$JWKS" | jq '.keys | length' 2>/dev/null || echo "0")
-          echo "Key count: $KEY_COUNT"
-
-          if [ "$KEY_COUNT" -gt "0" ]; then
-            echo "JWKS endpoint is working correctly!"
-          else
-            echo "WARNING: JWKS endpoint returned no keys (deployment may still be in progress)."
-            echo "Re-check: curl https://buildd.dev/api/.well-known/jwks.json"
-          fi
+          echo "Verifying JWKS endpoint (auto-bootstraps signing key on first call)..."
+          for i in 1 2 3; do
+            JWKS=$(curl -s "https://buildd.dev/api/.well-known/jwks.json")
+            KEY_COUNT=$(echo "$JWKS" | jq '.keys | length' 2>/dev/null || echo "0")
+            echo "Attempt $i - key count: $KEY_COUNT - response: $JWKS"
+            if [ "$KEY_COUNT" -gt "0" ]; then
+              echo "JWKS endpoint is working correctly!"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "WARNING: JWKS endpoint did not return keys after 3 attempts."
+          echo "The env var is set; the signing key will be auto-created on the next request to the JWKS endpoint."
