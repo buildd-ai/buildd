@@ -96,5 +96,5 @@ Buildd already has the agent-native primitives general tools lack: the `secrets`
 
 - **Caching / warm base:** how much of provisioning can be cached across worktrees on the same runner to keep the phase fast? (The install is already the slow part.)
 - **Auto-detection fidelity:** how far can we get with zero manifest before a repo *must* declare one?
-- **Failure taxonomy:** what structured reasons does a provision failure emit, and how does the organizer act on them (retry vs. escalate vs. mark blocked)?
+- **Failure taxonomy:** *(partly answered)* a provision block now emits a stable `ProvisionFailureCode` (`provision_toolchain_missing` / `_install_failed` / `_env_missing` / `_setup_failed` / `_readiness_failed`) + failing phase, carried to the worker record as `resultMeta.provisionFailure`. **Still open:** how the organizer/server *acts* on each code — retry-once (e.g. flaky readiness) vs. escalate (missing secret) vs. mark blocked — and where a bounded retry counter lives so a broken manifest can't loop.
 - **Relationship to `gitConfig.sandbox`:** does provisioning run inside or outside the sandbox boundary?

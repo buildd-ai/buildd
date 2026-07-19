@@ -397,13 +397,46 @@ export interface ProvisionGateResult {
   /** Passed, or nothing to enforce. When false AND enforced, block the agent. */
   ok: boolean;
   steps: StepResult[];
-  /** Structured failure reason for the worker record, set when blocking. */
+  /** Human-readable failure reason for the worker record, set when blocking. */
   reason?: string;
+  /**
+   * Stable, machine-readable failure classification, set when blocking. Lets the
+   * server/organizer act on the KIND of failure (e.g. an env-missing is likely a
+   * missing secret to escalate, a readiness fail may be worth one retry) instead
+   * of regex-matching a free-text string. See docs/design/reliable-env-provisioning.md.
+   */
+  failure?: ProvisionFailure;
 }
+
+/** Stable reason codes — one per phase. The server keys requeue/escalate policy off these. */
+export type ProvisionFailureCode =
+  | 'provision_toolchain_missing'
+  | 'provision_install_failed'
+  | 'provision_env_missing'
+  | 'provision_setup_failed'
+  | 'provision_readiness_failed';
+
+export interface ProvisionFailure {
+  code: ProvisionFailureCode;
+  phase: PhaseKind;
+  message: string;
+}
+
+const PHASE_FAILURE_CODE: Record<PhaseKind, ProvisionFailureCode> = {
+  toolchain: 'provision_toolchain_missing',
+  install: 'provision_install_failed',
+  env: 'provision_env_missing',
+  provision: 'provision_setup_failed',
+  readiness: 'provision_readiness_failed',
+};
 
 /** `Provision failed [readiness]: exit 1: <detail>` — a diagnosable worker error. */
 function provisionReason(step: StepResult): string {
   return `Provision failed [${step.phase}]: ${step.message}`;
+}
+
+function provisionFailure(step: StepResult): ProvisionFailure {
+  return { code: PHASE_FAILURE_CODE[step.phase], phase: step.phase, message: step.message };
 }
 
 /**
@@ -426,6 +459,7 @@ export async function runProvisionGate(opts: ExecuteOptions): Promise<ProvisionG
     ok: !firstFail,
     steps,
     reason: firstFail ? provisionReason(firstFail) : undefined,
+    failure: firstFail ? provisionFailure(firstFail) : undefined,
   };
 }
 
