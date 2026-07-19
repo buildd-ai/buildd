@@ -1,5 +1,95 @@
 export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle';
 
+// ─── Drive state ──────────────────────────────────────────────────────────────
+
+/** Will anything happen to this mission without the user? */
+export type DriveState = 'AUTO' | 'MANUAL' | 'QUIET_HOURS' | 'SEATS_FULL' | 'COMPLETE';
+
+/**
+ * Derives the drive state for a mission.
+ * Priority: COMPLETE > MANUAL > QUIET_HOURS / SEATS_FULL > AUTO.
+ * QUIET_HOURS and SEATS_FULL are inferred from a recent (≤2h) deferral record.
+ */
+export function deriveDriveState(mission: {
+  status: string;
+  orchestrationMode?: string | null;
+  lastDeferralReason?: string | null;
+  lastDeferredAt?: string | Date | null;
+}): DriveState {
+  if (mission.status === 'completed' || mission.status === 'archived') return 'COMPLETE';
+  if (mission.orchestrationMode === 'manual') return 'MANUAL';
+
+  if (mission.lastDeferralReason && mission.lastDeferredAt) {
+    const age = Date.now() - new Date(mission.lastDeferredAt).getTime();
+    if (age < 2 * 60 * 60 * 1000) {
+      if (mission.lastDeferralReason === 'active_hours') return 'QUIET_HOURS';
+      if (mission.lastDeferralReason === 'concurrent_cap') return 'SEATS_FULL';
+    }
+  }
+
+  return 'AUTO';
+}
+
+// ─── Health ───────────────────────────────────────────────────────────────────
+
+/**
+ * Orthogonal health axis: are tasks failing, stalled, or blocked?
+ * NOMINAL is the healthy baseline and renders as nothing.
+ */
+export type Health = 'NOMINAL' | 'BLOCKED' | 'FAILING' | 'STALLED';
+
+const LIVE_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
+
+function isCountableHealthTask(t: { status: string; kind?: string | null; title?: string | null; mode?: string | null }): boolean {
+  if (t.kind === 'coordination') return false;
+  if (t.mode === 'planning') return false;
+  if (t.title?.startsWith('Aggregate results:')) return false;
+  if (t.title?.startsWith('Evaluate mission completion:')) return false;
+  if (t.title?.startsWith('Mission:')) return false;
+  if (t.title?.startsWith('Close mission')) return false;
+  if (t.status === 'cancelled') return false;
+  return true;
+}
+
+/**
+ * Derives the health signal for a mission from its task outcomes.
+ * Priority: BLOCKED > FAILING > STALLED > NOMINAL.
+ * STALLED fires when deliverable non-cancelled tasks are pending/active but no
+ * worker is currently live on them.
+ */
+export function deriveHealth(
+  mission: {
+    dependsOnMissionId?: string | null;
+    dependencyMetAt?: Date | string | null;
+  },
+  tasks: Array<{
+    status: string;
+    kind?: string | null;
+    title?: string | null;
+    mode?: string | null;
+    creationSource?: string | null;
+    workers?: Array<{ status: string }>;
+  }>,
+): Health {
+  if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
+
+  const countable = tasks.filter(isCountableHealthTask);
+
+  if (countable.some(t => t.status === 'failed')) return 'FAILING';
+
+  const activeTasks = countable.filter(t =>
+    ['pending', 'assigned', 'in_progress'].includes(t.status),
+  );
+  if (
+    activeTasks.length > 0 &&
+    !activeTasks.some(t => t.workers?.some(w => LIVE_STATUSES.has(w.status)))
+  ) {
+    return 'STALLED';
+  }
+
+  return 'NOMINAL';
+}
+
 export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'paused' | 'completed';
 export type FilterTab = 'all' | 'active' | 'scheduled' | 'completed';
 
