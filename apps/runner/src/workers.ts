@@ -1238,52 +1238,10 @@ export class WorkerManager {
       console.warn(`[Worker ${worker.id}] ${warning}`);
     }
 
-    // Provision gate: prove the environment is runnable BEFORE the agent starts
-    // consuming budget (the SDK loop begins in startSession). Enforcement is
-    // opt-in — only a declared .buildd/env.yaml blocks; auto-detected plans never
-    // fail a runner that didn't opt in. We skip the `install` phase here because
-    // setupWorktree already ran the runner's own tolerant install; readiness is
-    // what proves the tree usable. See docs/design/reliable-env-provisioning.md.
-    try {
-      const gate = await runProvisionGate({
-        root: sessionCwd,
-        env: process.env,
-        skipPhases: ['install'],
-      });
-      if (gate.enforced) {
-        for (const s of gate.steps) {
-          console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
-        }
-        if (!gate.ok) {
-          const reason = gate.reason ?? 'Provision failed';
-          console.warn(`[Worker ${worker.id}] ${reason} — not starting agent (no budget spent)`);
-          worker.status = 'error';
-          worker.error = reason;
-          worker.currentAction = 'Environment not ready';
-          worker.hasNewActivity = true;
-          worker.completedAt = Date.now();
-          this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
-
-          await this.buildd.updateWorker(worker.id, {
-            status: 'failed',
-            error: reason,
-          }).catch(updateErr => {
-            console.error(`[Worker ${worker.id}] Failed to report provision failure to server:`, updateErr);
-          });
-
-          this.emit({ type: 'worker_update', worker });
-
-          if (worker.worktreePath) {
-            cleanupWorktree(workspacePath, worker.worktreePath, worker.id).catch(() => {});
-          }
-          return worker; // gate blocked — do NOT start the agent session
-        }
-        this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
-      }
-    } catch (gateErr) {
-      // A gate that itself errors must never block a task — fail open, log, proceed.
-      console.warn(`[Worker ${worker.id}] Provision gate errored (proceeding):`, gateErr instanceof Error ? gateErr.message : gateErr);
-    }
+    // NOTE: the provision gate (env-verify) runs inside startSession, once the
+    // worker env (cleanEnv, with server creds + connector + role secrets injected)
+    // is fully assembled — so env.required is checked against the values the agent
+    // will actually see, not raw process.env. It still runs before the budget loop.
 
     // Start SDK session (async, runs in background)
     this.startSession(worker, sessionCwd, fullTask).catch(err => {
@@ -1778,6 +1736,34 @@ export class WorkerManager {
         } catch (err) {
           console.error(`[Worker ${worker.id}] Failed to resolve role env:`, err);
         }
+      }
+
+      // Provision gate — prove the environment is runnable BEFORE the budget loop.
+      // cleanEnv is now fully assembled (server creds + connector + role secrets),
+      // so env.required is validated against exactly what the agent will see, not
+      // raw process.env. Enforcement is opt-in (only a declared .buildd/env.yaml
+      // blocks); `install` is skipped because setupWorktree already ran the runner's
+      // tolerant install. On a real block we throw — matching the codex-credential
+      // guard above, so the outer catch marks the worker failed with this reason and
+      // cleans up, with zero agent budget spent. A gate that itself errors fails
+      // open. See docs/design/reliable-env-provisioning.md.
+      try {
+        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, skipPhases: ['install'] });
+        if (gate.enforced) {
+          for (const s of gate.steps) {
+            console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
+          }
+          if (!gate.ok) {
+            this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
+            throw new Error(gate.reason ?? 'Provision failed');
+          }
+          this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
+        }
+      } catch (gateErr) {
+        const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
+        if (msg.startsWith('Provision failed')) throw gateErr; // real block → outer catch reports it
+        // Gate internals errored (not a policy block) — never wedge a task; log and proceed.
+        console.warn(`[Worker ${worker.id}] Provision gate errored (proceeding): ${msg}`);
       }
 
       // Determine whether to load CLAUDE.md
