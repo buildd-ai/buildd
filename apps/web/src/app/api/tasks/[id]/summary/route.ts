@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -31,6 +31,8 @@ export async function GET(
         missionId: true,
         workspaceId: true,
         result: true,
+        backend: true,
+        context: true,
       },
     });
 
@@ -55,18 +57,45 @@ export async function GET(
         turns: true,
         prUrl: true,
         prNumber: true,
+        prLifecycleStatus: true,
+        mergedAt: true,
         commitCount: true,
         filesChanged: true,
+        linesAdded: true,
+        linesRemoved: true,
         costUsd: true,
         startedAt: true,
         completedAt: true,
         waitingFor: true,
         branch: true,
+        milestones: true,
       },
     });
 
     const worker = latestWorkers[0] || null;
     const result = task.result as { summary?: string; nextSuggestion?: string } | null;
+
+    // Failover metadata lives on task.context (stamped when a Claude task is
+    // flipped to Codex on budget exhaustion). Surface just the display bits so
+    // the panel can show "ran on Codex after Claude budget hit".
+    const ctx = task.context as {
+      failedOverFrom?: string;
+      failoverReason?: string;
+      budgetExhausted?: boolean;
+    } | null;
+    const failover = ctx?.failedOverFrom
+      ? { from: ctx.failedOverFrom, reason: ctx.failoverReason ?? null }
+      : null;
+
+    // Latest error excerpt across all workers on this task — powers the panel's
+    // "Failed" state so you see *why* it broke without opening the full page.
+    const latestTraces = await db.query.workerErrorTraces.findMany({
+      where: eq(workerErrorTraces.taskId, id),
+      orderBy: desc(workerErrorTraces.ts),
+      limit: 1,
+      columns: { excerpt: true, pattern: true, ts: true },
+    });
+    const trace = latestTraces[0] || null;
 
     return NextResponse.json({
       id: task.id,
@@ -79,6 +108,8 @@ export async function GET(
       roleSlug: task.roleSlug,
       createdAt: task.createdAt,
       missionId: task.missionId,
+      backend: task.backend,
+      failover,
       worker: worker
         ? {
             id: worker.id,
@@ -87,14 +118,22 @@ export async function GET(
             turns: worker.turns,
             prUrl: worker.prUrl,
             prNumber: worker.prNumber,
+            prLifecycleStatus: worker.prLifecycleStatus,
+            mergedAt: worker.mergedAt,
             commitCount: worker.commitCount,
             filesChanged: worker.filesChanged,
+            linesAdded: worker.linesAdded,
+            linesRemoved: worker.linesRemoved,
             costUsd: worker.costUsd,
             startedAt: worker.startedAt,
             completedAt: worker.completedAt,
             waitingFor: worker.waitingFor as { type: string; prompt: string; options?: string[] } | null,
             branch: worker.branch,
+            milestones: worker.milestones ?? [],
           }
+        : null,
+      lastError: trace
+        ? { excerpt: trace.excerpt, pattern: trace.pattern, ts: trace.ts }
         : null,
       result: result
         ? {

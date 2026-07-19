@@ -18,6 +18,7 @@ import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ExpandableText from './ExpandableText';
 import TaskPanelWrapper from './TaskPanelWrapper';
+import InlineTaskRetry from './InlineTaskRetry';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -638,6 +639,9 @@ export default async function MissionDetailPage({
                                 <Link
                                   href={`/app/tasks/${task.id}`}
                                   data-task-id={task.id}
+                                  // Peek is worthwhile only when there's an action or live
+                                  // state; a plain completed task with no PR just navigates.
+                                  data-task-actionable={(!isDone || !!latestWorker?.prUrl) ? 'true' : 'false'}
                                   className={`absolute inset-0 rounded-md transition-colors cursor-pointer ${
                                     isRunning
                                       ? 'bg-status-info/5 border border-status-info/20'
@@ -731,11 +735,14 @@ export default async function MissionDetailPage({
                                     )}
 
                                     {isFailed && (
-                                      <span
-                                        className="text-[12px] md:text-[11px] text-status-error"
-                                        title={latestWorker?.prUrl ? 'PR was closed or superseded' : undefined}
-                                      >
-                                        {latestWorker?.prUrl ? 'PR closed' : 'Failed'}
+                                      <span className="flex items-center gap-1.5">
+                                        <span
+                                          className="text-[12px] md:text-[11px] text-status-error"
+                                          title={latestWorker?.prUrl ? 'PR was closed or superseded' : undefined}
+                                        >
+                                          {latestWorker?.prUrl ? 'PR closed' : 'Failed'}
+                                        </span>
+                                        <InlineTaskRetry taskId={task.id} />
                                       </span>
                                     )}
 
