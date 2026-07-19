@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type { KnowledgeStore, UpsertChunk, Corpus } from './types';
 import {
   chunkMarkdown,
@@ -36,6 +37,8 @@ export interface SourceFile {
 export interface IngestResult {
   files: number;
   chunks: number;
+  /** Files skipped because their content hash matched what is already stored. */
+  skippedUnchanged: number;
 }
 
 // Defaults sized for voyage-4-large (generous context) while keeping chunks
@@ -145,6 +148,12 @@ export async function fileToChunks(
  * Ingest a batch of files into the given corpus namespace. Clears each file's
  * prior chunks first (when the store supports deleteBySource) so re-ingestion
  * is idempotent and orphan-free.
+ *
+ * Hash-skip: each file's SHA-256 (taken from `file.fileHash` or computed from
+ * content) is compared against the hash already stored for that path. Files
+ * whose hash is unchanged are skipped entirely — no re-chunk, no delete, no
+ * re-embed. This is what turns a steady-state re-ingest of the whole tree into
+ * near-zero work. Skipping is disabled when the store lacks `getFileHashes`.
  */
 export async function ingestFiles(
   store: KnowledgeStore,
@@ -155,8 +164,27 @@ export async function ingestFiles(
 ): Promise<IngestResult> {
   const namespace = buildNamespace(workspaceId, corpus);
   let chunkCount = 0;
+  let skippedUnchanged = 0;
 
+  // Ensure every file carries a hash so it lands on its chunks (enabling the
+  // skip on the *next* run) and can be compared against stored hashes now.
   for (const file of files) {
+    if (!file.fileHash) {
+      file.fileHash = createHash('sha256').update(file.content).digest('hex');
+    }
+  }
+
+  const storedHashes = store.getFileHashes
+    ? await store.getFileHashes(namespace, files.map(f => f.path))
+    : new Map<string, string>();
+
+  const skippedPaths: string[] = [];
+  for (const file of files) {
+    if (file.fileHash && storedHashes.get(file.path) === file.fileHash) {
+      skippedUnchanged++;
+      skippedPaths.push(file.path);
+      continue;
+    }
     const chunks = await fileToChunks(file, corpus, overrides);
     // Clear prior chunks for this file even when it now yields zero chunks
     // (e.g. emptied) so stale content doesn't linger.
@@ -167,5 +195,42 @@ export async function ingestFiles(
     }
   }
 
-  return { files: files.length, chunks: chunkCount };
+  // Keep skipped (unchanged) files fresh so a later full-scope sweep that prunes
+  // chunks older than the job start doesn't treat them as stale.
+  if (skippedPaths.length > 0) {
+    await store.touchBySource?.(namespace, skippedPaths);
+  }
+
+  return { files: files.length, chunks: chunkCount, skippedUnchanged };
+}
+
+/**
+ * Delete chunks for source files that no longer exist on disk. Call after a
+ * full walk of `prefix`: `seenPaths` is every repo-relative path the walk
+ * found (and handed to ingestFiles) under that prefix. Any stored chunk under
+ * the same prefix whose path isn't in `seenPaths` is an orphan — its file was
+ * deleted, renamed, or filtered out — and gets removed.
+ *
+ * Scoping to `prefix` is what makes this safe when several walks populate the
+ * SAME namespace from different roots (the CI ingest walks `packages/` and
+ * `apps/` separately into `ws:code`): pruning `apps/` orphans never touches
+ * `packages/` chunks. Returns the pruned paths. No-op when the store lacks
+ * listSourcePaths.
+ */
+export async function pruneOrphans(
+  store: KnowledgeStore,
+  workspaceId: string,
+  corpus: Corpus,
+  prefix: string,
+  seenPaths: Iterable<string>,
+): Promise<string[]> {
+  if (!store.listSourcePaths) return [];
+  const namespace = buildNamespace(workspaceId, corpus);
+  const seen = seenPaths instanceof Set ? seenPaths : new Set(seenPaths);
+  const stored = await store.listSourcePaths(namespace, prefix);
+  const orphans = stored.filter(p => !seen.has(p));
+  for (const p of orphans) {
+    await store.deleteBySource?.(namespace, { sourcePath: p });
+  }
+  return orphans;
 }

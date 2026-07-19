@@ -30,7 +30,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { PgVectorStore } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedderForCorpus } from '../knowledge-store/voyage-embedder';
-import { ingestFiles, type SourceFile } from '../knowledge-store/ingest';
+import { ingestFiles, pruneOrphans, type SourceFile } from '../knowledge-store/ingest';
 import type { Corpus } from '../knowledge-store/types';
 import {
   DOC_EXTENSIONS as DOC_EXT,
@@ -47,6 +47,8 @@ const SKIP_DIRS = new Set([
 ]);
 // When set, drop test/spec files from the corpus (history, not current-state truth).
 const SKIP_TESTS = !!process.env.INGEST_SKIP_TESTS;
+// When set, skip pruning chunks for files no longer on disk (safety escape hatch).
+const NO_PRUNE = !!process.env.INGEST_NO_PRUNE;
 const BATCH = 50;
 
 function getFlag(flag: string): string | undefined {
@@ -78,9 +80,11 @@ async function ingestCorpus(
   corpus: Corpus,
   files: string[],
   root: string,
+  prefix: string,
 ): Promise<void> {
   let done = 0;
   let chunks = 0;
+  let skipped = 0;
   for (let i = 0; i < files.length; i += BATCH) {
     const batch = files.slice(i, i + BATCH);
     const sources: SourceFile[] = [];
@@ -97,9 +101,27 @@ async function ingestCorpus(
     const res = await ingestFiles(store, workspaceId, corpus, sources);
     done += res.files;
     chunks += res.chunks;
-    console.log(`[ingest:${corpus}] ${done}/${files.length} files, ${chunks} chunks`);
+    skipped += res.skippedUnchanged;
+    console.log(
+      `[ingest:${corpus}] ${done}/${files.length} files, ${chunks} chunks, ${skipped} unchanged`,
+    );
   }
-  console.log(`[ingest:${corpus}] done — ${files.length} files -> ${chunks} chunks`);
+  console.log(
+    `[ingest:${corpus}] done — ${files.length} files -> ${chunks} chunks (${skipped} unchanged, skipped)`,
+  );
+
+  // Remove chunks for files that no longer exist on disk under this prefix.
+  // `files` are the corpus-matched paths the walk found (size-skipped ones stay
+  // in the seen set so they aren't pruned — they still exist on disk).
+  if (!NO_PRUNE) {
+    const seen = new Set(files.map(f => path.relative(root, f)));
+    const orphans = await pruneOrphans(store, workspaceId, corpus, prefix, seen);
+    if (orphans.length > 0) {
+      console.log(
+        `[ingest:${corpus}] pruned ${orphans.length} orphaned file(s) under ${prefix || '<root>'}`,
+      );
+    }
+  }
 }
 
 async function main() {
@@ -154,6 +176,10 @@ async function main() {
   // This makes deleteBySource reliable when a CI-ingested file is later touched via a PR diff.
   const walkStart = path.resolve(dirArg);
   const root = process.cwd();
+  // prefix scopes orphan pruning to the walked directory so separate walks into
+  // the same namespace (e.g. code corpus over packages/ then apps/) don't prune
+  // each other's chunks. "" when walking the repo root.
+  const prefix = path.relative(root, walkStart);
 
   const all: string[] = [];
   await walk(walkStart, walkStart, all);
@@ -172,7 +198,7 @@ async function main() {
     }
     const store = new PgVectorStore(embedder);
     const files = corpusFlag === 'code' ? codeFiles : docFiles;
-    await ingestCorpus(store, workspaceId, corpusFlag, files, root);
+    await ingestCorpus(store, workspaceId, corpusFlag, files, root, prefix);
   } else {
     // Auto-classify mode (legacy): separate embedders per corpus.
     if (!docsOnly) {
@@ -181,12 +207,12 @@ async function main() {
         console.warn('[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)');
       }
       const store = new PgVectorStore(embedder);
-      await ingestCorpus(store, workspaceId, 'code', codeFiles, root);
+      await ingestCorpus(store, workspaceId, 'code', codeFiles, root, prefix);
     }
     if (!codeOnly) {
       const embedder = getVoyageEmbedderForCorpus('docs');
       const store = new PgVectorStore(embedder);
-      await ingestCorpus(store, workspaceId, 'docs', docFiles, root);
+      await ingestCorpus(store, workspaceId, 'docs', docFiles, root, prefix);
     }
   }
 
