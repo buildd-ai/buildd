@@ -382,6 +382,24 @@ export interface TaskArtifactResult {
   };
 }
 
+export interface RetryFailureContext {
+  /** Human-readable summary of the failure (CI log excerpt, reviewer feedback, error message). */
+  summary: string;
+  /** Broad category for programmatic routing. */
+  errorType?: 'ci_failure' | 'reviewer_request_changes' | 'runtime_error' | 'timeout' | 'budget_exhausted';
+  /** SHA of the last commit on the prior attempt's branch (same as context.lastCommitSha). */
+  commitSha?: string;
+}
+
+export interface TaskRetryContext {
+  /** Branch name from the prior attempt (e.g. "buildd/abc123-fix-login-flow"). */
+  resumeBranch?: string;
+  /** SHA of the last commit on resumeBranch, captured at failure time. */
+  lastCommitSha?: string;
+  /** Structured failure context from the prior attempt. */
+  failureContext?: RetryFailureContext | string; // string for backward compat with existing tasks
+}
+
 export interface Task {
   id: string;
   workspaceId: string;

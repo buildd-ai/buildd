@@ -83,10 +83,19 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
       // Branch continuity — the new worker's worktree starts from the previous
       // attempt's branch, so fixes land on the same PR.
       baseBranch: worker.branch,
+      // Explicit continuity marker (same value; preferred over baseBranch going forward)
+      resumeBranch: worker.branch,
+      // Copy lastCommitSha from parent context if captured by failure-capture path
+      ...(typeof ctx.lastCommitSha === 'string' ? { lastCommitSha: ctx.lastCommitSha } : {}),
+      // Structured failure context (replaces bare string going forward)
+      failureContext: {
+        summary: failureContext,
+        errorType: 'ci_failure' as const,
+        ...(typeof ctx.lastCommitSha === 'string' ? { commitSha: ctx.lastCommitSha } : {}),
+      },
       // Retry metadata
       iteration: nextIteration,
       maxIterations,
-      failureContext,
       // CI run reference for on-demand log pulls
       ...(ciRunId ? { ciRunId } : {}),
       ...(ciRunUrl ? { ciRunUrl } : {}),

@@ -2690,4 +2690,150 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
   });
+
+  // Spec §6.2 — retry-continuity failure capture
+  describe('failure capture (retry-continuity)', () => {
+    it('writes resumeBranch, lastCommitSha, and structured failureContext on permanent failure', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/abc-fix-login',
+        lastCommitSha: 'abc123sha',
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: null,
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'TypeScript compilation failed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate.context.resumeBranch).toBe('buildd/abc-fix-login');
+      expect(failedUpdate.context.lastCommitSha).toBe('abc123sha');
+      expect(typeof failedUpdate.context.failureContext).toBe('object');
+      expect(failedUpdate.context.failureContext.summary).toBe('TypeScript compilation failed');
+      expect(failedUpdate.context.failureContext.errorType).toBe('runtime_error');
+      expect(failedUpdate.context.failureContext.commitSha).toBe('abc123sha');
+    });
+
+    it('writes resumeBranch and retryCount together on auto-retry (mission task)', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/abc-mission-task',
+        lastCommitSha: 'def456sha',
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: 'mission-1',
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Runtime error in tests' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Mission task: auto-retry → status becomes pending
+      const pendingUpdate = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(pendingUpdate).toBeDefined();
+      expect(pendingUpdate.context.retryCount).toBe(1);
+      expect(pendingUpdate.context.resumeBranch).toBe('buildd/abc-mission-task');
+      expect(pendingUpdate.context.lastCommitSha).toBe('def456sha');
+      expect(pendingUpdate.context.failureContext.errorType).toBe('runtime_error');
+    });
+
+    it('omits lastCommitSha from context when worker has none', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/no-commits-branch',
+        lastCommitSha: null,
+        pendingInstructions: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        missionId: null,
+        context: {},
+        outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Aborted on startup' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate.context.resumeBranch).toBe('buildd/no-commits-branch');
+      expect(failedUpdate.context.lastCommitSha).toBeUndefined();
+      expect(failedUpdate.context.failureContext.commitSha).toBeUndefined();
+    });
+  });
 });

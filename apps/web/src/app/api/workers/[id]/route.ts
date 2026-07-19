@@ -602,6 +602,22 @@ export async function PATCH(
         if (shouldAutoRetry) {
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
+
+        // Capture branch coordinates from the failing worker for retry continuity.
+        // Written for both auto-retry and permanent-failure paths so that CI retry
+        // and reviewer-loop retry can read resumeBranch from the task record.
+        if (worker.branch) {
+          taskCtxForRetry = {
+            ...taskCtxForRetry,
+            resumeBranch: worker.branch,
+            ...(worker.lastCommitSha ? { lastCommitSha: worker.lastCommitSha } : {}),
+            failureContext: {
+              summary: body.error ?? worker.error ?? 'Worker failed without an error message',
+              errorType: 'runtime_error',
+              ...(worker.lastCommitSha ? { commitSha: worker.lastCommitSha } : {}),
+            },
+          };
+        }
       }
 
       const taskUpdate: Record<string, unknown> = {
@@ -611,6 +627,9 @@ export async function PATCH(
           claimedBy: null,
           claimedAt: null,
           expiresAt: null,
+          context: taskCtxForRetry,
+        } : status === 'failed' ? {
+          // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
           context: taskCtxForRetry,
         } : {}),
       };
@@ -1343,6 +1362,16 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
+      // Fetch the prior attempt's worker to get lastCommitSha for retry continuity
+      const priorWorker = await db.query.workers.findFirst({
+        where: and(
+          eq(workers.workspaceId, workspaceId),
+          eq(workers.prNumber, prNumber),
+        ),
+        columns: { lastCommitSha: true },
+      });
+      const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
+
       const retryTitle = originalTask.title
         .replace(/^\[reviewer retry #?\d*\]\s*/i, '')
         .trim();
@@ -1358,8 +1387,14 @@ async function handleReviewerOutcomeIfNeeded(
           context: {
             iteration: currentIteration + 1,
             maxIterations,
-            failureContext: output.feedback ?? output.summary,
             baseBranch: workerBranch, // MUST continue on same branch — no new branch
+            resumeBranch: workerBranch,
+            ...(reviewerLastCommitSha ? { lastCommitSha: reviewerLastCommitSha } : {}),
+            failureContext: {
+              summary: output.feedback ?? output.summary ?? 'Reviewer requested changes',
+              errorType: 'reviewer_request_changes',
+              ...(reviewerLastCommitSha ? { commitSha: reviewerLastCommitSha } : {}),
+            },
             prNumber,
             prUrl,
             workerBranch,

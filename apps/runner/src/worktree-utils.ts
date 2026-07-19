@@ -4,26 +4,62 @@
  * Extracted from workers.ts for testability.
  */
 
+export type BranchFetchResult = 'ok' | 'missing' | 'diverged';
+
+export interface ResolveWorktreeBaseOptions {
+  defaultBranch: string;
+  context: Record<string, unknown> | undefined | null;
+  /** Async probe: fetch the named branch from origin and return its status. */
+  fetchBranch?: (branch: string) => Promise<BranchFetchResult>;
+  /** If provided, log messages about fallbacks. */
+  log?: (msg: string) => void;
+}
+
 /**
  * Resolve the git base ref for a new worktree.
  *
- * If `context.baseBranch` is set (e.g., from a retry task in the Ralph loop),
- * the worktree will be based on that branch instead of the default branch.
- * This preserves work from previous attempts.
+ * Prefers `context.resumeBranch` (new canonical field) over `context.baseBranch`
+ * (legacy CI retry field). If a `fetchBranch` probe is supplied, it verifies the
+ * remote branch before returning it, falling back to `defaultBranch` on missing
+ * or diverged results. Without a probe the candidate is returned optimistically
+ * (backward compat for callers that haven't wired up the probe yet).
  *
- * @param defaultBranch - The workspace's default branch (e.g., 'main')
- * @param context - The task context, which may contain `baseBranch`
  * @returns A git ref like `origin/main` or `origin/buildd/abc-fix-tests`
  */
-export function resolveWorktreeBase(
-  defaultBranch: string,
-  context: Record<string, unknown> | undefined | null,
-): string {
-  const baseBranch = context?.baseBranch;
-  if (baseBranch && typeof baseBranch === 'string' && baseBranch.length > 0) {
-    return `origin/${baseBranch}`;
+export async function resolveWorktreeBase(
+  opts: ResolveWorktreeBaseOptions,
+): Promise<string> {
+  const { defaultBranch, context, fetchBranch, log } = opts;
+
+  // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry field)
+  const candidate =
+    (typeof context?.resumeBranch === 'string' && context.resumeBranch.length > 0
+      ? context.resumeBranch as string
+      : undefined) ??
+    (typeof context?.baseBranch === 'string' && (context.baseBranch as string).length > 0
+      ? context.baseBranch as string
+      : undefined);
+
+  if (!candidate) {
+    return `origin/${defaultBranch}`;
   }
-  return `origin/${defaultBranch}`;
+
+  if (!fetchBranch) {
+    // No probe available — return optimistically (backward compat)
+    return `origin/${candidate}`;
+  }
+
+  const result = await fetchBranch(candidate);
+  if (result === 'missing') {
+    log?.(`[worktree] resumeBranch ${candidate} not found on remote — falling back to ${defaultBranch}`);
+    return `origin/${defaultBranch}`;
+  }
+  if (result === 'diverged') {
+    log?.(`[worktree] resumeBranch ${candidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
+    return `origin/${defaultBranch}`;
+  }
+
+  return `origin/${candidate}`;
 }
 
 /**
