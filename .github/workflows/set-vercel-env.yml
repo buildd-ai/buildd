@@ -79,13 +79,14 @@ jobs:
             exit 0
           fi
 
-          # Promote the existing deployment to production with updated env vars.
-          # `vercel promote` reuses the cached build artifacts (no rebuild) so runtime
-          # env vars (like BUILDD_SIGNING_KEY_TEAM_ID) are injected fresh by Vercel.
+          # Redeploy the existing deployment with the latest env vars.
+          # `vercel redeploy` creates a new deployment from the same build artifacts
+          # and injects the current env vars — no full rebuild needed.
+          # Note: --yes is not supported by redeploy; in non-TTY CI it proceeds automatically.
           cd /tmp/vp
-          echo "Promoting https://$PROD_URL to production..."
-          vercel promote "https://$PROD_URL" --token "$VERCEL_TOKEN" --yes
-          echo "Promote triggered!"
+          echo "Redeploying https://$PROD_URL with updated env vars..."
+          vercel redeploy "https://$PROD_URL" --token "$VERCEL_TOKEN"
+          echo "Redeploy triggered!"
 
       - name: Verify JWKS endpoint
         if: ${{ github.event.inputs.redeploy == 'true' }}
