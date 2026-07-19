@@ -284,6 +284,20 @@ describe('runProvisionGate', () => {
     expect(gate.steps.find((s) => s.phase === 'readiness')!.status).toBe('skip');
   });
 
+  it('validates env.required against the injected env, not process.env (Phase 4)', async () => {
+    // A secret-backed var delivered via the claim lands in the worker's assembled
+    // env (cleanEnv), not process.env. The gate must pass when it's present there.
+    const manifest = { [MANIFEST_PATH]: 'env:\n  required: [VOYAGE_API_KEY]\n' };
+    const injected = { VOYAGE_API_KEY: 'secret-from-claim' }; // NOT in process.env
+    const pass = await runProvisionGate({ root: '/r', env: injected, fs: fakeFs(manifest), runCommand: fakeRunner(), now });
+    expect(pass.enforced).toBe(true);
+    expect(pass.ok).toBe(true);
+    // …and blocks when the secret wasn't delivered (absent from the injected env).
+    const fail = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(manifest), runCommand: fakeRunner(), now });
+    expect(fail.ok).toBe(false);
+    expect(fail.reason).toContain('VOYAGE_API_KEY');
+  });
+
   it('honors skipPhases so the runner-owned install is not re-run', async () => {
     const gate = await runProvisionGate({
       root: '/r', env: {},
