@@ -25,3 +25,21 @@ if ! bun run scripts/check-specs.ts --check; then
   echo "  to regenerate docs/specs/INDEX.md, then re-stage and commit." >&2
   exit 1
 fi
+
+# Migration journal ordering gate. Also fast (JSON parse only, no DB) — same
+# sub-second budget as the spec check above. Drizzle's migrator applies
+# journal entries by `when` high-water-mark, not idx order: a new migration
+# authored with a `when` at or below an already-applied later entry's `when`
+# is silently SKIPPED forever in prod (exit 0, looks green, DDL never runs).
+# See packages/core/__tests__/migration-journal-ordering.test.ts for the
+# incident history (0067, 0021/0022).
+if [ -f packages/core/__tests__/migration-journal-ordering.test.ts ]; then
+  if ! bun run migrations:lint >/dev/null 2>&1; then
+    echo "" >&2
+    echo "✖ migration journal lint failed: the newest migration's \"when\" in" >&2
+    echo "  packages/core/drizzle/meta/_journal.json is not greater than every" >&2
+    echo "  prior entry — Drizzle would silently skip it. Run 'bun run migrations:lint'" >&2
+    echo "  for details, then bump \"when\" and re-stage." >&2
+    exit 1
+  fi
+fi
