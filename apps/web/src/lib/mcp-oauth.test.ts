@@ -183,6 +183,109 @@ describe('discoverOAuthMetadata', () => {
     // 4 calls: probe + protected resource + AS primary (404) + AS fallback
     expect(fetchSpy).toHaveBeenCalledTimes(4);
   });
+
+  it('falls back to POST when GET returns 405, reading WWW-Authenticate from the POST 401', async () => {
+    // Streamable-HTTP MCP servers (e.g. cue.buildd.dev) answer 405 to GET but
+    // emit the 401 + WWW-Authenticate challenge on POST.
+    const protectedResource = {
+      resource: 'https://cue.buildd.dev/api/mcp',
+      authorization_servers: ['https://cue.buildd.dev'],
+    };
+    const asMetadata = {
+      issuer: 'https://cue.buildd.dev',
+      authorization_endpoint: 'https://cue.buildd.dev/authorize',
+      token_endpoint: 'https://cue.buildd.dev/token',
+    };
+
+    fetchSpy = spyOn(globalThis, 'fetch')
+      // GET → 405 (POST-only server rejects GET)
+      .mockResolvedValueOnce(new Response('Method Not Allowed', { status: 405 }))
+      // POST → 401 with the RFC 9728 challenge
+      .mockResolvedValueOnce(
+        new Response('Unauthorized', {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://cue.buildd.dev/.well-known/oauth-protected-resource"',
+          },
+        }),
+      )
+      // Protected Resource Metadata
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(protectedResource), { status: 200 }),
+      )
+      // AS metadata
+      .mockResolvedValueOnce(new Response(JSON.stringify(asMetadata), { status: 200 }));
+
+    const result = await discoverOAuthMetadata('https://cue.buildd.dev/api/mcp');
+
+    expect(result.authMode).toBe('oauth');
+    if (result.authMode === 'oauth') {
+      expect(result.protectedResource.resource).toBe('https://cue.buildd.dev/api/mcp');
+      expect(result.authorizationServer.token_endpoint).toBe('https://cue.buildd.dev/token');
+    }
+
+    // Call 1 is the GET probe, call 2 must be the POST fallback to the connector URL.
+    const [postUrl, postInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    expect(postUrl).toBe('https://cue.buildd.dev/api/mcp');
+    expect(postInit.method).toBe('POST');
+    // Call 3 fetches the resource_metadata URL from the POST challenge.
+    expect((fetchSpy.mock.calls[2] as [string])[0]).toBe(
+      'https://cue.buildd.dev/.well-known/oauth-protected-resource',
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it('falls back to origin well-known PR metadata when GET is 405 and POST yields no challenge', async () => {
+    const protectedResource = {
+      resource: 'https://cue.buildd.dev/api/mcp',
+      authorization_servers: ['https://cue.buildd.dev'],
+    };
+    const asMetadata = {
+      issuer: 'https://cue.buildd.dev',
+      authorization_endpoint: 'https://cue.buildd.dev/authorize',
+      token_endpoint: 'https://cue.buildd.dev/token',
+    };
+
+    fetchSpy = spyOn(globalThis, 'fetch')
+      // GET → 405
+      .mockResolvedValueOnce(new Response('Method Not Allowed', { status: 405 }))
+      // POST → 401 but WITHOUT a WWW-Authenticate header (no usable challenge)
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      // Origin-derived well-known PR metadata → 200
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(protectedResource), { status: 200 }),
+      )
+      // AS metadata
+      .mockResolvedValueOnce(new Response(JSON.stringify(asMetadata), { status: 200 }));
+
+    const result = await discoverOAuthMetadata('https://cue.buildd.dev/api/mcp');
+
+    expect(result.authMode).toBe('oauth');
+    if (result.authMode === 'oauth') {
+      expect(result.authorizationServer.issuer).toBe('https://cue.buildd.dev');
+    }
+    // Third call is the origin-derived well-known PR metadata URL.
+    expect((fetchSpy.mock.calls[2] as [string])[0]).toBe(
+      'https://cue.buildd.dev/.well-known/oauth-protected-resource',
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it('throws unexpected-status when GET, POST, and well-known all fail', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch')
+      // GET → 405
+      .mockResolvedValueOnce(new Response('Method Not Allowed', { status: 405 }))
+      // POST → 405 (no challenge)
+      .mockResolvedValueOnce(new Response('Method Not Allowed', { status: 405 }))
+      // Origin well-known → 404
+      .mockResolvedValueOnce(new Response('Not Found', { status: 404 }));
+
+    await expect(
+      discoverOAuthMetadata('https://cue.buildd.dev/api/mcp'),
+    ).rejects.toThrow('unexpected status 405');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
 });
 
 // ─── buildAuthorizationUrl ────────────────────────────────────────────────────

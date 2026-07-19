@@ -91,6 +91,18 @@ export function parseBearerChallenge(header: string): Record<string, string> {
  * Returns `{ authMode: 'none' }` when the server responds 2xx without auth.
  * Returns the discovered AS metadata on `authMode: 'oauth'`.
  * Throws on network errors or unexpected HTTP status codes.
+ *
+ * Probe strategy (tolerant, without weakening security):
+ *   1. GET the connector URL. `200` → no auth; `401` → parse WWW-Authenticate.
+ *   2. Any other status (e.g. `405` from POST-only streamable-HTTP servers that
+ *      reject GET, or `403`/`404`) → fall back before giving up:
+ *        a. Retry with an unauthenticated POST (the MCP-idiomatic method) and
+ *           parse WWW-Authenticate from its `401` exactly as the GET path does.
+ *        b. Derive the Protected Resource Metadata URL from the connector origin
+ *           (`{origin}/.well-known/oauth-protected-resource`, RFC 9728) and use
+ *           it if it returns valid PR metadata.
+ *   3. Only throw `unexpected status` when every fallback fails to yield PR
+ *      metadata.
  */
 export async function discoverOAuthMetadata(connectorUrl: string): Promise<DiscoveredMetadata> {
   let probeRes: Response;
@@ -107,20 +119,103 @@ export async function discoverOAuthMetadata(connectorUrl: string): Promise<Disco
     return { authMode: 'none' };
   }
 
-  if (probeRes.status !== 401) {
-    throw new Error(`Discovery probe returned unexpected status ${probeRes.status}`);
+  let resourceMetadataUrl: string;
+
+  if (probeRes.status === 401) {
+    // Happy path: GET → 401 with a WWW-Authenticate challenge (RFC 9728).
+    resourceMetadataUrl = resourceMetadataUrlFrom(probeRes, connectorUrl);
+  } else {
+    // GET returned neither 200 nor 401. Many streamable-HTTP MCP servers only
+    // implement POST and answer 405 to GET, emitting the 401 challenge on POST.
+    // Fallback 1: unauthenticated POST — read the challenge from its 401.
+    const postChallengeUrl = await resourceMetadataUrlViaPost(connectorUrl);
+    if (postChallengeUrl) {
+      resourceMetadataUrl = postChallengeUrl;
+    } else {
+      // Fallback 2: origin-derived Protected Resource Metadata (RFC 9728).
+      const originPrUrl = new URL(
+        '/.well-known/oauth-protected-resource',
+        connectorUrl,
+      ).toString();
+      const originPr = await tryFetchProtectedResource(originPrUrl);
+      if (originPr) {
+        return completeOAuthDiscovery(originPr);
+      }
+      // All of GET / POST / well-known failed to yield PR metadata.
+      throw new Error(`Discovery probe returned unexpected status ${probeRes.status}`);
+    }
   }
 
-  // Step 1: Extract resource_metadata URL from WWW-Authenticate header
-  const wwwAuth = probeRes.headers.get('www-authenticate') ?? '';
+  const protectedResource = await fetchProtectedResource(resourceMetadataUrl);
+  return completeOAuthDiscovery(protectedResource);
+}
+
+/**
+ * Extract the Protected Resource Metadata URL from a 401 response's
+ * WWW-Authenticate challenge, falling back to the connector-origin well-known
+ * path (RFC 9728) when the header omits `resource_metadata`.
+ */
+function resourceMetadataUrlFrom(res: Response, connectorUrl: string): string {
+  const wwwAuth = res.headers.get('www-authenticate') ?? '';
   const challenge = parseBearerChallenge(wwwAuth);
-
-  let resourceMetadataUrl =
+  return (
     challenge['resource_metadata'] ??
-    // Fallback: /.well-known/oauth-protected-resource on the connector origin
-    new URL('/.well-known/oauth-protected-resource', connectorUrl).toString();
+    new URL('/.well-known/oauth-protected-resource', connectorUrl).toString()
+  );
+}
 
-  // Step 2: Fetch Protected Resource Metadata (RFC 9728)
+/**
+ * Fallback probe for POST-only MCP servers: send an unauthenticated POST and,
+ * on 401, return the `resource_metadata` URL from its WWW-Authenticate header.
+ * Returns null when POST does not yield a usable challenge.
+ */
+async function resourceMetadataUrlViaPost(connectorUrl: string): Promise<string | null> {
+  let postRes: Response;
+  try {
+    postRes = await fetch(connectorUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Accept: 'application/json' },
+      body: '{}',
+    });
+  } catch {
+    return null;
+  }
+  if (postRes.status !== 401) return null;
+  const wwwAuth = postRes.headers.get('www-authenticate');
+  if (!wwwAuth) return null;
+  const challenge = parseBearerChallenge(wwwAuth);
+  return challenge['resource_metadata'] ?? null;
+}
+
+/**
+ * Fetch + validate Protected Resource Metadata, returning null (instead of
+ * throwing) on any failure — used by the tolerant well-known fallback so a
+ * miss can be distinguished from a successful discovery.
+ */
+async function tryFetchProtectedResource(
+  url: string,
+): Promise<ProtectedResourceMetadata | null> {
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' } });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  let pr: ProtectedResourceMetadata;
+  try {
+    pr = (await res.json()) as ProtectedResourceMetadata;
+  } catch {
+    return null;
+  }
+  if (!pr.authorization_servers?.length) return null;
+  return pr;
+}
+
+/** Fetch + validate Protected Resource Metadata (RFC 9728), throwing on failure. */
+async function fetchProtectedResource(
+  resourceMetadataUrl: string,
+): Promise<ProtectedResourceMetadata> {
   const prRes = await fetch(resourceMetadataUrl, {
     headers: { Accept: 'application/json' },
   });
@@ -128,16 +223,21 @@ export async function discoverOAuthMetadata(connectorUrl: string): Promise<Disco
     throw new Error(`Failed to fetch Protected Resource Metadata (${prRes.status})`);
   }
   const protectedResource = (await prRes.json()) as ProtectedResourceMetadata;
-
   if (!protectedResource.authorization_servers?.length) {
     throw new Error('Protected Resource Metadata missing authorization_servers');
   }
+  return protectedResource;
+}
 
+/**
+ * Given valid Protected Resource Metadata, fetch the Authorization Server
+ * Metadata (RFC 8414 with OIDC fallback) and assemble the discovery result.
+ */
+async function completeOAuthDiscovery(
+  protectedResource: ProtectedResourceMetadata,
+): Promise<DiscoveredMetadata> {
   const asBaseUrl = protectedResource.authorization_servers[0].replace(/\/$/, '');
-
-  // Step 3: Fetch Authorization Server Metadata (RFC 8414 with OIDC fallback)
   const authorizationServer = await fetchASMetadata(asBaseUrl);
-
   return { authMode: 'oauth', protectedResource, authorizationServer };
 }
 
