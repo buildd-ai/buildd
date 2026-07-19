@@ -150,6 +150,17 @@ export interface KnowledgeStore {
     namespace: string,
     selector: { sourcePath?: string; sourceType?: string },
   ): Promise<void>;
+  /**
+   * Check for near-duplicates before writing. Embeds `content` and returns the
+   * top-K current chunks ordered by cosine similarity descending. Returns an
+   * empty array when the store has no embedder or on any error.
+   * Used by the dedupe hook in handleLearnAction.
+   */
+  nearDupeCheck?(
+    namespace: string,
+    content: string,
+    topK?: number,
+  ): Promise<Array<{ id: string; similarity: number; content: string; sourceUrl: string | null }>>;
 }
 
 // ── Entity / Relation types (Phase 2+) ────────────────────────────────────────
