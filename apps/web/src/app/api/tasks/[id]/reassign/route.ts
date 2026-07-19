@@ -16,6 +16,12 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
  *
  * Query params:
  * - force=true: Force reassign even if task is assigned (requires workspace owner or stale task)
+ *
+ * Body (optional):
+ * - backend: 'claude' | 'codex' — switch the agent backend for this retry. When
+ *   omitted, the task keeps its stored backend. Team enablement + runner
+ *   capability are still enforced at claim time (maskBackend), so requesting a
+ *   backend the team disabled just gets redirected there as usual.
  */
 export async function POST(
   req: NextRequest,
@@ -36,6 +42,12 @@ export async function POST(
   const { id: taskId } = await params;
   const url = new URL(req.url);
   const force = url.searchParams.get('force') === 'true';
+
+  // Optional backend switch. Body is optional — legacy callers (ReassignButton)
+  // send none, so tolerate a missing/invalid JSON body.
+  const body = await req.json().catch(() => ({} as Record<string, unknown>));
+  const rawBackend = body?.backend;
+  const requestedBackend = rawBackend === 'claude' || rawBackend === 'codex' ? rawBackend : null;
 
   try {
     // Get the task
@@ -160,6 +172,16 @@ export async function POST(
       });
     }
 
+    // Apply an explicit backend switch (claude ⇄ codex) for this retry. Done as
+    // a single atomic update after the status reset so it covers every branch
+    // (assigned/failed/pending) without duplicating .set() logic.
+    const switchedBackend = requestedBackend && requestedBackend !== task.backend;
+    if (switchedBackend) {
+      await db.update(tasks)
+        .set({ backend: requestedBackend, updatedAt: new Date() })
+        .where(eq(tasks.id, taskId));
+    }
+
     // Build minimal task payload for Pusher (10KB event limit).
     // Full task data (with context, attachments, workspace config) is fetched
     // via the claim API. Sending the full object can exceed Pusher's limit.
@@ -198,6 +220,8 @@ export async function POST(
       reassigned: true,
       taskId: task.id,
       wasAssigned: task.status === 'assigned',
+      backend: switchedBackend ? requestedBackend : task.backend,
+      backendSwitched: !!switchedBackend,
       onlineRunners,
       availableCapacity,
     };

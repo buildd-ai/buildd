@@ -206,7 +206,7 @@ Keep the `docs/` namespace clean — each folder means exactly one thing:
 
 - **`docs/SPEC.md`** — canonical product/architecture spec (single source of truth). Code is truth → SPEC.md is its written form → doc/site repos are outputs.
 - **`docs/specs/*.md`** — living per-capability **contracts**, format defined by `docs/specs/SPEC-FORMAT.md`. Every file carries lifecycle frontmatter (`title / status / owner / last_verified`). Retire by setting `status: superseded` + `superseded_by`, not by deleting.
-- **`docs/design/*.md`** — design proposals (pre-implementation).
+- **`docs/design/*.md`** — design proposals (pre-implementation), format defined by `docs/design/DESIGN-FORMAT.md`.
 - **`docs/plans/*.md`** — ephemeral rollout plans; move to `docs/plans/archive/` once shipped.
 - **`docs/reports/*.md`** — generated audit/drift outputs; rebuildable, may be stale. Never a source of truth.
 

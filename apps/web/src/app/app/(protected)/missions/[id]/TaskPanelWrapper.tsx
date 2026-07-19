@@ -33,10 +33,16 @@ function TaskPanelInner({ children }: { children: React.ReactNode }) {
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [router, pathname, searchParams]);
 
-  // Intercept clicks on task links (data-task-id attribute)
+  // Intercept clicks on task links (data-task-id attribute).
   const handleClick = useCallback((e: React.MouseEvent) => {
     const target = (e.target as HTMLElement).closest('[data-task-id]');
     if (!target) return;
+
+    // The peek only earns its place when there's something to act on. Rows that
+    // opt out (data-task-actionable="false" — e.g. a plain completed task with
+    // no PR) fall through to the underlying <Link> and navigate to the full
+    // page instead of opening an empty drawer. Absent attribute = actionable.
+    if (target.getAttribute('data-task-actionable') === 'false') return;
 
     const id = target.getAttribute('data-task-id');
     e.preventDefault();

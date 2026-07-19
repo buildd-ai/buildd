@@ -9,7 +9,7 @@
 
 ### 1. The status badge asserts things that are false
 
-Mission `4281aa9b` is in `orchestrationMode: manual` — the orchestrator is idle by design. Its card renders:
+A mission in `orchestrationMode: manual` has an orchestrator that is idle by design. Its card renders:
 
 ```
 ON SCHEDULE          Next run in 9m

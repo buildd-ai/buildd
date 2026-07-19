@@ -1,7 +1,7 @@
 # Private Task Execution
 
 **Status:** Spec (audit + design) — no implementation yet  
-**Author:** Agent (task aa16330a)  
+**Author:** Agent  
 **Date:** 2026-07-17  
 **Related:** MCP OAuth (`/api/mcp-oauth/[workspace]`), credentials architecture (`docs/credentials-architecture.md`)
 

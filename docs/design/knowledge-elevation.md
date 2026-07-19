@@ -3,14 +3,14 @@
 **Status:** Draft — spec only, no implementation
 **Date:** 2026-07-18
 **Scope:** Ingestion pipeline, MCP access policy, memory scoping, consolidation lifecycle
-**Recon artifact:** `98ddf03c` — [Knowledge Layer Audit](https://buildd-di9n5ij51-maxs-projects-45386f31.vercel.app/share/nZgqVUGO0mheDgvxX4sabn1dd1RqnbjQ) (task a51c5358)
+**Recon artifact:** Knowledge Layer Audit
 **Prior art:** `docs/design/workspace-knowledge-management.md` (Wave 1 shipped; this spec extends it)
 
 ---
 
 ## Context
 
-The recon audit (task a51c5358) surfaced a structural failure: 10 of 11 repo-linked workspaces have no code or docs index (F1). The `knowledge-ingest.yml` CI workflow is hardcoded to the buildd workspace (`57ffc0e4`). The diff ingest webhook fires for all workspaces but the bootstrap full job is never claimed because runners are workspace-scoped and no runner is targeted at non-buildd workspaces. Per-workspace spec ingestion (`{workspaceId}:spec`) has never run for any client workspace, so `spec_compare` and the spec-validator role return empty results everywhere except buildd.
+The recon audit surfaced a structural failure: nearly all repo-linked workspaces have no code or docs index (F1). The `knowledge-ingest.yml` CI workflow is hardcoded to the buildd workspace. The diff ingest webhook fires for all workspaces but the bootstrap full job is never claimed because runners are workspace-scoped and no runner is targeted at non-buildd workspaces. Per-workspace spec ingestion (`{workspaceId}:spec`) has never run for any client workspace, so `spec_compare` and the spec-validator role return empty results everywhere except buildd.
 
 Additionally, the CI full ingest and diff ingest store paths in different formats (F2): the CI script uses the ingest subdirectory as the root (`core/...`, `web/...`) while the webhook uses full repo-relative paths (`packages/core/...`, `apps/web/...`). `deleteBySource` cannot find CI-ingested chunks when a file is later touched via a PR — stale chunks accumulate indefinitely.
 
@@ -166,7 +166,7 @@ The spec-validator role's prompt gates (`query spec before writing specs`) becom
 
 ### 3.4 Migration for Legacy spec-sync Chunks
 
-The legacy `SPEC_SYNC_NAMESPACE` (`471effe1-4668-4cc9-9fa3-e20a56769deb`) held buildd's own code and docs under subdir-relative paths. It was retired from production in PR #1159. No client workspace ever wrote to it.
+The legacy `SPEC_SYNC_NAMESPACE` held buildd's own code and docs under subdir-relative paths. It was retired from production in PR #1159. No client workspace ever wrote to it.
 
 Migration plan:
 1. No data migration needed for client workspaces — they have no `spec` chunks at all; the initial full ingest creates them fresh.

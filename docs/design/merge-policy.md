@@ -1,7 +1,6 @@
 # Merge Policy Primitive — Design Spec
 
-> **Status:** Proposed — awaiting Max's approval before any implementation begins.
-> **Task:** 33ab675e · Branch: `buildd/33ab675e-spec-merge-policy-primitive-au`
+> **Status:** Proposed — awaiting approval before any implementation begins.
 > **Dependencies:** Builds on `docs/design/worker-pr-automerge.md` (auto-merge mechanics),
 > `docs/design/review-gate-ux.md` (blocked-on-merge UX), `docs/design/settings-ia-refactor.md`
 > (settings IA — policy config lives under `/app/settings/workspace`).
@@ -453,7 +452,7 @@ For `request-changes`:
 │        ↩ Changes Requested (iteration 1/3)                   │
 │        "Missing handler for token refresh edge case in       │
 │         apps/web/src/lib/mcp-oauth.ts:142. See retry task."  │
-│        → Retry queued on same branch (buildd/884c8b72-…)     │
+│        → Retry queued on same branch (buildd/<task-id>-…)    │
 ```
 
 For `escalated`:

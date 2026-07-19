@@ -427,7 +427,7 @@ the failed step using the `migration_log` table as an idempotency ledger.
 
 **Workspace Settings** page → "Danger Zone" section → "Migrate Workspace" button.
 
-Also available from the custom workspace dropdown (when that feature lands, task 135f6057) for
+Also available from the custom workspace dropdown (when that feature lands) for
 teams managing many workspaces.
 
 ### Migration Flow
