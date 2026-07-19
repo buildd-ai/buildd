@@ -284,6 +284,50 @@ describe('runProvisionGate', () => {
     expect(gate.steps.find((s) => s.phase === 'readiness')!.status).toBe('skip');
   });
 
+  it('emits a stable machine-readable failure code keyed to the failing phase', async () => {
+    const env = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ [MANIFEST_PATH]: 'env:\n  required: [X]\n' }),
+      runCommand: fakeRunner(), now,
+    });
+    expect(env.failure).toEqual({ code: 'provision_env_missing', phase: 'env', message: 'missing: X' });
+
+    const tool = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ [MANIFEST_PATH]: 'toolchain:\n  runtime: ghc\n' }),
+      runCommand: fakeRunner(/command -v ghc/), now,
+    });
+    expect(tool.failure?.code).toBe('provision_toolchain_missing');
+    expect(tool.failure?.phase).toBe('toolchain');
+
+    const ready = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: tsc\n' }),
+      runCommand: fakeRunner(/tsc/), now,
+    });
+    expect(ready.failure?.code).toBe('provision_readiness_failed');
+  });
+
+  it('leaves failure undefined on a passing gate', async () => {
+    const gate = await runProvisionGate({
+      root: '/r', env: {}, fs: fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: echo ok\n' }),
+      runCommand: fakeRunner(), now,
+    });
+    expect(gate.ok).toBe(true);
+    expect(gate.failure).toBeUndefined();
+  });
+
+  it('validates env.required against the injected env, not process.env (Phase 4)', async () => {
+    // A secret-backed var delivered via the claim lands in the worker's assembled
+    // env (cleanEnv), not process.env. The gate must pass when it's present there.
+    const manifest = { [MANIFEST_PATH]: 'env:\n  required: [VOYAGE_API_KEY]\n' };
+    const injected = { VOYAGE_API_KEY: 'secret-from-claim' }; // NOT in process.env
+    const pass = await runProvisionGate({ root: '/r', env: injected, fs: fakeFs(manifest), runCommand: fakeRunner(), now });
+    expect(pass.enforced).toBe(true);
+    expect(pass.ok).toBe(true);
+    // …and blocks when the secret wasn't delivered (absent from the injected env).
+    const fail = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(manifest), runCommand: fakeRunner(), now });
+    expect(fail.ok).toBe(false);
+    expect(fail.reason).toContain('VOYAGE_API_KEY');
+  });
+
   it('honors skipPhases so the runner-owned install is not re-run', async () => {
     const gate = await runProvisionGate({
       root: '/r', env: {},

@@ -257,14 +257,14 @@ export const WEEKLY_CONSOLIDATION_SCHEDULE = {
     description: `Consolidate this workspace's knowledge store: merge near-duplicates, archive decayed noise, and leave an auditable report. Deterministic queries surface candidates — YOU judge every candidate before acting. Never delete anything; archiving flips is_current=false and stays recoverable.
 
 Step 1 — find near-duplicates:
-Call \`buildd_memory\` action=consolidate_knowledge op=find_duplicates (default corpora memory+task, cosine > 0.92). Read each pair's previews and decide whether they truly describe the same fact. Similar-but-distinct entries (e.g. two different gotchas about the same file) are NOT duplicates — leave them.
+Call \`buildd\` action=consolidate_knowledge op=find_duplicates (default corpora memory+task, cosine > 0.92). Read each pair's previews and decide whether they truly describe the same fact. Similar-but-distinct entries (e.g. two different gotchas about the same file) are NOT duplicates — leave them.
 
 Step 2 — merge true duplicates:
 - memory corpus: the memory service is the source of truth. Pick the survivor (usually the newer or more complete entry), fold any unique detail from the loser into it via \`buildd_memory\` action=update, and pass supersedes=[<loser memory id>] so the loser drops out of default retrieval.
-- task corpus: task outcomes have no upstream service; archive the older chunk of the pair via op=archive.
+- task corpus: task outcomes have no upstream service; archive the older chunk of the pair via \`buildd\` action=consolidate_knowledge op=archive.
 
 Step 3 — archive decayed noise:
-Call op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with op=archive (corpus + sourceIds).
+Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with \`buildd\` action=consolidate_knowledge op=archive (corpus + sourceIds).
 
 Step 4 — emit a consolidation report:
 Create a report artifact via \`buildd\` action=create_artifact type=report title "Knowledge consolidation <date>" listing: pairs merged (survivor ← loser), chunks archived (id + reason), and pairs/candidates deliberately left alone. The report is itself indexed and is the audit trail for this run.`,
