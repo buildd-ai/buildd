@@ -996,7 +996,10 @@ export class WorkerManager {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
       console.log(`No tasks claimed (reason: ${reason})`);
-      return null;
+      throw Object.assign(
+        new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
+        { claimError: 'server_rejected' as const },
+      );
     }
 
     claimLog({ event: 'claim_success', slotsRequested: 1, workersClaimed: 1, taskId: task.id });
@@ -1014,14 +1017,19 @@ export class WorkerManager {
     });
 
     if (!workspacePath) {
+      const wsName = fullTask.workspace?.name || fullTask.workspaceId;
+      const repoHint = fullTask.workspace?.repo ? ` (repo: ${fullTask.workspace.repo})` : '';
       console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
       this.pusherManager.markUnresolvable(task.id);
       // Fail the claimed worker on the server so it doesn't stay "running" forever
       this.buildd.updateWorker(claimedWorker.id, {
         status: 'failed',
-        error: `Cannot resolve workspace "${fullTask.workspace?.name || 'unknown'}" (repo: ${fullTask.workspace?.repo || 'none'})`,
+        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
       }).catch(() => {});
-      return null;
+      throw Object.assign(
+        new Error(`Workspace "${wsName}" is not cloned locally${repoHint} — clone the repo first`),
+        { claimError: 'workspace_not_found' as const },
+      );
     }
 
     let resolvedPath = workspacePath;

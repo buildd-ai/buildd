@@ -1381,10 +1381,11 @@ const server = DEBUG_MODE ? Bun.serve({
       try {
         const worker = await workerManager!.claimAndStart(task);
         if (!worker) {
-          // claimAndStart returns null when workspace can't be resolved or server claim returns 0 workers
-          const wsName = task.workspace?.name || task.workspaceId;
+          // claimAndStart returns null only when the auth context is paused (rate
+          // limit) or a Codex sequential-enforcement deferral. The server-rejected
+          // and workspace-not-found cases throw typed errors (caught below).
           return Response.json({
-            error: `Failed to claim task "${task.title}" — workspace "${wsName}" may not be cloned locally or server rejected the claim`,
+            error: `Cannot claim task "${task.title}" right now — account context is temporarily paused (rate limit). Try again shortly.`,
           }, { status: 400, headers: corsHeaders });
         }
         return Response.json({ worker }, { headers: corsHeaders });
