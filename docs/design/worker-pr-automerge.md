@@ -1,7 +1,6 @@
 # Worker PR Auto-Merge — Design Spec
 
-> **Status:** Proposed — awaiting Max's approval before any implementation begins.
-> **Task:** 136c9670 · Branch: `buildd/136c9670-recon-spec-read-only-generaliz`
+> **Status:** Proposed — awaiting approval before any implementation begins.
 > **Scope:** Track 1 = CI-gated auto-merge reliability + observability. Track 2 = fan-out task primitives (appendix, input to a separate spec).
 
 ---

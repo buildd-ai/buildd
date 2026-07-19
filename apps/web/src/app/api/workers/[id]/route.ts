@@ -628,6 +628,26 @@ export async function PATCH(
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
 
+        // Provision-gate policy. A worker blocked by the runner's env-verify gate
+        // reports a stable failure code (resultMeta.provisionFailure) and spent no
+        // agent budget. Act on the KIND of failure:
+        //   • transient (flaky readiness probe, install blip) → ONE auto-retry; the
+        //     next claim may land after the env settles (e.g. a secret finished
+        //     refreshing). Bounded by its own counter so a broken manifest can't loop.
+        //   • permanent (missing secret/toolchain, deterministic provision command)
+        //     → let it fail so a human / the organizer acts (escalate). No retry.
+        // Independent of the mission retry above; setting shouldAutoRetry inherits the
+        // held-for-retry UX (task → pending, no fail notification, re-broadcast claimable).
+        const provisionCode = (resultMeta as { provisionFailure?: { code?: string } } | undefined)?.provisionFailure?.code;
+        const TRANSIENT_PROVISION_CODES = new Set(['provision_readiness_failed', 'provision_install_failed']);
+        if (provisionCode && !shouldAutoRetry && TRANSIENT_PROVISION_CODES.has(provisionCode)) {
+          const provisionRetryCount = (taskCtxForRetry.provisionRetryCount as number) || 0;
+          if (provisionRetryCount < 1) {
+            shouldAutoRetry = true;
+            taskCtxForRetry = { ...taskCtxForRetry, provisionRetryCount: provisionRetryCount + 1 };
+          }
+        }
+
         // Capture branch coordinates from the failing worker for retry continuity.
         // Written for both auto-retry and permanent-failure paths so that CI retry
         // and reviewer-loop retry can read resumeBranch from the task record.

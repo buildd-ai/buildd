@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
+const mockErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
@@ -19,6 +20,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       tasks: { findFirst: mockTasksFindFirst },
       workers: { findMany: mockWorkersFindMany },
+      workerErrorTraces: { findMany: mockErrorTracesFindMany },
     },
   },
 }));
@@ -31,6 +33,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id' },
   workers: { taskId: 'taskId', createdAt: 'createdAt' },
+  workerErrorTraces: { taskId: 'taskId', ts: 'ts' },
 }));
 
 import { GET } from './route';
@@ -50,6 +53,8 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
+    mockErrorTracesFindMany.mockReset();
+    mockErrorTracesFindMany.mockResolvedValue([]);
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
   });
@@ -123,6 +128,7 @@ describe('GET /api/tasks/[id]/summary', () => {
       completedAt: null,
       waitingFor: null,
       branch: 'buildd/b5814ed6-feat-connectors-db-schema',
+      milestones: [{ type: 'checkpoint', event: 'first_edit', label: 'Edit', ts: 1 }],
     }]);
 
     const res = await callGET(taskId);
@@ -135,6 +141,8 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.worker?.status).toBe('running');
     // Summary must return task ID, not worker ID — the historical 404 cause
     expect(data.id).not.toBe(workerId);
+    // Milestones flow through so the panel can render the live activity timeline
+    expect(data.worker?.milestones?.[0]?.event).toBe('first_edit');
   });
 
   it('returns task summary for a completed task', async () => {
@@ -241,6 +249,150 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.worker?.costUsd).toBe('0.050000');
     // Verify Number() coercion works correctly (what TaskPanel.tsx does)
     expect(Number(data.worker?.costUsd).toFixed(3)).toBe('0.050');
+  });
+
+  it('surfaces PR lifecycle + diff stats so the panel can render CI state without a GitHub read', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-pr',
+      title: 'PR task',
+      status: 'completed',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-pr',
+      status: 'completed',
+      currentAction: null,
+      turns: 4,
+      prUrl: 'https://github.com/org/repo/pull/1263',
+      prNumber: 1263,
+      prLifecycleStatus: 'ci_running',
+      mergedAt: null,
+      commitCount: 3,
+      filesChanged: 5,
+      linesAdded: 120,
+      linesRemoved: 8,
+      costUsd: 0.03,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      waitingFor: null,
+      branch: 'buildd/task-pr',
+    }]);
+
+    const res = await callGET('task-pr');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.worker?.prLifecycleStatus).toBe('ci_running');
+    expect(data.worker?.linesAdded).toBe(120);
+    expect(data.worker?.linesRemoved).toBe(8);
+    expect(data.worker?.mergedAt).toBeNull();
+  });
+
+  it('returns the task backend and null failover for a normal claude task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-claude',
+      title: 'Claude task',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: 'claude',
+      context: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('task-claude');
+    const data = await res.json();
+    expect(data.backend).toBe('claude');
+    expect(data.failover).toBeNull();
+  });
+
+  it('surfaces failover metadata when a task was flipped to codex', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-failover',
+      title: 'Failed-over task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: 'codex',
+      context: { failedOverFrom: 'claude', failoverReason: 'budget_exhausted', budgetExhausted: true },
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('task-failover');
+    const data = await res.json();
+    expect(data.backend).toBe('codex');
+    expect(data.failover?.from).toBe('claude');
+    expect(data.failover?.reason).toBe('budget_exhausted');
+  });
+
+  it('surfaces the latest error excerpt for a failed task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-failed',
+      title: 'Failed task',
+      status: 'failed',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockErrorTracesFindMany.mockResolvedValue([{
+      excerpt: 'Failed to authenticate. API Error: 401 OAuth access token is invalid.',
+      pattern: 'auth_error',
+      ts: new Date().toISOString(),
+    }]);
+
+    const res = await callGET('task-failed');
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.status).toBe('failed');
+    expect(data.lastError?.excerpt).toContain('401 OAuth access token is invalid');
+    expect(data.lastError?.pattern).toBe('auth_error');
+  });
+
+  it('returns null lastError when the task has no error traces', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-clean',
+      title: 'Clean task',
+      status: 'completed',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('task-clean');
+    const data = await res.json();
+    expect(data.lastError).toBeNull();
   });
 
   it('surfaces waiting_input status when worker is blocked', async () => {

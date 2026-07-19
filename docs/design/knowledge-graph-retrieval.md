@@ -1,7 +1,7 @@
 # Recency-Aware + Entity/Graph Retrieval for KnowledgeStore
 
 **Status:** Draft spec — awaiting approval before any implementation task is created
-**Author:** Agent (task c21dfeb7)  
+**Author:** Agent  
 **Date:** 2026-06-25  
 **Scope:** `packages/core/knowledge-store/` and surrounding MCP tooling  
 **Related:** `docs/design/knowledge-tool-surface.md` (MCP tool surface that sits on top of this retrieval layer)

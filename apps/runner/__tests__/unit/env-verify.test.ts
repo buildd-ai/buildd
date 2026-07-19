@@ -7,6 +7,7 @@ import {
   executeSteps,
   runEnvVerify,
   runProvisionGate,
+  clearProvisionGateCache,
   MANIFEST_PATH,
   type EnvManifest,
   type FsProbe,
@@ -337,5 +338,81 @@ describe('runProvisionGate', () => {
     });
     expect(gate.ok).toBe(true);
     expect(gate.steps.find((s) => s.phase === 'install')!.status).toBe('skip');
+  });
+});
+
+// ─── warm gate cache ─────────────────────────────────────────────────────────
+
+describe('runProvisionGate warm cache', () => {
+  const READY = { [MANIFEST_PATH]: 'readiness:\n  command: echo ok\n' };
+
+  /** A runner that counts how many commands it actually executed. */
+  function countingRunner() {
+    let calls = 0;
+    const run: CommandRunner = () => { calls++; return { code: 0, stdout: '', stderr: '' }; };
+    return { run, calls: () => calls };
+  }
+
+  it('reuses a passing result for the same commit + manifest (skips re-running steps)', async () => {
+    clearProvisionGateCache();
+    const r = countingRunner();
+    const opts = { root: '/r', env: {}, fs: fakeFs(READY), runCommand: r.run, commit: 'abc123' };
+    const first = await runProvisionGate(opts);
+    expect(first.ok).toBe(true);
+    expect(first.cached).toBeUndefined();
+    const firstCalls = r.calls();
+    expect(firstCalls).toBeGreaterThan(0);
+
+    const second = await runProvisionGate(opts);
+    expect(second.ok).toBe(true);
+    expect(second.cached).toBe(true);
+    expect(r.calls()).toBe(firstCalls); // no additional command executed
+  });
+
+  it('does NOT cache when no commit is supplied', async () => {
+    clearProvisionGateCache();
+    const a = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner() });
+    const b = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner() });
+    expect(a.cached).toBeUndefined();
+    expect(b.cached).toBeUndefined();
+  });
+
+  it('does NOT cache an env-dependent manifest (env.required present)', async () => {
+    clearProvisionGateCache();
+    const fs = fakeFs({ [MANIFEST_PATH]: 'env:\n  required: [X]\nreadiness:\n  command: echo ok\n' });
+    const opts = { root: '/r', env: { X: '1' }, fs, runCommand: fakeRunner(), commit: 'abc123' };
+    await runProvisionGate(opts);
+    const second = await runProvisionGate(opts);
+    expect(second.cached).toBeUndefined(); // must re-check — result depends on injected secrets
+  });
+
+  it('never caches a failure', async () => {
+    clearProvisionGateCache();
+    const fs = fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: flaky\n' });
+    const opts = { root: '/r', env: {}, fs, runCommand: fakeRunner(/flaky/), commit: 'abc123' };
+    const fail = await runProvisionGate(opts);
+    expect(fail.ok).toBe(false);
+    // Same commit now "passes" (issue fixed) — must re-run, not serve a stale pass.
+    const retry = await runProvisionGate({ ...opts, runCommand: fakeRunner() });
+    expect(retry.ok).toBe(true);
+    expect(retry.cached).toBeUndefined();
+  });
+
+  it('expires cached passes after the TTL', async () => {
+    clearProvisionGateCache();
+    let t = 0;
+    const clock = () => t;
+    const opts = { root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner(), commit: 'abc123', now: clock };
+    await runProvisionGate(opts);
+    t += 11 * 60 * 1000; // advance past the 10-min TTL
+    const after = await runProvisionGate(opts);
+    expect(after.cached).toBeUndefined(); // stale → re-run
+  });
+
+  it('keys on the commit — a different base misses', async () => {
+    clearProvisionGateCache();
+    await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner(), commit: 'aaa' });
+    const other = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(READY), runCommand: fakeRunner(), commit: 'bbb' });
+    expect(other.cached).toBeUndefined();
   });
 });

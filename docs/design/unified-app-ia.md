@@ -10,10 +10,8 @@
 > refactoring.
 >
 > **Sources of truth (read before this doc):**
-> - Recon A — App IA, surfaces + team propagation (artifact
->   `370a87d1-b07d-44a5-810e-c98b25990552`)
-> - Recon B — Role & Scoping Model (artifact
->   `a3399045-2281-4438-b601-c3cc0d29b319`)
+> - Recon A — App IA, surfaces + team propagation
+> - Recon B — Role & Scoping Model
 > - Settings IA Refactor — detailed settings task breakdown
 >   (`docs/design/settings-ia-refactor.md`, PR #988)
 > - Credentials Architecture — canonical credential scoping pattern
@@ -188,7 +186,7 @@ across all viewports. Desktop (sidebar rail) and mobile (bottom tab nav)
 both route to the same `HealthClient` component — there is no separate
 mobile path. No section may be conditionally rendered for a specific
 breakpoint. Treat any viewport-only section as a regression equal to the
-artifact→task action mobile regression (task 1940b072).
+artifact→task action mobile regression.
 
 Acceptance criteria:
 - AC-1: Health shows watched projects for all team workspaces by default.

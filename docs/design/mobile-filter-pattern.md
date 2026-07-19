@@ -93,10 +93,10 @@ On **desktop**: search is always a visible fixed-width input inline with the fil
 | Page | Status | Notes |
 |---|---|---|
 | Activity (`/app/tasks` → `TaskGrid.tsx`) | ✅ Implemented | Reference implementation |
-| Missions (`/app/missions`) | TODO | After task 5ee76654 (header overlap fix) merges |
+| Missions (`/app/missions`) | TODO | After the mission header overlap fix merges |
 | Team (`/app/team`) | TODO | Lower priority; simpler filter surface |
 
-See task `5ee76654` for the mobile header layout spec being applied to Missions. Filter rows begin below the page header per that spec.
+See `docs/design/mission-status-mobile-header-spec.md` for the mobile header layout being applied to Missions. Filter rows begin below the page header per that spec.
 
 ---
 

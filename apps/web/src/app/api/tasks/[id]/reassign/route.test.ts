@@ -108,8 +108,9 @@ import { POST } from './route';
 function createMockRequest(options: {
   headers?: Record<string, string>;
   searchParams?: Record<string, string>;
+  body?: unknown;
 } = {}): NextRequest {
-  const { headers = {}, searchParams = {} } = options;
+  const { headers = {}, searchParams = {}, body } = options;
 
   let url = 'http://localhost:3000/api/tasks/task-123/reassign';
   const params = new URLSearchParams(searchParams);
@@ -119,7 +120,10 @@ function createMockRequest(options: {
 
   return new NextRequest(url, {
     method: 'POST',
-    headers: new Headers(headers),
+    headers: new Headers(
+      body ? { 'Content-Type': 'application/json', ...headers } : headers
+    ),
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -419,6 +423,81 @@ describe('POST /api/tasks/[id]/reassign', () => {
     const data = await response.json();
     expect(data.reassigned).toBe(true);
     expect(data.taskId).toBe('task-123');
+  });
+
+  describe('backend switching on retry', () => {
+    const failedClaudeTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'failed',
+      workspaceId: 'ws-1',
+      description: 'A task that failed on claude',
+      mode: 'code',
+      priority: 1,
+      backend: 'claude',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    it('switches the task backend to codex when requested', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(failedClaudeTask);
+
+      const request = createMockRequest({
+        searchParams: { force: 'true' },
+        body: { backend: 'codex' },
+      });
+      const response = await callHandler(request, 'task-123');
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.reassigned).toBe(true);
+      expect(data.backend).toBe('codex');
+      expect(data.backendSwitched).toBe(true);
+    });
+
+    it('keeps the stored backend when none is requested (single-click retry)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(failedClaudeTask);
+
+      const request = createMockRequest({ searchParams: { force: 'true' } });
+      const response = await callHandler(request, 'task-123');
+
+      const data = await response.json();
+      expect(data.reassigned).toBe(true);
+      expect(data.backend).toBe('claude');
+      expect(data.backendSwitched).toBe(false);
+    });
+
+    it('does not report a switch when the requested backend matches the current one', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(failedClaudeTask);
+
+      const request = createMockRequest({
+        searchParams: { force: 'true' },
+        body: { backend: 'claude' },
+      });
+      const response = await callHandler(request, 'task-123');
+
+      const data = await response.json();
+      expect(data.backend).toBe('claude');
+      expect(data.backendSwitched).toBe(false);
+    });
+
+    it('ignores an invalid backend value rather than persisting garbage', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(failedClaudeTask);
+
+      const request = createMockRequest({
+        searchParams: { force: 'true' },
+        body: { backend: 'gpt-5-turbo' },
+      });
+      const response = await callHandler(request, 'task-123');
+
+      const data = await response.json();
+      expect(data.reassigned).toBe(true);
+      expect(data.backend).toBe('claude');
+      expect(data.backendSwitched).toBe(false);
+    });
   });
 
   it('works with API key auth', async () => {

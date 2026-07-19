@@ -454,6 +454,12 @@ export interface ResultMeta {
   numTurns: number;
   modelUsage: Record<string, ModelUsage>;
   permissionDenials?: Array<{ tool: string; reason: string }>;
+  /**
+   * Set when the worker was blocked by the runner's provision gate (never started
+   * the agent). `code` is a stable classification the server keys requeue/escalate
+   * policy off. See docs/design/reliable-env-provisioning.md.
+   */
+  provisionFailure?: { code: string; phase: string; message: string };
 }
 
 export const workspaces = pgTable('workspaces', {
