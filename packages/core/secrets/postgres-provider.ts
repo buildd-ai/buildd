@@ -5,7 +5,7 @@
 
 import { db } from '../db/client';
 import { secrets } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { encrypt, decrypt } from './crypto';
 import type { SecretsProvider, SecretMetadata, SecretRecord } from './types';
 
@@ -41,6 +41,41 @@ export class PostgresSecretsProvider implements SecretsProvider {
         workspaceId: metadata.workspaceId || null,
         purpose: metadata.purpose,
         label: metadata.label || null,
+        encryptedValue,
+      })
+      .returning({ id: secrets.id });
+
+    return row.id;
+  }
+
+  async replaceScoped(value: string, metadata: SecretMetadata): Promise<string> {
+    if (!metadata.teamId) throw new Error('teamId is required');
+    if (!metadata.purpose) throw new Error('purpose is required');
+
+    const accountId = metadata.accountId ?? null;
+    const workspaceId = metadata.workspaceId ?? null;
+    const label = metadata.label ?? null;
+    const encryptedValue = encrypt(value);
+
+    // Delete any existing row(s) at the exact scope (NULL-aware) so a re-save
+    // replaces rather than appends. A single UPDATE would leave stale health
+    // columns (a replaced 'revoked' row must not stay revoked); delete+insert
+    // gives a clean row that defaults to health 'unknown'.
+    await db.delete(secrets).where(and(
+      eq(secrets.teamId, metadata.teamId),
+      eq(secrets.purpose, metadata.purpose),
+      accountId ? eq(secrets.accountId, accountId) : isNull(secrets.accountId),
+      workspaceId ? eq(secrets.workspaceId, workspaceId) : isNull(secrets.workspaceId),
+      label ? eq(secrets.label, label) : isNull(secrets.label),
+    ));
+
+    const [row] = await db.insert(secrets)
+      .values({
+        teamId: metadata.teamId,
+        accountId,
+        workspaceId,
+        purpose: metadata.purpose,
+        label,
         encryptedValue,
       })
       .returning({ id: secrets.id });

@@ -131,10 +131,15 @@ export async function POST(req: NextRequest) {
 
   try {
     const provider = getSecretsProvider();
-    const id = await provider.set(null, sanitizedValue, {
+    // replaceScoped (not set(null)): a re-save REPLACES the existing credential at
+    // the same scope instead of appending a duplicate row. Duplicates are a real
+    // hazard here — the claim-time resolver picks one row per (team, purpose) with
+    // no ordering, so a stale/revoked leftover could be handed to a worker while a
+    // fresh token sits unused. See docs/credentials-architecture.md.
+    const id = await provider.replaceScoped(sanitizedValue, {
       teamId: targetTeamId,
       // MCP credentials are team-wide (shared with all runners), so don't scope to account
-      accountId: purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId),
+      accountId: (purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
       workspaceId,
       purpose,
       label,

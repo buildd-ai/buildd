@@ -65,6 +65,12 @@ export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
 export interface ClaudeVerifyResult {
   verified: boolean;
   error: string | null;
+  /**
+   * True when the token *reads* OK (GET /v1/models → 200) but is still flagged
+   * 'revoked' from a real worker run — the access check cannot detect OAuth
+   * session revocation. The UI shows a re-auth warning instead of a green pass.
+   */
+  revoked?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -362,7 +368,7 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
       eq(secrets.id, secretId),
       or(eq(secrets.purpose, 'oauth_token'), eq(secrets.purpose, 'anthropic_api_key')),
     ),
-    columns: { encryptedValue: true, purpose: true },
+    columns: { encryptedValue: true, purpose: true, healthStatus: true },
   });
 
   if (!row) return { verified: false, error: 'Credential not found' };
@@ -421,8 +427,22 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
     })
     .where(eq(secrets.id, secretId));
 
-  // Update health state based on verification outcome
+  // Update health state based on verification outcome.
+  //
+  // CRITICAL for oauth_token: GET /v1/models is only an *access* check — a setup
+  // token whose OAuth session has been revoked ("logged out or signed in to
+  // another account") STILL returns 200 here, because revocation surfaces only on
+  // the refresh/session path the SDK exercises in-worker. So a passing verify must
+  // NOT launder a worker-observed 'revoked' credential back to 'healthy' — doing so
+  // flips the UI badge green and hides a token that will fail every real run. Only
+  // a genuine worker-session success (recorded via the PATCH route) clears revoked.
+  // API keys have no such session/refresh semantics, so their verify is authoritative.
+  const revoked = row.healthStatus === 'revoked';
   if (verified) {
+    if (row.purpose === 'oauth_token' && revoked) {
+      // Preserve the revoked state; report that the token merely *reads* OK.
+      return { verified: true, error: null, revoked: true };
+    }
     await recordCredentialAuthSuccess(secretId);
   } else if (error) {
     await recordCredentialAuthFailure(secretId, error);

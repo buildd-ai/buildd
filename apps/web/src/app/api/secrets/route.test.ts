@@ -4,6 +4,8 @@ import { NextRequest } from 'next/server';
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
+// POST now uses provider.replaceScoped (replace-on-store), not set(null, …).
+const mockSecretsReplaceScoped = mock(() => Promise.resolve('secret-1'));
 const mockSecretsSet = mock(() => Promise.resolve('secret-1'));
 const mockSecretsList = mock(() => Promise.resolve([] as any[]));
 const mockSecretsDelete = mock(() => Promise.resolve());
@@ -19,6 +21,7 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
     set: mockSecretsSet,
+    replaceScoped: mockSecretsReplaceScoped,
     list: mockSecretsList,
     delete: mockSecretsDelete,
   }),
@@ -38,13 +41,14 @@ describe('POST /api/secrets', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
     mockSecretsSet.mockReset();
     mockSecretsList.mockReset();
 
     // Default: authenticated user with a team
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockSecretsSet.mockResolvedValue('secret-1');
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -86,7 +90,7 @@ describe('POST /api/secrets', () => {
     expect(data.id).toBe('secret-1');
 
     // Verify provider.set was called with correct args
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'dispatch-api-key-value', {
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('dispatch-api-key-value', {
       teamId: 'team-1',
       accountId: 'account-1',
       workspaceId: undefined,
@@ -123,7 +127,7 @@ describe('POST /api/secrets', () => {
       custom: 'val',
     };
     for (const purpose of ['anthropic_api_key', 'oauth_token', 'webhook_token', 'custom']) {
-      mockSecretsSet.mockResolvedValue('secret-1');
+      mockSecretsReplaceScoped.mockResolvedValue('secret-1');
       const res = await POST(createPostRequest({ value: valueFor[purpose], purpose }));
       expect(res.status).toBe(200);
     }
@@ -136,7 +140,7 @@ describe('POST /api/secrets', () => {
     }));
     expect(res.status).toBe(200);
     // Stored value must NOT contain the wrapping quotes.
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
   });
 
   it('strips wrapping single quotes too', async () => {
@@ -145,7 +149,7 @@ describe('POST /api/secrets', () => {
       purpose: 'anthropic_api_key',
     }));
     expect(res.status).toBe(200);
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'sk-ant-api03-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-api03-abc123', expect.anything());
   });
 
   it('trims surrounding whitespace before storing', async () => {
@@ -154,7 +158,7 @@ describe('POST /api/secrets', () => {
       purpose: 'oauth_token',
     }));
     expect(res.status).toBe(200);
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
   });
 
   it('trims and strips quotes together (whitespace outside quotes)', async () => {
@@ -163,7 +167,7 @@ describe('POST /api/secrets', () => {
       purpose: 'oauth_token',
     }));
     expect(res.status).toBe(200);
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, 'sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
   });
 
   it('rejects oauth_token with the wrong prefix (400)', async () => {
@@ -174,7 +178,7 @@ describe('POST /api/secrets', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain('sk-ant-oat');
-    expect(mockSecretsSet).not.toHaveBeenCalled();
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
   it('rejects anthropic_api_key with the wrong prefix (400)', async () => {
@@ -185,7 +189,7 @@ describe('POST /api/secrets', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain('sk-ant-api');
-    expect(mockSecretsSet).not.toHaveBeenCalled();
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
   it('rejects a quoted oauth_token whose real prefix is wrong (quotes stripped first)', async () => {
@@ -194,7 +198,7 @@ describe('POST /api/secrets', () => {
       purpose: 'oauth_token',
     }));
     expect(res.status).toBe(400);
-    expect(mockSecretsSet).not.toHaveBeenCalled();
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
   it('does NOT strip quotes from JSON-blob purposes like claude_credential', async () => {
@@ -205,6 +209,6 @@ describe('POST /api/secrets', () => {
     }));
     expect(res.status).toBe(200);
     // JSON blob stored verbatim (only trimmed) — not quote-stripped.
-    expect(mockSecretsSet).toHaveBeenCalledWith(null, json, expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith(json, expect.anything());
   });
 });

@@ -1225,21 +1225,30 @@ export async function POST(req: NextRequest) {
               eq(secrets.workspaceId, task.workspaceId),
             ),
           ),
-          columns: { id: true, purpose: true, label: true },
+          columns: { id: true, purpose: true, label: true, healthStatus: true, updatedAt: true },
         });
 
         if (workerSecrets.length === 0) continue;
 
-        const apiKeySecret = workerSecrets.find(s => s.purpose === 'anthropic_api_key');
-        const oauthSecret = workerSecrets.find(s => s.purpose === 'oauth_token');
+        // Pick the best row per purpose: prefer a non-revoked credential, then the
+        // most recently updated. With replaceScoped enforcing one row per scope this
+        // is normally a single row; the ordering is defense-in-depth so a stale or
+        // revoked leftover can never shadow a healthy credential (the bug that let a
+        // revoked token be handed to workers while a fresh one sat unused).
+        const pickBest = (purpose: string) =>
+          workerSecrets
+            .filter(s => s.purpose === purpose)
+            .sort((a, b) =>
+              (a.healthStatus === 'revoked' ? 1 : 0) - (b.healthStatus === 'revoked' ? 1 : 0) ||
+              (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0];
+
+        const apiKeySecret = pickBest('anthropic_api_key');
+        const oauthSecret = pickBest('oauth_token');
 
         const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
           apiKeySecret ? provider.get(apiKeySecret.id) : null,
           oauthSecret ? provider.get(oauthSecret.id) : null,
         ]);
-
-        // TEMP diagnostic (value-free) — pin why serverOauthToken is empty in prod
-        console.warn(`[claim-diag] task=${task.id} wsTeam=${workspaceTeamId} secrets=${workerSecrets.length} purposes=${workerSecrets.map(s => s.purpose).join('|')} oauthFound=${!!oauthSecret} oauthLen=${decryptedOauthToken?.length ?? 0} apiKeyLen=${decryptedApiKey?.length ?? 0}`);
 
         if (decryptedApiKey) {
           (cw as any).serverApiKey = decryptedApiKey;

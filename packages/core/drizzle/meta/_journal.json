@@ -582,6 +582,13 @@
       "when": 1784472315088,
       "tag": "0082_reconcile_dropped_tables_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1784497198764,
+      "tag": "0083_plain_silver_samurai",
+      "breakpoints": true
     }
   ]
 }
