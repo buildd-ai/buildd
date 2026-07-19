@@ -66,13 +66,13 @@ jobs:
         run: |
           VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN_RAW" | tr -d '\n\r')
 
-          echo "Fetching latest production deployment..."
+          echo "Fetching latest successful production deployment..."
           LATEST=$(curl -sf \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
-            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&limit=1")
+            "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&target=production&state=READY&limit=1")
 
           PROD_URL=$(echo "$LATEST" | jq -r '.deployments[0].url // empty')
-          echo "Latest production deployment URL: $PROD_URL"
+          echo "Latest ready production deployment URL: $PROD_URL"
 
           if [ -z "$PROD_URL" ]; then
             echo "Could not find production deployment URL, skipping redeploy"
