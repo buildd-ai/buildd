@@ -8,6 +8,46 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
 /**
+ * Purposes whose value is a raw credential string (not a JSON blob). Values pasted
+ * for these are frequently wrapped in quotes (e.g. `"sk-ant-oat01-…"`), which makes a
+ * valid 108-char token 110 chars and gets it rejected by Anthropic with a
+ * `401 Invalid bearer token` hours later. We strip a single wrapping quote pair before
+ * encrypting. JSON-blob credentials (e.g. `claude_credential`, written via the
+ * connected-account route) must NOT be quote-stripped.
+ */
+const RAW_STRING_PURPOSES = new Set([
+  'anthropic_api_key',
+  'oauth_token',
+  'webhook_token',
+  'custom',
+  'mcp_credential',
+  'vercel_token',
+]);
+
+/** Required prefixes for Claude credential purposes. */
+const REQUIRED_PREFIXES: Record<string, string> = {
+  oauth_token: 'sk-ant-oat',
+  anthropic_api_key: 'sk-ant-api',
+};
+
+/**
+ * Sanitize a raw secret value before encryption: trim whitespace, and for raw-string
+ * purposes strip a single pair of wrapping quotes (single or double). Enforced
+ * server-side regardless of what the client sends.
+ */
+function sanitizeSecretValue(raw: string, purpose: string): string {
+  let v = raw.trim();
+  if (RAW_STRING_PURPOSES.has(purpose) && v.length >= 2) {
+    const first = v[0];
+    const last = v[v.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      v = v.slice(1, -1).trim();
+    }
+  }
+  return v;
+}
+
+/**
  * Dual auth: API key (Bearer token) or session cookie.
  * Returns the list of team IDs the caller belongs to.
  */
@@ -66,6 +106,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'label is required for mcp_credential secrets' }, { status: 400 });
   }
 
+  // Sanitize the raw value: trim, and strip wrapping quotes for raw-string purposes.
+  // This is the fix for pasted Claude tokens arriving as `"sk-ant-oat01-…"`.
+  const sanitizedValue = sanitizeSecretValue(String(value), purpose);
+  if (!sanitizedValue) {
+    return NextResponse.json({ error: 'value is required' }, { status: 400 });
+  }
+
+  // Validate format for Claude credential purposes so we fail loudly instead of
+  // silently storing a token that will 401 hours later.
+  const requiredPrefix = REQUIRED_PREFIXES[purpose];
+  if (requiredPrefix && !sanitizedValue.startsWith(requiredPrefix)) {
+    return NextResponse.json(
+      { error: `Token must start with ${requiredPrefix}…` },
+      { status: 400 },
+    );
+  }
+
   // Verify the requested team belongs to the caller
   const targetTeamId = teamId || auth.teamIds[0];
   if (!auth.teamIds.includes(targetTeamId)) {
@@ -74,7 +131,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const provider = getSecretsProvider();
-    const id = await provider.set(null, value, {
+    const id = await provider.set(null, sanitizedValue, {
       teamId: targetTeamId,
       // MCP credentials are team-wide (shared with all runners), so don't scope to account
       accountId: purpose === 'mcp_credential' ? (accountId ?? null) : (accountId || auth.accountId),

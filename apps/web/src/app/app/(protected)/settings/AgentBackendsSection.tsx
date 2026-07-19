@@ -15,6 +15,23 @@ interface Props {
 
 type Scope = 'team' | 'workspace' | 'all_teams';
 
+/**
+ * Trim whitespace and strip a single pair of wrapping quotes from a pasted token.
+ * Mirrors the server-side sanitizeSecretValue — pasted Claude tokens often arrive as
+ * `"sk-ant-oat01-…"`, which adds 2 chars and causes a later `401 Invalid bearer token`.
+ */
+function sanitizeToken(raw: string): string {
+  let v = raw.trim();
+  if (v.length >= 2) {
+    const first = v[0];
+    const last = v[v.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      v = v.slice(1, -1).trim();
+    }
+  }
+  return v;
+}
+
 export interface TeamTarget {
   teamId: string;
   /** A representative workspace in the team — used to authorize team-scoped writes. */
@@ -293,6 +310,10 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   async function save() {
     setBusy(true);
     setMsg(null);
+    // Trim + strip a single pair of wrapping quotes before sending. The server
+    // enforces this too, but sanitizing here keeps the UI honest for pasted tokens
+    // like `"sk-ant-oat01-…"`. See sanitizeSecretValue in api/secrets/route.ts.
+    const cleanValue = sanitizeToken(value);
     try {
       // Fan out across every team the operator manages — one team-wide row each.
       if (allTeams) {
@@ -301,7 +322,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
             fetch('/api/secrets', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ value: value.trim(), purpose, teamId: t.teamId }),
+              body: JSON.stringify({ value: cleanValue, purpose, teamId: t.teamId }),
             }).then((r) => r.ok).catch(() => false),
           ),
         );
@@ -317,7 +338,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          value: value.trim(),
+          value: cleanValue,
           purpose,
           teamId,
           ...(scope === 'workspace' && workspaceId ? { workspaceId } : {}),
