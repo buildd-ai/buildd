@@ -12,6 +12,8 @@ import type { QueryResult, CatalogEntity } from '@buildd/core/knowledge-store';
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
   query: (ns: string, params: { text: string; topK?: number }) => Promise<QueryResult[]>;
+  /** Optional — used to build the corpora availability hint in claim payloads. */
+  countNamespace?: (ns: string) => Promise<number>;
 };
 
 /**
@@ -24,6 +26,35 @@ export type KnowledgeQuerier = {
  * workspace-scoped. Best-effort — returns [] on any failure (no embeddings
  * configured, store down, empty goal) so planning never breaks.
  */
+async function buildCorporaHint(
+  workspaceId: string | null | undefined,
+  teamId: string | null | undefined,
+  ks: KnowledgeQuerier,
+): Promise<string> {
+  if (!ks.countNamespace) return '';
+  try {
+    const parts: string[] = [];
+
+    if (teamId) {
+      const memCount = await ks.countNamespace(buildNamespace(teamId, 'memory')).catch(() => 0);
+      parts.push(`memory ${memCount}`);
+    }
+
+    if (workspaceId) {
+      const codeCount = await ks.countNamespace(buildNamespace(workspaceId, 'code')).catch(() => 0);
+      parts.push(codeCount > 0 ? `code indexed (${codeCount.toLocaleString()} chunks)` : 'code not indexed');
+
+      const specCount = await ks.countNamespace(buildNamespace(workspaceId, 'spec')).catch(() => 0);
+      parts.push(specCount > 0 ? `spec ${specCount}` : 'spec not indexed');
+    }
+
+    if (parts.length === 0) return '';
+    return `knowledge: ${parts.join(' · ')} — query_knowledge before diagnosing`;
+  } catch {
+    return '';
+  }
+}
+
 export async function buildKnowledgeContext(
   query: string,
   workspaceId: string | null | undefined,
@@ -33,31 +64,42 @@ export async function buildKnowledgeContext(
   if (!query.trim()) return [];
   try {
     const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+
+    const hint = await buildCorporaHint(workspaceId, teamId, ks);
+
     const sources: Array<{ label: string; ns: string }> = [];
     if (teamId) sources.push({ label: 'Team memory', ns: buildNamespace(teamId, 'memory') });
     if (workspaceId) {
       sources.push({ label: 'Prior plans', ns: buildNamespace(workspaceId, 'plan') });
       sources.push({ label: 'Past task outcomes', ns: buildNamespace(workspaceId, 'task') });
     }
-    if (sources.length === 0) return [];
 
-    const sectioned = await Promise.all(
-      sources.map(async (s) => {
-        const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
-        if (results.length === 0) return [];
-        const lines = [`\n### ${s.label}`];
-        for (const r of results) {
-          const firstLine = r.content.split('\n').find((l) => l.trim()) ?? '';
-          const link = r.sourceUrl ? ` (${r.sourceUrl})` : '';
-          lines.push(`- ${firstLine.slice(0, 160)}${link}`);
-        }
-        return lines;
-      }),
-    );
+    const sectioned = sources.length > 0
+      ? await Promise.all(
+          sources.map(async (s) => {
+            const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
+            if (results.length === 0) return [];
+            const lines = [`\n### ${s.label}`];
+            for (const r of results) {
+              const firstLine = r.content.split('\n').find((l) => l.trim()) ?? '';
+              const link = r.sourceUrl ? ` (${r.sourceUrl})` : '';
+              lines.push(`- ${firstLine.slice(0, 160)}${link}`);
+            }
+            return lines;
+          }),
+        )
+      : [];
 
-    const parts = sectioned.flat();
-    if (parts.length === 0) return [];
-    return ['\n## Related prior work (retrieved from knowledge base)', ...parts];
+    const priorWork = sectioned.flat();
+    const output: string[] = [];
+
+    if (hint) output.push(hint);
+    if (priorWork.length > 0) {
+      output.push('\n## Related prior work (retrieved from knowledge base)');
+      output.push(...priorWork);
+    }
+
+    return output.length > 0 ? output : [];
   } catch {
     return []; // non-fatal: knowledge retrieval must never block planning
   }

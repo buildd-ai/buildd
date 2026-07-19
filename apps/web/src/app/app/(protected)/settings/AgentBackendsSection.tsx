@@ -239,12 +239,20 @@ interface SecretMeta {
   accountId: string | null;
   workspaceId: string | null;
   createdAt: string | null;
+  healthStatus?: 'healthy' | 'degraded' | 'revoked' | 'unknown';
+  lastFailureAt?: string | null;
+  lastFailureMessage?: string | null;
+  consecutiveAuthFailures?: number;
+  lastSuccessAt?: string | null;
+  lastVerifiedAt?: string | null;
+  lastVerificationError?: string | null;
 }
 
 function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -342,6 +350,26 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     }
   }
 
+  async function verify() {
+    if (!matching.length) return;
+    setVerifying(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/secrets/${matching[0].id}/verify`, { method: 'POST' });
+      const data = await res.json();
+      if (data.verified) {
+        setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
+      } else {
+        setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
+      }
+      await load();
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   const placeholder = purpose === 'oauth_token'
     ? 'sk-ant-oat01-… (output of `claude setup-token`)'
     : 'sk-ant-api03-… (Anthropic API key)';
@@ -399,9 +427,19 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       ) : matching.length > 0 ? (
         <div className="space-y-3">
           <div className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-            </span>
+            {matching[0].healthStatus === 'revoked' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-error/10 text-status-error border border-status-error/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-error" /> Revoked — re-auth required
+              </span>
+            ) : matching[0].healthStatus === 'degraded' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Degraded — auth failures detected
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
+              </span>
+            )}
             <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
           </div>
 
@@ -412,9 +450,26 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
             {matching[0].createdAt && (
               <div>Connected: {new Date(matching[0].createdAt).toLocaleString()}</div>
             )}
+            {matching[0].lastVerifiedAt && (
+              <div>
+                Last verified: {new Date(matching[0].lastVerifiedAt).toLocaleString()}
+                {matching[0].lastVerificationError
+                  ? <span className="text-status-error"> — failed: {matching[0].lastVerificationError}</span>
+                  : <span className="text-status-success"> — passed</span>}
+              </div>
+            )}
+            {(matching[0].healthStatus === 'revoked' || matching[0].healthStatus === 'degraded') && matching[0].lastFailureAt && (
+              <div className="text-status-error">
+                Last failure: {new Date(matching[0].lastFailureAt).toLocaleString()}
+                {matching[0].lastFailureMessage && ` — ${matching[0].lastFailureMessage.slice(0, 120)}`}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={verify} disabled={busy || verifying} className="text-sm font-medium text-status-info disabled:opacity-50">
+              {verifying ? 'Verifying…' : 'Verify'}
+            </button>
             {!replaceOpen && (
               <button onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }} className="text-sm font-medium text-text-secondary">
                 Replace credential

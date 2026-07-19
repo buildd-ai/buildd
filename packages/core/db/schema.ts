@@ -1072,6 +1072,14 @@ export const secrets = pgTable('secrets', {
   // smoke-tested against the real provider API, and the error string if it failed.
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
   lastVerificationError: text('last_verification_error'),
+  // Credential health — set by spawn-time auth failures and active verification.
+  // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;
+  // revoked: explicit revocation or ≥3 consecutive auth failures; unknown: never tested.
+  healthStatus: text('health_status').default('unknown').notNull().$type<'healthy' | 'degraded' | 'revoked' | 'unknown'>(),
+  lastFailureAt: timestamp('last_failure_at', { withTimezone: true }),
+  lastFailureMessage: text('last_failure_message'),
+  consecutiveAuthFailures: integer('consecutive_auth_failures').default(0).notNull(),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1213,7 +1221,7 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   /** "owner/name" — denormalized so jobs survive repo re-binding. */
   repo: text('repo').notNull(),
-  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled'>(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
   /** Merge SHA (diff jobs) or target SHA (full jobs). */
   sha: text('sha'),
   prNumber: integer('pr_number'),

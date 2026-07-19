@@ -27,6 +27,8 @@ import { eq, sql } from "drizzle-orm";
 import {
   handleBuilddAction,
   handleMemoryAction,
+  handleRecallAction,
+  handleLearnAction,
   triggerActions,
   workerActions,
   adminActions,
@@ -225,18 +227,19 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: `Buildd is a task coordination system for AI coding agents. Two tools: \`buildd\` (task actions) and \`buildd_memory\` (workspace knowledge).
+      instructions: `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`buildd_memory\` (workspace knowledge), \`recall\` (read knowledge), \`learn\` (write knowledge).
 
 **Worker workflow:**
-1. \`buildd\` action=claim_task → checkout the returned branch → do the work.
-2. Report progress at milestones (25%, 50%, 75%) via action=update_progress.
-3. When done: push commits → action=create_pr.
-4. Before completing: write a summary artifact (\`buildd\` action=create_artifact, type=summary) and save relevant memories (\`buildd_memory\` action=save).
-5. \`buildd\` action=complete_task (with summary).
+1. \`recall\` (query: task title) BEFORE starting — check for prior gotchas and patterns.
+2. \`buildd\` action=claim_task → checkout the returned branch → do the work.
+3. Report progress at milestones (25%, 50%, 75%) via action=update_progress.
+4. When done: push commits → action=create_pr.
+5. Before completing: write a summary artifact (\`buildd\` action=create_artifact, type=summary) and save relevant lessons (\`learn\`).
+6. \`buildd\` action=complete_task (with summary).
 
 **Note:** This is a remote MCP server. register_skill with filePath/repo is not supported — use content param instead.
 
-**Memory:** Use \`buildd_memory\` to search, save, update, or delete workspace observations.
+**Knowledge:** Use \`recall\` to query prior lessons before starting work. Use \`learn\` to record gotchas, patterns, and decisions for future agents.
 
 **Artifacts:** Use \`buildd\` action=create_artifact to attach deliverables (summaries, reports, data) to your task.`,
     }
@@ -294,6 +297,93 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           required: ["action"],
         },
       },
+      {
+        name: "recall",
+        description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.",
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            query: {
+              type: "string" as const,
+              description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
+            },
+            scope: {
+              type: "string" as const,
+              description: "Corpus to search. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+              enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+            },
+            type: {
+              type: "string" as const,
+              description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
+            },
+            files: {
+              type: "array" as const,
+              items: { type: "string" as const },
+              description: "Narrow results to entries touching these file paths.",
+            },
+            limit: {
+              type: "number" as const,
+              description: "Max results to return. Default: 10.",
+            },
+            id: {
+              type: "string" as const,
+              description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+            },
+          },
+        },
+      },
+      {
+        name: "learn",
+        description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            type: {
+              type: "string" as const,
+              description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
+              enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+            },
+            title: {
+              type: "string" as const,
+              description: "Short title for this lesson.",
+            },
+            content: {
+              type: "string" as const,
+              description: "The lesson content — what the next agent should know.",
+            },
+            files: {
+              type: "array" as const,
+              items: { type: "string" as const },
+              description: "File paths this lesson relates to.",
+            },
+            tags: {
+              type: "array" as const,
+              items: { type: "string" as const },
+              description: "Tags for categorisation.",
+            },
+            scope: {
+              type: "string" as const,
+              description: "Project/monorepo scope for this memory.",
+            },
+            supersedes: {
+              type: "array" as const,
+              items: { type: "string" as const },
+              description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
+            },
+          },
+          required: ["type", "title", "content"],
+        },
+      },
     ],
   }));
 
@@ -346,7 +436,43 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           teamId: memTeamId ?? undefined,
           knowledgeStore,
           embedder,
+          api,
         });
+      } else if (name === "recall" || name === "learn") {
+        // Workspace / memory client resolution shared with buildd_memory
+        const wsId = await getWorkspaceId();
+        if (!wsId && authType === 'oauth') {
+          return {
+            content: [{ type: "text" as const, text: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint." }],
+            isError: true,
+          };
+        }
+        const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
+        if (!memClient) {
+          return {
+            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            isError: true,
+          };
+        }
+        const embedder = getVoyageEmbedder();
+        const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+        const memTeamId = await resolveTeamId(wsId, accountTeamId);
+
+        const memCtx = {
+          project: repoName,
+          workerId,
+          workspaceId: wsId ?? undefined,
+          teamId: memTeamId ?? undefined,
+          knowledgeStore,
+          embedder,
+          api,
+        };
+
+        if (name === "recall") {
+          return await handleRecallAction(memClient, args as Record<string, unknown>, memCtx);
+        } else {
+          return await handleLearnAction(memClient, args as Record<string, unknown>, memCtx);
+        }
       } else {
         throw new Error(`Unknown tool: ${name}`);
       }

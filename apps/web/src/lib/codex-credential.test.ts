@@ -39,6 +39,12 @@ mock.module('@buildd/core/secrets', () => ({
   decrypt: (s: string) => s.replace(/^enc:/, ''),
 }));
 
+// Stub health side-effects so they don't interfere with codex-credential unit tests
+mock.module('./credential-health', () => ({
+  recordCredentialAuthSuccess: mock(() => Promise.resolve()),
+  recordCredentialAuthFailure: mock(() => Promise.resolve(null)),
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ __eq: true, field, value }),
   and: (...conds: any[]) => ({ __and: true, conds }),
