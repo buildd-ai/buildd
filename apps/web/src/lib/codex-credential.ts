@@ -484,64 +484,178 @@ export async function writeBackCodexTokens(
 export interface VerifyResult {
   verified: boolean;
   error: string | null;
+  /**
+   * True when the refresh grant passes but the credential is still flagged
+   * 'revoked' from a real worker run — the session check cannot detect OAuth
+   * revocation that only surfaces in-runner. The UI shows a re-auth warning
+   * instead of a green pass.
+   */
+  revoked?: boolean;
 }
 
 const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
 
 /**
- * Smoke-test the stored Codex credential against the real OpenAI API. Uses the
- * decrypted access_token as a Bearer token — the same path the Codex SDK takes
- * at runtime. Persists lastVerifiedAt and lastVerificationError so the UI can
- * show a durable "Verified" or "Failed" state (distinct from refresh, which
- * rotates the token). Never logs token values.
+ * Smoke-test the stored Codex credential. Behavior differs by credential type:
+ *
+ * - **API key** (`api_key` blob): calls GET /v1/models with the key as Bearer.
+ *   This endpoint is API-key-only and reliably confirms/rejects the key.
+ *
+ * - **OAuth** (`access_token`+`refresh_token` blob): exercises the OpenAI
+ *   refresh grant (POST auth.openai.com/oauth/token). GET /v1/models returns
+ *   403 for OAuth Bearer tokens regardless of validity, so it cannot detect
+ *   revocation. The refresh grant is the actual path that fails when the
+ *   ChatGPT session is revoked ("logged out or signed in to another account"),
+ *   making it the definitive validity check. On success the rotated tokens are
+ *   written back in the same DB update as the verification stamp.
+ *
+ * Persists lastVerifiedAt and lastVerificationError for durable UI state.
+ * Never logs token values.
  */
 export async function verifyCodexCredential(secretId: string): Promise<VerifyResult> {
   const row = await db.query.secrets.findFirst({
     where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
-    columns: { encryptedValue: true },
+    columns: { encryptedValue: true, healthStatus: true },
   });
 
   if (!row) return { verified: false, error: 'Credential not found' };
 
   const blob = decodeBlob(row.encryptedValue);
+  const isApiKey = typeof blob.api_key === 'string' && blob.api_key.length > 0;
+
+  // ── API key path ─────────────────────────────────────────────────────────────
+  // GET /v1/models is the correct check for API keys; response is authoritative.
+  if (isApiKey) {
+    let verified: boolean;
+    let error: string | null = null;
+
+    try {
+      const res = await fetch(OPENAI_MODELS_URL, {
+        headers: { Authorization: `Bearer ${blob.api_key}` },
+      });
+      if (res.ok) {
+        verified = true;
+      } else {
+        verified = false;
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json() as Record<string, unknown>;
+          const msg = (body.error as Record<string, unknown> | undefined)?.message;
+          if (typeof msg === 'string') detail += `: ${msg}`;
+        } catch {
+          // ignore json parse error
+        }
+        error = detail;
+      }
+    } catch (err) {
+      verified = false;
+      error = err instanceof Error ? err.message : 'Network error';
+    }
+
+    await db
+      .update(secrets)
+      .set({ lastVerifiedAt: sql`NOW()`, lastVerificationError: error, updatedAt: sql`NOW()` })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+
+    if (verified) {
+      await recordCredentialAuthSuccess(secretId);
+    } else if (error) {
+      await recordCredentialAuthFailure(secretId, error);
+    }
+
+    return { verified, error };
+  }
+
+  // ── OAuth path ───────────────────────────────────────────────────────────────
+  // GET /v1/models is API-key-only and returns 403 for OAuth Bearer tokens
+  // regardless of whether the credential is valid — it cannot confirm a good
+  // OAuth cred or detect a revoked one. Use the refresh grant instead: this is
+  // what the Codex CLI exercises and what actually fails on revocation.
+  if (!blob.refresh_token) {
+    return { verified: false, error: 'No refresh token available' };
+  }
 
   let verified: boolean;
   let error: string | null = null;
 
   try {
-    const res = await fetch(OPENAI_MODELS_URL, {
-      headers: { Authorization: `Bearer ${blob.access_token}` },
+    const res = await fetch(OPENAI_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: blob.refresh_token,
+        client_id: codexOAuthClientId(),
+      }).toString(),
     });
 
     if (res.ok) {
+      const tokens = await res.json() as Record<string, unknown>;
+      const newAccessToken = tokens.access_token as string;
+      // CRITICAL: always persist the rotated refresh token (OpenAI rotates on every call)
+      const newRefreshToken = typeof tokens.refresh_token === 'string'
+        ? tokens.refresh_token
+        : blob.refresh_token;
+      const expiresIn = typeof tokens.expires_in === 'number' ? tokens.expires_in : null;
+      const tokenExpiresAt = expiresIn != null ? new Date(Date.now() + expiresIn * 1000) : null;
+
+      // Merge token write-back + verification stamp into one DB update
+      await db
+        .update(secrets)
+        .set({
+          encryptedValue: encodeBlob({
+            access_token: newAccessToken,
+            refresh_token: newRefreshToken,
+            account_id: blob.account_id,
+          }),
+          ...(tokenExpiresAt ? { tokenExpiresAt } : {}),
+          lastRefreshedAt: sql`NOW()`,
+          lastVerifiedAt: sql`NOW()`,
+          lastVerificationError: null,
+          updatedAt: sql`NOW()`,
+        })
+        .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+
       verified = true;
     } else {
       verified = false;
       let detail = `HTTP ${res.status}`;
       try {
         const body = await res.json() as Record<string, unknown>;
-        const msg = (body.error as Record<string, unknown> | undefined)?.message;
+        const msg = (body.error as Record<string, unknown> | undefined)?.message
+          ?? (typeof body.error_description === 'string' ? body.error_description : undefined);
         if (typeof msg === 'string') detail += `: ${msg}`;
       } catch {
         // ignore json parse error
       }
       error = detail;
+
+      await db
+        .update(secrets)
+        .set({ lastVerifiedAt: sql`NOW()`, lastVerificationError: error, updatedAt: sql`NOW()` })
+        .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
     }
   } catch (err) {
     verified = false;
     error = err instanceof Error ? err.message : 'Network error';
+
+    await db
+      .update(secrets)
+      .set({ lastVerifiedAt: sql`NOW()`, lastVerificationError: error, updatedAt: sql`NOW()` })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
   }
 
-  await db
-    .update(secrets)
-    .set({
-      lastVerifiedAt: sql`NOW()`,
-      lastVerificationError: error,
-      updatedAt: sql`NOW()`,
-    })
-    .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
-
+  // Revoked-aware health update (mirrors PR #1302's Claude OAuth fix).
+  // A passing refresh-grant verify must NOT launder a worker-observed 'revoked'
+  // credential back to 'healthy'. Session revocation surfaces only on the
+  // runner's in-session path — only a fresh credential store resets health.
+  // API keys have no session/refresh semantics so their verify IS authoritative
+  // (handled above in the isApiKey branch).
+  const revoked = row.healthStatus === 'revoked';
   if (verified) {
+    if (revoked) {
+      return { verified: true, error: null, revoked: true };
+    }
     await recordCredentialAuthSuccess(secretId);
   } else if (error) {
     await recordCredentialAuthFailure(secretId, error);
