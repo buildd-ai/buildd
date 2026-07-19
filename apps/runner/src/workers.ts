@@ -1755,7 +1755,11 @@ export class WorkerManager {
           }
           if (!gate.ok) {
             this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
-            throw new Error(gate.reason ?? 'Provision failed');
+            // Attach the stable failure classification so the outer catch can
+            // surface it as structured resultMeta (server/organizer act on the code).
+            const provErr = new Error(gate.reason ?? 'Provision failed') as Error & { provisionFailure?: unknown };
+            provErr.provisionFailure = gate.failure;
+            throw provErr;
           }
           this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
         }
@@ -2524,10 +2528,16 @@ If something is missing or incomplete, describe what and fix it now.`;
         // the task over (Codex) / holds it until reset instead of hard-failing.
         const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
           errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
+        // A provision-gate block carries a stable failure classification — surface
+        // it as structured resultMeta so the server/organizer can act on the code
+        // (escalate a missing secret vs. retry a flaky readiness) rather than
+        // regex-matching the free-text error.
+        const provisionFailure = (error as { provisionFailure?: unknown })?.provisionFailure;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
+          ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
