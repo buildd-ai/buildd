@@ -1,3 +1,10 @@
+---
+title: MCP Connectors & Roles
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # MCP Connectors & Roles (unified model)
 
 > **Status: approved — supersedes the two-system split.**

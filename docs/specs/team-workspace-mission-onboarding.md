@@ -1,3 +1,10 @@
+---
+title: Team / Workspace / Mission Onboarding
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Team → Workspace → Mission Onboarding
 
 Capabilities the dashboard must fulfill for a user to take a freshly-created

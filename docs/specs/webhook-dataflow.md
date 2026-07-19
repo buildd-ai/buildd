@@ -1,3 +1,10 @@
+---
+title: Webhook Dataflow
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Webhook & Realtime Dataflow
 
 **Capability statement**: The buildd coordination layer MUST emit Pusher events

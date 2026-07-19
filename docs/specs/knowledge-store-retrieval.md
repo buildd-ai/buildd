@@ -1,3 +1,10 @@
+---
+title: Knowledge Store Retrieval
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Knowledge Store & Retrieval
 
 **Capability statement**: The buildd knowledge store MUST ingest content from

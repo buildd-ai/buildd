@@ -1,3 +1,10 @@
+---
+title: Auth & OAuth Boundaries
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Auth & OAuth Boundaries
 
 **Capability statement**: The buildd API MUST authenticate every request using

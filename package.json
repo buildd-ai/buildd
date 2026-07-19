@@ -28,7 +28,10 @@
     "seed:knowledge-digest": "bun run scripts/seed/knowledge-digest-schedule.ts",
     "seed:reset": "bun run scripts/seed/reset.ts",
     "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts",
-    "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts"
+    "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
+    "specs:check": "bun run scripts/check-specs.ts",
+    "specs:lint": "bun run scripts/check-specs.ts --check",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "next": "^16.0.0",

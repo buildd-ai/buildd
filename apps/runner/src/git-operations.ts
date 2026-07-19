@@ -141,6 +141,20 @@ export async function setupWorktree(
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
     execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
 
+    // Register the repo's shared git hooks in this worktree. The package.json
+    // `prepare` script also sets this during `bun install`, but that install is
+    // best-effort (see installWorkspaceDeps) — doing it explicitly here guarantees
+    // commit-time gates (e.g. spec lint) fire even if install never runs. Guarded
+    // on .githooks existing so other repos the runner clones are unaffected.
+    if (existsSync(join(worktreePath, '.githooks'))) {
+      try {
+        execSync('git config core.hooksPath .githooks', { ...execOpts, cwd: worktreePath });
+        console.log(`[Worker ${workerId}] Registered .githooks (core.hooksPath)`);
+      } catch (err) {
+        console.warn(`[Worker ${workerId}] Failed to register .githooks:`, err instanceof Error ? err.message : err);
+      }
+    }
+
     // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
     // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)
     // rather than the workspace root. A fresh worktree has no node_modules at all, so

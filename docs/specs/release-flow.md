@@ -1,3 +1,10 @@
+---
+title: Release Flow
+status: active
+owner: max
+last_verified: 2026-07-18
+supersedes: []
+---
 # Release Flow
 
 **Capability statement**: The buildd release system MUST resolve a workspace's
