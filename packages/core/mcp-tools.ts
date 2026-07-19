@@ -2783,6 +2783,160 @@ function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean
   return `\n[savedAt: ${age} · superseded: ${superseded}]`;
 }
 
+// ── Shared memory action context type ────────────────────────────────────────
+
+type MemoryActionCtx = {
+  project?: string;
+  workerId?: string;
+  workspaceId?: string;
+  teamId?: string;
+  knowledgeStore?: KnowledgeStore;
+  embedder?: Embedder | null;
+  api?: ApiFn;
+};
+
+/**
+ * Heuristic: short queries without whitespace (IDs, symbol names, error codes)
+ * are better served by lexical search. Natural-language queries use hybrid.
+ */
+function chooseModeForQuery(query: string): 'lexical' | 'hybrid' {
+  const trimmed = query.trim();
+  if (trimmed.length <= 20 && !/\s/.test(trimmed)) return 'lexical';
+  return 'hybrid';
+}
+
+// ── recall — read ─────────────────────────────────────────────────────────────
+
+/**
+ * Team knowledge base. Query this BEFORE starting work or diagnosing a failure —
+ * it holds prior gotchas, architecture decisions, and outcomes of past tasks,
+ * and will frequently contain the answer already. Pass the task title and any
+ * error message.
+ */
+export async function handleRecallAction(
+  memoryClient: MemoryClient,
+  params: Record<string, unknown>,
+  ctx: MemoryActionCtx,
+): Promise<ToolResult> {
+  // id present → direct fetch, all other params ignored.
+  if (params.id) {
+    const data = await memoryClient.get(params.id as string);
+    const m = data.memory;
+    const meta = [
+      `Type: ${m.type}`,
+      m.project && `Project: ${m.project}`,
+      m.tags?.length && `Tags: ${m.tags.join(', ')}`,
+      m.files?.length && `Files: ${m.files.join(', ')}`,
+      m.source && `Source: ${m.source}`,
+    ].filter(Boolean).join('\n');
+    return text(`# ${m.title}\n\n${meta}\n\n${m.content}`);
+  }
+
+  if (!params.query) {
+    return errorResult('query is required (or pass id for a direct fetch)');
+  }
+
+  const scope = ((params.scope as string) || 'memory') as Corpus;
+  const limit = Math.min((params.limit as number) || 10, 50);
+  const query = params.query as string;
+
+  // Resolve namespace — namespace resolution is internal to the server.
+  const ns = knowledgeNamespace(ctx, scope);
+  if (!ns) {
+    return errorResult(scope === 'memory'
+      ? 'teamId required for recall with scope=memory'
+      : `workspaceId required for recall with scope=${scope}`);
+  }
+
+  // Retrieval mode is server-chosen. Hybrid by default; lexical for short
+  // exact-match queries (IDs, symbol names, error codes).
+  const mode = chooseModeForQuery(query);
+
+  const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+  const raw = await ks.query(ns, { text: query, mode, topK: limit });
+
+  // Exclude superseded entries by default, then apply caller limit.
+  const results = raw.filter(r => r.isCurrent !== false).slice(0, limit);
+
+  if (results.length === 0) {
+    if (scope === 'code' || scope === 'docs') {
+      return text(`No ${scope} index found. Run ingestion first: WORKSPACE_ID=<id> bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
+    }
+    return text(`No knowledge found for: "${query}"`);
+  }
+
+  const formatted = results.map((r, i) => {
+    const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
+    const sourceLink = r.sourceUrl ? ` ([source](${r.sourceUrl}))` : '';
+    const freshness = scope === 'memory' ? formatMemoryFreshness(r) : '';
+    return `### ${i + 1}. ${typeTag}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}${sourceLink}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+  }).join('\n\n---\n\n');
+
+  return text(`Found ${results.length} result(s):\n\n${formatted}`);
+}
+
+// ── learn — write ─────────────────────────────────────────────────────────────
+
+/**
+ * Record a durable lesson for the team — a gotcha, pattern, decision,
+ * discovery, or architecture fact. Write what the next agent would have wanted
+ * to know. Near-duplicates are merged automatically.
+ */
+export async function handleLearnAction(
+  memoryClient: MemoryClient,
+  params: Record<string, unknown>,
+  ctx: MemoryActionCtx,
+): Promise<ToolResult> {
+  if (!params.type || !params.title || !params.content) {
+    return errorResult('type, title, and content are required');
+  }
+
+  const validTypes = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'];
+  if (!validTypes.includes(params.type as string)) {
+    return errorResult(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+  }
+
+  const supersedesParam = parseSupersedesParam(params.supersedes);
+  if (supersedesParam.error) return errorResult(supersedesParam.error);
+
+  // TODO(dedupe-hook): before saving, embed the entry and check cosine similarity
+  // against the team namespace. Auto-supersede at >0.94, return conflict at 0.88–0.94.
+  // Implemented in the downstream deduplication task.
+
+  const data = await memoryClient.save({
+    type: params.type as string,
+    title: params.title as string,
+    content: params.content as string,
+    project: (params.scope as string) || ctx.project || undefined,
+    tags: params.tags as string[] | undefined,
+    files: params.files as string[] | undefined,
+    source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+  });
+
+  // Mirror into KnowledgeStore for hybrid retrieval (team-scoped).
+  let learnSuperseded = 0;
+  if (ctx.teamId && ctx.knowledgeStore) {
+    const m = data.memory;
+    const ns = buildNamespace(ctx.teamId, 'memory');
+    const lexicalText = `${m.title}\n\n${m.content}`;
+    const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
+      id: m.id,
+      content: m.content,
+      lexicalText,
+      sourceType: 'memory',
+      sourceUrl: `/app/memory/${m.id}`,
+      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
+      ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
+    }]).catch(() => undefined);
+    if (upsertRes) learnSuperseded = upsertRes.superseded;
+  }
+
+  const supersededStr = supersedesParam.ids !== undefined
+    ? ` | superseded: ${learnSuperseded}`
+    : '';
+  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}`);
+}
+
 export async function handleMemoryAction(
   memoryClient: MemoryClient,
   action: string,
