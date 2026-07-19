@@ -131,6 +131,24 @@ describe('createMcpFailureHook — assertion re-auth (§F.2)', () => {
     expect(worker.assertionTokenCache!.get('cue')?.accessToken).toBe('refreshed-tok');
   });
 
+  test('401 on assertion connector → exchange fails → sets assertionReAuthFailed flag', async () => {
+    exchangeThrows = true;
+    const worker = makeWorker();
+    const mcpServersRef: Record<string, any> = {
+      cue: { type: 'http', url: 'https://mcp.cue.example.com', headers: { Authorization: 'Bearer old-tok' } },
+    };
+
+    const factory = makeFactory();
+    const hook = factory.createMcpFailureHook(worker, mcpServersRef, 'bld_key', mockExchange as any);
+    await hook(makeFailureInput('mcp__cue__search', 'HTTP 401 Unauthorized') as any);
+
+    // assertionReAuthFailed must be set so handleMessage fires the circuit breaker
+    expect(worker.assertionReAuthFailed).toBeDefined();
+    expect(worker.assertionReAuthFailed!.has('cue')).toBe(true);
+    // Old token remains unchanged
+    expect(mcpServersRef.cue.headers).toEqual({ Authorization: 'Bearer old-tok' });
+  });
+
   test('401 on assertion connector → exchange fails → logs error, does not throw', async () => {
     exchangeThrows = true;
     const worker = makeWorker();

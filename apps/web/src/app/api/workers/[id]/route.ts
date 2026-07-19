@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -116,6 +116,31 @@ export async function PATCH(
     }
     // Reactivation: clear completion timestamp so worker can run again
   }
+
+  // connector_auth_expired: mark the MCP connector secret as expired and broadcast to the workspace.
+  // For assertion-mode connectors this fires only when re-exchange is exhausted (runner sets the flag).
+  // For oauth/static connectors it fires on the first 401.
+  if (body.event === 'connector_auth_expired' && typeof body.connectorId === 'string') {
+    const connectorRow = await db.query.connectors.findFirst({
+      where: eq(connectors.id, body.connectorId),
+      columns: { id: true, name: true },
+    });
+    if (connectorRow) {
+      await db
+        .update(secrets)
+        .set({ tokenExpiresAt: sql`NOW()`, lastVerificationError: 'mid_task_401', updatedAt: sql`NOW()` })
+        .where(and(
+          eq(secrets.label, body.connectorId),
+          eq(secrets.purpose, 'mcp_connector_credential'),
+        ));
+      void triggerEvent(
+        channels.workspace(worker.workspaceId),
+        events.WORKER_CONNECTOR_AUTH_EXPIRED,
+        { workerId: id, connectorId: body.connectorId, connectorName: connectorRow.name },
+      );
+    }
+  }
+
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,

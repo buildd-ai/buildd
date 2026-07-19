@@ -5,6 +5,8 @@ import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
+import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
+import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, getUserWorkspaceIds } from '@/lib/team-access';
@@ -49,24 +51,28 @@ export default async function ProtectedLayout({
     <AuthGuard>
       <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
-        <div className="flex h-screen overflow-hidden">
-          {/* Desktop: collapsed icon sidebar */}
-          <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} />
+        <ConnectorReconnectProvider workspaceIds={workspaceIds}>
+          <div className="flex h-screen overflow-hidden">
+            {/* Desktop: collapsed icon sidebar */}
+            <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} />
 
-          {/* Main content area */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            {/* Global notification banner for tasks needing input */}
-            <NeedsInputBanner />
-            {/* Mobile page header for non-tasks pages */}
-            <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} />
-            <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
-              {children}
-            </main>
+            {/* Main content area */}
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+              {/* Global notification banner for tasks needing input */}
+              <NeedsInputBanner />
+              {/* Banner shown when a connector's auth expires mid-task */}
+              <ConnectorReconnectBanner />
+              {/* Mobile page header for non-tasks pages */}
+              <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} />
+              <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
+                {children}
+              </main>
+            </div>
           </div>
-        </div>
 
-        {/* Mobile: bottom tab nav */}
-        <MissionsBottomNav />
+          {/* Mobile: bottom tab nav */}
+          <MissionsBottomNav />
+        </ConnectorReconnectProvider>
       </NeedsInputProvider>
       </EscalationProvider>
     </AuthGuard>
