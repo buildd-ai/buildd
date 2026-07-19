@@ -718,6 +718,24 @@ export class PgVectorStore implements KnowledgeStore {
     `);
   }
 
+  async listSourcePaths(namespace: string, prefix?: string): Promise<string[]> {
+    const db = await getDb();
+    // starts_with (not LIKE) so path segments with `_`/`%` aren't treated as
+    // LIKE metacharacters. Matches the prefix dir itself or anything under it.
+    const prefixClause = prefix
+      ? sql`AND (source_path = ${prefix} OR starts_with(source_path, ${prefix + '/'}))`
+      : sql``;
+    const res = await db.execute(sql`
+      SELECT DISTINCT source_path FROM knowledge_chunks
+      WHERE namespace = ${namespace}
+        AND source_path IS NOT NULL
+        ${prefixClause}
+    `);
+    return (res.rows as Array<{ source_path: string | null }>)
+      .map(r => r.source_path)
+      .filter((p): p is string => !!p);
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private async _fetchBySourceIds(

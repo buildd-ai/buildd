@@ -168,6 +168,13 @@ export interface KnowledgeStore {
    */
   touchBySource?(namespace: string, sourcePaths: string[]): Promise<void>;
   /**
+   * List the distinct source paths present in a namespace, optionally scoped to
+   * a directory prefix (matches `prefix` itself or anything under `prefix/`).
+   * Used by a full directory walk to find orphaned chunks whose source file no
+   * longer exists on disk. Optional; when absent, orphan pruning is disabled.
+   */
+  listSourcePaths?(namespace: string, prefix?: string): Promise<string[]>;
+  /**
    * Check for near-duplicates before writing. Embeds `content` and returns the
    * top-K current chunks ordered by cosine similarity descending. Returns an
    * empty array when the store has no embedder or on any error.

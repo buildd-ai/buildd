@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { fileToChunks, ingestFiles } from '../knowledge-store/ingest';
+import { fileToChunks, ingestFiles, pruneOrphans } from '../knowledge-store/ingest';
 import { chunkCode } from '../knowledge-store/chunker';
 import { __setAstGrepLoaderForTests } from '../knowledge-store/symbol-extractor';
 import type { KnowledgeStore, UpsertChunk, QueryResult } from '../knowledge-store/types';
@@ -46,6 +46,15 @@ function makeRecordingStore() {
     },
     async touchBySource(namespace, sourcePaths) {
       touchedSources.push({ namespace, sourcePaths });
+    },
+    async listSourcePaths(namespace, prefix) {
+      const paths = new Set<string>();
+      for (const c of chunks.values()) {
+        if (c.namespace !== namespace || !c.sourcePath) continue;
+        if (prefix && !(c.sourcePath === prefix || c.sourcePath.startsWith(prefix + '/'))) continue;
+        paths.add(c.sourcePath);
+      }
+      return [...paths];
     },
   };
   return { store, chunks, deletedSources, touchedSources };
@@ -238,5 +247,64 @@ describe('ingestFiles', () => {
     const changed = await ingestFiles(store, 'ws-1', 'code', [{ path: 'x.ts', content: 'const x = 2;' }]);
     expect(changed.skippedUnchanged).toBe(0);
     expect(changed.chunks).toBe(1);
+  });
+});
+
+// ── pruneOrphans ──────────────────────────────────────────────────────────────
+
+describe('pruneOrphans', () => {
+  it('deletes chunks for files no longer in the seen set', async () => {
+    const { store, chunks, deletedSources } = makeRecordingStore();
+    await ingestFiles(store, 'ws-1', 'code', [
+      { path: 'a.ts', content: 'const a = 1;' },
+      { path: 'b.ts', content: 'const b = 2;' },
+    ]);
+
+    // Second walk found only a.ts — b.ts was deleted on disk.
+    const orphans = await pruneOrphans(store, 'ws-1', 'code', '', new Set(['a.ts']));
+
+    expect(orphans).toEqual(['b.ts']);
+    expect(deletedSources.some(d => d.namespace === 'ws-1:code' && d.sourcePath === 'b.ts')).toBe(true);
+    expect([...chunks.values()].some(c => c.sourcePath === 'b.ts')).toBe(false);
+    expect([...chunks.values()].some(c => c.sourcePath === 'a.ts')).toBe(true);
+  });
+
+  it('scopes pruning to the prefix — a walk of one dir never prunes another', async () => {
+    const { store, chunks } = makeRecordingStore();
+    // Same namespace populated by two separate directory walks (like the CI
+    // code corpus over packages/ then apps/).
+    await ingestFiles(store, 'ws-1', 'code', [
+      { path: 'packages/core/x.ts', content: 'const x = 1;' },
+      { path: 'apps/web/y.ts', content: 'const y = 2;' },
+    ]);
+
+    // Walk of apps/ finds nothing (all apps files deleted). Must NOT touch packages/.
+    const orphans = await pruneOrphans(store, 'ws-1', 'code', 'apps', new Set());
+
+    expect(orphans).toEqual(['apps/web/y.ts']);
+    expect([...chunks.values()].some(c => c.sourcePath === 'packages/core/x.ts')).toBe(true);
+    expect([...chunks.values()].some(c => c.sourcePath === 'apps/web/y.ts')).toBe(false);
+  });
+
+  it('prunes nothing when every stored file is still seen', async () => {
+    const { store, deletedSources } = makeRecordingStore();
+    await ingestFiles(store, 'ws-1', 'code', [{ path: 'apps/keep.ts', content: 'const k = 1;' }]);
+    const deletesBefore = deletedSources.length;
+
+    const orphans = await pruneOrphans(store, 'ws-1', 'code', 'apps', new Set(['apps/keep.ts']));
+
+    expect(orphans).toEqual([]);
+    expect(deletedSources.length).toBe(deletesBefore);
+  });
+
+  it('is a no-op when the store lacks listSourcePaths', async () => {
+    const minimal: KnowledgeStore = {
+      async upsert() {},
+      async query() { return []; },
+      async delete() {},
+      async listNamespaces() { return []; },
+    };
+    const orphans = await pruneOrphans(minimal, 'ws-1', 'code', 'apps', new Set());
+    expect(orphans).toEqual([]);
   });
 });

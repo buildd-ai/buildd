@@ -203,3 +203,34 @@ export async function ingestFiles(
 
   return { files: files.length, chunks: chunkCount, skippedUnchanged };
 }
+
+/**
+ * Delete chunks for source files that no longer exist on disk. Call after a
+ * full walk of `prefix`: `seenPaths` is every repo-relative path the walk
+ * found (and handed to ingestFiles) under that prefix. Any stored chunk under
+ * the same prefix whose path isn't in `seenPaths` is an orphan — its file was
+ * deleted, renamed, or filtered out — and gets removed.
+ *
+ * Scoping to `prefix` is what makes this safe when several walks populate the
+ * SAME namespace from different roots (the CI ingest walks `packages/` and
+ * `apps/` separately into `ws:code`): pruning `apps/` orphans never touches
+ * `packages/` chunks. Returns the pruned paths. No-op when the store lacks
+ * listSourcePaths.
+ */
+export async function pruneOrphans(
+  store: KnowledgeStore,
+  workspaceId: string,
+  corpus: Corpus,
+  prefix: string,
+  seenPaths: Iterable<string>,
+): Promise<string[]> {
+  if (!store.listSourcePaths) return [];
+  const namespace = buildNamespace(workspaceId, corpus);
+  const seen = seenPaths instanceof Set ? seenPaths : new Set(seenPaths);
+  const stored = await store.listSourcePaths(namespace, prefix);
+  const orphans = stored.filter(p => !seen.has(p));
+  for (const p of orphans) {
+    await store.deleteBySource?.(namespace, { sourcePath: p });
+  }
+  return orphans;
+}
