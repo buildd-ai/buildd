@@ -81,6 +81,7 @@ async function ingestCorpus(
 ): Promise<void> {
   let done = 0;
   let chunks = 0;
+  let skipped = 0;
   for (let i = 0; i < files.length; i += BATCH) {
     const batch = files.slice(i, i + BATCH);
     const sources: SourceFile[] = [];
@@ -97,9 +98,14 @@ async function ingestCorpus(
     const res = await ingestFiles(store, workspaceId, corpus, sources);
     done += res.files;
     chunks += res.chunks;
-    console.log(`[ingest:${corpus}] ${done}/${files.length} files, ${chunks} chunks`);
+    skipped += res.skippedUnchanged;
+    console.log(
+      `[ingest:${corpus}] ${done}/${files.length} files, ${chunks} chunks, ${skipped} unchanged`,
+    );
   }
-  console.log(`[ingest:${corpus}] done — ${files.length} files -> ${chunks} chunks`);
+  console.log(
+    `[ingest:${corpus}] done — ${files.length} files -> ${chunks} chunks (${skipped} unchanged, skipped)`,
+  );
 }
 
 async function main() {

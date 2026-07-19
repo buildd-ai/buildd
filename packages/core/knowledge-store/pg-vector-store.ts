@@ -678,6 +678,46 @@ export class PgVectorStore implements KnowledgeStore {
     return (res.rows as Array<{ namespace: string }>).map(r => r.namespace);
   }
 
+  /**
+   * Return the stored file_hash per source path, but ONLY for paths whose chunks
+   * all agree on a single non-null hash. A path with mixed hashes (should never
+   * happen — deleteBySource clears before re-upsert) is omitted so the caller
+   * re-ingests it rather than skipping on stale data.
+   */
+  async getFileHashes(namespace: string, sourcePaths: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (sourcePaths.length === 0) return out;
+    const db = await getDb();
+    const inList = sql.join(sourcePaths.map(p => sql`${p}`), sql`, `);
+    const res = await db.execute(sql`
+      SELECT source_path, MIN(file_hash) AS file_hash
+      FROM knowledge_chunks
+      WHERE namespace = ${namespace}
+        AND source_path IN (${inList})
+        AND file_hash IS NOT NULL
+        AND is_current = true
+      GROUP BY source_path
+      HAVING COUNT(DISTINCT file_hash) = 1
+    `);
+    for (const row of res.rows as Array<{ source_path: string | null; file_hash: string | null }>) {
+      if (row.source_path && row.file_hash) out.set(row.source_path, row.file_hash);
+    }
+    return out;
+  }
+
+  async touchBySource(namespace: string, sourcePaths: string[]): Promise<void> {
+    if (sourcePaths.length === 0) return;
+    const db = await getDb();
+    const inList = sql.join(sourcePaths.map(p => sql`${p}`), sql`, `);
+    await db.execute(sql`
+      UPDATE knowledge_chunks
+      SET updated_at = NOW()
+      WHERE namespace = ${namespace}
+        AND source_path IN (${inList})
+        AND is_current = true
+    `);
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private async _fetchBySourceIds(

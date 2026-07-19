@@ -151,6 +151,23 @@ export interface KnowledgeStore {
     selector: { sourcePath?: string; sourceType?: string },
   ): Promise<void>;
   /**
+   * Return the stored `file_hash` for each given source path (only paths that
+   * have a single consistent hash across their chunks are included). Lets
+   * file-based ingestion skip re-chunking + re-embedding unchanged files.
+   * Optional; when absent, callers must process every file.
+   */
+  getFileHashes?(
+    namespace: string,
+    sourcePaths: string[],
+  ): Promise<Map<string, string>>;
+  /**
+   * Bump `updated_at` on the current chunks for the given source paths without
+   * re-embedding. Called for hash-skipped (unchanged) files so a later
+   * full-scope sweep (which prunes chunks older than the job start) doesn't
+   * treat a still-valid file as stale. Optional; no-op when unsupported.
+   */
+  touchBySource?(namespace: string, sourcePaths: string[]): Promise<void>;
+  /**
    * Check for near-duplicates before writing. Embeds `content` and returns the
    * top-K current chunks ordered by cosine similarity descending. Returns an
    * empty array when the store has no embedder or on any error.

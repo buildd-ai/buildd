@@ -13,6 +13,7 @@ afterEach(() => {
 function makeRecordingStore() {
   const chunks = new Map<string, UpsertChunk & { namespace: string }>();
   const deletedSources: Array<{ namespace: string; sourcePath?: string }> = [];
+  const touchedSources: Array<{ namespace: string; sourcePaths: string[] }> = [];
   const store: KnowledgeStore = {
     async upsert(namespace, cs) {
       for (const c of cs) chunks.set(`${namespace}:${c.id}`, { ...c, namespace });
@@ -32,8 +33,22 @@ function makeRecordingStore() {
     async listNamespaces() {
       return [];
     },
+    async getFileHashes(namespace, sourcePaths) {
+      const wanted = new Set(sourcePaths);
+      const byPath = new Map<string, Set<string>>();
+      for (const c of chunks.values()) {
+        if (c.namespace !== namespace || !c.sourcePath || !wanted.has(c.sourcePath) || !c.fileHash) continue;
+        (byPath.get(c.sourcePath) ?? byPath.set(c.sourcePath, new Set()).get(c.sourcePath)!).add(c.fileHash);
+      }
+      const out = new Map<string, string>();
+      for (const [p, set] of byPath) if (set.size === 1) out.set(p, [...set][0]);
+      return out;
+    },
+    async touchBySource(namespace, sourcePaths) {
+      touchedSources.push({ namespace, sourcePaths });
+    },
   };
-  return { store, chunks, deletedSources };
+  return { store, chunks, deletedSources, touchedSources };
 }
 
 // ── fileToChunks ─────────────────────────────────────────────────────────────
@@ -195,5 +210,33 @@ describe('ingestFiles', () => {
     const result = await ingestFiles(store, 'ws-1', 'docs', [{ path: 'empty.md', content: '   ' }]);
     expect(result.files).toBe(1);
     expect(result.chunks).toBe(0);
+  });
+
+  it('skips re-ingesting an unchanged file (no delete, no upsert, but touches it)', async () => {
+    const { store, chunks, deletedSources, touchedSources } = makeRecordingStore();
+    const file = { path: 'stable.ts', content: 'const stable = 42;' };
+
+    const first = await ingestFiles(store, 'ws-1', 'code', [{ ...file }]);
+    expect(first.chunks).toBe(1);
+    expect(first.skippedUnchanged).toBe(0);
+    const chunksAfterFirst = chunks.size;
+    const deletesAfterFirst = deletedSources.length;
+
+    // Same content → hash matches → fully skipped.
+    const second = await ingestFiles(store, 'ws-1', 'code', [{ ...file }]);
+    expect(second.skippedUnchanged).toBe(1);
+    expect(second.chunks).toBe(0);
+    expect(chunks.size).toBe(chunksAfterFirst); // nothing re-written
+    expect(deletedSources.length).toBe(deletesAfterFirst); // deleteBySource NOT called
+    // But the skipped file is touched so a full-scope sweep won't prune it.
+    expect(touchedSources).toEqual([{ namespace: 'ws-1:code', sourcePaths: ['stable.ts'] }]);
+  });
+
+  it('re-ingests when a file changes (hash differs)', async () => {
+    const { store } = makeRecordingStore();
+    await ingestFiles(store, 'ws-1', 'code', [{ path: 'x.ts', content: 'const x = 1;' }]);
+    const changed = await ingestFiles(store, 'ws-1', 'code', [{ path: 'x.ts', content: 'const x = 2;' }]);
+    expect(changed.skippedUnchanged).toBe(0);
+    expect(changed.chunks).toBe(1);
   });
 });
