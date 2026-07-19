@@ -27,6 +27,9 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
+import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { secrets as secretsTable } from '@buildd/core/db/schema';
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -931,6 +934,61 @@ export async function PATCH(
               });
             }
           }
+        }
+      });
+
+      // Credential health tracking: update health state on auth failure or success.
+      await runStep('credential-health', async () => {
+        const taskForHealth = await db.query.tasks.findFirst({
+          where: eq(tasks.id, taskId),
+          columns: { backend: true, workspaceId: true },
+          with: { workspace: { columns: { teamId: true } } },
+        });
+        const teamId = (taskForHealth?.workspace as { teamId?: string } | undefined)?.teamId;
+        if (!teamId) return;
+
+        const backend = (taskForHealth as any)?.backend as string | undefined;
+        const workspaceId = taskForHealth?.workspaceId ?? null;
+
+        if (status === 'failed' && error) {
+          const severity = classifyAuthErrorSeverity(error);
+          if (severity !== 'none') {
+            let secretId: string | null = null;
+            if (!backend || backend === 'claude') {
+              secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+            } else if (backend === 'codex') {
+              const codexRow = await db.query.secrets.findFirst({
+                where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+                columns: { id: true },
+              });
+              secretId = codexRow?.id ?? null;
+            }
+
+            if (secretId) {
+              const result = await recordCredentialAuthFailure(secretId, error);
+              if (result?.becameRevoked) {
+                void notifyTeam(teamId, 'credentialExpired', {
+                  title: '🔑 Credential revoked — action required',
+                  message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
+                  url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
+                  urlTitle: 'Open settings',
+                  priority: 1,
+                });
+              }
+            }
+          }
+        } else if (status === 'completed') {
+          let secretId: string | null = null;
+          if (!backend || backend === 'claude') {
+            secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+          } else if (backend === 'codex') {
+            const codexRow = await db.query.secrets.findFirst({
+              where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+              columns: { id: true },
+            });
+            secretId = codexRow?.id ?? null;
+          }
+          if (secretId) await recordCredentialAuthSuccess(secretId);
         }
       });
     }

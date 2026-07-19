@@ -568,6 +568,13 @@
       "when": 1784259696614,
       "tag": "0080_regular_shotgun",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1784403366131,
+      "tag": "0081_bright_dagger",
+      "breakpoints": true
     }
   ]
 }
