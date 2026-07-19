@@ -2899,9 +2899,37 @@ export async function handleLearnAction(
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
 
-  // TODO(dedupe-hook): before saving, embed the entry and check cosine similarity
-  // against the team namespace. Auto-supersede at >0.94, return conflict at 0.88–0.94.
-  // Implemented in the downstream deduplication task.
+  // Dedupe check — embed the candidate and compare cosine similarity against the
+  // team memory namespace. Skip when the caller already supplied explicit supersedes
+  // (they've resolved the conflict) or when the store lacks nearDupeCheck.
+  const THRESH_AUTO     = 0.94;
+  const THRESH_CONFLICT = 0.88;
+
+  if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
+    const ns = buildNamespace(ctx.teamId, 'memory');
+    const embedText = `${params.title as string}\n\n${params.content as string}`;
+    const candidates = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, 5).catch(() => []);
+
+    const top = candidates[0];
+    if (top && top.similarity > THRESH_AUTO) {
+      // Auto-supersede: fold the best match into the supersedes list so the
+      // upsert marks it as not-current. The caller gets back superseded: 1.
+      supersedesParam.ids = [top.id];
+    } else {
+      const conflicts = candidates.filter(c => c.similarity >= THRESH_CONFLICT);
+      if (conflicts.length > 0) {
+        const list = conflicts
+          .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
+          .join('\n\n');
+        const ids = JSON.stringify(conflicts.map(c => c.id));
+        return text(
+          `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
+          `or modify the content to make the distinction clear.\n\n${list}\n\n` +
+          `To replace: re-call learn with supersedes: ${ids}`,
+        );
+      }
+    }
+  }
 
   const data = await memoryClient.save({
     type: params.type as string,

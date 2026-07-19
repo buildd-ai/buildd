@@ -736,4 +736,51 @@ export class PgVectorStore implements KnowledgeStore {
     `);
     return Number((res.rows[0] as Record<string, unknown>)?.cnt ?? 0);
   }
+
+  /**
+   * Check for near-duplicates before writing. Returns raw cosine similarity
+   * (no recency scoring) so callers can compare against fixed thresholds.
+   */
+  async nearDupeCheck(
+    namespace: string,
+    content: string,
+    topK = 5,
+  ): Promise<Array<{ id: string; similarity: number; content: string; sourceUrl: string | null }>> {
+    const corpus = namespace.split(':')[1] as Corpus;
+    const activeEmbedder = this._selectEmbedder(corpus);
+    if (!activeEmbedder) return [];
+
+    try {
+      const [embedding] = await activeEmbedder.embed([content]);
+      const embeddingStr = vectorToString(embedding);
+      const db = await getDb();
+
+      const res = await db.execute(sql`
+        SELECT source_id AS id,
+               1 - (embedding <=> ${embeddingStr}::vector) AS similarity,
+               content,
+               source_url
+        FROM knowledge_chunks
+        WHERE namespace = ${namespace}
+          AND embedding IS NOT NULL
+          AND is_current = true
+        ORDER BY embedding <=> ${embeddingStr}::vector
+        LIMIT ${topK}
+      `);
+
+      return (res.rows as Array<{
+        id: string;
+        similarity: string | number;
+        content: string;
+        source_url: string | null;
+      }>).map(r => ({
+        id: r.id,
+        similarity: Number(r.similarity),
+        content: r.content,
+        sourceUrl: r.source_url,
+      }));
+    } catch {
+      return [];
+    }
+  }
 }

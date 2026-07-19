@@ -463,3 +463,111 @@ describe('recall — input validation', () => {
     expect(res.content[0].text).toContain('query');
   });
 });
+
+// ── learn: server-side near-duplicate detection ───────────────────────────────
+
+describe('learn — server-side near-duplicate detection', () => {
+  function makeDedupeStore(
+    topSimilarity: number | null,
+    upsertResult: { superseded: number } = { superseded: 0 },
+  ) {
+    const upsertCalls: Array<{ ns: string; supersedes?: string[] }> = [];
+    let nearDupeCheckCalled = false;
+    const store = {
+      upsertCalls,
+      get nearDupeCheckCalled() { return nearDupeCheckCalled; },
+      capturedNamespaces: [] as string[],
+      capturedModes: [] as string[],
+      async query() { return []; },
+      async upsert(ns: string, chunks: any[]) {
+        for (const c of chunks) upsertCalls.push({ ns, supersedes: c.supersedes });
+        return upsertResult;
+      },
+      async delete() {},
+      async listNamespaces() { return []; },
+      async nearDupeCheck(_ns: string, _content: string, _topK?: number) {
+        nearDupeCheckCalled = true;
+        if (topSimilarity === null) return [];
+        return [{ id: 'existing-mem-id', similarity: topSimilarity, content: 'An existing memory', sourceUrl: '/app/memory/existing-mem-id' }];
+      },
+    };
+    return store;
+  }
+
+  it('auto-supersedes when top similarity > 0.94', async () => {
+    const store = makeDedupeStore(0.96, { superseded: 1 });
+    const mem = makeMemClient({
+      saveResult: { id: 'new-id', type: 'gotcha', title: 'T', content: 'C', files: [], tags: [], project: null, source: null },
+    });
+    const ctx = recallCtx(store as any);
+
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: 'T', content: 'C' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(store.upsertCalls).toHaveLength(1);
+    expect(store.upsertCalls[0].supersedes).toContain('existing-mem-id');
+    expect(res.content[0].text).toContain('superseded: 1');
+  });
+
+  it('returns conflict when top similarity is in the 0.88–0.94 band', async () => {
+    const store = makeDedupeStore(0.91);
+    let saveCalled = false;
+    const mem = {
+      ...makeMemClient(),
+      save: async (d: any) => { saveCalled = true; return makeMemClient().save(d); },
+    };
+    const ctx = recallCtx(store as any);
+
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: 'T', content: 'C' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+    expect(res.content[0].text).toContain('existing-mem-id');
+    expect(saveCalled).toBe(false);
+    expect(store.upsertCalls).toHaveLength(0);
+  });
+
+  it('writes as new when top similarity < 0.88', async () => {
+    const store = makeDedupeStore(0.80);
+    const mem = makeMemClient({
+      saveResult: { id: 'new-id', type: 'gotcha', title: 'T', content: 'C', files: [], tags: [], project: null, source: null },
+    });
+    const ctx = recallCtx(store as any);
+
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: 'T', content: 'C' }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('new-id');
+    expect(store.upsertCalls).toHaveLength(1);
+    expect(store.upsertCalls[0].supersedes).toBeUndefined();
+  });
+
+  it('explicit supersedes bypasses the near-dup check entirely', async () => {
+    const store = makeDedupeStore(0.96, { superseded: 1 });
+    const mem = makeMemClient({
+      saveResult: { id: 'new-id', type: 'gotcha', title: 'T', content: 'C', files: [], tags: [], project: null, source: null },
+    });
+    const ctx = recallCtx(store as any);
+
+    await handleLearnAction(mem as any, {
+      type: 'gotcha',
+      title: 'T',
+      content: 'C',
+      supersedes: ['explicit-old-id'],
+    }, ctx);
+
+    expect(store.nearDupeCheckCalled).toBe(false);
+    expect(store.upsertCalls[0].supersedes).toEqual(['explicit-old-id']);
+  });
+
+  it('skips dedupe check gracefully when nearDupeCheck not on store', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient({
+      saveResult: { id: 'ok', type: 'gotcha', title: 'T', content: 'C', files: [], tags: [], project: null, source: null },
+    });
+    const ctx = recallCtx(store as any);
+    // Store has no nearDupeCheck — should just write normally
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: 'T', content: 'C' }, ctx);
+    expect(res.isError).toBeFalsy();
+  });
+});
