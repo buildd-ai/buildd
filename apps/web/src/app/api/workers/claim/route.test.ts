@@ -2903,6 +2903,9 @@ describe('entity catalog injection at claim time', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
-    expect(data.workers[0].resolvedContextProviders).toBeUndefined();
+    // Knowledge hint may be present, but no entity catalog block when store errors
+    const providers = data.workers[0].resolvedContextProviders;
+    const block = providers ? (providers as string[]).join('\n') : '';
+    expect(block).not.toContain('## Known entities');
   });
 });
