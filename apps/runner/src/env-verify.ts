@@ -290,6 +290,12 @@ export interface ExecuteOptions {
   skipPhases?: PhaseKind[];
   /** Filesystem probe injection for tests; defaults to the real fs at `root`. */
   fs?: FsProbe;
+  /**
+   * Base commit SHA of the tree being verified. When set (and the manifest is
+   * env-independent), enables the warm gate cache — a pass is reused for repeat
+   * provisions off the same base on this runner. Omit to always run fresh.
+   */
+  commit?: string;
   /** Monotonic clock injection for tests; defaults to wall clock. */
   now?: () => number;
 }
@@ -406,6 +412,8 @@ export interface ProvisionGateResult {
    * of regex-matching a free-text string. See docs/design/reliable-env-provisioning.md.
    */
   failure?: ProvisionFailure;
+  /** True when this PASS was served from the warm cache (no steps re-run). */
+  cached?: boolean;
 }
 
 /** Stable reason codes — one per phase. The server keys requeue/escalate policy off these. */
@@ -439,24 +447,75 @@ function provisionFailure(step: StepResult): ProvisionFailure {
   return { code: PHASE_FAILURE_CODE[step.phase], phase: step.phase, message: step.message };
 }
 
+// ─── Warm gate cache ─────────────────────────────────────────────────────────
+// The gate runs BEFORE the agent modifies the worktree, so at gate time the tree
+// is exactly the base commit. For an env-INDEPENDENT manifest (no env.required)
+// the pass is therefore a pure function of (base commit + manifest) — identical
+// across every task branching off that base. On a single runner that's a real
+// win: skip a possibly-expensive readiness probe (e.g. tsc) for repeat tasks.
+//
+// Safety: only PASSES are cached (a failure may be fixed → always re-check), only
+// for manifests with no env.required (env can't change the result), keyed by the
+// caller-supplied commit + a manifest hash, with a short TTL to bound staleness
+// (e.g. a runner-level toolchain change). Manifests with env.required are never
+// cached — their result depends on per-task injected secrets.
+
+const GATE_CACHE_TTL_MS = 10 * 60 * 1000;
+const gateCache = new Map<string, number>(); // key → timestamp of the cached pass
+
+/** Test seam: drop all warm-cache entries. */
+export function clearProvisionGateCache(): void {
+  gateCache.clear();
+}
+
+/** FNV-1a over the manifest JSON — a stable, dependency-free cache discriminator. */
+function manifestHash(manifest: EnvManifest): string {
+  const s = JSON.stringify(manifest);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
 /**
  * The runner's readiness gate: prove a claimed task's environment is runnable
  * before the agent starts consuming budget. Enforcement is OPT-IN — only a
  * declared `.buildd/env.yaml` blocks. Auto-detected plans (no manifest) never
- * fail a runner that didn't opt in; they remain a CLI/CI convenience. See
- * docs/design/reliable-env-provisioning.md.
+ * fail a runner that didn't opt in; they remain a CLI/CI convenience.
+ *
+ * When `opts.commit` is supplied and the manifest is env-independent, a passing
+ * result is cached and reused for repeat provisions off the same base (see the
+ * warm-cache note above). See docs/design/reliable-env-provisioning.md.
  */
 export async function runProvisionGate(opts: ExecuteOptions): Promise<ProvisionGateResult> {
   const { manifest, source } = resolveManifest(opts.root, opts.fs);
   if (source !== 'manifest' || !manifest) {
     return { source, enforced: false, ok: true, steps: [] };
   }
+
+  const now = opts.now ?? (() => Date.now());
+  // Cacheable only when the caller pins a base commit AND the gate is
+  // env-independent (env.required would make the result depend on per-task secrets).
+  const cacheable = !!opts.commit && !manifest.env?.required?.length;
+  const cacheKey = cacheable ? `${opts.commit}\0${manifestHash(manifest)}` : null;
+  if (cacheKey) {
+    const at = gateCache.get(cacheKey);
+    if (at !== undefined && now() - at < GATE_CACHE_TTL_MS) {
+      return { source, enforced: true, ok: true, steps: [], cached: true };
+    }
+  }
+
   const steps = await executeSteps(planSteps(manifest), opts);
   const firstFail = steps.find((s) => s.status === 'fail');
+  const ok = !firstFail;
+  if (cacheKey && ok) gateCache.set(cacheKey, now());
+
   return {
     source,
     enforced: true,
-    ok: !firstFail,
+    ok,
     steps,
     reason: firstFail ? provisionReason(firstFail) : undefined,
     failure: firstFail ? provisionFailure(firstFail) : undefined,

@@ -1748,7 +1748,18 @@ export class WorkerManager {
       // cleans up, with zero agent budget spent. A gate that itself errors fails
       // open. See docs/design/reliable-env-provisioning.md.
       try {
-        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, skipPhases: ['install'] });
+        // Base commit of the freshly-created worktree (== the branch's base at
+        // gate time, before the agent modifies anything). Lets the gate reuse a
+        // cached pass across tasks off the same base on this runner. Fail-open.
+        let baseCommit: string | undefined;
+        try {
+          const cp = await import('child_process');
+          const { promisify } = await import('util');
+          const { stdout } = await promisify(cp.execFile)('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, encoding: 'utf-8' });
+          baseCommit = stdout.trim() || undefined;
+        } catch { /* no commit → gate runs fresh (no caching) */ }
+
+        const gate = await runProvisionGate({ root: cwd, env: cleanEnv, skipPhases: ['install'], commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}`);
@@ -1761,7 +1772,8 @@ export class WorkerManager {
             provErr.provisionFailure = gate.failure;
             throw provErr;
           }
-          this.addMilestone(worker, { type: 'status', label: 'Environment verified', ts: Date.now() });
+          console.log(`[Worker ${worker.id}] Environment verified${gate.cached ? ' (cached)' : ''}`);
+          this.addMilestone(worker, { type: 'status', label: gate.cached ? 'Environment verified (cached)' : 'Environment verified', ts: Date.now() });
         }
       } catch (gateErr) {
         const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
