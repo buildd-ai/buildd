@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 
 // Runner heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min)
 // to let Neon suspend. Stale threshold is 2.5× so a single dropped beat isn't fatal.
@@ -165,7 +166,7 @@ export async function GET(req: NextRequest) {
       const activeWorkerRecords = await db.query.workers.findMany({
         where: and(
           inArray(workers.accountId, accountIds),
-          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
+          inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         ),
         columns: { accountId: true },
       });
