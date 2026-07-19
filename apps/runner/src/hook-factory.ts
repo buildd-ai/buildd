@@ -69,6 +69,22 @@ export class HookFactory {
         };
       }
 
+      // AskUserQuestion is the agent's direct channel to the user — the question
+      // itself is surfaced to the worker UI by handleMessage (waitingFor.type =
+      // 'question'). It must NEVER be gated behind a separate tool-permission
+      // approval ("may I ask you a question? → yes → here's the question").
+      // Explicitly allow it here so it can't fall through to the PermissionRequest
+      // / canUseTool gates. (The autonomous hard-block is handled above.)
+      if (toolName === 'AskUserQuestion') {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'allow' as const,
+            permissionDecisionReason: 'AskUserQuestion is presented directly to the user; no separate permission needed',
+          },
+        };
+      }
+
       // Block dangerous bash commands
       if (toolName === 'Bash') {
         const command = (toolInput.command as string) || '';
@@ -295,6 +311,20 @@ export class HookFactory {
       const toolInput = (input as any).tool_input as Record<string, unknown>;
       const permissionSuggestions = (input as any).permission_suggestions as unknown[] | undefined;
 
+      // AskUserQuestion is the agent's direct line to the user; the question
+      // itself is surfaced to the worker UI by handleMessage. Never gate it
+      // behind a redundant "grant permission to ask a question" approval —
+      // allow it straight through so the user sees a single prompt (the question).
+      if (toolName === 'AskUserQuestion') {
+        console.log(`[Worker ${worker.id}] Auto-allowing AskUserQuestion (user-facing tool, no permission gate)`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PermissionRequest' as const,
+            decision: { behavior: 'allow' as const, updatedInput: toolInput },
+          },
+        };
+      }
+
       console.log(`[Worker ${worker.id}] Permission requested: ${toolName}, suggestions=${permissionSuggestions?.length || 0}`);
 
       // Build human-readable labels for each suggestion
@@ -388,6 +418,14 @@ export class HookFactory {
   ) => Promise<{ behavior: 'allow'; updatedPermissions?: unknown[] } | { behavior: 'deny'; message: string }> {
     return async (toolName, input, options) => {
       const { agentID, requestId, title, suggestions } = options;
+
+      // AskUserQuestion is the user-interaction channel itself — never gate it
+      // behind a tool-permission prompt (for the main agent or a subagent). The
+      // question is surfaced to the worker UI directly; a "grant permission to
+      // ask you a question" step would be a nonsensical double-prompt.
+      if (toolName === 'AskUserQuestion') {
+        return { behavior: 'allow' as const };
+      }
 
       // Main agent path (no agentID): allow — hooks run next and make the real decision
       if (!agentID) {
