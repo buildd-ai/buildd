@@ -1,6 +1,6 @@
 # Reliable Environment Provisioning
 
-**Status:** design proposal (2026-07-18). No implementation yet.
+**Status:** Phase 1 shipped (2026-07-18) — verifier core + `buildd env verify` CLI + auto-detection. Phases 2–4 (runner integration, CI check, secret contract) not yet implemented.
 **Owner:** max
 **Related:** `apps/runner/src/git-operations.ts` (worktree setup), `apps/web/src/lib/role-config.ts` (env mapping → R2), the `secrets` table, `docs/credentials-architecture.md`.
 
@@ -87,7 +87,7 @@ Buildd already has the agent-native primitives general tools lack: the `secrets`
 
 ## Phased rollout
 
-1. **Verifier core** — manifest parser + phase runner + `buildd env verify` CLI. Auto-detection for the no-manifest case so existing repos get value with zero config.
+1. **Verifier core** ✅ *shipped* — `apps/runner/src/env-verify.ts`: manifest parser (`Bun.YAML`), step planner, injectable executor, and `buildd env verify` CLI (`--json` for machines). Auto-detection from lockfiles (bun/pnpm/yarn/npm/uv/poetry/cargo/go) so existing repos get value with zero config. Fails fast, exits nonzero, blames the earliest phase. Dogfooded via this repo's `.buildd/env.yaml`.
 2. **Runner integration** — call the verifier as the provision phase in `setupWorktree`; on failure, requeue with a structured reason instead of spending agent budget.
 3. **CI check** — run the verifier on PRs to catch bootstrappability regressions.
 4. **Secret contract** — wire `env.required` to the `secrets` table scoping precedence; surface missing/expired secrets as a first-class provision failure.

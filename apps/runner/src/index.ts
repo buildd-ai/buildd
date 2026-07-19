@@ -56,6 +56,20 @@ if (process.argv.includes('--doctor')) {
   process.exit(report.summary.error > 0 ? 1 : 0);
 }
 
+// `env verify` (or --env-verify): prove the current repo is runnable, then exit.
+// Backs the reliable-env-provisioning design — same contract the runner's
+// provision phase will use, exposed as a CLI for CI and humans on a fresh clone.
+if (
+  process.argv.includes('--env-verify') ||
+  (process.argv[2] === 'env' && process.argv[3] === 'verify')
+) {
+  const { runEnvVerify, formatReport, reportToJson } = await import('./env-verify');
+  const root = process.env.BUILDD_ENV_ROOT || process.cwd();
+  const report = runEnvVerify({ root });
+  console.log(process.argv.includes('--json') ? reportToJson(report) : formatReport(report));
+  process.exit(report.ok ? 0 : 1);
+}
+
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
 // Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
 const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
