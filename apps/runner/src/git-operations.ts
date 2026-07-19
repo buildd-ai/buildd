@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveWorktreeBase, BranchFetchResult } from './worktree-utils';
+import { resolveWorktreeBase, clearResumeContext, BranchFetchResult } from './worktree-utils';
 
 export interface GitStats {
   commitCount?: number;
@@ -159,6 +159,10 @@ export async function setupWorktree(
       context: taskContext,
       fetchBranch,
       log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
+      // The resume branch is gone/diverged and we fell back to the default base —
+      // strip the stale resume fields so the session starts fresh instead of
+      // building "prior attempt" instructions that reference a missing branch.
+      onFallback: () => clearResumeContext(taskContext),
     });
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
     execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
