@@ -101,9 +101,10 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string)
       capabilities: { tools: {} },
       instructions: `Buildd MCP (OAuth) — scoped to workspace ${workspaceId}.
 
-Two tools:
+Tools:
 - \`buildd\`: task coordination + scheduling. Available actions: ${actions.join(', ')}
-- \`buildd_memory\`: shared team memories.
+- \`recall\` (read knowledge) / \`learn\` (write knowledge) — preferred over buildd_memory.
+- \`buildd_memory\`: DEPRECATED. Kept for compatibility; use recall/learn instead.
 
 Workspace is bound to this connector — pass workspaceId only when overriding (rare).`,
     },
@@ -133,7 +134,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
       },
       {
         name: 'buildd_memory',
-        description: `Search, save, and manage shared team memories. Actions: ${[...memoryActions].join(', ')}`,
+        description: `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${[...memoryActions].join(', ')}`,
         annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
         inputSchema: {
           type: 'object' as const,
@@ -166,6 +167,22 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
             content: [{ type: 'text' as const, text: 'Error: filePath and repo params are not supported in the remote MCP server (no filesystem access). Use the content param instead.' }],
             isError: true,
           };
+        }
+
+        // Admin-only knowledge management ops (moved from buildd_memory)
+        if (action === 'consolidate_knowledge' || action === 'memory_delete') {
+          const memClient = await getMemoryClientForTeam(workspaceId, accountTeamId);
+          if (!memClient && action === 'memory_delete') {
+            return { content: [{ type: 'text' as const, text: 'Memory service not configured on this server.' }], isError: true };
+          }
+          const embedder = getVoyageEmbedder();
+          const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker());
+          return await handleMemoryAction(memClient, action === 'memory_delete' ? 'delete' : 'consolidate_knowledge', params, {
+            workspaceId,
+            teamId: accountTeamId,
+            knowledgeStore,
+            embedder,
+          });
         }
 
         return await handleBuilddAction(api, action, params, ctx);

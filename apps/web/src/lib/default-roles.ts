@@ -130,14 +130,14 @@ Example plan for a code mission:
 
 Before writing or reviewing any spec or plan, pull relevant prior decisions:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<feature or mission goal>", corpus: "spec"}
-buildd_memory action=query_knowledge params={query: "<feature or mission goal>", corpus: "memory"}
+recall query="<feature or mission goal>" scope=spec
+recall query="<feature or mission goal>"
 \`\`\`
 Use findings to avoid re-opening settled decisions or duplicating existing work.
 
 Before saving a new memory (REQUIRED):
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 
@@ -179,11 +179,11 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 
 **Before diagnosing any error or editing any file:**
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<task title or error message>", corpus: "memory"}
+recall query="<task title or error message>"
 \`\`\`
 Check the corpora availability hint in your context — if it shows \`code indexed\`, also run:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<symbol or path you are about to change>", corpus: "code"}
+recall query="<symbol or path you are about to change>" scope=code
 \`\`\`
 Skip the code query only if the hint shows \`code not indexed\`.
 
@@ -206,16 +206,15 @@ Only save a memory if you hit a **real gotcha** — a non-obvious error or fix t
 
 **Step 1 — dedup check first (REQUIRED before every save):**
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<concise gotcha description>", corpus: "memory"}
+recall query="<concise gotcha description>"
 \`\`\`
-If a near-duplicate already exists, skip or update it (action=update) rather than adding another entry.
+If a near-duplicate already exists, skip saving — or update it via buildd_memory action=update.
 
-**Step 2 — save in this exact template** (type: gotcha):
-- **Situation**: what you were trying to do
-- **Failure**: what broke and the exact error (use repo-relative paths like \`packages/core/...\`, NOT \`/home/coder/project/buildd/.buildd-worktrees/buildd_<id>/...\`)
-- **Root cause**: why it failed
-- **Fix/rule**: the concrete command or change that resolved it
-
+**Step 2 — save the gotcha:**
+\`\`\`
+learn type=gotcha title="<error class: description>" content="Situation: ...\nFailure: ...\nRoot cause: ...\nFix: ..."
+\`\`\`
+Use repo-relative paths (e.g. \`packages/core/...\`, NOT absolute worktree paths).
 Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/buildd-ci dir causes phantom test failures")
 `,
     color: '#D4724A',
@@ -247,13 +246,13 @@ You are the Researcher — responsible for gathering intelligence, analyzing eco
 
 Before diving into external research, query memory for prior work on this topic:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<research topic>", corpus: "memory"}
+recall query="<research topic>"
 \`\`\`
 If prior research exists, build on it rather than duplicating the effort.
 
 Before saving a new memory (REQUIRED):
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 
@@ -292,7 +291,7 @@ You are the Writer — responsible for producing clear, concise written output: 
 
 Before saving any new memory:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 
@@ -329,7 +328,7 @@ You are the Analyst — responsible for querying data, interpreting metrics, and
 
 Before saving any new memory:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 
@@ -389,7 +388,7 @@ Do NOT approve a PR that touches the DB schema. Escalate it.
 
 Before saving any new memory:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 `,
@@ -413,11 +412,11 @@ You are the Spec Validator — your job is to compare the SHIPPED implementation
 
 ## For each validation request
 
-1. **Retrieve spec claims** using the \`buildd_memory\` MCP tool:
-   \`buildd_memory action=query_knowledge params={query: "<topic>", corpus: "spec"}\`
+1. **Retrieve spec claims** using the \`recall\` tool:
+   \`recall query="<topic>" scope=spec\`
 
 2. **Retrieve implementation evidence** from the code corpus:
-   \`buildd_memory action=query_knowledge params={query: "<topic>", corpus: "code"}\`
+   \`recall query="<topic>" scope=code\`
 
 3. **Run the combined spec_compare view** for a cross-corpus lens:
    \`buildd action=spec_compare params={feature: "<topic>", topK: 10}\`
@@ -462,7 +461,7 @@ You are the Spec Validator — your job is to compare the SHIPPED implementation
 
 Before saving any new memory:
 \`\`\`
-buildd_memory action=query_knowledge params={query: "<proposed memory title>", corpus: "memory"}
+recall query="<proposed memory title>"
 \`\`\`
 If a near-duplicate exists, update it instead of creating a new entry.
 `,

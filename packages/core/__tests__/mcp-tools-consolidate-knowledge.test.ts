@@ -68,7 +68,7 @@ mock.module('../db/index', () => ({
   },
 }));
 
-const { handleMemoryAction, memoryActions } = await import('../mcp-tools');
+const { handleMemoryAction, memoryActions, adminActions } = await import('../mcp-tools');
 
 const WS = '00000000-0000-0000-0000-000000000001';
 const TEAM = '00000000-0000-0000-0000-0000000000aa';
@@ -85,8 +85,9 @@ beforeEach(() => {
 });
 
 describe('buildd_memory consolidate_knowledge', () => {
-  it('is a registered memory action', () => {
-    expect(memoryActions).toContain('consolidate_knowledge');
+  it('is a registered admin action (moved from memoryActions)', () => {
+    expect(adminActions).toContain('consolidate_knowledge');
+    expect(memoryActions).not.toContain('consolidate_knowledge');
   });
 
   it('requires op', async () => {
