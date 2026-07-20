@@ -367,7 +367,7 @@ export default async function TaskDetailPage({
                 status: task.status,
               }}
             />
-            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}
+            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
             {task.externalUrl && (
               <a
                 href={task.externalUrl}
