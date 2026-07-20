@@ -4,6 +4,7 @@ import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
+import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
@@ -18,6 +19,8 @@ export interface RunMissionResult {
   skippedBlocked?: boolean;
   /** Human-readable reason for skippedBlocked (e.g. "Waiting for mission X to merge") */
   blockedReason?: string;
+  /** True when spawning was blocked because the mission's cost budget is exhausted */
+  skippedBudgetExhausted?: boolean;
 }
 
 export interface CycleContext {
@@ -38,6 +41,8 @@ export interface RunMissionDeps {
   buildMissionContext?: typeof _buildMissionContext;
   dispatchNewTask?: typeof _dispatchNewTask;
   getOrCreateCoordinationWorkspace?: typeof _getOrCreateCoordinationWorkspace;
+  getMissionSpendUsd?: (missionId: string) => Promise<number>;
+  exhaustMissionBudget?: (missionId: string, title: string, spendUsd: number, budgetUsd: number) => Promise<void>;
 }
 
 /**
@@ -55,6 +60,8 @@ export async function runMission(
   const buildMissionContext = deps?.buildMissionContext ?? _buildMissionContext;
   const dispatchNewTask = deps?.dispatchNewTask ?? _dispatchNewTask;
   const getOrCreateCoordinationWorkspace = deps?.getOrCreateCoordinationWorkspace ?? _getOrCreateCoordinationWorkspace;
+  const getMissionSpendUsd = deps?.getMissionSpendUsd ?? _getMissionSpendUsd;
+  const exhaustMissionBudget = deps?.exhaustMissionBudget ?? _exhaustMissionBudget;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -79,6 +86,16 @@ export async function runMission(
   if (blockStatus.blocked) {
     console.log(`[runMission] Mission ${missionId} blocked: ${blockStatus.reason}`);
     return { task: null, skippedBlocked: true, blockedReason: blockStatus.reason };
+  }
+
+  // Budget gate: check aggregate spend before spawning a new planning task
+  if (mission.costBudgetUsd != null) {
+    const spendUsd = await getMissionSpendUsd(missionId);
+    const budgetUsd = parseFloat(mission.costBudgetUsd as string);
+    if (spendUsd >= budgetUsd) {
+      await exhaustMissionBudget(missionId, mission.title, spendUsd, budgetUsd);
+      return { task: null, skippedBudgetExhausted: true };
+    }
   }
 
   // Dedupe: if a planning task for this mission is already in-flight, return it

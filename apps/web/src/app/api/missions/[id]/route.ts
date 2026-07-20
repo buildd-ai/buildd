@@ -168,7 +168,7 @@ export async function PATCH(
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
-      dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl } = body;
+      dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -251,6 +251,16 @@ export async function PATCH(
     }
     if (orchestrationMode !== undefined) {
       updateData.orchestrationMode = orchestrationMode;
+    }
+    if (costBudgetUsd !== undefined) {
+      updateData.costBudgetUsd = costBudgetUsd != null ? String(costBudgetUsd) : null;
+      // Auto-resume: raising the budget on a budget_exhausted mission resumes it
+      if (costBudgetUsd != null && existing.status === 'budget_exhausted') {
+        const existingBudget = existing.costBudgetUsd != null ? parseFloat(existing.costBudgetUsd as string) : null;
+        if (existingBudget === null || costBudgetUsd > existingBudget) {
+          updateData.status = 'active';
+        }
+      }
     }
 
     // Handle schedule updates

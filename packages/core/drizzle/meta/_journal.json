@@ -589,6 +589,13 @@
       "when": 1784497198764,
       "tag": "0083_plain_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1784514795332,
+      "tag": "0084_shiny_violations",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
+const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
+const mockExhaustMissionBudget = mock(() => Promise.resolve());
 
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
@@ -82,6 +84,8 @@ const deps = {
   buildMissionContext: mockBuildMissionContext as any,
   dispatchNewTask: mockDispatchNewTask as any,
   getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace as any,
+  getMissionSpendUsd: mockGetMissionSpendUsd as any,
+  exhaustMissionBudget: mockExhaustMissionBudget as any,
 };
 
 describe('runMission', () => {
@@ -97,6 +101,9 @@ describe('runMission', () => {
     mockDispatchNewTask.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
+    mockGetMissionSpendUsd.mockReset();
+    mockGetMissionSpendUsd.mockResolvedValue(0);
+    mockExhaustMissionBudget.mockReset();
     mockUpdate.mockReset();
     mockUpdate.mockImplementation(() => ({
       set: () => ({
@@ -639,5 +646,77 @@ describe('runMission', () => {
 
     // db.update() must NOT be called
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('blocks spawn and returns skippedBudgetExhausted when spend >= budget', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Expensive Mission',
+      priority: 0,
+      schedule: null,
+      costBudgetUsd: '0.01',
+    });
+
+    mockGetMissionSpendUsd.mockResolvedValue(0.05);
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.task).toBeNull();
+    expect(result.skippedBudgetExhausted).toBe(true);
+    expect(mockExhaustMissionBudget).toHaveBeenCalledWith('obj-1', 'Expensive Mission', 0.05, 0.01);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('allows spawn when spend < budget', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Under Budget Mission',
+      priority: 0,
+      schedule: null,
+      costBudgetUsd: '10.00',
+    });
+
+    mockGetMissionSpendUsd.mockResolvedValue(5.00);
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+    selectResults[0] = [];
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.task).not.toBeNull();
+    expect(result.skippedBudgetExhausted).toBeUndefined();
+    expect(mockExhaustMissionBudget).not.toHaveBeenCalled();
+  });
+
+  it('skips budget check when costBudgetUsd is null', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'No Budget Mission',
+      priority: 0,
+      schedule: null,
+      costBudgetUsd: null,
+    });
+
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+    selectResults[0] = [];
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.task).not.toBeNull();
+    expect(mockGetMissionSpendUsd).not.toHaveBeenCalled();
+    expect(mockExhaustMissionBudget).not.toHaveBeenCalled();
   });
 });
