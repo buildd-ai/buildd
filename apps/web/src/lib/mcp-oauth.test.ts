@@ -421,10 +421,13 @@ describe('validateTokenAudience', () => {
     expect(() => validateTokenAudience(token, 'https://mcp.example.com')).not.toThrow();
   });
 
-  it('throws on invalid JWT format', () => {
-    expect(() => validateTokenAudience('notajwt', 'https://mcp.example.com')).toThrow(
-      'Invalid JWT format',
-    );
+  it('does not throw on an opaque (non-JWT) bearer token', () => {
+    expect(() => validateTokenAudience('mcp_a1b2c3d4e5f6', 'https://mcp.example.com')).not.toThrow();
+    expect(() => validateTokenAudience('notajwt', 'https://mcp.example.com')).not.toThrow();
+  });
+
+  it('does not throw when the token has 3 parts but an undecodable payload', () => {
+    expect(() => validateTokenAudience('a.b.c', 'https://mcp.example.com')).not.toThrow();
   });
 });
 

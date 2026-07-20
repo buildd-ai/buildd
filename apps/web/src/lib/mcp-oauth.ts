@@ -398,12 +398,15 @@ export async function exchangeCodeForToken(
 /**
  * Validate that the access token's `aud` claim contains the connector resource URL.
  * Decodes without verifying signature — we only care about the claim value.
- * Throws if audience is missing or does not match.
+ * Throws only if an `aud` claim is present and doesn't match — many AS
+ * implementations issue opaque bearer tokens (not JWTs) or omit `aud`
+ * entirely, and neither is something the client can or should reject.
  */
 export function validateTokenAudience(token: string, connectorUrl: string): void {
   const parts = token.split('.');
-  if (parts.length < 2) {
-    throw new Error('Invalid JWT format');
+  if (parts.length !== 3) {
+    // Not a JWT (e.g. an opaque bearer token) — no claim to check.
+    return;
   }
 
   let payload: Record<string, unknown>;
@@ -411,7 +414,8 @@ export function validateTokenAudience(token: string, connectorUrl: string): void
     const decoded = Buffer.from(parts[1], 'base64url').toString('utf8');
     payload = JSON.parse(decoded) as Record<string, unknown>;
   } catch {
-    throw new Error('Failed to decode JWT payload');
+    // Doesn't decode as a JWT payload — treat like an opaque token.
+    return;
   }
 
   const aud = payload['aud'];
