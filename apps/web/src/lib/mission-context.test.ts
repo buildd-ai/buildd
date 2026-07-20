@@ -463,15 +463,13 @@ describe('buildMissionContext', () => {
       priorHeartbeats: [
         {
           result: {
-            summary: 'All good',
-            structuredOutput: { status: 'ok', summary: 'All systems nominal' },
+            structuredOutput: { status: 'ok', tasksCreated: 2, actionCount: 5 },
           },
           createdAt: new Date(Date.now() - 3600000),
         },
         {
           result: {
-            summary: 'Fixed cache',
-            structuredOutput: { status: 'action_taken', summary: 'Cleared stale cache' },
+            structuredOutput: { status: 'action_taken', tasksRetried: 1, actionCount: 3 },
           },
           createdAt: new Date(Date.now() - 7200000),
         },
@@ -480,8 +478,8 @@ describe('buildMissionContext', () => {
 
     const result = await buildMissionContext('obj-hb4', { triggerSource: 'cron' });
     expect(result!.description).toContain('## Prior Heartbeats');
-    expect(result!.description).toContain('[ok] All systems nominal');
-    expect(result!.description).toContain('[action_taken] Cleared stale cache');
+    expect(result!.description).toContain('[ok] 2 task(s) created, 5 action(s)');
+    expect(result!.description).toContain('[action_taken] 1 retried, 3 action(s)');
   });
 
   it('includes prior artifacts in description when mission has linked artifacts', async () => {
