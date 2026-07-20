@@ -115,6 +115,7 @@ export default async function HomePage({
     nextScanMins: number | null;
     nextRunAt: string | null;
     workspaceName: string | null;
+    orchestrationMode: string | null;
   }[] = [];
 
   let completedLast12h = 0;
@@ -403,7 +404,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, status: true },
+            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -452,12 +453,14 @@ export default async function HomePage({
               ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
               : null;
 
+            const orchestrationMode = (mission as any).orchestrationMode ?? null;
             const health = deriveMissionHealth({
               status: mission.status,
               activeAgents: activeWorkers,
               cronExpression,
               lastRunAt,
               nextRunAt,
+              orchestrationMode,
             });
 
             return {
@@ -473,6 +476,7 @@ export default async function HomePage({
               nextScanMins,
               nextRunAt: nextRunAt ? String(nextRunAt) : null,
               workspaceName: (mission.workspace as any)?.name || null,
+              orchestrationMode,
             };
           });
         }
@@ -987,14 +991,19 @@ export default async function HomePage({
                                           </span>
                                         </>
                                       )}
-                                      {nextRun.text && (
+                                      {mission.orchestrationMode === 'manual' && mission.nextScanMins !== null ? (
+                                        <>
+                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
+                                          <span className="text-text-muted">Disarmed · Run now to advance</span>
+                                        </>
+                                      ) : nextRun.text ? (
                                         <>
                                           {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
                                           <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
                                             {nextRun.text}
                                           </span>
                                         </>
-                                      )}
+                                      ) : null}
                                     </div>
                                   </Link>
                                 );

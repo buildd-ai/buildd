@@ -20,6 +20,7 @@ const DEFERRAL_LABELS: Record<string, string> = {
   concurrent_cap: 'Deferred: seats full',
   active_hours: 'Deferred: quiet hours',
   trigger_unchanged: 'Deferred: no change',
+  orchestration_manual: 'Disarmed',
 };
 
 // Completed missions older than this are collapsed by default
@@ -48,6 +49,7 @@ export interface MissionItem {
   primaryPrUrl: string | null;
   primaryPrNumber: number | null;
   latestTaskId: string | null;
+  orchestrationMode: string | null;
 }
 
 interface WorkspaceBucket {
@@ -329,6 +331,7 @@ function FilterTabBar({
 /* ── Full Mission Card (running, scheduled, attention) ── */
 function FullMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
   const healthDisplay = HEALTH_DISPLAY[mission.health];
+  const isManual = mission.orchestrationMode === 'manual';
   const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
   const isHibernating = nextRun.urgency === 'far';
   const hasFooterLinks = mission.primaryPrUrl || mission.latestTaskId;
@@ -400,14 +403,19 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               </span>
             </>
           )}
-          {nextRun.text && (
+          {isManual && mission.nextScanMins !== null ? (
+            <>
+              <span className="mx-0.5">&middot;</span>
+              <span className="text-text-muted">Disarmed · Run now to advance</span>
+            </>
+          ) : nextRun.text ? (
             <>
               <span className="mx-0.5">&middot;</span>
               <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
                 {nextRun.text}
               </span>
             </>
-          )}
+          ) : null}
           {mission.lastDeferralReason && (
             <>
               <span className="mx-0.5">&middot;</span>

@@ -109,6 +109,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
@@ -156,6 +157,7 @@ export default async function MissionsPage({
       cronExpression: scheduleCron,
       lastRunAt,
       nextRunAt,
+      orchestrationMode: obj.orchestrationMode,
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
@@ -184,6 +186,7 @@ export default async function MissionsPage({
             time: String(latestFinding.updatedAt),
           }
         : null,
+      orchestrationMode: obj.orchestrationMode || null,
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       primaryPrUrl: (obj as any).primaryPrUrl || null,
