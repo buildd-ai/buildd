@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
 import { exchangeClaudeOAuthCode } from '@/lib/claude-oauth-login';
 import { storeClaudeCredential, getClaudeStatus, type ClaudeScope } from '@/lib/claude-credential';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
@@ -33,6 +33,23 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   const result = await exchangeClaudeOAuthCode(code, verifier, typeof state === 'string' ? state : '');
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+
+  // All-teams fan-out: one approval → store the same credential team-wide to every
+  // team the caller manages (parity with the paste flow's "All my teams").
+  if (scopeParam === 'all_teams') {
+    const teamIds = await getUserTeamIds(user.id);
+    let stored = 0;
+    for (const tid of teamIds) {
+      try {
+        await storeClaudeCredential({ teamId: tid }, result.credential);
+        await requeueAuthFailedTasks(tid).catch(() => {});
+        stored++;
+      } catch (err) {
+        console.warn(`[claude-oauth] fan-out store failed for team ${tid}:`, err);
+      }
+    }
+    return NextResponse.json({ status: 'connected', teams: stored, totalTeams: teamIds.length });
   }
 
   const scope = buildScope(access.teamId, id, typeof scopeParam === 'string' ? scopeParam : null);

@@ -1,6 +1,30 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+
+/**
+ * Shared action affordances for the credential cards. Replaces the old bare
+ * blue-/red-text links with consistent bordered pills that read as buttons and
+ * carry a clear tone hierarchy (primary action, neutral, destructive).
+ */
+function CredActionRow({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-2 pt-1">{children}</div>;
+}
+
+function CredAction({
+  onClick, children, disabled, tone = 'neutral',
+}: { onClick: () => void; children: ReactNode; disabled?: boolean; tone?: 'primary' | 'neutral' | 'danger' }) {
+  const toneCls =
+    tone === 'primary' ? 'border-status-info/40 text-status-info hover:bg-status-info/10'
+    : tone === 'danger' ? 'border-status-error/40 text-status-error hover:bg-status-error/10'
+    : 'border-border-default text-text-secondary hover:bg-surface-3';
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`h-8 px-3 rounded-lg border text-xs font-medium transition-colors disabled:opacity-40 ${toneCls}`}>
+      {children}
+    </button>
+  );
+}
 
 interface Workspace {
   id: string;
@@ -493,21 +517,19 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
             )}
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={verify} disabled={busy || verifying} className="text-sm font-medium text-status-info disabled:opacity-50">
+          <CredActionRow>
+            <CredAction onClick={verify} disabled={busy || verifying} tone="primary">
               {verifying ? 'Verifying…' : 'Verify'}
-            </button>
+            </CredAction>
             {!replaceOpen && (
-              <button onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }} className="text-sm font-medium text-text-secondary">
-                Replace credential
-              </button>
+              <CredAction onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }}>
+                Replace
+              </CredAction>
             )}
             {matching.map((s) => (
-              <button key={s.id} onClick={() => revoke(s.id)} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">
-                Revoke
-              </button>
+              <CredAction key={s.id} onClick={() => revoke(s.id)} disabled={busy} tone="danger">Revoke</CredAction>
             ))}
-          </div>
+          </CredActionRow>
 
           {replaceOpen && inputForm}
         </div>
@@ -595,8 +617,12 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
       if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Exchange failed' }); return; }
       setOauth(null);
       setOauthCode('');
-      setStatus(data);
-      setMsg({ type: 'success', text: 'Claude connected via OAuth (managed refresh enabled).' });
+      if (typeof data.teams === 'number') {
+        setMsg({ type: 'success', text: `Claude connected via OAuth for ${data.teams} of ${data.totalTeams} teams.` });
+      } else {
+        setStatus(data);
+        setMsg({ type: 'success', text: 'Claude connected via OAuth (managed refresh enabled).' });
+      }
     } catch {
       setMsg({ type: 'error', text: 'Failed to exchange code' });
     } finally {
@@ -753,22 +779,16 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
             )}
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-              {busy ? 'Refreshing…' : 'Refresh now'}
-            </button>
-            <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+          <CredActionRow>
             {!allTeams && !oauth && (
-              <button onClick={startOAuth} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-                Reconnect with Claude
-              </button>
+              <CredAction onClick={startOAuth} disabled={busy} tone="primary">Reconnect with Claude</CredAction>
             )}
+            <CredAction onClick={refresh} disabled={busy}>{busy ? 'Refreshing…' : 'Refresh now'}</CredAction>
             {!pasteOpen && (
-              <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
-                Paste .credentials.json
-              </button>
+              <CredAction onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }}>Paste .credentials.json</CredAction>
             )}
-          </div>
+            <CredAction onClick={revoke} disabled={busy} tone="danger">Revoke</CredAction>
+          </CredActionRow>
 
           {oauth && (
             <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
@@ -788,8 +808,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
               <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
             </span>
           )}
-          {/* OAuth connect (short code) is the clean primary path. Not for all-teams fan-out. */}
-          {!allTeams && (oauth ? (
+          {/* OAuth connect (short code) is the clean primary path — incl. all-teams fan-out. */}
+          {oauth ? (
             <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
               onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
           ) : (
@@ -797,9 +817,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
               <button onClick={startOAuth} disabled={busy} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
                 Connect with Claude
               </button>
-              <span className="text-xs text-text-muted">Recommended — approve + paste a short code, no file</span>
+              <span className="text-xs text-text-muted">
+                {allTeams ? `Approve once → applied to all ${teamTargets.length} teams` : 'Recommended — approve + paste a short code, no file'}
+              </span>
             </div>
-          ))}
+          )}
           <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
         </div>
       )}
@@ -1121,25 +1143,17 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
             )}
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={verify} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-              {busy ? 'Working…' : 'Verify'}
-            </button>
-            <button onClick={refresh} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-              {busy ? 'Refreshing…' : 'Refresh now'}
-            </button>
-            <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+          <CredActionRow>
             {!allTeams && !device && (
-              <button onClick={startDeviceLogin} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
-                Re-auth via device login
-              </button>
+              <CredAction onClick={startDeviceLogin} disabled={busy} tone="primary">Re-auth via device login</CredAction>
             )}
+            <CredAction onClick={verify} disabled={busy}>{busy ? 'Working…' : 'Verify'}</CredAction>
+            <CredAction onClick={refresh} disabled={busy}>{busy ? 'Refreshing…' : 'Refresh now'}</CredAction>
             {!pasteOpen && (
-              <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
-                Replace credential
-              </button>
+              <CredAction onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }}>Paste auth.json</CredAction>
             )}
-          </div>
+            <CredAction onClick={revoke} disabled={busy} tone="danger">Revoke</CredAction>
+          </CredActionRow>
 
           {device && (
             <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
