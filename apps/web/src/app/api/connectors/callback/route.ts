@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
     return errorRedirect(req, 'missing_client_id');
   }
 
-  const callbackUrl = getCallbackUrl();
+  const callbackUrl = getCallbackUrl(req.nextUrl.origin);
 
   // Exchange code for tokens
   let tokenResponse;

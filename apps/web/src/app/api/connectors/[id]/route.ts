@@ -121,7 +121,7 @@ export async function PATCH(
         if (!body.clientId && !connector.clientId && discovered.authorizationServer.registration_endpoint) {
           const dcrResult = await registerClient(
             discovered.authorizationServer.registration_endpoint,
-            getCallbackUrl(),
+            getCallbackUrl(req.nextUrl.origin),
           );
           updates.clientId = dcrResult.client_id;
           if (dcrResult.client_secret) {
