@@ -91,11 +91,29 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   // Setup-token / API-key is the fallback for Claude — collapsed by default so the
   // one-tap OAuth connect is the single primary Claude action (less clutter).
   const [showClaudeAlt, setShowClaudeAlt] = useState(false);
+  // True when the team already has a setup-token / API-key Claude credential — so the
+  // primary Claude card can show "connected via …" instead of a misleading "Connect"
+  // when Claude is actually working through the (collapsed) fallback path.
+  const [claudeFallbackConnected, setClaudeFallbackConnected] = useState(false);
 
   // The Codex API is nested under a workspace; for team scope we still need a
   // workspace in the team to authorize + resolve the team id.
   const accessWorkspaceId = scope === 'workspace' ? workspaceId : teamWorkspaces[0]?.id ?? '';
   const teamId = currentTeamId ?? teamWorkspaces[0]?.teamId ?? '';
+
+  useEffect(() => {
+    if (!teamId) return;
+    let cancelled = false;
+    fetch(`/api/secrets?teamId=${teamId}`)
+      .then((r) => (r.ok ? r.json() : { secrets: [] }))
+      .then((d) => {
+        if (cancelled) return;
+        const has = (d.secrets || []).some((s: { purpose?: string }) => s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key');
+        setClaudeFallbackConnected(has);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [teamId, showClaudeAlt]);
 
   if (teamWorkspaces.length === 0) return null;
 
@@ -159,7 +177,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
         {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
             key is a collapsed fallback so there's a single Claude section by default. */}
-        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
+        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} fallbackConnected={claudeFallbackConnected} />
         <div>
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
@@ -585,7 +603,7 @@ interface ClaudeCredentialStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[] }) {
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean }) {
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -818,7 +836,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
       ) : (
         <div className="space-y-3">
           {allTeams ? (
-            <span className="text-xs text-text-muted">Paste once — applies the same connected account to all {teamTargets.length} teams you manage.</span>
+            <span className="text-xs text-text-muted">Approve once — applies the same Claude login to all {teamTargets.length} teams you manage.</span>
+          ) : fallbackConnected ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected via setup token / API key
+            </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
               <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
@@ -831,14 +853,21 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
           ) : (
             <div className="flex items-center gap-3">
               <button onClick={startOAuth} disabled={busy} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
-                Connect with Claude
+                {fallbackConnected ? 'Upgrade to one-tap connect' : 'Connect with Claude'}
               </button>
               <span className="text-xs text-text-muted">
-                {allTeams ? `Approve once → applied to all ${teamTargets.length} teams` : 'Recommended — approve + paste a short code, no file'}
+                {allTeams ? `Approve once → applied to all ${teamTargets.length} teams` : 'Approve in the browser, paste a short code — no file'}
               </span>
             </div>
           )}
-          <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+          {!pasteOpen ? (
+            <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-xs font-medium text-text-secondary hover:text-text-primary transition-colors">
+              Paste .credentials.json instead
+            </button>
+          ) : (
+            <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
+              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+          )}
         </div>
       )}
 
