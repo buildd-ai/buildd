@@ -2028,6 +2028,46 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Merged ${totalMounted} MCP connector(s) into query options`);
       }
 
+      // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
+      // resolving ${VAR} references using cleanEnv. Claude Code SDK does not expand
+      // ${VAR} in HTTP server headers when reading .mcp.json — servers with unresolved
+      // refs connect without auth and receive 401 (which the agent sees as "OAuth
+      // required"). Connectors already in queryOptions.mcpServers take precedence.
+      // Skip buildd (reserved) and already-mounted names. Codex path handles its own
+      // .mcp.json injection above (lines 1605-1640).
+      if (!isCodexTask) {
+        const cwdMcpJsonPath = join(cwd, '.mcp.json');
+        if (existsSync(cwdMcpJsonPath)) {
+          try {
+            const cwdMcpData = JSON.parse(readFileSync(cwdMcpJsonPath, 'utf-8')) as {
+              mcpServers?: Record<string, { type?: string; url?: string; headers?: Record<string, string> }>;
+            };
+            for (const [name, serverCfg] of Object.entries(cwdMcpData.mcpServers || {})) {
+              if (name === 'buildd') continue; // reserved — never override coordination server
+              if (queryOptions.mcpServers[name]) continue; // connector already mounted — skip
+              if (serverCfg?.type === 'http' && serverCfg?.url) {
+                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                const resolvedHeaders: Record<string, string> = {};
+                let hasUnresolved = false;
+                for (const [hk, hv] of Object.entries(serverCfg.headers ?? {})) {
+                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                  if (/\$\{/.test(resolved)) { hasUnresolved = true; break; }
+                  resolvedHeaders[hk] = resolved;
+                }
+                if (!hasUnresolved) {
+                  queryOptions.mcpServers[name] = { type: 'http', url: resolvedUrl, headers: resolvedHeaders };
+                  console.log(`[Worker ${worker.id}] Injected .mcp.json server "${name}" into queryOptions (${Object.keys(resolvedHeaders).length} header(s))`);
+                } else {
+                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not injected? Check claim route.`);
+                }
+              }
+            }
+          } catch {
+            console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
+          }
+        }
+      }
+
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
