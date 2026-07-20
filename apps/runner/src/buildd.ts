@@ -2,6 +2,7 @@ import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
+import { createRedactionInterceptor } from '@buildd/core/redaction';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -38,6 +39,7 @@ export class BuilddClient {
       baseUrl: config.builddServer,
       apiKey: config.apiKey,
       timeoutMs: FETCH_TIMEOUT_MS,
+      interceptors: [createRedactionInterceptor()],
     });
   }
 
@@ -414,10 +416,19 @@ export class BuilddClient {
     return this.fetch(url, { method: 'POST' }, [403]);
   }
 
-  async sendHeartbeat(localUiUrl: string, activeWorkerCount: number, environment?: WorkerEnvironment): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
+  async sendHeartbeat(
+    localUiUrl: string,
+    activeWorkerCount: number,
+    environment?: WorkerEnvironment,
+    redactionCounts?: Record<string, number>,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
+    const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
+    if (redactionCounts && Object.keys(redactionCounts).length > 0) {
+      payload.redactionCounts = redactionCounts;
+    }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ localUiUrl, activeWorkerCount, environment }),
+      body: JSON.stringify(payload),
     });
     return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit };
   }
