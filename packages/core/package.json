@@ -41,7 +41,8 @@
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./path-overlap": "./path-overlap.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
-    "./buildd-transport": "./buildd-transport.ts"
+    "./buildd-transport": "./buildd-transport.ts",
+    "./redaction": "./redaction.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.206",
