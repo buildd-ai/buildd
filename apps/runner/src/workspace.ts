@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, mkdirSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, basename } from 'path';
 import { execSync } from 'child_process';
 import { homedir, tmpdir } from 'os';
 
@@ -174,12 +174,28 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
       const normalizedTarget = normalizeGitUrl(workspace.repo);
       if (normalizedTarget) {
         const cache = getGitCache();
+        const remoteMatches: string[] = [];
         for (const [dirPath, remoteUrl] of cache) {
           const normalizedRemote = normalizeGitUrl(remoteUrl);
           if (normalizedRemote === normalizedTarget) {
-            attempts.push({ path: dirPath, exists: true, method: 'git-remote' });
-            return { path: dirPath, attempts };
+            remoteMatches.push(dirPath);
           }
+        }
+        if (remoteMatches.length > 0) {
+          // When multiple dirs share the same remote (e.g. "dispatch",
+          // "dispatch-ios-old-dispatch-clone" all pointing at buildd-ai/dispatch),
+          // prefer the dir whose basename exactly equals the repo slug; use
+          // shorter name as a tiebreak to avoid old-clone directories winning.
+          const repoSlug = normalizedTarget.split('/').pop() ?? '';
+          const best = remoteMatches.sort((a, b) => {
+            const an = basename(a), bn = basename(b);
+            const aExact = an === repoSlug ? 0 : 1;
+            const bExact = bn === repoSlug ? 0 : 1;
+            if (aExact !== bExact) return aExact - bExact;
+            return an.length - bn.length;
+          })[0];
+          attempts.push({ path: best, exists: true, method: 'git-remote' });
+          return { path: best, attempts };
         }
         // Log that we tried git matching but found no match
         attempts.push({ path: `git:${normalizedTarget}`, exists: false, method: 'git-remote' });
