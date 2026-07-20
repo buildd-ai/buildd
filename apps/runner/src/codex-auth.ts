@@ -8,6 +8,10 @@ export interface CodexCredential {
   accessToken?: string;
   refreshToken?: string;
   accountId?: string;
+  // id_token is REQUIRED by codex-cli 0.144's auth.json parser — without it the CLI
+  // errors "missing field `id_token`" (verified live). It also carries the account
+  // claim the CLI uses for the `chatgpt-account-id` backend header.
+  idToken?: string;
   // API key (present when credentialType === 'api_key')
   apiKey?: string;
   expiresAt: Date | null;
@@ -67,14 +71,29 @@ export function ensureStableCodexHome(workerId: string): { codexHome: string } {
   return { codexHome };
 }
 
-/** (Re)write auth.json into an existing CODEX_HOME. Idempotent. */
+/**
+ * (Re)write auth.json into an existing CODEX_HOME. Idempotent.
+ *
+ * OAuth credentials MUST use codex-cli's NESTED shape
+ * (`{ tokens: { access_token, refresh_token, account_id, id_token }, last_refresh }`).
+ * codex-cli 0.144 rejects a flat `{access_token,…}` blob's account and 401s the
+ * backend (the CLI derives the `chatgpt-account-id` header from `tokens.account_id`),
+ * and it hard-errors "missing field `id_token`/`refresh_token`" if either is absent.
+ * Verified live against codex-cli 0.144.1. API-key creds are unaffected — resolveAuth
+ * reads `api_key` and passes it to the SDK directly, bypassing auth.json parsing.
+ */
 export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
   const authJson = credential.credentialType === 'api_key'
     ? { api_key: credential.apiKey }
     : {
-        access_token: credential.accessToken,
-        refresh_token: credential.refreshToken,
-        account_id: credential.accountId,
+        OPENAI_API_KEY: null,
+        tokens: {
+          access_token: credential.accessToken,
+          refresh_token: credential.refreshToken,
+          account_id: credential.accountId,
+          id_token: credential.idToken,
+        },
+        last_refresh: new Date().toISOString(),
       };
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify(authJson));
@@ -118,17 +137,18 @@ export function seedCodexAuthIfMissing(workerId: string, credential: CodexCreden
  * Used for write-back after a session: the Codex CLI may have refreshed
  * the tokens during the run and written them back to auth.json.
  */
-export function readCodexAuthJson(workerId: string): { access_token?: string; refresh_token?: string; account_id?: string; expires_in?: number } | null {
+export function readCodexAuthJson(workerId: string): { access_token?: string; refresh_token?: string; account_id?: string; id_token?: string; expires_in?: number } | null {
   const authPath = join(stableCodexHomePath(workerId), 'auth.json');
   if (!fs.existsSync(authPath)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as Record<string, unknown>;
-    // Normalize: Codex CLI may nest under `tokens`
+    // Normalize: Codex CLI nests under `tokens`
     const src = (raw.tokens && typeof raw.tokens === 'object' ? raw.tokens : raw) as Record<string, unknown>;
     return {
       ...(typeof src.access_token === 'string' ? { access_token: src.access_token } : {}),
       ...(typeof src.refresh_token === 'string' ? { refresh_token: src.refresh_token } : {}),
       ...(typeof src.account_id === 'string' ? { account_id: src.account_id } : {}),
+      ...(typeof src.id_token === 'string' ? { id_token: src.id_token } : {}),
       ...(typeof src.expires_in === 'number' ? { expires_in: src.expires_in } : {}),
     };
   } catch {

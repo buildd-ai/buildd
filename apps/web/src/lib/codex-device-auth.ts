@@ -125,6 +125,7 @@ export async function pollCodexDeviceAuth(deviceAuthId: string, userCode: string
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       account_id: accountId,
+      id_token: tokens.id_token,
       expires_in: tokens.expires_in,
     },
   };
