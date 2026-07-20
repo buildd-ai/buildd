@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, connectorWorkspaces, secrets, teamMembers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -108,6 +108,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Per-workspace enablement (unified-sharing reach). Maps each connector to the
+    // workspace ids that have an enabled mount row. For a workspace-scoped connector
+    // this is its allowlist; the role editor renders reach + validates that a
+    // workspace-scoped role only mounts connectors in scope for its workspace.
+    const enabledWorkspaceMap = new Map<string, string[]>();
+    if (connectorIds.length > 0) {
+      const mountRows = await db.query.connectorWorkspaces.findMany({
+        where: and(
+          inArray(connectorWorkspaces.connectorId, connectorIds),
+          eq(connectorWorkspaces.enabled, true),
+        ),
+        columns: { connectorId: true, workspaceId: true },
+      });
+      for (const m of mountRows) {
+        const list = enabledWorkspaceMap.get(m.connectorId) ?? [];
+        list.push(m.workspaceId);
+        enabledWorkspaceMap.set(m.connectorId, list);
+      }
+    }
+
     // Credential-free projection — never include clientId/encryptedClientSecret.
     const project = (c: typeof rows[number]) => ({
       id: c.id,
@@ -119,6 +139,10 @@ export async function GET(req: NextRequest) {
       // Migrated legacy placeholders (spec §4) carry needsReview in discoveredMetadata;
       // the role editor surfaces a "needs review" badge from this flag.
       needsReview: (c.discoveredMetadata as { needsReview?: boolean } | null)?.needsReview === true,
+      // Reach (unified-sharing): false = team-wide (opt-out); true = allowlist of
+      // enabledWorkspaceIds only.
+      workspaceScoped: c.workspaceScoped === true,
+      enabledWorkspaceIds: enabledWorkspaceMap.get(c.id) ?? [],
     });
 
     const result = [
@@ -176,6 +200,13 @@ export async function POST(req: NextRequest) {
     reuseIfExists?: boolean;
     assertionAudience?: string;
     assertionTokenEndpoint?: string;
+    // Unified-sharing scope chosen at creation (Phase 3). 'team' (default) keeps
+    // the opt-out behavior (visible in all workspaces of the team). 'workspace'
+    // makes the connector an opt-in allowlist mounted only in `workspaceId`.
+    // 'all_teams' is intentionally NOT accepted here — cross-team stays a
+    // post-hoc share via connector_shares (see docs/design/unified-sharing-model.md).
+    scope?: 'team' | 'workspace' | 'all_teams';
+    workspaceId?: string;
   };
   try {
     body = await req.json();
@@ -189,7 +220,13 @@ export async function POST(req: NextRequest) {
     clientId: bodyClientId, clientSecret: bodyClientSecret, reuseIfExists,
     assertionAudience: bodyAssertionAudience,
     assertionTokenEndpoint: bodyAssertionTokenEndpoint,
+    scope, workspaceId: scopeWorkspaceId,
   } = body;
+
+  // Scope resolution (unified-sharing Phase 3). 'workspace' makes the connector an
+  // opt-in allowlist mounted only in the given workspace; anything else keeps the
+  // team-wide opt-out default. 'all_teams' is not a creation-time concept.
+  const workspaceScoped = scope === 'workspace';
 
   const transport: 'http' | 'stdio' = body.transport === 'stdio' ? 'stdio' : 'http';
 
@@ -221,6 +258,20 @@ export async function POST(req: NextRequest) {
     }
     if (!bodyAssertionTokenEndpoint) {
       return NextResponse.json({ error: 'assertion_token_endpoint_required' }, { status: 400 });
+    }
+  }
+
+  // Workspace scope requires a workspaceId that belongs to the owning team.
+  if (workspaceScoped) {
+    if (!scopeWorkspaceId) {
+      return NextResponse.json({ error: 'workspace_id_required' }, { status: 400 });
+    }
+    const ws = await db.query.workspaces.findFirst({
+      where: and(eq(workspaces.id, scopeWorkspaceId), eq(workspaces.teamId, teamId)),
+      columns: { id: true },
+    });
+    if (!ws) {
+      return NextResponse.json({ error: 'workspace_not_in_team' }, { status: 400 });
     }
   }
 
@@ -279,7 +330,18 @@ export async function POST(req: NextRequest) {
       encryptedClientSecret: encryptedClientSecret ?? null,
       assertionAudience: authMode === 'assertion' ? (bodyAssertionAudience ?? null) : null,
       assertionTokenEndpoint: authMode === 'assertion' ? (bodyAssertionTokenEndpoint ?? null) : null,
+      workspaceScoped,
     }).returning();
+
+    // Workspace-scoped connectors are an opt-in allowlist: seed the enabled mount
+    // row so the connector is visible in exactly the chosen workspace (spec §3).
+    if (workspaceScoped && scopeWorkspaceId) {
+      await db.insert(connectorWorkspaces).values({
+        connectorId: connector.id,
+        workspaceId: scopeWorkspaceId,
+        enabled: true,
+      });
+    }
 
     if (authMode === 'header' && headerValue) {
       const provider = getSecretsProvider();

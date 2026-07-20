@@ -2359,6 +2359,60 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
+    // Unified-sharing Phase 3 — opt-out: a non-scoped connector with NO mount row
+    // for the task workspace still mounts (missing row = enabled).
+    it('mounts a non-scoped connector even with no workspace mount row', async () => {
+      setupConnectorClaim(['conn-1']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {}, workspaceScoped: false },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([]); // no rows at all
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { id: 'conn-1', name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+      ]);
+    });
+
+    // Allowlist: a workspaceScoped connector with NO mount row for the task workspace
+    // is EXCLUDED (opt-in — absence means not visible here).
+    it('does not mount a workspace-scoped connector when no mount row exists', async () => {
+      setupConnectorClaim(['conn-1']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {}, workspaceScoped: true },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([]); // no allowlist row for ws-1
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    // Allowlist: a workspaceScoped connector WITH an enabled mount row for the task
+    // workspace mounts.
+    it('mounts a workspace-scoped connector when an enabled mount row exists for the workspace', async () => {
+      setupConnectorClaim(['conn-1']);
+      mockConnectorsFindMany.mockResolvedValue([
+        { id: 'conn-1', teamId: 'team-1', name: 'my-mcp', url: 'https://mcp.example.com', authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {}, workspaceScoped: true },
+      ]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: true },
+      ]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toEqual([
+        { id: 'conn-1', name: 'my-mcp', transport: 'http', url: 'https://mcp.example.com' },
+      ]);
+    });
+
     // §2 AC-3: a task with no roleSlug (unrouted) mounts no connectors.
     it('mounts nothing when the task has no role', async () => {
       setupConnectorClaim([], null);

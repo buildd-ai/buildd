@@ -1340,8 +1340,12 @@ export async function POST(req: NextRequest) {
         );
         if (referencedConnectors.length === 0) continue;
 
-        // Filter to connectors enabled for this workspace (enabled !== false; a
-        // missing connector_workspaces row is treated as enabled).
+        // Filter to connectors enabled for this workspace. Two visibility modes
+        // (unified-sharing Phase 3):
+        //   - opt-out (workspaceScoped=false, default): a missing connector_workspaces
+        //     row means enabled; only an explicit enabled:false row disables it.
+        //   - opt-in allowlist (workspaceScoped=true): the connector mounts ONLY when
+        //     an enabled row exists for this workspace; a missing row excludes it.
         const cwRows = await db.query.connectorWorkspaces.findMany({
           where: and(
             eq(connectorWorkspaces.workspaceId, task.workspaceId),
@@ -1349,7 +1353,13 @@ export async function POST(req: NextRequest) {
           ),
         });
         const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
-        const activeConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
+        const activeConnectors = referencedConnectors.filter(c => {
+          const enabled = cwMap.get(c.id); // true | false | undefined (no row)
+          if ((c as { workspaceScoped?: boolean }).workspaceScoped) {
+            return enabled === true; // allowlist: only an explicit enabled row mounts
+          }
+          return enabled !== false; // opt-out: missing row = enabled
+        });
         if (activeConnectors.length === 0) continue;
 
         const ownerTeamIds = [...new Set(activeConnectors.map(c => c.teamId))];

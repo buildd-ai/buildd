@@ -64,9 +64,12 @@ function truncateUrl(url: string, maxLen = 48): string {
 export default function ConnectionsClient({
   connectedId,
   errorMsg,
+  workspaces = [],
 }: {
   connectedId?: string;
   errorMsg?: string;
+  /** Workspaces in the owning team — passed to the Add Connection modal's scope picker. */
+  workspaces?: { id: string; name: string }[];
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -481,6 +484,7 @@ export default function ConnectionsClient({
         <AddConnectionModal
           onClose={() => setShowAddModal(false)}
           onAdded={handleAdded}
+          workspaces={workspaces}
         />
       )}
 

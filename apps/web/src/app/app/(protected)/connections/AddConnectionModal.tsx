@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 
 interface CreatedConnector {
   id: string;
@@ -11,18 +12,29 @@ interface CreatedConnector {
   headerName?: string | null;
 }
 
+interface WorkspaceOption {
+  id: string;
+  name: string;
+}
+
 interface AddConnectionModalProps {
   onClose: () => void;
   onAdded: (connector: CreatedConnector) => void;
+  /** Workspaces in the owning team — feeds the "One workspace" scope option. */
+  workspaces?: WorkspaceOption[];
 }
 
 type Step = 'form' | 'discovered';
 
-export default function AddConnectionModal({ onClose, onAdded }: AddConnectionModalProps) {
+export default function AddConnectionModal({ onClose, onAdded, workspaces = [] }: AddConnectionModalProps) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [headerValue, setHeaderValue] = useState('');
   const [step, setStep] = useState<Step>('form');
+  // Scope (unified-sharing). Cross-team ('all_teams') is a post-creation share, so
+  // the selector offers only "This team" and "One workspace" here.
+  const [scope, setScope] = useState<ShareScope>('team');
+  const [scopeWorkspaceId, setScopeWorkspaceId] = useState<string>(workspaces[0]?.id ?? '');
   const [createdConnector, setCreatedConnector] = useState<CreatedConnector & { discoveredAuthMode?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +44,14 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
     nameRef.current?.focus();
   }, []);
 
+  // Scope fragment threaded into every /api/connectors POST (discover + header re-POST)
+  // so the chosen reach survives the auth-mode round trip.
+  function scopeBody(): { scope: ShareScope; workspaceId?: string } {
+    return scope === 'workspace'
+      ? { scope: 'workspace', workspaceId: scopeWorkspaceId }
+      : { scope: 'team' };
+  }
+
   // Called when user clicks "Add connection" in the form step.
   // POST to /api/connectors with authMode='oauth' to trigger auto-discovery.
   async function handleDiscover(e: React.FormEvent) {
@@ -40,13 +60,17 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
       setError('Name and URL are required.');
       return;
     }
+    if (scope === 'workspace' && !scopeWorkspaceId) {
+      setError('Select a workspace for this connection.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const res = await fetch('/api/connectors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), url: url.trim() }),
+        body: JSON.stringify({ name: name.trim(), url: url.trim(), ...scopeBody() }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -109,6 +133,7 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
           url: createdConnector.url,
           authMode: 'header',
           headerValue: headerValue.trim(),
+          ...scopeBody(),
         }),
       });
       if (res.ok) {
@@ -191,10 +216,25 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                   {error}
                 </div>
               )}
-              {/* Make scope clear up-front (mirrors the agent-backend "Applies to" language). */}
-              <p className="text-[11px] text-text-muted">
-                This connection will be available to <strong className="text-text-secondary">all workspaces in your current team</strong>. You can share it with other teams afterward from its Sharing panel.
-              </p>
+              {/* Scope up-front in the shared vocabulary (mirrors the agent-backend
+                  "Applies to" control). Cross-team ("All my teams") is intentionally
+                  omitted — it stays a post-creation share via the Sharing panel. */}
+              <div className="pt-1">
+                <ScopeSelector
+                  scope={scope}
+                  onScopeChange={setScope}
+                  workspaceId={scopeWorkspaceId}
+                  onWorkspaceChange={setScopeWorkspaceId}
+                  workspaces={workspaces}
+                  allowAllTeams={false}
+                />
+                <p className="text-[11px] text-text-muted mt-2">
+                  {scope === 'workspace'
+                    ? 'Only the selected workspace will see this connection.'
+                    : 'Available to all workspaces in this team.'}{' '}
+                  You can share it with other teams afterward from its Sharing panel.
+                </p>
+              </div>
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"

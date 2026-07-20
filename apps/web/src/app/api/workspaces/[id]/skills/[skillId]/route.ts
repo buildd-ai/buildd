@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { connectors, connectorWorkspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -112,6 +112,35 @@ export async function PATCH(
 
         if (!existing) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+        }
+
+        // Scope guard (unified-sharing Phase 2): a workspace-scoped role must not mount a
+        // connector that is workspace-scoped to a DIFFERENT workspace. `id` is this role's
+        // workspace; a workspace-scoped connector is only in scope when its allowlist
+        // includes `id`. Mirrors the client-side disable in RoleEditor.
+        if (Array.isArray(connectorRefs) && connectorRefs.length > 0) {
+            const refConnectors = await db.query.connectors.findMany({
+                where: inArray(connectors.id, connectorRefs),
+                columns: { id: true, workspaceScoped: true },
+            });
+            const scopedIds = refConnectors.filter(c => c.workspaceScoped).map(c => c.id);
+            if (scopedIds.length > 0) {
+                const mounts = await db.query.connectorWorkspaces.findMany({
+                    where: and(
+                        inArray(connectorWorkspaces.connectorId, scopedIds),
+                        eq(connectorWorkspaces.workspaceId, id),
+                    ),
+                    columns: { connectorId: true, enabled: true },
+                });
+                const enabledHere = new Set(mounts.filter(m => m.enabled).map(m => m.connectorId));
+                const outOfScope = scopedIds.filter(cid => !enabledHere.has(cid));
+                if (outOfScope.length > 0) {
+                    return NextResponse.json(
+                        { error: 'connector_out_of_scope', connectorIds: outOfScope },
+                        { status: 400 },
+                    );
+                }
+            }
         }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };

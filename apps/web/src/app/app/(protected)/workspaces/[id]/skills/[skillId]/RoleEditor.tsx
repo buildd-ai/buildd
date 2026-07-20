@@ -29,14 +29,12 @@ type Scope = 'team' | 'workspace';
 
 /**
  * A team connector as surfaced by GET /api/connectors.
- *
- * ASSUMED SHAPE (reconcile with the connectors API agent):
- *   - id, name, url, authMode, status are already returned today.
- *   - transport is added by the foundation (defaults 'http'); optional here so the
- *     UI degrades gracefully if the route hasn't been updated to project it yet.
- *   - enabledWorkspaceIds: ids of workspaces this connector is enabled for. If the
- *     payload omits it we cannot tell workspace-enablement → see the TODO in the
- *     connector list (spec §2: mounting needs role-ref AND workspace-enable).
+ *   - id, name, url, authMode, status, transport are projected by the list route.
+ *   - workspaceScoped: false = team-wide reach (visible in every workspace); true =
+ *     opt-in allowlist mounted only in enabledWorkspaceIds (unified-sharing Phase 3).
+ *   - enabledWorkspaceIds: workspaces with an enabled mount row. For a workspace-scoped
+ *     connector this is its allowlist; the editor uses it to render reach and to block
+ *     mounting a connector scoped to a different workspace than this role's.
  *   - needsReview: true for migrated placeholders (discoveredMetadata.needsReview,
  *     spec §4) — the URL/auth still needs a human.
  */
@@ -47,6 +45,7 @@ interface Connector {
   authMode: 'none' | 'header' | 'oauth';
   status: 'connected' | 'expired' | 'not_connected';
   transport?: 'http' | 'stdio';
+  workspaceScoped?: boolean;
   enabledWorkspaceIds?: string[];
   needsReview?: boolean;
 }
@@ -371,7 +370,24 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     );
   };
 
+  // Reach in the shared sharing vocabulary. Team-wide connectors read "This team";
+  // workspace-scoped ones read "One workspace: <name>" from their allowlist.
+  const wsNameById = new Map(userWorkspaces.map(w => [w.id, w.name]));
+  const reachLabel = (c: Connector): string => {
+    if (!c.workspaceScoped) return 'This team';
+    const names = (c.enabledWorkspaceIds ?? []).map(id => wsNameById.get(id) ?? 'a workspace');
+    if (names.length === 0) return 'One workspace';
+    return `One workspace: ${names.join(', ')}`;
+  };
+  // A workspace-scoped connector is out of scope for THIS role unless its allowlist
+  // includes this workspace. A workspace-scoped role must not mount such a connector.
+  const isOutOfScope = (c: Connector): boolean =>
+    !!c.workspaceScoped && !(c.enabledWorkspaceIds ?? []).includes(workspaceId);
+
   const toggleConnector = (id: string) => {
+    const connector = teamConnectors.find(c => c.id === id);
+    // Block mounting a connector scoped to a different workspace (validated again server-side).
+    if (connector && isOutOfScope(connector) && !connectorRefs.includes(id)) return;
     setConnectorRefs(prev =>
       prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
     );
@@ -703,24 +719,19 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 )}
                 {teamConnectors.map((connector) => {
                   const active = connectorRefs.includes(connector.id);
-                  // TODO(spec §2): mounting needs BOTH a role ref AND workspace enablement.
-                  // If GET /api/connectors omits enabledWorkspaceIds we cannot detect the
-                  // "enabled for this workspace" case here — reconcile the payload with the
-                  // connectors API agent so this note fires accurately.
-                  const enabledHere = connector.enabledWorkspaceIds
-                    ? connector.enabledWorkspaceIds.includes(workspaceId)
-                    : true;
+                  const outOfScope = isOutOfScope(connector);
                   return (
                     <div
                       key={connector.id}
                       className={`border rounded-md overflow-hidden transition-colors ${
                         active ? 'border-text-primary' : 'border-border-default'
-                      }`}
+                      } ${outOfScope && !active ? 'opacity-60' : ''}`}
                     >
                       <button
                         type="button"
                         onClick={() => toggleConnector(connector.id)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors"
+                        disabled={outOfScope && !active}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
                       >
                         <span
                           className={`w-4 h-4 flex-shrink-0 border-2 flex items-center justify-center ${
@@ -740,6 +751,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                               <span className="text-[10px] text-text-muted font-mono">stdio</span>
                             )}
                           </div>
+                          {/* Reach in the shared vocabulary — consistent with the connector card + credentials. */}
+                          <span className="block text-[11px] text-text-muted truncate">{reachLabel(connector)}</span>
                           {connector.url && (
                             <span className="block text-[11px] text-text-muted font-mono truncate">{connector.url}</span>
                           )}
@@ -753,10 +766,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           <ConnectorBadge authMode={connector.authMode} status={connector.status} />
                         </div>
                       </button>
-                      {active && !enabledHere && (
+                      {outOfScope && (
                         <div className="px-3 py-1.5 bg-surface-2 border-t border-border-default">
                           <p className="text-[11px] text-text-muted">
-                            Enable this connector for <span className="font-medium text-text-primary">{workspaceName}</span> in Settings → Connectors to mount it.
+                            Scoped to another workspace — cannot be mounted by a role in <span className="font-medium text-text-primary">{workspaceName}</span>.
                           </p>
                         </div>
                       )}

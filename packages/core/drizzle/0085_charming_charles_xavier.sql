@@ -1,0 +1,1 @@
+ALTER TABLE "connectors" ADD COLUMN "workspace_scoped" boolean DEFAULT false NOT NULL;

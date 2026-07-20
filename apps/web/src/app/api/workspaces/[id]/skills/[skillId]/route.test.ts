@@ -9,6 +9,8 @@ const mockSkillsUpdate = mock(() => null as any);
 const mockSkillsDelete = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
+const mockConnectorsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockConnectorWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -42,6 +44,8 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
+      connectors: { findMany: mockConnectorsFindMany },
+      connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
     },
     update: mockSkillsUpdate,
     delete: mockSkillsDelete,
@@ -52,6 +56,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
 }));
 
 // Mock schema
@@ -60,6 +65,8 @@ mock.module('@buildd/core/db/schema', () => ({
     id: 'id',
     workspaceId: 'workspaceId',
   },
+  connectors: { id: 'id', workspaceScoped: 'workspaceScoped' },
+  connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
 }));
 
 // Import handlers AFTER mocks
@@ -279,6 +286,10 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     mockSkillsUpdate.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    mockConnectorsFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no auth', async () => {
@@ -521,6 +532,58 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     expect(capturedUpdates.connectorRefs).toEqual(['conn-1', 'conn-2']);
     const data = await response.json();
     expect(data.skill.connectorRefs).toEqual(['conn-1', 'conn-2']);
+  });
+
+  // Unified-sharing Phase 2: reject mounting a connector workspace-scoped to a
+  // DIFFERENT workspace than this role's (no enabled mount row for ws-1).
+  it('returns 400 connector_out_of_scope when a workspace-scoped connector is not in scope', async () => {
+    const existingSkill = {
+      id: 'skill-1', workspaceId: 'ws-1', name: 'Builder', slug: 'builder',
+      content: '# Builder', isRole: true, connectorRefs: [], enabled: true,
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+    // conn-1 is workspace-scoped, and has NO enabled mount row for ws-1.
+    mockConnectorsFindMany.mockResolvedValue([{ id: 'conn-1', workspaceScoped: true }]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+
+    const request = createMockRequest({ method: 'PATCH', body: { connectorRefs: ['conn-1'] } });
+    const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-1' });
+    const response = await PATCH(request, { params });
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe('connector_out_of_scope');
+    expect(data.connectorIds).toEqual(['conn-1']);
+  });
+
+  // A workspace-scoped connector WITH an enabled mount row for this workspace is allowed.
+  it('allows a workspace-scoped connector when it is enabled for this workspace', async () => {
+    const existingSkill = {
+      id: 'skill-1', workspaceId: 'ws-1', name: 'Builder', slug: 'builder',
+      content: '# Builder', isRole: true, connectorRefs: [], enabled: true,
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+    mockConnectorsFindMany.mockResolvedValue([{ id: 'conn-1', workspaceScoped: true }]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([{ connectorId: 'conn-1', enabled: true }]);
+
+    const mockReturning = mock(() => [{ ...existingSkill, connectorRefs: ['conn-1'] }]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    const request = createMockRequest({ method: 'PATCH', body: { connectorRefs: ['conn-1'] } });
+    const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-1' });
+    const response = await PATCH(request, { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.skill.connectorRefs).toEqual(['conn-1']);
   });
 
   it('returns 404 when skill not found', async () => {

@@ -1596,6 +1596,12 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
+  // Workspace-scoping mode (unified-sharing Phase 3). false (default) = opt-out:
+  // a missing connectorWorkspaces row means the connector is visible in EVERY
+  // workspace of the owning team (rows only ever disable). true = opt-in allowlist:
+  // the connector mounts ONLY in workspaces that have an enabled connectorWorkspaces
+  // row. Additive; existing rows keep the historical opt-out behavior.
+  workspaceScoped: boolean('workspace_scoped').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

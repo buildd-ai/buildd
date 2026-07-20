@@ -7,6 +7,8 @@ const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockConnectorsFindMany = mock(() => [] as any[]);
 const mockConnectorsFindFirst = mock(() => null as any);
 const mockConnectorSharesFindMany = mock(() => [] as any[]);
+const mockConnectorWorkspacesFindMany = mock(() => [] as any[]);
+const mockWorkspacesFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockConnectorsInsert = mock(() => ({
@@ -14,6 +16,9 @@ const mockConnectorsInsert = mock(() => ({
     returning: mock(() => [{ id: 'conn-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth', teamId: 'team-1' }]),
   })),
 }));
+// Captures connector_workspaces mount-row inserts (workspace-scoped create path).
+const mockConnectorWorkspacesInsertValues = mock((_v: any) => Promise.resolve());
+const mockConnectorWorkspacesInsert = mock(() => ({ values: mockConnectorWorkspacesInsertValues }));
 const mockDiscoverOAuthMetadata = mock(() => Promise.resolve({ authMode: 'none' as const }));
 const mockRegisterClient = mock(() => Promise.resolve({ client_id: 'client-1' }));
 const mockGetCallbackUrl = mock(() => 'https://app.example.com/api/connectors/callback');
@@ -33,15 +38,19 @@ mock.module('@buildd/core/secrets', () => ({
   encrypt: mockEncrypt,
 }));
 
+const schemaConnectorWorkspaces = { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' };
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       connectors: { findMany: mockConnectorsFindMany, findFirst: mockConnectorsFindFirst },
       connectorShares: { findMany: mockConnectorSharesFindMany },
+      connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       secrets: { findMany: mockSecretsFindMany },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
     },
-    insert: () => mockConnectorsInsert(),
+    insert: (table: any) => (table === schemaConnectorWorkspaces ? mockConnectorWorkspacesInsert() : mockConnectorsInsert()),
   },
 }));
 
@@ -54,8 +63,10 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
+  connectorWorkspaces: schemaConnectorWorkspaces,
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
   teamMembers: { userId: 'userId', teamId: 'teamId' },
+  workspaces: { id: 'id', teamId: 'teamId' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -82,11 +93,13 @@ describe('GET /api/connectors', () => {
     mockGetUserTeamIds.mockReset();
     mockConnectorsFindMany.mockReset();
     mockConnectorSharesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockReset();
     mockSecretsFindMany.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
     mockSecretsFindMany.mockResolvedValue([]);
   });
 
@@ -189,10 +202,14 @@ describe('POST /api/connectors', () => {
     mockConnectorsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
     mockSecretsProviderSet.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockConnectorWorkspacesInsert.mockClear();
+    mockConnectorWorkspacesInsertValues.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'none' as const });
     mockConnectorsFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
     // Default: session user is an admin/owner of the team (no member row => personal team => allowed).
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'owner' });
     mockSecretsProviderSet.mockResolvedValue('secret-1');
@@ -399,5 +416,62 @@ describe('POST /api/connectors', () => {
     expect(captured.assertionTokenEndpoint).toBe('https://cue.buildd.dev/api/oauth/token');
     // Must not try to discover OAuth metadata for assertion connectors
     expect(mockDiscoverOAuthMetadata).not.toHaveBeenCalled();
+  });
+
+  // Unified-sharing Phase 3: scope defaults to team → workspaceScoped:false, no mount row.
+  it('creates a team-scoped connector by default (workspaceScoped false, no mount row)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return {
+        returning: mock(() => [{ id: 'conn-team', name: 'Team', url: 'https://mcp.example.com', authMode: 'none', teamId: 'team-1' }]),
+      }; }),
+    });
+    const res = await POST(makePostReq({ name: 'Team Connector', url: 'https://mcp.example.com', authMode: 'none' }));
+    expect(res.status).toBe(201);
+    expect(captured.workspaceScoped).toBe(false);
+    expect(mockConnectorWorkspacesInsertValues).not.toHaveBeenCalled();
+  });
+
+  // scope:'workspace' → workspaceScoped:true + an enabled mount row for the chosen workspace.
+  it('creates a workspace-scoped connector with an enabled mount row', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    let captured: any;
+    mockConnectorsInsert.mockReturnValue({
+      values: mock((v: any) => { captured = v; return {
+        returning: mock(() => [{ id: 'conn-ws', name: 'WS', url: 'https://mcp.example.com', authMode: 'none', teamId: 'team-1' }]),
+      }; }),
+    });
+    const res = await POST(makePostReq({
+      name: 'WS Connector', url: 'https://mcp.example.com', authMode: 'none',
+      scope: 'workspace', workspaceId: 'ws-1',
+    }));
+    expect(res.status).toBe(201);
+    expect(captured.workspaceScoped).toBe(true);
+    expect(mockConnectorWorkspacesInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ connectorId: 'conn-ws', workspaceId: 'ws-1', enabled: true }),
+    );
+  });
+
+  // scope:'workspace' with no workspaceId → 400.
+  it('returns 400 workspace_id_required when scope is workspace but no workspaceId', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makePostReq({ name: 'WS', url: 'https://mcp.example.com', authMode: 'none', scope: 'workspace' }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('workspace_id_required');
+  });
+
+  // scope:'workspace' with a workspace not in the owning team → 400.
+  it('returns 400 workspace_not_in_team when the workspace does not belong to the team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    const res = await POST(makePostReq({
+      name: 'WS', url: 'https://mcp.example.com', authMode: 'none',
+      scope: 'workspace', workspaceId: 'ws-other',
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('workspace_not_in_team');
   });
 });
