@@ -81,13 +81,15 @@ describe('materializeCodexAuth', () => {
     expect(existsSync(authPath)).toBe(true);
   });
 
-  fsTest('auth.json contains access_token, refresh_token, account_id', () => {
+  fsTest('auth.json contains access_token and account_id (no refresh_token)', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
     expect(authJson.access_token).toBe('tok_access_123');
-    expect(authJson.refresh_token).toBe('tok_refresh_456');
+    // refresh_token is deliberately omitted — workers receive access-token-only so
+    // the Codex CLI cannot rotate tokens in-session (mirrors claude-auth.ts pattern).
+    expect(authJson.refresh_token).toBeUndefined();
     expect(authJson.account_id).toBe('acct_789');
   });
 
@@ -96,8 +98,8 @@ describe('materializeCodexAuth', () => {
     dirs.push(codexHome);
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // expiresAt should NOT be in auth.json (it's metadata, not needed by Codex CLI)
-    expect(Object.keys(authJson).sort()).toEqual(['access_token', 'account_id', 'refresh_token']);
+    // expiresAt and refresh_token should NOT be in auth.json (metadata / deliberately excluded)
+    expect(Object.keys(authJson).sort()).toEqual(['access_token', 'account_id']);
   });
 
   fsTest('temp dir is prefixed with "codex-"', () => {

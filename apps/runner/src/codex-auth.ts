@@ -67,13 +67,23 @@ export function ensureStableCodexHome(workerId: string): { codexHome: string } {
   return { codexHome };
 }
 
-/** (Re)write auth.json into an existing CODEX_HOME. Idempotent. */
+/** (Re)write auth.json into an existing CODEX_HOME. Idempotent.
+ *
+ * OAuth credentials are written as access_token-only (no refresh_token).
+ * This mirrors claude-auth.ts's materializeClaudeConfigDir pattern: workers
+ * receive a short-lived access_token and the server (cron + claim-gate) is
+ * the sole entity that calls the OpenAI token endpoint. Without a
+ * refresh_token in auth.json the Codex CLI cannot rotate in-session,
+ * eliminating the token-family revocation cascade where each run's stale
+ * refresh_token invalidates the next run's credential.
+ */
 export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
   const authJson = credential.credentialType === 'api_key'
     ? { api_key: credential.apiKey }
     : {
         access_token: credential.accessToken,
-        refresh_token: credential.refreshToken,
+        // Deliberately no refresh_token — workers must not rotate tokens in-session.
+        // The server refreshes centrally via refreshCodexCredential (cron + claim-gate).
         account_id: credential.accountId,
       };
   const authPath = join(codexHome, 'auth.json');

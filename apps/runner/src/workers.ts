@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } f
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
@@ -1607,10 +1607,14 @@ export class WorkerManager {
           writeCodexApiKeyToHome(_ch, worker.codexCredential.apiKey);
           console.log(`[Worker ${worker.id}] Injecting Codex API key credential`);
         } else if (worker.codexCredential?.credentialType === 'oauth') {
-          // B (seed-if-missing): only write auth.json the first time. If auth.json
-          // already exists (from a prior run), the CLI may have refreshed the tokens
-          // — don't overwrite with the potentially staler stored snapshot.
-          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential);
+          // Always re-seed from the claim-time credential. The claim route already
+          // refreshes the access_token before injecting it, so this is always fresh.
+          // auth.json is written access_token-only (no refresh_token) so the Codex
+          // CLI cannot rotate tokens in-session — eliminating the token-family
+          // revocation cascade. Refresh happens centrally via refreshCodexCredential
+          // (cron + claim-gate). sessions/ is preserved (materializeStableCodexHome
+          // does not touch it), so resumable rollouts survive restarts.
+          const { codexHome: home } = materializeStableCodexHome(worker.id, worker.codexCredential);
           _ch = home;
         } else {
           _ch = ensureStableCodexHome(worker.id).codexHome;
@@ -2400,27 +2404,6 @@ If something is missing or incomplete, describe what and fix it now.`;
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
-
-        // B (write-back): After a successful OAuth Codex session, the CLI may have
-        // silently refreshed the tokens. Read the auth.json we left in place
-        // (seed-if-missing means it was never rewritten from the stale snapshot) and
-        // POST the current tokens back so the credential store stays fresh.
-        // Best-effort — never throws, never logs token values.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
-          try {
-            const currentAuth = readCodexAuthJson(worker.id);
-            if (currentAuth?.access_token && currentAuth?.refresh_token) {
-              await this.buildd.writeBackCodexAuth(task.workspaceId, {
-                accessToken: currentAuth.access_token,
-                refreshToken: currentAuth.refresh_token,
-                ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
-              });
-              console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
-            }
-          } catch (err) {
-            console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
-          }
-        }
 
         this.addMilestone(worker, { type: 'status', label: 'Task completed', ts: Date.now() });
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);

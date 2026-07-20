@@ -134,23 +134,26 @@ describe('seedCodexAuthIfMissing', () => {
     expect(existsSync(codexHome)).toBe(true);
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
     expect(auth.access_token).toBe('at_fresh');
-    expect(auth.refresh_token).toBe('rt_fresh');
+    // refresh_token is intentionally omitted — workers receive access-token-only
+    // to prevent in-session CLI rotation (see writeCodexAuthJson).
+    expect(auth.refresh_token).toBeUndefined();
     expect(auth.account_id).toBe('acct_123');
   });
 
   fsTest('does NOT overwrite auth.json when one already exists (seed-if-missing)', () => {
     const workerId = 'seed-test-worker-2';
-    // First: write a "CLI-refreshed" auth.json manually
+    // First: seed auth.json
     const { codexHome } = materializeStableCodexHome(workerId, oauthCred);
-    const freshContent = JSON.stringify({ access_token: 'at_cli_refreshed', refresh_token: 'rt_cli_refreshed', account_id: 'acct_123' });
-    writeFileSync(join(codexHome, 'auth.json'), freshContent);
+    // Overwrite manually (simulates an operator writing a custom auth.json)
+    const customContent = JSON.stringify({ access_token: 'at_custom', account_id: 'acct_123' });
+    writeFileSync(join(codexHome, 'auth.json'), customContent);
 
     // Now call seedCodexAuthIfMissing with DIFFERENT tokens — must not overwrite
-    const staleCredential = { ...oauthCred, accessToken: 'at_stale', refreshToken: 'rt_stale' };
-    seedCodexAuthIfMissing(workerId, staleCredential);
+    const laterCredential = { ...oauthCred, accessToken: 'at_newer' };
+    seedCodexAuthIfMissing(workerId, laterCredential);
 
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth.access_token).toBe('at_cli_refreshed'); // original preserved
+    expect(auth.access_token).toBe('at_custom'); // original preserved
   });
 
   fsTest('is idempotent when called twice with the same credentials', () => {
@@ -176,14 +179,11 @@ describe('readCodexAuthJson', () => {
   fsTest('returns the current auth.json content after seeding', () => {
     const workerId = 'read-test-worker-1';
     const { codexHome } = materializeStableCodexHome(workerId, oauthCred);
-    // Simulate CLI refreshing the tokens
-    const refreshed = { access_token: 'at_refreshed', refresh_token: 'rt_refreshed', account_id: 'acct_123' };
-    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(refreshed));
-
+    // Verify the seeded content (access_token-only; no refresh_token)
     const result = readCodexAuthJson(workerId);
     expect(result).not.toBeNull();
-    expect(result!.access_token).toBe('at_refreshed');
-    expect(result!.refresh_token).toBe('rt_refreshed');
+    expect(result!.access_token).toBe('at_fresh');
+    expect(result!.refresh_token).toBeUndefined();
     expect(result!.account_id).toBe('acct_123');
   });
 
