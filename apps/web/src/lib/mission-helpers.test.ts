@@ -96,6 +96,59 @@ describe('deriveMissionHealth — paused status', () => {
   });
 });
 
+describe('deriveMissionHealth — manual orchestrationMode', () => {
+  it('returns idle (not on-schedule) when orchestrationMode is manual, even with a cron and recent lastRunAt', () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: '0 */6 * * *',
+      lastRunAt: fiveMinutesAgo,
+      nextRunAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
+      orchestrationMode: 'manual',
+    });
+    expect(h).toBe('idle');
+    expect(healthToGroup(h, 50)).toBe('attention');
+  });
+
+  it('returns idle (not on-schedule) when manual and cron exists but never ran', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: '0 9 * * *',
+      lastRunAt: null,
+      nextRunAt: new Date(Date.now() + 3600_000).toISOString(),
+      orchestrationMode: 'manual',
+    });
+    expect(h).toBe('idle');
+  });
+
+  it('auto mode with cron still returns on-schedule (no regression)', () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: '0 */6 * * *',
+      lastRunAt: fiveMinutesAgo,
+      nextRunAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
+      orchestrationMode: 'auto',
+    });
+    expect(h).toBe('on-schedule');
+  });
+
+  it('omitted orchestrationMode with cron still returns on-schedule (backward compat)', () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: '0 */6 * * *',
+      lastRunAt: fiveMinutesAgo,
+      nextRunAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
+    });
+    expect(h).toBe('on-schedule');
+  });
+});
+
 describe('tab count reconciliation', () => {
   it('paused missions are counted in "all" but not in "completed" group', () => {
     // Simulate a bucket of missions: 1 paused, 1 shipped, 1 active

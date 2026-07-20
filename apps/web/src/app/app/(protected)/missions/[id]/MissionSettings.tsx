@@ -218,7 +218,7 @@ export default function MissionSettings({
                   {schedule?.lastRunAt && (
                     <span>Last: {timeAgo(schedule.lastRunAt)}</span>
                   )}
-                  {schedule?.nextRunAt && (
+                  {schedule?.nextRunAt && orchestrationMode !== 'manual' && (
                     isNextOverdue
                       ? <span className="text-status-warning">&middot; Overdue by {overdueMinutes}m</span>
                       : <span>&middot; Next: {timeAgo(schedule.nextRunAt)}</span>
