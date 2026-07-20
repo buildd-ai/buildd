@@ -88,6 +88,9 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
   const [scope, setScope] = useState<Scope>('team');
   const [workspaceId, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
+  // Setup-token / API-key is the fallback for Claude — collapsed by default so the
+  // one-tap OAuth connect is the single primary Claude action (less clutter).
+  const [showClaudeAlt, setShowClaudeAlt] = useState(false);
 
   // The Codex API is nested under a workspace; for team scope we still need a
   // workspace in the team to authorize + resolve the team id.
@@ -154,9 +157,22 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
           )}
         </div>
 
-        <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
-        <div className="border-t border-border-default" />
+        {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
+            key is a collapsed fallback so there's a single Claude section by default. */}
         <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
+        <div>
+          <button
+            onClick={() => setShowClaudeAlt((v) => !v)}
+            className="text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+          >
+            {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude — setup token or API key
+          </button>
+          {showClaudeAlt && (
+            <div className="mt-3 pl-3 border-l-2 border-border-default">
+              <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
+            </div>
+          )}
+        </div>
         <div className="border-t border-border-default" />
         <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
       </div>
@@ -466,9 +482,9 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="text-sm font-medium text-text-primary">Claude</h3>
+        <h3 className="text-sm font-medium text-text-primary">Setup token / API key</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Provide an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
+          A fallback to the one-tap connect: paste an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
           or an Anthropic API key (pay-per-token).
         </p>
       </div>
@@ -743,7 +759,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="text-sm font-medium text-text-primary">Claude — connected account <span className="text-xs font-normal text-status-info">(recommended)</span></h3>
+        <h3 className="text-sm font-medium text-text-primary">Claude</h3>
         <p className="text-xs text-text-secondary mt-0.5">
           Connect with Claude in one tap — approve in the browser and paste the short code back.
           Tokens are refreshed server-side; workers never rotate them directly.
