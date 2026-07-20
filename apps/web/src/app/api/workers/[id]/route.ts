@@ -89,6 +89,15 @@ export async function PATCH(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  // Resolve workspace sensitivity once — used throughout the handler to redact prose.
+  const wsForSensitivity = worker.workspaceId
+    ? await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, worker.workspaceId),
+        columns: { dataClass: true },
+      })
+    : null;
+  const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
+
   const body = await req.json();
 
   // Check if worker was already terminated (reassigned/failed)
@@ -175,12 +184,21 @@ export async function PATCH(
   // Auto-increment turns for MCP workers that don't send explicit turn counts
   else updates.turns = sql`${workers.turns} + 1` as any;
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
-  if (currentAction !== undefined) updates.currentAction = currentAction;
-  if (milestones !== undefined) updates.milestones = milestones;
+  // Sensitive: generic state string instead of prose action description
+  if (currentAction !== undefined) updates.currentAction = isSensitive ? 'working' : currentAction;
+  // Sensitive: keep {type, ts} only — strip label and metadata prose
+  if (milestones !== undefined) {
+    updates.milestones = isSensitive
+      ? (milestones as any[]).map((m: any) => ({ type: m.type, ts: m.ts }))
+      : milestones;
+  }
   // appendMilestones: merge new milestones into existing (for MCP workers)
   if (appendMilestones && Array.isArray(appendMilestones)) {
     const existing = (worker.milestones as any[]) || [];
-    const merged = [...existing, ...appendMilestones];
+    const toAppend = isSensitive
+      ? appendMilestones.map((m: any) => ({ type: m.type, ts: m.ts }))
+      : appendMilestones;
+    const merged = [...existing, ...toAppend];
     updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
   }
   // appendMcpCalls: merge new MCP tool calls into existing log
@@ -201,7 +219,8 @@ export async function PATCH(
         workerId: worker.id,
         taskId: worker.taskId,
         pattern: String(t.pattern).slice(0, 100),
-        excerpt: String(t.excerpt).slice(0, 500),
+        // Sensitive: drop excerpt prose, keep only pattern/source/ts for structured analysis
+        excerpt: isSensitive ? '' : String(t.excerpt).slice(0, 500),
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
@@ -220,15 +239,21 @@ export async function PATCH(
   if (typeof filesChanged === 'number' && (filesChanged > 0 || !(worker.filesChanged ?? 0))) updates.filesChanged = filesChanged;
   if (typeof linesAdded === 'number' && (linesAdded > 0 || !(worker.linesAdded ?? 0))) updates.linesAdded = linesAdded;
   if (typeof linesRemoved === 'number' && (linesRemoved > 0 || !(worker.linesRemoved ?? 0))) updates.linesRemoved = linesRemoved;
-  // Waiting state
-  if (waitingFor !== undefined) updates.waitingFor = waitingFor;
-  // Pushover notification when agent needs input
+  // Waiting state — sensitive: store type only, drop prompt prose
+  if (waitingFor !== undefined) {
+    updates.waitingFor = (isSensitive && waitingFor !== null)
+      ? { type: waitingFor.type }
+      : waitingFor;
+  }
+  // Pushover notification when agent needs input — sensitive: generic message only
   if (waitingFor?.type === 'question') {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     notify({
       app: 'tasks',
       title: 'Agent needs your input',
-      message: (waitingFor.prompt || 'A task needs your response').slice(0, 200),
+      message: isSensitive
+        ? 'Agent waiting for input'
+        : (waitingFor.prompt || 'A task needs your response').slice(0, 200),
       url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
       urlTitle: 'Respond',
       priority: 0,
@@ -245,14 +270,17 @@ export async function PATCH(
   // Status audit trail: record terminal transitions in milestones for debugging
   if (status === 'completed' || status === 'failed') {
     const existingMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
-    const transition = {
-      type: 'statusTransition',
-      label: `Status: ${worker.status} → ${status}`,
-      from: worker.status,
-      to: status,
-      ts: Date.now(),
-      source: 'api',
-    };
+    // Sensitive: keep {type, ts} only — strip label/from/to prose
+    const transition = isSensitive
+      ? { type: 'statusTransition', ts: Date.now() }
+      : {
+          type: 'statusTransition',
+          label: `Status: ${worker.status} → ${status}`,
+          from: worker.status,
+          to: status,
+          ts: Date.now(),
+          source: 'api',
+        };
     updates.milestones = [...existingMilestones, transition];
   }
 
@@ -657,7 +685,10 @@ export async function PATCH(
             resumeBranch: worker.branch,
             ...(worker.lastCommitSha ? { lastCommitSha: worker.lastCommitSha } : {}),
             failureContext: {
-              summary: body.error ?? worker.error ?? 'Worker failed without an error message',
+              // Sensitive: drop prose summary, keep errorType code only
+              summary: isSensitive
+                ? 'runtime_error'
+                : (body.error ?? worker.error ?? 'Worker failed without an error message'),
               errorType: 'runtime_error',
               ...(worker.lastCommitSha ? { commitSha: worker.lastCommitSha } : {}),
             },
@@ -689,6 +720,19 @@ export async function PATCH(
             .replace(/\nEOF\n?\)\s*"?\s*$/g, '')
             .replace(/\s*Co-Authored-By:.*$/gm, '')
             .trim() || undefined;
+        }
+        // Sensitive: replace prose summary with machine-generated structured line
+        if (isSensitive) {
+          const turns = body.turns ?? worker.turns ?? 0;
+          const cost = body.costUsd ?? parseFloat(worker.costUsd as string ?? '0');
+          const commits = body.commitCount ?? worker.commitCount ?? 0;
+          const prNum = worker.prNumber ?? body.prNumber;
+          summary = [
+            `Completed in ${turns} turns`,
+            cost > 0 ? `$${cost.toFixed(2)}` : null,
+            prNum ? `PR #${prNum}` : null,
+            commits > 0 ? `${commits} commit${commits === 1 ? '' : 's'}` : null,
+          ].filter(Boolean).join(' · ');
         }
         // Extract phase timeline from milestones for result snapshot
         const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
@@ -975,9 +1019,12 @@ export async function PATCH(
               priority: 0,
             });
           } else {
+            // Sensitive: send a redacted stub — event type only, no task title/workspace prose
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
-              message: `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
+              message: isSensitive
+                ? `Task ${isDone ? 'completed' : 'failed'} (content redacted)`
+                : `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
               url: `https://buildd.dev/app/tasks/${worker.taskId}`,
               urlTitle: 'View task',
               priority: isDone ? -1 : 0,
@@ -1182,6 +1229,7 @@ export async function PATCH(
         }).catch((err) => console.error('Discord notify error:', err));
 
         // Webhook callback (enriched with worker performance data)
+        // Sensitive: redacted stub — no summary or structured output in payload
         const completedAt = updates.completedAt ?? worker.completedAt;
         const startedAt = updates.startedAt ?? worker.startedAt;
         const durationMs = startedAt && completedAt
@@ -1189,9 +1237,9 @@ export async function PATCH(
           : null;
         sendTaskCallback(taskForNotify as any, {
           status,
-          summary: result?.summary,
+          summary: isSensitive ? undefined : result?.summary,
           prUrl: result?.prUrl,
-          structuredOutput: (result as any)?.structuredOutput,
+          structuredOutput: isSensitive ? undefined : (result as any)?.structuredOutput,
         }, {
           turns: updates.turns ?? worker.turns,
           inputTokens: updates.inputTokens ?? worker.inputTokens,

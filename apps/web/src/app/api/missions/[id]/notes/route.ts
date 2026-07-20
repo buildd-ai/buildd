@@ -129,6 +129,17 @@ export async function POST(
       ? status
       : (type === 'question' ? 'open' : 'answered');
 
+    // Sensitive: agent-authored notes store type+title only, drop body prose
+    let isSensitive = false;
+    if (access.mission.workspaceId) {
+      const wsRow = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, access.mission.workspaceId),
+        columns: { dataClass: true },
+      });
+      isSensitive = wsRow?.dataClass === 'sensitive';
+    }
+    const effectiveBody = (isSensitive && effectiveAuthorType === 'agent') ? null : (bodyText || null);
+
     // If this is a reply, mark the parent note as answered
     if (replyTo) {
       await db.update(missionNotes)
@@ -146,7 +157,7 @@ export async function POST(
       authorType: effectiveAuthorType,
       type,
       title,
-      body: bodyText || null,
+      body: effectiveBody,
       replyTo: replyTo || null,
       defaultChoice: defaultChoice || null,
       status: effectiveStatus,

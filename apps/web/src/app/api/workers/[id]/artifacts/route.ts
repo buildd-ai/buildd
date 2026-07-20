@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts, tasks } from '@buildd/core/db/schema';
+import { workers, artifacts, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -42,6 +42,16 @@ export async function POST(
 
   if (worker.accountId !== account.id) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  // Sensitive: block content — allow metadata stub rows only
+  let isSensitive = false;
+  if (worker.workspaceId) {
+    const wsRow = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, worker.workspaceId),
+      columns: { dataClass: true },
+    });
+    isSensitive = wsRow?.dataClass === 'sensitive';
   }
 
   const linkedTask = worker.taskId
@@ -91,12 +101,13 @@ export async function POST(
 
     if (existing) {
       // Update existing artifact, preserve shareToken
+      // Sensitive: never store content prose; storageKey is also blocked (no R2 upload)
       const [updated] = await db
         .update(artifacts)
         .set({
           title,
-          content: content || null,
-          storageKey: storageKey || existing.storageKey || null,
+          content: isSensitive ? null : (content || null),
+          storageKey: isSensitive ? null : (storageKey || existing.storageKey || null),
           metadata: artifactMetadata,
           workerId: id,
           type,
@@ -129,6 +140,7 @@ export async function POST(
   }
 
   // Insert new artifact
+  // Sensitive: content and storageKey are always null — metadata stub only
   const shareToken = randomBytes(24).toString('base64url');
 
   const [artifact] = await db
@@ -140,8 +152,8 @@ export async function POST(
       key: key || null,
       type,
       title,
-      content: content || null,
-      storageKey: storageKey || null,
+      content: isSensitive ? null : (content || null),
+      storageKey: isSensitive ? null : (storageKey || null),
       shareToken,
       metadata: artifactMetadata,
     })

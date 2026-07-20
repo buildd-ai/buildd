@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => ({ dataClass: 'standard' }) as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsFindMany = mock(() => [] as any);
@@ -39,6 +40,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
       artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
@@ -54,6 +56,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
+  workspaces: 'workspaces',
   tasks: 'tasks',
   artifacts: 'artifacts',
 }));
@@ -165,6 +168,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
@@ -172,6 +176,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
     mockTriggerEvent.mockReset();
     mockArtifactsFindFirst.mockResolvedValue(null);
     mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
     mockArtifactsInsert.mockReturnValue({
       values: mock((vals: any) => ({
         returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', type: 'content', title: 'Test', ...vals }]),
