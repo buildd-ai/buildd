@@ -191,6 +191,10 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                   {error}
                 </div>
               )}
+              {/* Make scope clear up-front (mirrors the agent-backend "Applies to" language). */}
+              <p className="text-[11px] text-text-muted">
+                This connection will be available to <strong className="text-text-secondary">all workspaces in your current team</strong>. You can share it with other teams afterward from its Sharing panel.
+              </p>
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"

@@ -406,6 +406,14 @@ export default function ConnectionsClient({
                   <div className="text-xs text-text-secondary font-mono break-all">
                     {truncateUrl(connector.url)}
                   </div>
+                  {/* Reach — make scope visible at a glance instead of hidden behind "Sharing".
+                      Owned connectors are available to all workspaces in the owning team;
+                      cross-team access is granted explicitly via the Sharing panel. */}
+                  {!connector.shared && (
+                    <div className="text-[11px] text-text-muted mt-1">
+                      Available to all workspaces in this team · share with other teams via Sharing
+                    </div>
+                  )}
                 </div>
                 {/* Grantees only enable per workspace / opt roles in — no config,
                     credential, or sharing controls on a shared-in connector (spec §1b). */}
