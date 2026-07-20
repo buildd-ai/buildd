@@ -16,6 +16,7 @@ interface Props {
     dependsOn?: string[];
     mode?: TaskModeValue;
     status?: string;
+    backend?: 'claude' | 'codex' | null;
   };
   onClose: () => void;
 }
@@ -25,6 +26,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || '');
   const [priority, setPriority] = useState(task.priority);
+  const [backend, setBackend] = useState<'claude' | 'codex' | null>(task.backend ?? null);
   const [mode, setMode] = useState<TaskModeValue>(task.mode || 'execution');
   const [selectedDeps, setSelectedDeps] = useState<string[]>(task.dependsOn || []);
   const [loading, setLoading] = useState(false);
@@ -51,6 +53,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
           title: title.trim(),
           description: description.trim() || null,
           priority,
+          backend,
           mode,
           project: task.project ?? null,
           dependsOn: selectedDeps,
@@ -147,6 +150,24 @@ export default function EditTaskModal({ task, onClose }: Props) {
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"
                 disabled={loading}
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Backend</label>
+              <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
+                {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => (
+                  <button
+                    key={o.l}
+                    type="button"
+                    onClick={() => setBackend(o.v)}
+                    disabled={loading}
+                    className={`px-3 py-1 text-sm font-medium rounded-md transition-colors disabled:opacity-50 ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
+                  >
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-text-muted mt-1">Auto uses the mission/role/workspace default.</p>
             </div>
 
             {/* Mode toggle — only when task is still pending */}

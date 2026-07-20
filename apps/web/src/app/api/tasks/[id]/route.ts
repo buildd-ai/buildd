@@ -164,7 +164,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl, backend } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -173,6 +173,9 @@ export async function PATCH(
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
     if (priority !== undefined) updateData.priority = priority;
+    // Agent backend override for this task. 'claude' | 'codex' set it; null/'' clears
+    // it (fall back to mission/role/workspace default). The runner reads it at claim.
+    if (backend !== undefined) updateData.backend = backend === 'claude' || backend === 'codex' ? backend : null;
     if (project !== undefined) updateData.project = project;
     if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
     // Link (or unlink) the task to an external issue tracker item (e.g. a Linear

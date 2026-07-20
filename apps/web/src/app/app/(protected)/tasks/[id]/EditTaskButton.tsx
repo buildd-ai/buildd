@@ -15,6 +15,7 @@ interface Props {
     dependsOn?: string[];
     mode?: TaskModeValue;
     status?: string;
+    backend?: 'claude' | 'codex' | null;
   };
 }
 
