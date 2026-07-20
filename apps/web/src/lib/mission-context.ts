@@ -5,13 +5,21 @@ import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { LIVE_WORKER_STATUSES } from './task-timestamps';
 
+// Operational-only schema: no free-text string fields that could capture email
+// subjects, bodies, or sender addresses from sensitive workspaces. Consumers that
+// previously read `summary` / `checksPerformed` / `actionsPerformed` now use the
+// count fields below instead — see buildHeartbeatContext and the prior-heartbeats
+// display loop further down this file.
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
     status: { type: 'string', enum: ['ok', 'action_taken', 'error'] },
-    summary: { type: 'string' },
-    checksPerformed: { type: 'array', items: { type: 'string' } },
-    actionsPerformed: { type: 'array', items: { type: 'string' } },
+    // Operational counts — safe for sensitive workspaces (no content, just numbers)
+    tasksCreated: { type: 'integer', description: 'Number of child tasks spawned this run' },
+    tasksRetried: { type: 'integer', description: 'Number of failed tasks retried this run' },
+    actionCount: { type: 'integer', description: 'Total discrete actions taken (classify, archive, notify…)' },
+    checkCount: { type: 'integer', description: 'Total checks performed' },
+    missionComplete: { type: 'boolean', description: 'Signal that all mission goals are met' },
   },
   required: ['status'],
 };
@@ -879,15 +887,18 @@ Only create child tasks when the work requires:
 - A different role's expertise (e.g., builder for code)
 - More than ~5 minutes of work`);
 
-  // Prior heartbeats
+  // Prior heartbeats — read only operational count fields (no content-bearing strings)
   if (priorHeartbeats.length > 0) {
     descParts.push('\n## Prior Heartbeats');
     for (const t of priorHeartbeats) {
       const result = t.result as Record<string, unknown> | null;
       const so = result?.structuredOutput as Record<string, unknown> | undefined;
       const status = so?.status || 'unknown';
-      const summary = so?.summary || result?.summary || 'no summary';
-      descParts.push(`- ${timeAgo(t.createdAt)}: [${status}] ${summary}`);
+      const counts: string[] = [];
+      if (typeof so?.tasksCreated === 'number') counts.push(`${so.tasksCreated} task(s) created`);
+      if (typeof so?.tasksRetried === 'number' && so.tasksRetried > 0) counts.push(`${so.tasksRetried} retried`);
+      if (typeof so?.actionCount === 'number') counts.push(`${so.actionCount} action(s)`);
+      descParts.push(`- ${timeAgo(t.createdAt)}: [${status}]${counts.length ? ` ${counts.join(', ')}` : ''}`);
     }
   }
 

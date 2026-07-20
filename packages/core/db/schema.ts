@@ -258,6 +258,14 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
+  // Data classification for privacy enforcement. Absent / 'standard' = normal retention.
+  // 'sensitive' = structured-only retention: free-text fields (progress messages, summaries,
+  // artifacts, error traces) are dropped at the control-plane boundary; only schema-validated
+  // structuredOutput flows through. The outputSchema denylist in create_task enforces
+  // that even the schema-validated carve-out contains no content-bearing field names.
+  // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
+  dataClass?: 'standard' | 'sensitive';
+
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
