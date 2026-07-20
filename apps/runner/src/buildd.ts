@@ -1,6 +1,7 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import { BuilddTransport } from '@buildd/core/buildd-transport';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -29,9 +30,15 @@ const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
 export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
+  private transport: BuilddTransport;
 
   constructor(config: LocalUIConfig) {
     this.config = config;
+    this.transport = new BuilddTransport({
+      baseUrl: config.builddServer,
+      apiKey: config.apiKey,
+      timeoutMs: FETCH_TIMEOUT_MS,
+    });
   }
 
   /** Attach an outbox for queuing failed mutations when server is unreachable */
@@ -43,16 +50,13 @@ export class BuilddClient {
     const method = options.method || 'GET';
 
     try {
-      const res = await fetch(`${this.config.builddServer}${endpoint}`, {
-        ...options,
+      const res = await this.transport.request(endpoint, {
+        method,
+        body: options.body as string | undefined,
+        headers: options.headers as Record<string, string> | undefined,
         // Abort hung requests (half-open keep-alive sockets) so the poll loop
         // can't wedge. Caller-supplied signals (if any) take precedence.
-        signal: options.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          ...options.headers,
-        },
+        signal: options.signal as AbortSignal | undefined,
       });
 
       // Got an HTTP response → the server is reachable (even a 4xx counts).
