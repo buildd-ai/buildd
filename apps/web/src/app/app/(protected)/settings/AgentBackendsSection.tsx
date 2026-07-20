@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ScopeSelector } from '@/components/ScopeSelector';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -134,46 +135,16 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <ProviderRoutingToggle teamId={teamId} />
         <div className="border-t border-border-default" />
 
-        {/* Shared scope selector */}
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-medium text-text-secondary">Applies to</span>
-          <div className="flex sm:inline-flex w-full sm:w-auto rounded-lg border border-border-default overflow-hidden">
-            <button
-              onClick={() => setScope('team')}
-              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium transition-colors ${scope === 'team' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
-            >
-              This team
-            </button>
-            <button
-              onClick={() => setScope('workspace')}
-              className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'workspace' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
-            >
-              One workspace
-            </button>
-            {multiTeam && (
-              <button
-                onClick={() => setScope('all_teams')}
-                className={`flex-1 sm:flex-none px-3 h-9 text-sm font-medium border-l border-border-default transition-colors ${scope === 'all_teams' ? 'bg-surface-3 text-text-primary' : 'text-text-secondary'}`}
-              >
-                All my teams
-              </button>
-            )}
-          </div>
-          {scope === 'all_teams' && (
-            <span className="text-xs text-text-muted">Writes one credential per team ({teamTargets.length})</span>
-          )}
-          {scope === 'workspace' && (
-            <select
-              value={workspaceId}
-              onChange={(e) => setWorkspaceId(e.target.value)}
-              className="h-9 px-2 rounded-lg border border-border-default bg-surface text-sm"
-            >
-              {teamWorkspaces.map((ws) => (
-                <option key={ws.id} value={ws.id}>{ws.name}</option>
-              ))}
-            </select>
-          )}
-        </div>
+        {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
+        <ScopeSelector
+          scope={scope}
+          onScopeChange={setScope}
+          workspaceId={workspaceId}
+          onWorkspaceChange={setWorkspaceId}
+          workspaces={teamWorkspaces}
+          allowAllTeams={multiTeam}
+          allTeamsCount={teamTargets.length}
+        />
 
         {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
             key is a collapsed fallback so there's a single Claude section by default. */}
