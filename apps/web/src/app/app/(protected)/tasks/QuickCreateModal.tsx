@@ -49,6 +49,7 @@ export default function QuickCreateModal({
   // Dependencies state
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [showDeps, setShowDeps] = useState(false);
+  const [backend, setBackend] = useState<'claude' | 'codex' | null>(null);
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
@@ -209,6 +210,7 @@ export default function QuickCreateModal({
           ...(attachments && { attachments }),
           ...(Object.keys(context).length > 0 && { context }),
           ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
+          ...(backend && { backend }),
         }),
       });
 
@@ -519,6 +521,24 @@ export default function QuickCreateModal({
                   + Add dependencies
                 </button>
               )}
+
+              {/* Agent backend (optional) */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-text-secondary">Backend</span>
+                <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg">
+                  {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => (
+                    <button
+                      key={o.l}
+                      type="button"
+                      onClick={() => setBackend(o.v)}
+                      disabled={loading}
+                      className={`px-2.5 py-0.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
+                    >
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {/* Worker assignment */}
               {activeLocalUis.length > 0 && (
