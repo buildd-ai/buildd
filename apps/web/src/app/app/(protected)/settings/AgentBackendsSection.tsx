@@ -555,10 +555,54 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
   const [pasteValue, setPasteValue] = useState('');
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // OAuth connect (authorization-code): buildd mints a claude_credential from a
+  // short pasted code instead of the whole .credentials.json blob.
+  const [oauth, setOauth] = useState<{ authorizeUrl: string; verifier: string; state: string } | null>(null);
+  const [oauthCode, setOauthCode] = useState('');
 
   const allTeams = scope === 'all_teams';
   const base = `/api/workspaces/${accessWorkspaceId}/claude-credential`;
   const q = `?scope=${scope}`;
+
+  async function startOAuth() {
+    setBusy(true);
+    setMsg(null);
+    setOauthCode('');
+    try {
+      const res = await fetch(`${base}/oauth/start`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Failed to start Claude login' }); return; }
+      setOauth({ authorizeUrl: data.authorizeUrl, verifier: data.verifier, state: data.state });
+      window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to start Claude login' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitOAuthCode() {
+    if (!oauth || !oauthCode.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`${base}/oauth/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: oauthCode.trim(), verifier: oauth.verifier, state: oauth.state, scope }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Exchange failed' }); return; }
+      setOauth(null);
+      setOauthCode('');
+      setStatus(data);
+      setMsg({ type: 'success', text: 'Claude connected via OAuth (managed refresh enabled).' });
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to exchange code' });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     if (!accessWorkspaceId || scope === 'all_teams') { setStatus(null); return; }
@@ -578,6 +622,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
     setPasteOpen(false);
     setPasteValue('');
     setPasteError(null);
+    setOauth(null);
+    setOauthCode('');
     void load();
   }, [load]);
 
@@ -673,8 +719,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
       <div>
         <h3 className="text-sm font-medium text-text-primary">Claude — connected account <span className="text-xs font-normal text-status-info">(recommended)</span></h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Paste the contents of <code className="bg-surface-3 px-1 rounded text-[11px]">~/.claude/.credentials.json</code> from a machine
-          where you&apos;ve authenticated with Claude. Tokens are refreshed server-side — workers never rotate them directly.
+          Connect with Claude in one tap — approve in the browser and paste the short code back.
+          Tokens are refreshed server-side; workers never rotate them directly.
         </p>
       </div>
 
@@ -712,13 +758,22 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
               {busy ? 'Refreshing…' : 'Refresh now'}
             </button>
             <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+            {!allTeams && !oauth && (
+              <button onClick={startOAuth} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
+                Reconnect with Claude
+              </button>
+            )}
             {!pasteOpen && (
               <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
-                Replace credential
+                Paste .credentials.json
               </button>
             )}
           </div>
 
+          {oauth && (
+            <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
+              onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
+          )}
           {pasteOpen && (
             <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
               onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
@@ -733,6 +788,18 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets }: {
               <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
             </span>
           )}
+          {/* OAuth connect (short code) is the clean primary path. Not for all-teams fan-out. */}
+          {!allTeams && (oauth ? (
+            <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
+              onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
+          ) : (
+            <div className="flex items-center gap-3">
+              <button onClick={startOAuth} disabled={busy} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+                Connect with Claude
+              </button>
+              <span className="text-xs text-text-muted">Recommended — approve + paste a short code, no file</span>
+            </div>
+          ))}
           <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
         </div>
       )}
@@ -763,6 +830,35 @@ function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, o
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
         {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+      </button>
+    </div>
+  );
+}
+
+/** In-progress Claude OAuth connect: approve in the opened tab, paste the short code back. */
+function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCancel }: {
+  authorizeUrl: string; code: string; onChange: (v: string) => void; busy: boolean; onSubmit: () => void; onCancel: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-status-info/30 bg-status-info/5 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-text-primary">Finish connecting Claude</div>
+        <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>
+      </div>
+      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+        <li>Approve in the Claude tab we opened (<a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="text-status-info underline">reopen</a>).</li>
+        <li>Copy the code shown after approving and paste it here:</li>
+      </ol>
+      <input
+        type="text"
+        value={code}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="paste the code (looks like abc…#def…)"
+        className="w-full px-3 py-2 rounded-lg border bg-surface font-mono text-xs"
+        onKeyDown={(e) => { if (e.key === 'Enter' && code.trim() && !busy) onSubmit(); }}
+      />
+      <button onClick={onSubmit} disabled={busy || !code.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+        {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
   );
