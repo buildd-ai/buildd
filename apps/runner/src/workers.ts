@@ -1143,6 +1143,7 @@ export class WorkerManager {
       taskBackend: fullTask.backend || 'claude',
       workspaceId: fullTask.workspaceId,
       workspaceName: fullTask.workspace?.name || 'unknown',
+      workspaceDataClass: fullTask.workspace?.dataClass ?? 'standard',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,

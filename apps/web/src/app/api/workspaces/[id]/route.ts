@@ -88,7 +88,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, discordConfig, teamId, gitConfig, maxConcurrentTasks } = body;
+    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass, discordConfig, teamId, gitConfig, maxConcurrentTasks } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -125,6 +125,9 @@ export async function PATCH(
     const branchValue = localPath ?? defaultBranch;
     if (branchValue !== undefined) updates.localPath = branchValue;
     if (accessMode !== undefined) updates.accessMode = accessMode;
+    if (dataClass !== undefined && (dataClass === 'standard' || dataClass === 'sensitive')) {
+      updates.dataClass = dataClass;
+    }
     if (discordConfig !== undefined) updates.discordConfig = discordConfig;
     // Max parallel workers per repo-backed workspace (>= 1). Worktree isolation makes
     // parallel work safe; this just bounds branch fan-out. Clamp to a sane floor of 1.

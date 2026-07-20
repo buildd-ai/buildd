@@ -244,6 +244,8 @@ export interface Workspace {
   memory: Record<string, unknown>;
   projects?: WorkspaceProject[];
   webhookConfig?: WebhookConfig | null;
+  accessMode?: 'open' | 'restricted';
+  dataClass?: 'standard' | 'sensitive';
   createdAt: Date;
   updatedAt: Date;
   taskCount?: number;

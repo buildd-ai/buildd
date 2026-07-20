@@ -142,6 +142,7 @@ export interface LocalWorker {
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
   workspaceName: string;
+  workspaceDataClass: 'standard' | 'sensitive';
   branch: string;
   status: WorkerStatus;
   hasNewActivity: boolean;  // Blue dot
@@ -264,6 +265,7 @@ export interface BuilddTask {
     gitConfig?: WorkspaceGitConfig;
     configStatus?: 'unconfigured' | 'admin_confirmed';
     teamId?: string;
+    dataClass?: 'standard' | 'sensitive';
   };
   status: string;
   priority: number;

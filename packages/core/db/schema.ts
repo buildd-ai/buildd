@@ -474,6 +474,9 @@ export const workspaces = pgTable('workspaces', {
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+  // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
+  // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
+  dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
