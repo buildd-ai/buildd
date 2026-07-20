@@ -1165,7 +1165,8 @@ export async function POST(req: NextRequest) {
     if (!task) continue;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
     const teamId = (task as any).workspace?.teamId;
-    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId);
+    const sensitive = (task as any).workspace?.dataClass === 'sensitive';
+    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
     // Known-entities catalog (§8.4): canonical entity names for the task's
     // likely files so agents don't invent loose refs. Best-effort — returns ''
     // on any failure; the extra .catch is belt-and-braces (claim must not 500).

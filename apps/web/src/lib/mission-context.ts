@@ -286,10 +286,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   let teamWorkspacesList: Array<{ id: string; name: string; repo: string | null }> = [];
 
+  let missionWorkspaceSensitive = false;
   if (mission.workspaceId) {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, mission.workspaceId),
-      columns: { id: true, name: true, repo: true, githubInstallationId: true },
+      columns: { id: true, name: true, repo: true, githubInstallationId: true, dataClass: true },
     });
     if (ws) {
       workspaceState = {
@@ -298,6 +299,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
         isCoordination: ws.name === '__coordination',
         hasGitHubApp: !!ws.githubInstallationId,
       };
+      missionWorkspaceSensitive = (ws.dataClass as string) === 'sensitive';
     }
   }
 
@@ -567,7 +569,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Knowledge bridge — inject relevant prior work (team memory, prior plans,
   // past task outcomes) retrieved from the KnowledgeStore. Best-effort.
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
-  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId);
+  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId, undefined, { sensitive: missionWorkspaceSensitive });
   descParts.push(...knowledgeParts);
 
   // Known-entities catalog (§8.4) — canonical vocabulary hint. Best-effort ''.
