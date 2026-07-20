@@ -527,7 +527,7 @@ export class BuilddClient {
    */
   async writeBackCodexAuth(
     workspaceId: string,
-    tokens: { accessToken: string; refreshToken: string; accountId?: string; expiresIn?: number },
+    tokens: { accessToken: string; refreshToken: string; accountId?: string; idToken?: string; expiresIn?: number },
   ): Promise<void> {
     try {
       await this.fetch(`/api/workspaces/${workspaceId}/codex-credential/write-back`, {

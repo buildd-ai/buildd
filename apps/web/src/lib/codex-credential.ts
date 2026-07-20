@@ -12,6 +12,8 @@ export interface CodexAuthJson {
   access_token?: string;
   refresh_token?: string;
   account_id?: string;
+  /** id_token — REQUIRED by codex-cli 0.144's auth.json parser (verified live). */
+  id_token?: string;
   /** API key (alternative to OAuth — simpler rotation, recommended for CI/automation) */
   api_key?: string;
   /** seconds until expiry (Codex device-code flow) */
@@ -81,6 +83,9 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
   }
 
   const value: CodexAuthJson = { access_token, refresh_token, account_id };
+  // id_token is required by codex-cli's auth.json parser — capture it if present.
+  const id_token = src.id_token ?? root.id_token;
+  if (typeof id_token === 'string') value.id_token = id_token;
 
   // Explicit lifetime fields can live at the root or alongside the tokens.
   const expiresIn = root.expires_in ?? src.expires_in;
@@ -103,6 +108,8 @@ export interface CodexCredential {
   accessToken?: string;
   refreshToken?: string;
   accountId?: string;
+  // id_token — REQUIRED by codex-cli's auth.json parser (delivered to the runner).
+  idToken?: string;
   // API key — present when credentialType === 'api_key'
   apiKey?: string;
   tokenExpiresAt: Date | null;
@@ -126,6 +133,7 @@ interface CodexBlob {
   access_token?: string;
   refresh_token?: string;
   account_id?: string;
+  id_token?: string;
   // API key (alternative to OAuth)
   api_key?: string;
 }
@@ -180,6 +188,7 @@ export async function storeCodexCredential(scope: CodexScope, authJson: CodexAut
         access_token: authJson.access_token,
         refresh_token: authJson.refresh_token,
         account_id: authJson.account_id,
+        id_token: authJson.id_token,
       });
   // API keys don't carry short-lived JWTs — no expiry metadata.
   const tokenExpiresAt = authJson.api_key ? null : expiryFromAuthJson(authJson);
@@ -238,6 +247,7 @@ export async function resolveCodexCredential(opts: {
           accessToken: blob.access_token,
           refreshToken: blob.refresh_token,
           accountId: blob.account_id,
+          idToken: blob.id_token,
         }),
     tokenExpiresAt: best.tokenExpiresAt ?? null,
     lastRefreshedAt: best.lastRefreshedAt ?? null,
@@ -387,6 +397,10 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     const expiresIn = typeof tokens.expires_in === 'number' ? tokens.expires_in : null;
     const tokenExpiresAt = expiresIn != null ? new Date(Date.now() + expiresIn * 1000) : null;
 
+    // Preserve id_token: the refresh response usually returns a new one, but keep
+    // the prior one if omitted (codex-cli requires it in auth.json).
+    const newIdToken = typeof tokens.id_token === 'string' ? tokens.id_token : blob.id_token;
+
     await db
       .update(secrets)
       .set({
@@ -394,6 +408,7 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
           access_token: newAccessToken,
           refresh_token: newRefreshToken,
           account_id: blob.account_id,
+          id_token: newIdToken,
         }),
         tokenExpiresAt,
         updatedAt: sql`NOW()`,
@@ -422,7 +437,7 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
  */
 export async function writeBackCodexTokens(
   opts: { teamId: string; accountId?: string | null; workspaceId?: string | null },
-  tokens: { accessToken: string; refreshToken: string; accountId?: string; expiresIn?: number },
+  tokens: { accessToken: string; refreshToken: string; accountId?: string; idToken?: string; expiresIn?: number },
 ): Promise<boolean> {
   // Find the credential row to update (most specific scope wins).
   const rows = await db.query.secrets.findMany({
@@ -449,6 +464,7 @@ export async function writeBackCodexTokens(
     access_token: tokens.accessToken,
     refresh_token: tokens.refreshToken,
     account_id: tokens.accountId ?? blob.account_id,
+    id_token: tokens.idToken ?? blob.id_token,
   });
   const tokenExpiresAt = tokens.expiresIn != null ? new Date(Date.now() + tokens.expiresIn * 1000) : null;
 

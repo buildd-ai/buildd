@@ -1060,7 +1060,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { accessToken: string; refreshToken: string; accountId: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -2414,6 +2414,7 @@ If something is missing or incomplete, describe what and fix it now.`;
                 accessToken: currentAuth.access_token,
                 refreshToken: currentAuth.refresh_token,
                 ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
+                ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
               });
               console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
             }

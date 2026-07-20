@@ -1573,6 +1573,7 @@ export async function POST(req: NextRequest) {
                   accessToken: cred.accessToken,
                   refreshToken: cred.refreshToken,
                   accountId: cred.accountId,
+                  idToken: cred.idToken,
                 }
               : {}),
             // API key (only set for api_key credentials)
