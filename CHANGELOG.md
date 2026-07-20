@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mount TaskCard across Home, Activity, and Mission timeline with consistent chain, health, and worker data (#1309)
 - Work-tracker outbound dispatch for GitHub issues via GitHub App — closes linked issues and posts completion comments without a separate connector (#1201)
 - Serialize concurrent agents to prevent PR collisions in orchestrator
 - Missions 'Awaiting review' group + 24h auto-archive for done missions (#1065)
@@ -50,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Suppress schedule countdown and ON SCHEDULE badge for manual-mode missions (#1312)
+- Decouple Codex-backend workers from Claude OAuth token to prevent cross-backend auth failures (#1308)
+- Use refresh grant to verify Codex OAuth credentials instead of GET /v1/models (#1305)
+- Runner worktree disambiguation and split claim error messages (#1304)
 - Deduplicate code corpus during knowledge ingest with hash-skip and backfill enqueue guard (#1220)
 - Fix all 5 seed bugs at 390px viewport (#1105)
 - Truncate long team names in TeamSwitcher header (#1094)
@@ -90,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- Remove deprecated spec-sync workflow — knowledge-ingest supersedes it (#1311)
 - Visual QA PR runs label-gated behind 'visual-qa' label
 - Visual QA ephemeral Neon branch clones sanitized prod data (#1049)
 - Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
