@@ -11,6 +11,9 @@ import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
+import TaskCard from '@/components/TaskCard';
+import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
+import type { ChainPositionResult } from '@/lib/task-presentation';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -70,11 +73,23 @@ export default async function HomePage({
     id: string;
     taskId: string;
     taskTitle: string;
+    taskCreatedAt: string;
+    taskUpdatedAt: string;
+    taskStatus: string;
+    missionId: string | null;
     missionTitle: string | null;
+    workspaceName: string | null;
     workerName: string;
-    status: string;
+    workerStatus: string;
     startedAt: Date | null;
+    workerUpdatedAt: string | null;
+    prUrl: string | null;
+    prNumber: number | null;
     roleSlug: string | null;
+    attemptCurrent: number | null;
+    attemptTotal: number | null;
+    chain: ChainPositionResult | null;
+    intensityTier: 'fresh' | 'working' | 'slow' | 'stalled';
   }[] = [];
 
   let recentActivity: {
@@ -100,6 +115,7 @@ export default async function HomePage({
     nextScanMins: number | null;
     nextRunAt: string | null;
     workspaceName: string | null;
+    orchestrationMode: string | null;
   }[] = [];
 
   let completedLast12h = 0;
@@ -216,26 +232,105 @@ export default async function HomePage({
           limit: 10,
           with: {
             task: {
-              columns: { id: true, title: true, mode: true, category: true, missionId: true, roleSlug: true },
+              columns: {
+                id: true, title: true, mode: true, category: true,
+                missionId: true, roleSlug: true, status: true,
+                createdAt: true, updatedAt: true, dependsOn: true, context: true,
+              },
               with: {
-                mission: {
-                  columns: { title: true },
-                },
+                mission: { columns: { title: true } },
+                workspace: { columns: { name: true } },
               },
             },
           },
         });
 
-        activeItems = activeWorkers.map((w: any) => ({
-          id: w.id,
-          taskId: w.task?.id || '',
-          taskTitle: w.task?.title || w.name,
-          missionTitle: (w.task as any)?.mission?.title || null,
-          workerName: w.name,
-          status: w.status,
-          startedAt: w.startedAt,
-          roleSlug: w.task?.roleSlug || null,
-        }));
+        // Collect dep IDs for chain computation
+        const allDepIds = [...new Set(
+          activeWorkers.flatMap((w: any) => (w.task?.dependsOn as string[] | null) ?? [])
+        )];
+        const depTaskInfoMap = new Map<string, {
+          id: string; status: string;
+          workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
+        }>();
+        if (allDepIds.length > 0) {
+          const depTasks = await db.query.tasks.findMany({
+            where: inArray(tasks.id, allDepIds),
+            columns: { id: true, status: true },
+            with: {
+              workers: {
+                columns: { prUrl: true, prNumber: true, mergedAt: true },
+                orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
+                limit: 1,
+              },
+            },
+          });
+          for (const dt of depTasks) {
+            depTaskInfoMap.set(dt.id, {
+              id: dt.id,
+              status: dt.status,
+              workers: dt.workers.map((w: any) => ({
+                prUrl: w.prUrl ?? null,
+                prNumber: w.prNumber ?? null,
+                mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+              })),
+            });
+          }
+        }
+
+        // Count dependents within this active set + recently loaded workspace tasks
+        const activeTaskIds = new Set(activeWorkers.map((w: any) => w.task?.id).filter(Boolean));
+        const dependentCountMap = new Map<string, number>();
+        for (const w of activeWorkers) {
+          for (const depId of (w.task?.dependsOn as string[] | null) ?? []) {
+            dependentCountMap.set(depId, (dependentCountMap.get(depId) ?? 0) + 1);
+          }
+        }
+
+        activeItems = activeWorkers.map((w: any) => {
+          const task = w.task;
+          const ctx = (task?.context || {}) as Record<string, unknown>;
+          const depIds = (task?.dependsOn as string[] | null) ?? [];
+          const deps = depIds.map((id: string) => depTaskInfoMap.get(id)).filter(Boolean) as Array<{
+            id: string; title: string; status: string;
+            workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
+          }>;
+          const resolvedDeps = depIds.map((id: string) => {
+            const dt = depTaskInfoMap.get(id);
+            return dt ? { ...dt, title: id } : null;
+          }).filter(Boolean) as Array<{ id: string; title: string; status: string; workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }> }>;
+          const dependents = dependentCountMap.get(task?.id) ?? 0;
+          const chain = (resolvedDeps.length > 0 || dependents > 0)
+            ? deriveChainPosition({ task: { id: task?.id ?? '', status: task?.status ?? 'pending' }, deps: resolvedDeps, dependents })
+            : null;
+          const intensity = deriveIntensity({
+            turns: [],
+            startedAt: w.startedAt ? w.startedAt.toISOString() : null,
+            workerUpdatedAt: w.updatedAt ? w.updatedAt.toISOString() : null,
+          });
+          return {
+            id: w.id,
+            taskId: task?.id || '',
+            taskTitle: task?.title || w.name,
+            taskCreatedAt: task?.createdAt ? task.createdAt.toISOString() : new Date().toISOString(),
+            taskUpdatedAt: task?.updatedAt ? task.updatedAt.toISOString() : new Date().toISOString(),
+            taskStatus: task?.status ?? 'assigned',
+            missionId: task?.missionId ?? null,
+            missionTitle: task?.mission?.title ?? null,
+            workspaceName: task?.workspace?.name ?? null,
+            workerName: w.name,
+            workerStatus: w.status,
+            startedAt: w.startedAt,
+            workerUpdatedAt: w.updatedAt ? w.updatedAt.toISOString() : null,
+            prUrl: w.prUrl ?? null,
+            prNumber: w.prNumber ?? null,
+            roleSlug: task?.roleSlug ?? null,
+            attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
+            attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
+            chain,
+            intensityTier: intensity.tier,
+          };
+        });
 
         // Recent completed/failed/error workers for activity feed.
         // Order by COALESCE(completedAt, updatedAt) so error workers (null
@@ -309,7 +404,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, status: true },
+            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true },
             with: {
               tasks: {
                 columns: { id: true, status: true },
@@ -358,12 +453,14 @@ export default async function HomePage({
               ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
               : null;
 
+            const orchestrationMode = (mission as any).orchestrationMode ?? null;
             const health = deriveMissionHealth({
               status: mission.status,
               activeAgents: activeWorkers,
               cronExpression,
               lastRunAt,
               nextRunAt,
+              orchestrationMode,
             });
 
             return {
@@ -379,6 +476,7 @@ export default async function HomePage({
               nextScanMins,
               nextRunAt: nextRunAt ? String(nextRunAt) : null,
               workspaceName: (mission.workspace as any)?.name || null,
+              orchestrationMode,
             };
           });
         }
@@ -635,35 +733,30 @@ export default async function HomePage({
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {activeItems.map((item) => {
-                    const role = item.roleSlug ? rolesMap.get(item.roleSlug) : null;
-                    return (
-                      <Link
-                        key={item.id}
-                        href={`/app/tasks/${item.taskId}`}
-                        className="block border-l-2 border-accent bg-card-rightnow rounded-r-[10px] px-4 py-3 hover:bg-surface-3 transition-colors"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[15px] font-medium text-text-primary truncate">
-                              {item.taskTitle}
-                            </div>
-                            <div className="text-[12px] font-light text-text-secondary mt-0.5 truncate">
-                              {item.workerName}
-                              {item.startedAt && ` \u00B7 ${timeAgo(item.startedAt)}`}
-                              {item.missionTitle && ` \u00B7 ${item.missionTitle}`}
-                            </div>
-                          </div>
-                          {role && (
-                            <span className="flex items-center gap-1.5 shrink-0">
-                              <span className="w-2 h-2 bg-text-muted" />
-                              <span className="text-[11px] text-text-muted">{role.name}</span>
-                            </span>
-                          )}
-                        </div>
-                      </Link>
-                    );
-                  })}
+                  {activeItems.map((item) => (
+                    <TaskCard
+                      key={item.id}
+                      id={item.taskId}
+                      title={item.taskTitle}
+                      taskStatus={item.taskStatus}
+                      workerStatus={item.workerStatus}
+                      missionId={item.missionId}
+                      missionTitle={item.missionTitle}
+                      workspaceName={item.workspaceName}
+                      chain={item.chain}
+                      taskCreatedAt={item.taskCreatedAt}
+                      taskUpdatedAt={item.taskUpdatedAt}
+                      workerStartedAt={item.startedAt ? item.startedAt.toISOString() : null}
+                      workerUpdatedAt={item.workerUpdatedAt}
+                      intensity={{ tier: item.intensityTier, sparkline: [] }}
+                      attemptCurrent={item.attemptCurrent}
+                      attemptTotal={item.attemptTotal}
+                      runnerName={item.workerName}
+                      prUrl={item.prUrl}
+                      prNumber={item.prNumber}
+                      density="full"
+                    />
+                  ))}
                 </div>
               )}
             </div>
@@ -898,14 +991,19 @@ export default async function HomePage({
                                           </span>
                                         </>
                                       )}
-                                      {nextRun.text && (
+                                      {mission.orchestrationMode === 'manual' && mission.nextScanMins !== null ? (
+                                        <>
+                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
+                                          <span className="text-text-muted">Disarmed · Run now to advance</span>
+                                        </>
+                                      ) : nextRun.text ? (
                                         <>
                                           {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
                                           <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
                                             {nextRun.text}
                                           </span>
                                         </>
-                                      )}
+                                      ) : null}
                                     </div>
                                   </Link>
                                 );

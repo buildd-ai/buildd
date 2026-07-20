@@ -165,12 +165,16 @@ export function deriveMissionHealth(opts: {
   cronExpression: string | null;
   lastRunAt: string | Date | null;
   nextRunAt: string | Date | null;
+  orchestrationMode?: string | null;
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
   if (opts.activeAgents > 0) return 'active';
 
   if (opts.cronExpression) {
+    // Manual mode: schedule exists but orchestrator is disarmed — not "on schedule"
+    if (opts.orchestrationMode === 'manual') return 'idle';
+
     // Parse cron interval to determine if stalled
     const intervalMs = estimateCronIntervalMs(opts.cronExpression);
     const now = Date.now();

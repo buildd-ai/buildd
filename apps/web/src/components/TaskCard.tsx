@@ -46,6 +46,10 @@ export interface TaskCardProps {
   runnerName?: string | null;
   prUrl?: string | null;
   prNumber?: number | null;
+  prLifecycleStatus?: string | null;
+
+  // Agent current action (shown in inline density when running)
+  currentAction?: string | null;
 
   density: 'full' | 'row' | 'inline';
 }
@@ -142,6 +146,16 @@ function StatusPill({ displayStatus }: { displayStatus: string }) {
 
 // ─── Intensity tier → elapsed color ──────────────────────────────────────────
 
+// PR lifecycle pills (mirrors mission page)
+const PR_LIFECYCLE: Record<string, { label: string; cls: string }> = {
+  merged:     { label: 'merged',    cls: 'bg-status-success/12 text-status-success' },
+  ci_running: { label: 'CI…',       cls: 'bg-status-info/12 text-status-info' },
+  ci_failed:  { label: 'CI ✗',      cls: 'bg-status-error/12 text-status-error' },
+  conflict:   { label: 'conflict',  cls: 'bg-status-warning/12 text-status-warning' },
+  closed:     { label: 'closed',    cls: 'bg-text-muted/10 text-text-muted' },
+  pr_open:    { label: 'open',      cls: 'bg-accent/12 text-accent-text' },
+};
+
 const TIER_COLOR: Record<IntensityTier, string> = {
   fresh:   'text-status-success',
   working: 'text-text-secondary',
@@ -212,6 +226,8 @@ export function TaskCard({
   runnerName,
   prUrl,
   prNumber,
+  prLifecycleStatus,
+  currentAction,
   density,
 }: TaskCardProps) {
   const now = useNow();
@@ -235,6 +251,7 @@ export function TaskCard({
   // ─── INLINE density — mission timeline row ────────────────────────────────
   // Tiers: 1 (identity), 2 (position), 4 (provenance).
   if (density === 'inline') {
+    const lifecycle = prLifecycleStatus ? PR_LIFECYCLE[prLifecycleStatus] : null;
     return (
       <div className="relative group flex items-center gap-2 py-1.5 min-w-0">
         {/* Link overlay */}
@@ -247,9 +264,14 @@ export function TaskCard({
           </div>
         )}
 
-        {/* T1 — title */}
-        <span className="flex-1 min-w-0 text-[13px] text-text-primary truncate pointer-events-none group-hover:text-accent-text transition-colors">
-          {title}
+        {/* T1 — title + currentAction */}
+        <span className="flex-1 min-w-0 pointer-events-none group-hover:text-accent-text transition-colors">
+          <span className={`text-[13px] truncate block ${displayStatus === 'completed' ? 'text-text-secondary' : 'text-text-primary'}`}>
+            {title}
+          </span>
+          {displayStatus === 'running' && currentAction && (
+            <span className="text-[11px] text-status-info truncate block">{currentAction}</span>
+          )}
         </span>
 
         {/* T3 — status */}
@@ -257,17 +279,24 @@ export function TaskCard({
           <StatusPill displayStatus={displayStatus} />
         </div>
 
-        {/* T4 — PR link (restores pointer events) */}
+        {/* T4 — PR link + lifecycle (restores pointer events) */}
         {prUrl && (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline shrink-0"
-          >
-            #{prNumber}↗
-          </a>
+          <span className="shrink-0 flex items-center gap-1">
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline"
+            >
+              #{prNumber}↗
+            </a>
+            {lifecycle && (
+              <span className={`text-[10px] font-medium px-1 py-0.5 rounded pointer-events-none ${lifecycle.cls}`}>
+                {lifecycle.label}
+              </span>
+            )}
+          </span>
         )}
 
         {/* T4 — runner (last) */}

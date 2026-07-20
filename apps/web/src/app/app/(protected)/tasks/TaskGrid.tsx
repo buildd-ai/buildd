@@ -4,8 +4,9 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import { deriveTimestampLabel, isStaleWorker, deriveDisplayStatus } from '@/lib/task-timestamps';
 import LocalTime from './LocalTime';
+import { TaskCard } from '@/components/TaskCard';
+import type { ChainPositionResult } from '@/lib/task-presentation';
 
 interface GridTask {
   id: string;
@@ -29,18 +30,10 @@ interface GridTask {
   workerStatus?: string | null;
   workerStartedAt?: string | null;
   workerUpdatedAt?: string | null;
-}
-
-function taskTimestamp(task: GridTask, now: number): string {
-  return deriveTimestampLabel({
-    taskStatus: task.status,
-    workerStatus: task.workerStatus,
-    taskCreatedAt: task.createdAt,
-    taskUpdatedAt: task.updatedAt,
-    workerStartedAt: task.workerStartedAt,
-    workerUpdatedAt: task.workerUpdatedAt,
-    now,
-  });
+  runnerName?: string | null;
+  chain?: ChainPositionResult | null;
+  attemptCurrent?: number | null;
+  attemptTotal?: number | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -56,6 +49,32 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function renderTaskCard(task: GridTask) {
+  return (
+    <TaskCard
+      key={task.id}
+      id={task.id}
+      title={task.title}
+      taskStatus={task.status}
+      workerStatus={task.workerStatus}
+      missionId={task.missionId}
+      missionTitle={task.missionTitle}
+      workspaceName={task.workspaceName}
+      chain={task.chain}
+      taskCreatedAt={task.createdAt}
+      taskUpdatedAt={task.updatedAt}
+      workerStartedAt={task.workerStartedAt}
+      workerUpdatedAt={task.workerUpdatedAt}
+      attemptCurrent={task.attemptCurrent}
+      attemptTotal={task.attemptTotal}
+      runnerName={task.runnerName}
+      prUrl={task.prUrl}
+      prNumber={task.prNumber}
+      density="row"
+    />
+  );
+}
+
 // Sort strictly by recency — status is never a sort key
 function sortByRecency(list: GridTask[]): GridTask[] {
   return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -64,178 +83,6 @@ function sortByRecency(list: GridTask[]): GridTask[] {
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
 type ContentFilter = 'all' | 'missions' | 'tasks';
 type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
-
-function getStatusDot(status: string): { color: string; pulse: boolean } {
-  switch (status) {
-    case 'completed': return { color: 'bg-status-success', pulse: false };
-    case 'running':
-    case 'in_progress':
-    case 'assigned': return { color: 'bg-status-info', pulse: true };
-    case 'failed': return { color: 'bg-status-error', pulse: false };
-    case 'waiting_input': return { color: 'bg-status-warning', pulse: false };
-    case 'pending': return { color: 'bg-text-muted', pulse: false };
-    default: return { color: 'bg-text-muted', pulse: false };
-  }
-}
-
-function StatusBadge({ status }: { status: string }) {
-  if (status === 'failed') {
-    return (
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-error/15 text-status-error">
-        Failed
-      </span>
-    );
-  }
-  if (status === 'running' || status === 'in_progress' || status === 'assigned') {
-    return (
-      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-info/15 text-status-info">
-        Running
-      </span>
-    );
-  }
-  return null;
-}
-
-function getCategoryClasses(category: string): string {
-  const map: Record<string, string> = {
-    bug: 'bg-cat-bug/15 text-cat-bug',
-    feature: 'bg-cat-feature/15 text-cat-feature',
-    refactor: 'bg-cat-refactor/15 text-cat-refactor',
-    chore: 'bg-cat-chore/15 text-cat-chore',
-    docs: 'bg-cat-docs/15 text-cat-docs',
-    test: 'bg-cat-test/15 text-cat-test',
-    infra: 'bg-cat-infra/15 text-cat-infra',
-    design: 'bg-cat-design/15 text-cat-design',
-  };
-  return map[category] ?? 'bg-surface-3 text-text-secondary';
-}
-
-// Small icon that distinguishes standalone tasks from mission-grouped ones
-function StandaloneIcon() {
-  return (
-    <span
-      title="Standalone task"
-      className="inline-flex items-center justify-center w-4 h-4 rounded border border-border-default text-text-muted shrink-0"
-    >
-      <svg viewBox="0 0 12 12" fill="none" className="w-2.5 h-2.5" stroke="currentColor" strokeWidth={1.5}>
-        <rect x="1.5" y="1.5" width="9" height="9" rx="1" />
-        <path d="M3.5 5.5h5M3.5 7.5h3" strokeLinecap="round" />
-      </svg>
-    </span>
-  );
-}
-
-function TaskRow({ task, isStandalone, now }: { task: GridTask; isStandalone?: boolean; now: number }) {
-  const displayStatus = deriveDisplayStatus(task.status, task.workerStatus);
-  const dot = getStatusDot(displayStatus);
-  const isCompleted = displayStatus === 'completed';
-  const stale = isStaleWorker(task.workerStatus, task.workerUpdatedAt, now);
-  const tsLabel = taskTimestamp(task, now);
-
-
-  const dotEl = (
-    <span
-      className={`w-2 h-2 rounded-full shrink-0 ${
-        task.budgetPaused
-          ? 'bg-status-warning animate-pulse'
-          : `${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`
-      }`}
-    />
-  );
-
-  const badgeEl = task.budgetPaused ? (
-    <span
-      title={`${task.budgetBackend || 'Agent'} budget/rate-limit — claims paused, auto-retries when it resets`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded bg-status-warning/15 text-status-warning shrink-0 whitespace-nowrap"
-    >
-      ⏸ Paused{task.budgetResetsAt && <LocalTime iso={task.budgetResetsAt} prefix=" · ~" />}
-    </span>
-  ) : (
-    <StatusBadge status={displayStatus} />
-  );
-
-  return (
-    <Link href={`/app/tasks/${task.id}`} className="block">
-      {/* Mobile card — stacked layout below sm */}
-      <div className="sm:hidden px-3 py-2 hover:bg-surface-2/50 transition-colors">
-        <div className="border-2 border-border-strong shadow-md px-3 py-2">
-          {/* Line 1: status dot + title + status badge */}
-          <div className="flex items-start gap-2 min-w-0 mb-1">
-            <span className="mt-[3px] shrink-0">{dotEl}</span>
-            {isStandalone && <span className="mt-[3px] shrink-0"><StandaloneIcon /></span>}
-            <span className={`text-[14px] line-clamp-2 min-w-0 flex-1 leading-snug ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
-              {task.title}
-            </span>
-            {badgeEl}
-          </div>
-          {/* Line 2: workspace badge + pr link + time ago */}
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
-              {task.workspaceName}
-            </span>
-            {task.prUrl && (
-              <a
-                href={task.prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="text-[12px] text-accent-text hover:underline shrink-0"
-              >
-                #{task.prNumber}
-              </a>
-            )}
-            <span className="flex-1" />
-            <span className={`text-[12px] shrink-0 ${stale ? 'text-status-warning' : 'text-text-desc'}`}>
-              {stale && <span className="mr-1" title="No agent activity for 10+ minutes">⚠</span>}
-              {tsLabel}
-            </span>
-          </div>
-          {/* Line 3: category chip */}
-          {task.category && (
-            <div className="mt-1.5">
-              <span className={`inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium ${getCategoryClasses(task.category)}`}>
-                {task.category}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Desktop row — hidden below sm; secondary columns hidden below md */}
-      <div className="hidden sm:flex items-center gap-3 px-4 py-2.5 md:py-3 border-b border-border-default hover:bg-surface-2/50 transition-colors">
-        {dotEl}
-        {isStandalone && <StandaloneIcon />}
-        <span className={`text-[14px] truncate min-w-0 flex-1 ${isCompleted ? 'text-text-muted' : 'text-text-primary'}`}>
-          {task.title}
-        </span>
-        {badgeEl}
-        {task.prUrl && (
-          <a
-            href={task.prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="text-[12px] text-accent-text hover:underline shrink-0"
-          >
-            #{task.prNumber}
-          </a>
-        )}
-        <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
-          {task.workspaceName}
-        </span>
-        {task.missionTitle && (
-          <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden md:inline">
-            {task.missionTitle}
-          </span>
-        )}
-        <span className={`text-[12px] shrink-0 text-right hidden md:inline ${stale ? 'text-status-warning' : 'text-text-desc'} ${displayStatus === 'running' ? 'min-w-[160px]' : 'w-[70px]'}`}>
-          {stale && <span className="mr-1" title="No agent activity for 10+ minutes">⚠</span>}
-          {tsLabel}
-        </span>
-      </div>
-    </Link>
-  );
-}
 
 interface MissionGroup {
   id: string | null;
@@ -261,13 +108,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     if (!missionFilter) return tasks;
     return tasks.filter(t => t.missionId === missionFilter);
   }, [tasks, missionFilter]);
-
-  // Tick every 30s so running task timestamps stay fresh without a full page reload
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
@@ -715,24 +555,23 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               </button>
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 snap-x">
-              {mobileRecentTasks.map(task => {
-                const dot = getStatusDot(task.status);
-                return (
-                  <Link
-                    key={task.id}
-                    href={`/app/tasks/${task.id}`}
-                    className="flex-shrink-0 snap-start border border-border-strong bg-surface-2/50 px-3 py-2 w-[180px]"
-                  >
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot.color} ${dot.pulse ? 'animate-pulse' : ''}`} />
-                      <span className="text-[11px] text-text-muted">{taskTimestamp(task, now)}</span>
-                    </div>
-                    <div className="text-[13px] text-text-primary line-clamp-2 leading-snug">
-                      {task.title}
-                    </div>
-                  </Link>
-                );
-              })}
+              {mobileRecentTasks.map(task => (
+                <Link
+                  key={task.id}
+                  href={`/app/tasks/${task.id}`}
+                  className="flex-shrink-0 snap-start border border-border-strong bg-surface-2/50 px-3 py-2 w-[180px]"
+                >
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-status-info animate-pulse" />
+                    <span className="text-[11px] text-text-muted font-mono">
+                      {task.workspaceName}
+                    </span>
+                  </div>
+                  <div className="text-[13px] text-text-primary line-clamp-2 leading-snug">
+                    {task.title}
+                  </div>
+                </Link>
+              ))}
             </div>
           </div>
         )}
@@ -747,51 +586,31 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 <span className="text-[13px] font-semibold text-text-primary">Needs Input</span>
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
-              {needsInputTasks.map((task) => {
-                const dot = getStatusDot(task.status);
-                return (
-                  <Link
+              <div className="px-2">
+                {needsInputTasks.map((task) => (
+                  <TaskCard
                     key={task.id}
-                    href={`/app/tasks/${task.id}`}
-                    className="block"
-                  >
-                    {/* Mobile card */}
-                    <div className="sm:hidden px-3 py-2 hover:bg-status-warning/12 transition-colors">
-                      <div className="border-2 border-border-strong shadow-md px-3 py-2">
-                        <div className="flex items-start gap-2 min-w-0 mb-1">
-                          <span className={`w-2 h-2 rounded-full shrink-0 mt-[3px] ${dot.color}`} />
-                          <span className="text-[14px] text-text-primary line-clamp-2 min-w-0 flex-1 leading-snug">{task.title}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
-                            {task.workspaceName}
-                          </span>
-                          <span className="flex-1" />
-                          <span className="text-[12px] text-text-desc shrink-0">
-                            {taskTimestamp(task, now)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    {/* Desktop row */}
-                    <div className="hidden sm:flex items-center gap-3 px-4 py-2.5 md:py-3 border-b border-border-default/60 hover:bg-status-warning/12 transition-colors">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${dot.color}`} />
-                      <span className="text-[14px] text-text-primary truncate min-w-0 flex-1">{task.title}</span>
-                      <span className="inline-flex items-center px-1.5 py-0.5 text-[11px] font-mono bg-surface-3 text-text-secondary shrink-0">
-                        {task.workspaceName}
-                      </span>
-                      {task.missionTitle && (
-                        <span className="text-[12px] text-text-muted truncate max-w-[160px] shrink-0 hidden md:inline">
-                          {task.missionTitle}
-                        </span>
-                      )}
-                      <span className="text-[12px] text-text-desc shrink-0 text-right hidden md:inline min-w-[160px]">
-                        {taskTimestamp(task, now)}
-                      </span>
-                    </div>
-                  </Link>
-                );
-              })}
+                    id={task.id}
+                    title={task.title}
+                    taskStatus={task.status}
+                    workerStatus={task.workerStatus}
+                    missionId={task.missionId}
+                    missionTitle={task.missionTitle}
+                    workspaceName={task.workspaceName}
+                    chain={task.chain}
+                    taskCreatedAt={task.createdAt}
+                    taskUpdatedAt={task.updatedAt}
+                    workerStartedAt={task.workerStartedAt}
+                    workerUpdatedAt={task.workerUpdatedAt}
+                    attemptCurrent={task.attemptCurrent}
+                    attemptTotal={task.attemptTotal}
+                    runnerName={task.runnerName}
+                    prUrl={task.prUrl}
+                    prNumber={task.prNumber}
+                    density="row"
+                  />
+                ))}
+              </div>
             </div>
           )}
 
@@ -842,9 +661,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   </span>
                 </button>
 
-                {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} isStandalone={isNoMission} now={now} />
-                ))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
               </div>
             );
           })}
@@ -868,9 +685,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} now={now} />
-                ))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
               </div>
             );
           })}
@@ -894,17 +709,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} now={now} />
-                ))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
               </div>
             );
           })}
 
           {/* Flat list (no grouping) */}
-          {effectiveGroupBy === 'none' && flatSorted.map((task) => (
-            <TaskRow key={task.id} task={task} isStandalone={!task.missionId} now={now} />
-          ))}
+          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskCard(task))}
 
           {/* Empty filtered state */}
           {filtered.length === 0 && visibleTasks.length > 0 && (

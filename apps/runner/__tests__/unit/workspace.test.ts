@@ -317,6 +317,32 @@ describe('Git URL Matching Scenarios', () => {
 
     expect(org1).not.toBe(org2);
   });
+
+  test('disambiguation: exact basename match wins over longer dirname with same remote', () => {
+    // Mirrors the fix for the cue-workspace bug: when multiple local dirs share
+    // the same git remote (e.g. "dispatch" and "dispatch-ios-old-dispatch-clone"
+    // both pointing at buildd-ai/dispatch), the one whose basename === repo slug wins.
+    const normalizedTarget = normalizeGitUrl('buildd-ai/dispatch')!; // "buildd-ai/dispatch"
+    const repoSlug = normalizedTarget.split('/').pop() ?? '';         // "dispatch"
+
+    const candidates = [
+      '/home/coder/project/dispatch-ios-old-dispatch-clone',
+      '/home/coder/project/dispatch-family',
+      '/home/coder/project/dispatch',
+    ];
+
+    // Sort using the same logic as workspace.ts
+    const { basename } = require('path');
+    const sorted = [...candidates].sort((a: string, b: string) => {
+      const an = basename(a), bn = basename(b);
+      const aExact = an === repoSlug ? 0 : 1;
+      const bExact = bn === repoSlug ? 0 : 1;
+      if (aExact !== bExact) return aExact - bExact;
+      return an.length - bn.length;
+    });
+
+    expect(basename(sorted[0])).toBe('dispatch');
+  });
 });
 
 // --- Clone Endpoint: Existing Repo Detection ---

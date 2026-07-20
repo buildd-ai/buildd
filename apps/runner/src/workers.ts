@@ -996,7 +996,10 @@ export class WorkerManager {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
       console.log(`No tasks claimed (reason: ${reason})`);
-      return null;
+      throw Object.assign(
+        new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
+        { claimError: 'server_rejected' as const },
+      );
     }
 
     claimLog({ event: 'claim_success', slotsRequested: 1, workersClaimed: 1, taskId: task.id });
@@ -1014,14 +1017,19 @@ export class WorkerManager {
     });
 
     if (!workspacePath) {
+      const wsName = fullTask.workspace?.name || fullTask.workspaceId;
+      const repoHint = fullTask.workspace?.repo ? ` (repo: ${fullTask.workspace.repo})` : '';
       console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
       this.pusherManager.markUnresolvable(task.id);
       // Fail the claimed worker on the server so it doesn't stay "running" forever
       this.buildd.updateWorker(claimedWorker.id, {
         status: 'failed',
-        error: `Cannot resolve workspace "${fullTask.workspace?.name || 'unknown'}" (repo: ${fullTask.workspace?.repo || 'none'})`,
+        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
       }).catch(() => {});
-      return null;
+      throw Object.assign(
+        new Error(`Workspace "${wsName}" is not cloned locally${repoHint} — clone the repo first`),
+        { claimError: 'workspace_not_found' as const },
+      );
     }
 
     let resolvedPath = workspacePath;
@@ -1504,6 +1512,17 @@ export class WorkerManager {
         )
       );
 
+      // Determine backend early — needed to gate Anthropic credential injection below.
+      const isCodexTask = (task.backend || 'claude') === 'codex';
+
+      // Codex tasks run against OpenAI, not Anthropic. Strip any inherited
+      // ANTHROPIC_API_KEY from the runner's own process.env so it can't leak
+      // into the Codex CLI subprocess (which uses Claude Code internally and
+      // would try — and potentially fail — to authenticate with Anthropic).
+      if (isCodexTask) {
+        delete cleanEnv.ANTHROPIC_API_KEY;
+      }
+
       // Inject LLM provider config into environment (for OpenRouter, etc.)
       // The Claude Agent SDK reads ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
       if (this.config.llmProvider?.provider === 'openrouter') {
@@ -1520,14 +1539,18 @@ export class WorkerManager {
         }
       }
 
-      // Inject server-managed API key (delivered inline during claim)
-      if (worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
+      // Inject server-managed API key (delivered inline during claim).
+      // Skipped for Codex tasks — they use OpenAI credentials, not Anthropic.
+      if (!isCodexTask && worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
         cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
         console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
 
-      // Inject server-managed OAuth token (delivered inline during claim)
-      if (worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+      // Inject server-managed OAuth token (delivered inline during claim).
+      // Skipped for Codex tasks: CLAUDE_CODE_OAUTH_TOKEN is not needed and can
+      // cause spurious Claude auth failures if the token is expired/revoked —
+      // the Codex CLI uses Claude Code internally and would attempt a refresh.
+      if (!isCodexTask && worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
         cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
@@ -1552,8 +1575,6 @@ export class WorkerManager {
       if (this.config.apiKey) {
         cleanEnv.BUILDD_API_KEY = this.config.apiKey;
       }
-
-      const isCodexTask = (task.backend || 'claude') === 'codex';
 
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
       // CODEX_HOME (keyed by worker id) so `sessions/` rollouts survive restarts.

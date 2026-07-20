@@ -31,6 +31,7 @@ mock.module('@buildd/core/db/schema', () => ({
     lastRefreshedAt: 'last_refreshed_at',
     lastVerifiedAt: 'last_verified_at',
     lastVerificationError: 'last_verification_error',
+    healthStatus: 'health_status',
   },
 }));
 
@@ -72,6 +73,10 @@ import {
 // helper: build an encrypted blob the way the lib does (encrypt = `enc:${json}`)
 function blob(access: string, refresh: string, account: string) {
   return `enc:${JSON.stringify({ access_token: access, refresh_token: refresh, account_id: account })}`;
+}
+
+function apiKeyBlob(key: string) {
+  return `enc:${JSON.stringify({ api_key: key })}`;
 }
 
 // helper: build a fake JWT carrying an `exp` claim (signature is irrelevant — we don't verify)
@@ -457,39 +462,19 @@ describe('verifyCodexCredential', () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
+    process.env.CODEX_OAUTH_CLIENT_ID = 'codex-client-test';
     mockDbFindFirst.mockReset();
     mockDbUpdate.mockReset();
     setArg = undefined;
-    // verifyCodexCredential does: update(secrets).set({...}).where(...)
     const set = mock((arg: Record<string, unknown>) => { setArg = arg; return { where: mock(() => Promise.resolve()) }; });
     mockDbUpdate.mockImplementation(() => ({ set }));
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc') });
   });
-  afterEach(() => { globalThis.fetch = originalFetch; });
-
-  it('returns verified:true and persists a null error when the API accepts the token', async () => {
-    globalThis.fetch = mock(() => Promise.resolve({ ok: true })) as any;
-    const result = await verifyCodexCredential('s-1');
-    expect(result).toEqual({ verified: true, error: null });
-    expect(setArg?.lastVerificationError).toBeNull();
-    expect('lastVerifiedAt' in (setArg ?? {})).toBe(true);
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.CODEX_OAUTH_CLIENT_ID;
   });
 
-  it('returns verified:false with HTTP status + message when the API rejects', async () => {
-    globalThis.fetch = mock(() => Promise.resolve({
-      ok: false, status: 401, json: () => Promise.resolve({ error: { message: 'invalid token' } }),
-    })) as any;
-    const result = await verifyCodexCredential('s-1');
-    expect(result.verified).toBe(false);
-    expect(result.error).toBe('HTTP 401: invalid token');
-    expect(setArg?.lastVerificationError).toBe('HTTP 401: invalid token');
-  });
-
-  it('returns verified:false with the network error message when fetch throws', async () => {
-    globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
-    const result = await verifyCodexCredential('s-1');
-    expect(result).toEqual({ verified: false, error: 'boom' });
-  });
+  // ── common ─────────────────────────────────────────────────────────────────
 
   it('returns "Credential not found" without calling the API when no row exists', async () => {
     mockDbFindFirst.mockResolvedValue(null);
@@ -500,15 +485,133 @@ describe('verifyCodexCredential', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('does not log the token value', async () => {
-    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 500, json: () => Promise.reject(new Error('x')) })) as any;
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('SECRET_AT', 'SECRET_RT', 'acc') });
+  // ── API key path ────────────────────────────────────────────────────────────
+  // API key credentials are verified via GET /v1/models — the only OpenAI
+  // endpoint that actually accepts API key Bearer tokens.
+
+  it('[api_key] returns verified:true and stamps lastVerifiedAt when models endpoint accepts the key', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: apiKeyBlob('sk-test'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: true, error: null });
+    expect(setArg?.lastVerificationError).toBeNull();
+    expect('lastVerifiedAt' in (setArg ?? {})).toBe(true);
+  });
+
+  it('[api_key] returns verified:false with HTTP status when models endpoint rejects', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: apiKeyBlob('sk-bad'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: false, status: 401,
+      json: () => Promise.resolve({ error: { message: 'invalid token' } }),
+    })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result.verified).toBe(false);
+    expect(result.error).toBe('HTTP 401: invalid token');
+    expect(setArg?.lastVerificationError).toBe('HTTP 401: invalid token');
+  });
+
+  it('[api_key] returns verified:false when fetch throws', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: apiKeyBlob('sk-test'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.reject(new Error('network boom'))) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: false, error: 'network boom' });
+  });
+
+  // ── OAuth path ──────────────────────────────────────────────────────────────
+  // OAuth credentials use the refresh grant as the verification probe.
+  // GET /v1/models always returns 403 for OAuth Bearer tokens — it is API-key
+  // only and cannot detect validity or revocation for OAuth credentials.
+
+  it('[oauth] uses refresh grant (not GET /v1/models) for verification', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    const fetched: string[] = [];
+    globalThis.fetch = mock((url: string) => {
+      fetched.push(url);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', expires_in: 3600 }),
+      });
+    }) as any;
+    await verifyCodexCredential('s-1');
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0]).toContain('auth.openai.com');
+    expect(fetched[0]).not.toContain('api.openai.com/v1/models');
+  });
+
+  it('[oauth] returns verified:true and writes back rotated tokens on refresh success', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('old-AT', 'old-RT', 'acc-1'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', expires_in: 3600 }),
+    })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: true, error: null });
+    // The update must include the rotated tokens and verification stamp
+    expect(setArg?.encryptedValue).toBe(blob('new-AT', 'new-RT', 'acc-1'));
+    expect('lastVerifiedAt' in (setArg ?? {})).toBe(true);
+    expect('lastRefreshedAt' in (setArg ?? {})).toBe(true);
+    expect(setArg?.lastVerificationError).toBeNull();
+    expect(setArg?.tokenExpiresAt).toBeInstanceOf(Date);
+  });
+
+  it('[oauth] returns verified:false when refresh grant returns 4xx (revocation)', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: false, status: 401,
+      json: () => Promise.resolve({ error: 'invalid_grant', error_description: 'Token has been revoked' }),
+    })) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result.verified).toBe(false);
+    expect(result.error).toMatch(/401/);
+    expect(result.error).toMatch(/Token has been revoked/);
+    expect(setArg?.lastVerificationError).toBe(result.error);
+  });
+
+  it('[oauth] returns verified:false when fetch throws', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.reject(new Error('connection refused'))) as any;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: false, error: 'connection refused' });
+  });
+
+  it('[oauth] returns verified:false when no refresh_token is present', async () => {
+    mockDbFindFirst.mockResolvedValue({
+      encryptedValue: `enc:${JSON.stringify({ access_token: 'AT', account_id: 'acc' })}`,
+      healthStatus: 'unknown',
+    });
+    const fetchSpy = mock(() => Promise.resolve({ ok: true })) as any;
+    globalThis.fetch = fetchSpy;
+    const result = await verifyCodexCredential('s-1');
+    expect(result).toEqual({ verified: false, error: 'No refresh token available' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('[oauth] does not reset health to healthy when credential is worker-observed revoked (mirrors #1302)', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'revoked' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', expires_in: 3600 }),
+    })) as any;
+    const result = await verifyCodexCredential('s-1');
+    // Tokens written back (refresh succeeded) but health preserved as revoked
+    expect(result.verified).toBe(true);
+    expect(result.revoked).toBe(true);
+    expect(result.error).toBeNull();
+  });
+
+  it('[oauth] does not log token values', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('SECRET_AT', 'SECRET_RT', 'acc'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: false, status: 500,
+      json: () => Promise.reject(new Error('x')),
+    })) as any;
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     await verifyCodexCredential('s-1');
     const logs = [...logSpy.mock.calls.flat(), ...errSpy.mock.calls.flat(), ...warnSpy.mock.calls.flat()].join(' ');
     expect(logs).not.toContain('SECRET_AT');
+    expect(logs).not.toContain('SECRET_RT');
     logSpy.mockRestore(); errSpy.mockRestore(); warnSpy.mockRestore();
   });
 });

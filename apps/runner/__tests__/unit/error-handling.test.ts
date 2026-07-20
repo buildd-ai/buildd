@@ -682,13 +682,11 @@ describe('Error Handling', () => {
       await expect(manager.claimAndStart(makeTask())).rejects.toThrow();
     });
 
-    test('claim returns empty array returns null', async () => {
+    test('claim returns empty array throws server_rejected error', async () => {
       mockClaimTask.mockImplementation(async () => ({ workers: [] }));
 
       manager = new WorkerManager(makeConfig());
-      const result = await manager.claimAndStart(makeTask());
-
-      expect(result).toBeNull();
+      await expect(manager.claimAndStart(makeTask())).rejects.toThrow('Server rejected claim');
     });
   });
 

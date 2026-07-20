@@ -1,12 +1,13 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte } from 'drizzle-orm';
-import { deriveDisplayStatus, LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
+import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
+import type { ChainPositionResult } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
 
 export default async function TasksPage({
@@ -44,6 +45,10 @@ export default async function TasksPage({
     workerStatus: string | null;
     workerStartedAt: string | null;
     workerUpdatedAt: string | null;
+    runnerName: string | null;
+    chain: ChainPositionResult | null;
+    attemptCurrent: number | null;
+    attemptTotal: number | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -88,6 +93,7 @@ export default async function TasksPage({
               missionId: true,
               context: true,
               backend: true,
+              dependsOn: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
@@ -120,10 +126,11 @@ export default async function TasksPage({
                   waitingFor: true,
                   startedAt: true,
                   updatedAt: true,
+                  name: true,
                 },
               })
             : [];
-          const activeWorkerByTaskId = new Map<string, { status: string; waitingFor: unknown; startedAt: string | null; updatedAt: string | null }>();
+          const activeWorkerByTaskId = new Map<string, { status: string; waitingFor: unknown; startedAt: string | null; updatedAt: string | null; name: string }>();
           for (const w of activeWorkers) {
             if (w.taskId && !activeWorkerByTaskId.has(w.taskId)) {
               activeWorkerByTaskId.set(w.taskId, {
@@ -131,9 +138,59 @@ export default async function TasksPage({
                 waitingFor: w.waitingFor,
                 startedAt: w.startedAt?.toISOString() ?? null,
                 updatedAt: w.updatedAt?.toISOString() ?? null,
+                name: w.name,
               });
             }
           }
+
+          // Chain data — only for non-terminal tasks (completed rows don't need it)
+          const nonTerminalTaskIds = recentTasks
+            .filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
+            .map(t => t.id);
+          const allDepIds = [...new Set(
+            recentTasks
+              .filter(t => nonTerminalTaskIds.includes(t.id))
+              .flatMap(t => (t.dependsOn as string[] | null) ?? [])
+          )];
+          const depInfoMap = new Map<string, {
+            id: string; status: string;
+            workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
+          }>();
+          if (allDepIds.length > 0) {
+            const depTasks = await db.query.tasks.findMany({
+              where: inArray(tasks.id, allDepIds),
+              columns: { id: true, status: true },
+              with: {
+                workers: {
+                  columns: { prUrl: true, prNumber: true, mergedAt: true },
+                  orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
+                  limit: 1,
+                },
+              },
+            });
+            for (const dt of depTasks) {
+              depInfoMap.set(dt.id, {
+                id: dt.id,
+                status: dt.status,
+                workers: dt.workers.map((w: any) => ({
+                  prUrl: w.prUrl ?? null,
+                  prNumber: w.prNumber ?? null,
+                  mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+                })),
+              });
+            }
+          }
+          // Count dependents within the loaded set
+          const dependentCount = new Map<string, number>();
+          for (const t of recentTasks) {
+            if (nonTerminalTaskIds.includes(t.id)) {
+              for (const depId of (t.dependsOn as string[] | null) ?? []) {
+                dependentCount.set(depId, (dependentCount.get(depId) ?? 0) + 1);
+              }
+            }
+          }
+          // Build a title map from loaded tasks for dep display
+          const taskTitleMap = new Map(recentTasks.map(t => [t.id, t.title]));
 
           gridTasks = recentTasks.map(t => {
             const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
@@ -143,6 +200,24 @@ export default async function TasksPage({
             const activeW = !isTerminal ? activeWorkerByTaskId.get(t.id) : undefined;
             const effectiveStatus = deriveDisplayStatus(t.status, activeW?.status);
             const waitingFor = activeW?.status === 'waiting_input' ? (activeW.waitingFor as { prompt?: string } | null) : null;
+
+            // Chain: only for non-terminal tasks
+            let chain: ChainPositionResult | null = null;
+            if (!isTerminal) {
+              const depIds = (t.dependsOn as string[] | null) ?? [];
+              if (depIds.length > 0) {
+                const deps = depIds.map(id => {
+                  const dt = depInfoMap.get(id);
+                  return dt ? { ...dt, title: taskTitleMap.get(id) ?? id } : null;
+                }).filter(Boolean) as Array<{ id: string; title: string; status: string; workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }> }>;
+                chain = deriveChainPosition({
+                  task: { id: t.id, status: t.status },
+                  deps,
+                  dependents: dependentCount.get(t.id) ?? 0,
+                });
+              }
+            }
+
             return {
               id: t.id,
               title: t.title,
@@ -165,6 +240,10 @@ export default async function TasksPage({
               workerStatus: activeW?.status ?? null,
               workerStartedAt: activeW?.startedAt ?? null,
               workerUpdatedAt: activeW?.updatedAt ?? null,
+              runnerName: activeW?.name ?? null,
+              chain,
+              attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
+              attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
             };
           });
         }
