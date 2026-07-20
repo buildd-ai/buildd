@@ -28,6 +28,7 @@ import HeartbeatTimeline from './HeartbeatTimeline';
 import AiFeedback from '@/components/AiFeedback';
 import { StatusChip } from '@/components/StatusChip';
 import PrioritySelector from './PrioritySelector';
+import MissionBackendSelector from './MissionBackendSelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
@@ -392,9 +393,10 @@ export default async function MissionDetailPage({
           }
         />
 
-        {/* Priority */}
-        <div className="mb-3">
+        {/* Priority + default backend */}
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           <PrioritySelector missionId={id} initialPriority={mission.priority} />
+          <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
         </div>
 
         {/* Progress — shown for all missions with tasks */}
