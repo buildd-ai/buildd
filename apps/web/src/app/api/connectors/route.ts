@@ -248,7 +248,7 @@ export async function POST(req: NextRequest) {
         if (!clientId && discovered.authorizationServer.registration_endpoint) {
           const dcrResult = await registerClient(
             discovered.authorizationServer.registration_endpoint,
-            getCallbackUrl(),
+            getCallbackUrl(req.nextUrl.origin),
           );
           clientId = dcrResult.client_id;
           if (dcrResult.client_secret) {
