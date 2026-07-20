@@ -352,7 +352,7 @@ export default async function TaskDetailPage({
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap shrink-0 md:justify-end md:max-w-[55%]">
             {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
             <EditTaskButton
               task={{
@@ -365,6 +365,7 @@ export default async function TaskDetailPage({
                 dependsOn: (task.dependsOn as string[]) || [],
                 mode: task.mode,
                 status: task.status,
+                backend: (task.backend as 'claude' | 'codex' | null) ?? null,
               }}
             />
             {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
