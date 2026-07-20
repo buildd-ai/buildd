@@ -100,6 +100,7 @@ describe('normalizeCodexAuthJson', () => {
     expect(res.value.access_token).toBe(raw.tokens.access_token);
     expect(res.value.refresh_token).toBe('rt');
     expect(res.value.account_id).toBe('acc-1');
+    expect(res.value.id_token).toBe('x'); // required by codex-cli — must be captured
     expect(res.value.expires_in).toBeGreaterThan(3500);
     expect(res.value.expires_in).toBeLessThanOrEqual(3600);
   });

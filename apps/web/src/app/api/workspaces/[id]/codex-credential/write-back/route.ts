@@ -55,11 +55,12 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const expiresIn = typeof b.expiresIn === 'number' ? b.expiresIn : undefined;
   const accountId = typeof b.accountId === 'string' ? b.accountId : undefined;
+  const idToken = typeof b.idToken === 'string' ? b.idToken : undefined;
 
   try {
     await writeBackCodexTokens(
       { teamId: workspace.teamId, accountId: account.id, workspaceId: id },
-      { accessToken: b.accessToken, refreshToken: b.refreshToken, accountId, expiresIn },
+      { accessToken: b.accessToken, refreshToken: b.refreshToken, accountId, idToken, expiresIn },
     );
     return NextResponse.json({ ok: true });
   } catch (err) {

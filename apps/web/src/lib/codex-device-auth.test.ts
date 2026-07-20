@@ -64,6 +64,9 @@ describe('pollCodexDeviceAuth', () => {
       expect(r.authJson.refresh_token).toBe('rt');
       expect(r.authJson.account_id).toBe('acct-xyz');
       expect(r.authJson.expires_in).toBe(3600);
+      // id_token must be carried through — codex-cli requires it in auth.json.
+      expect(typeof r.authJson.id_token).toBe('string');
+      expect(r.authJson.id_token).toBe(jwtWithAccount('acct-xyz'));
     }
   });
 
