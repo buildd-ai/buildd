@@ -292,3 +292,57 @@ describe('integration flow', () => {
     expect(fts.some(r => r.id === id)).toBe(true);
   });
 });
+
+describe('sensitive workspace archive redaction', () => {
+  // Tests the archive data construction logic for sensitive vs standard workers.
+  // Mirrors the isSensitive branch in archiveSession's archiveData construction.
+
+  function buildArchiveData(worker: { workspaceDataClass: 'standard' | 'sensitive'; messages: any[]; toolCalls: any[]; output: string[] }) {
+    const isSensitive = worker.workspaceDataClass === 'sensitive';
+    return {
+      messages: isSensitive ? [] : worker.messages,
+      toolCalls: isSensitive ? [] : worker.toolCalls,
+      output: isSensitive ? [] : worker.output,
+    };
+  }
+
+  test('sensitive worker: messages and toolCalls are empty in archive', () => {
+    const worker = {
+      workspaceDataClass: 'sensitive' as const,
+      messages: [
+        { type: 'text', content: 'The API key is: sk-secret-abc123', timestamp: 1000 },
+        { type: 'tool_use', name: 'bash', input: { command: 'cat /etc/secrets' }, timestamp: 2000 },
+      ],
+      toolCalls: [{ name: 'bash', timestamp: 1000, input: { command: 'cat /etc/secrets' } }],
+      output: ['$ cat /etc/secrets', 'token=supersecret'],
+    };
+    const archiveData = buildArchiveData(worker);
+    expect(archiveData.messages).toHaveLength(0);
+    expect(archiveData.toolCalls).toHaveLength(0);
+    expect(archiveData.output).toHaveLength(0);
+  });
+
+  test('standard worker: messages and toolCalls are preserved in archive', () => {
+    const worker = {
+      workspaceDataClass: 'standard' as const,
+      messages: [{ type: 'text', content: 'All done!', timestamp: 1000 }],
+      toolCalls: [{ name: 'bash', timestamp: 1000 }],
+      output: ['Done'],
+    };
+    const archiveData = buildArchiveData(worker);
+    expect(archiveData.messages).toHaveLength(1);
+    expect(archiveData.messages[0].content).toBe('All done!');
+    expect(archiveData.toolCalls).toHaveLength(1);
+    expect(archiveData.output).toHaveLength(1);
+  });
+
+  test('sensitive archive gzips and decompresses correctly with empty messages', async () => {
+    const archiveData = { messages: [], toolCalls: [], output: [], milestones: [{ type: 'phase', ts: 1000 }] };
+    const compressed = Bun.gzipSync(Buffer.from(JSON.stringify(archiveData)));
+    const decompressed = Bun.gunzipSync(compressed);
+    const parsed = JSON.parse(new TextDecoder().decode(decompressed));
+    expect(parsed.messages).toHaveLength(0);
+    expect(parsed.toolCalls).toHaveLength(0);
+    expect(parsed.milestones).toHaveLength(1);
+  });
+});

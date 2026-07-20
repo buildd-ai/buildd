@@ -227,12 +227,14 @@ export function archiveSession(worker: LocalWorker): void {
     });
 
     // Archive full session data as gzip
+    // Sensitive: skip messages and toolCalls (prose/content) — keep operational data only
+    const isSensitive = worker.workspaceDataClass === 'sensitive';
     const archiveData = {
-      messages: worker.messages,
-      toolCalls: worker.toolCalls,
+      messages: isSensitive ? [] : worker.messages,
+      toolCalls: isSensitive ? [] : worker.toolCalls,
       milestones: worker.milestones,
       commits: worker.commits,
-      output: worker.output,
+      output: isSensitive ? [] : worker.output,
       resultMeta: worker.resultMeta,
       teamState: worker.teamState,
       promptSuggestions: worker.promptSuggestions,
