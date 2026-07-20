@@ -16,7 +16,41 @@ mock.module('fs', () => ({
   existsSync: mockExistsSync,
 }));
 
-import { scanEnvironment, checkBrowserCapability, type ScanConfig } from './env-scan';
+import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
+
+describe('checkBwrapSupport', () => {
+  beforeEach(() => {
+    mockExecSync.mockReset();
+  });
+
+  it('returns true when bwrap is installed and namespace test passes', () => {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('echo')) return Buffer.from('ok\n');
+      throw new Error('not found');
+    });
+    expect(checkBwrapSupport()).toBe(true);
+  });
+
+  it('returns false when bwrap is not installed', () => {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') throw new Error('not found');
+      return Buffer.from('');
+    });
+    expect(checkBwrapSupport()).toBe(false);
+  });
+
+  it('returns false when bwrap is installed but namespace creation fails', () => {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap')) {
+        throw new Error('bwrap: No permissions to create a new namespace');
+      }
+      throw new Error('not found');
+    });
+    expect(checkBwrapSupport()).toBe(false);
+  });
+});
 
 describe('checkBrowserCapability', () => {
   beforeEach(() => {

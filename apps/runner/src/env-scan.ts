@@ -44,6 +44,31 @@ const DEFAULT_ENV_KEYS = [
 ];
 
 /**
+ * Self-check: does bwrap (bubblewrap) support unprivileged user namespaces on this runner?
+ *
+ * Returns true if bwrap is installed and can create a user namespace. Returns false
+ * if bwrap is missing or if the kernel has unprivileged_userns_clone=0. The result
+ * is used by the runner to force-disable Claude Code sandboxing when namespaces are
+ * unavailable — preventing every Bash tool call from failing with a bwrap error.
+ */
+export function checkBwrapSupport(): boolean {
+  try {
+    execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
+  } catch {
+    return false; // not installed — sandbox won't be attempted
+  }
+  try {
+    execSync('bwrap --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
+      timeout: 5000,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Self-check: does headless Chromium actually launch on this runner?
  *
  * Checks system-installed Chromium binaries first (cheapest), then falls back
