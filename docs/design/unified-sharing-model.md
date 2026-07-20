@@ -34,8 +34,8 @@ Unify at the **concept + UX layer**, not with a storage migration. Define one **
 ## Phasing
 
 - **Phase 1 (this PR):** extract `<ScopeSelector>`; make the connector Add modal + card show scope/reach in the shared vocabulary (fixes the reported confusion). No storage change.
-- **Phase 2:** role editor surfaces connectors with the shared scope language; validate that a role only mounts connectors in scope for its team/workspace.
-- **Phase 3 (optional):** connector "All my teams" fan-out parity with credentials (share to every team in one action), if desired.
+- **Phase 2:** role editor surfaces connectors with the shared scope language; validate that a role only mounts connectors in scope for its team/workspace. *Presentation-only — no schema change; safe to build directly.*
+- **Phase 3 (needs schema decision):** connector "One workspace" + "All my teams" parity. Blocked on the opt-in flag decision in Open Questions (visibility is opt-out today). Land `connectors.workspaceScoped` first, then wire the full `<ScopeSelector>` into the Add modal; until then the modal stays "This team" only.
 
 ## Current state (cite)
 
@@ -46,6 +46,10 @@ Unify at the **concept + UX layer**, not with a storage migration. Define one **
 ## Open questions
 
 - **`connectorWorkspaces` vs single `workspaceId`.** Connectors mount to *many* workspaces; credentials scope to *one*. Lean: keep connectors' many-mount, and map "One workspace" in the shared control to a single `connectorWorkspaces` row (with an "add more workspaces" affordance) — don't force credentials to become many-workspace.
+  - **⚠️ Blocker for connector "One workspace" (verified 2026-07-20, `apps/web/src/app/api/workers/claim/route.ts:1343-1352`):** connector→workspace visibility is currently **opt-out** — *a missing `connector_workspaces` row is treated as enabled*, and rows only exist to set `enabled:false`. So today a connector reaches **every** workspace in its owning team; there is no row that means "only this workspace." Implementing "One workspace" needs a real semantics decision, not just `<ScopeSelector>` wiring. Two options:
+    1. **Opt-in flag on the connector** (recommended): add e.g. `connectors.workspaceScoped` (bool) + treat mount rows as an allowlist when set. Clean precedence, survives new workspaces, migration is additive. Touches the claim resolver's mount filter.
+    2. **Enumerate disable-rows** for every *other* workspace at creation. No schema change, but silently wrong when a workspace is added later — rejected.
+    Until this lands, the connector Add modal should offer **"This team" only** (the honest current behavior) and defer "One workspace"/"All my teams" — matching what Phase 1 already states in the modal copy.
 - **Cross-team sharing for credentials.** Credentials do all-teams via fan-out (a row per team); connectors do it via `connectorShares` (one row, referenced). These stay different physically; the UI says "All my teams" for both. Acceptable, or converge later (Phase 3)?
 - **Account-scoped credentials.** `secrets.accountId` has no analogue in connectors/roles. Lean: leave it out of the shared control (it's a rarely-used niche), keep it in the credential resolver only.
 
