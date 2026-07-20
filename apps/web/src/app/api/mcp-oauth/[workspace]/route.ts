@@ -82,7 +82,7 @@ function createApi(jwt: string): ApiFn {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, isSensitive?: boolean) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -110,8 +110,8 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools: object[] = [
       {
         name: 'buildd',
         description: buildToolDescription(actions),
@@ -132,7 +132,10 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           required: ['action'],
         },
       },
-      {
+    ];
+
+    if (!isSensitive) {
+      tools.push({
         name: 'buildd_memory',
         description: `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${[...memoryActions].join(', ')}`,
         annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -151,9 +154,11 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           },
           required: ['action'],
         },
-      },
-    ],
-  }));
+      });
+    }
+
+    return { tools };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -188,6 +193,11 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         return await handleBuilddAction(api, action, params, ctx);
       }
       if (name === 'buildd_memory') {
+        // Defense-in-depth: gate even if tool was called despite being absent from
+        // ListTools response for sensitive workspaces.
+        if (isSensitive) {
+          return { content: [{ type: 'text' as const, text: 'Error: buildd_memory is not available in sensitive workspaces.' }], isError: true };
+        }
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
@@ -195,7 +205,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         if (!memClient) {
           return { content: [{ type: 'text' as const, text: 'Memory service not configured on this server.' }], isError: true };
         }
-        return await handleMemoryAction(memClient, action, params, ctx);
+        return await handleMemoryAction(memClient, action, params, { ...ctx, isSensitive });
       }
       throw new Error(`Unknown tool: ${name}`);
     } catch (error) {
@@ -219,12 +229,13 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspace),
-    columns: { id: true, teamId: true },
+    columns: { id: true, teamId: true, dataClass: true },
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
   const api = createApi(jwt);
-  const server = createMcpServer(api, workspace, ws.teamId);
+  const isSensitive = (ws.dataClass as string) === 'sensitive';
+  const server = createMcpServer(api, workspace, ws.teamId, isSensitive);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
