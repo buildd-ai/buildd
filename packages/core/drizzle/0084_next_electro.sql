@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "data_class" text DEFAULT 'standard' NOT NULL;

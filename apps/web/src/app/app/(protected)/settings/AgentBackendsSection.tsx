@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface Workspace {
   id: string;
@@ -788,10 +788,72 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
   const [pasteValue, setPasteValue] = useState('');
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Device-code login: buildd mints its own session (no pasted file to go stale).
+  const [device, setDevice] = useState<{ userCode: string; verificationUri: string } | null>(null);
+  const devicePollRef = useRef<{ cancelled: boolean } | null>(null);
 
   const allTeams = scope === 'all_teams';
   const base = `/api/workspaces/${accessWorkspaceId}/codex-credential`;
   const q = `?scope=${scope}`;
+
+  // Stop any in-flight device polling when scope/workspace changes or on unmount.
+  useEffect(() => () => { if (devicePollRef.current) devicePollRef.current.cancelled = true; }, [accessWorkspaceId, scope]);
+
+  async function startDeviceLogin() {
+    setBusy(true);
+    setMsg(null);
+    setDevice(null);
+    if (devicePollRef.current) devicePollRef.current.cancelled = true;
+    try {
+      const res = await fetch(`${base}/device/start`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setMsg({ type: 'error', text: data.error ?? 'Failed to start device login' });
+        return;
+      }
+      setDevice({ userCode: data.userCode, verificationUri: data.verificationUri });
+      const token = { cancelled: false };
+      devicePollRef.current = token;
+      void pollDeviceLogin(data.deviceAuthId, data.userCode, data.interval ?? 5, token);
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to start device login' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pollDeviceLogin(deviceAuthId: string, userCode: string, intervalSec: number, token: { cancelled: boolean }) {
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (!token.cancelled && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.max(1, intervalSec) * 1000));
+      if (token.cancelled) return;
+      try {
+        const res = await fetch(`${base}/device/poll`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceAuthId, userCode, scope }),
+        });
+        const data = await res.json();
+        if (data.status === 'connected') {
+          if (token.cancelled) return;
+          setDevice(null);
+          setStatus(data);
+          setMsg({ type: 'success', text: 'Codex connected via device login. buildd now owns this session.' });
+          return;
+        }
+        if (data.status === 'error') {
+          if (token.cancelled) return;
+          setDevice(null);
+          setMsg({ type: 'error', text: data.error ?? 'Device login failed' });
+          return;
+        }
+        // pending → keep polling
+      } catch {
+        // transient — keep polling
+      }
+    }
+    if (!token.cancelled) { setDevice(null); setMsg({ type: 'error', text: 'Device login timed out. Try again.' }); }
+  }
 
   const load = useCallback(async () => {
     // All-teams is an action (write to every team), not a per-team status view.
@@ -971,12 +1033,22 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
               {busy ? 'Refreshing…' : 'Refresh now'}
             </button>
             <button onClick={revoke} disabled={busy} className="text-sm text-status-error font-medium disabled:opacity-50">Revoke</button>
+            {!allTeams && !device && (
+              <button onClick={startDeviceLogin} disabled={busy} className="text-sm font-medium text-status-info disabled:opacity-50">
+                Re-auth via device login
+              </button>
+            )}
             {!pasteOpen && (
               <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-sm font-medium text-text-secondary">
                 Replace credential
               </button>
             )}
           </div>
+
+          {device && (
+            <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
+              onCancel={() => { if (devicePollRef.current) devicePollRef.current.cancelled = true; setDevice(null); }} />
+          )}
 
           {pasteOpen && (
             <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
@@ -992,6 +1064,19 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
               <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
             </span>
           )}
+          {/* Device login mints a buildd-owned session — no pasted file to go stale. Not for all-teams fan-out. */}
+          {!allTeams && (device ? (
+            <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
+              onCancel={() => { if (devicePollRef.current) devicePollRef.current.cancelled = true; setDevice(null); }} />
+          ) : (
+            <div className="flex items-center gap-3">
+              <button onClick={startDeviceLogin} disabled={busy}
+                className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+                Sign in with device code
+              </button>
+              <span className="text-xs text-text-muted">Recommended — buildd owns the session, no stale paste</span>
+            </div>
+          ))}
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
         </div>
       )}
@@ -1023,6 +1108,34 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
       <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
         {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
       </button>
+    </div>
+  );
+}
+
+/** Shown while a Codex device-code login is in progress (buildd polls in the background). */
+function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: string; verificationUri: string; onCancel: () => void }) {
+  return (
+    <div className="rounded-lg border border-status-info/30 bg-status-info/5 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-text-primary">Finish sign-in</div>
+        <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>
+      </div>
+      <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
+        <li>
+          Open <a href={verificationUri} target="_blank" rel="noopener noreferrer" className="text-status-info underline">{verificationUri}</a>
+        </li>
+        <li>Enter this code:</li>
+      </ol>
+      <div className="font-mono text-lg tracking-[0.3em] text-text-primary bg-surface-3 rounded-md px-3 py-2 text-center select-all">
+        {userCode}
+      </div>
+      <div className="flex items-center gap-2 text-xs text-text-muted">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-pulse" />
+        Waiting for approval… buildd will connect automatically.
+      </div>
+      <p className="text-[11px] text-text-muted">
+        Device-code login must be enabled in ChatGPT → Settings → Security. Signing in here logs Codex out on other devices for this account.
+      </p>
     </div>
   );
 }

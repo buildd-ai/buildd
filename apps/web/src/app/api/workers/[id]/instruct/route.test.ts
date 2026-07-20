@@ -326,4 +326,60 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(data.ok).toBe(true);
   });
 
+  describe('sensitive workspace — instructionHistory redaction', () => {
+    it('stores {type, ts} only in instructionHistory for sensitive workspaces', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'sensitive' },
+        instructionHistory: [],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Here is the secret token: abc123' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.instructionHistory).toHaveLength(1);
+      const entry = capturedSet.instructionHistory[0];
+      expect(entry.type).toBe('instruction');
+      expect(entry.timestamp).toBeDefined();
+      // Message text must be suppressed
+      expect(entry.message).toBeUndefined();
+    });
+
+    it('preserves message text in instructionHistory for standard workspaces', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.instructionHistory[0].message).toBe('Use JWT tokens');
+    });
+  });
 });

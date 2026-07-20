@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, artifacts } from '@buildd/core/db/schema';
+import { workers, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomBytes, randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -55,6 +55,20 @@ export async function POST(req: NextRequest) {
 
   if (worker.accountId !== account.id) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  // Sensitive workspaces: block R2 uploads entirely (content must not leave the runner)
+  if (worker.workspaceId) {
+    const wsRow = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, worker.workspaceId),
+      columns: { dataClass: true },
+    });
+    if (wsRow?.dataClass === 'sensitive') {
+      return NextResponse.json(
+        { error: 'Content upload is not permitted for sensitive workspaces' },
+        { status: 403 }
+      );
+    }
   }
 
   const uuid = randomUUID();

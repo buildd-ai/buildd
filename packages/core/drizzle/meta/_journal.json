@@ -589,6 +589,13 @@
       "when": 1784497198764,
       "tag": "0083_plain_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1784548492567,
+      "tag": "0084_next_electro",
+      "breakpoints": true
     }
   ]
 }

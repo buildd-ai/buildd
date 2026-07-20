@@ -1222,4 +1222,170 @@ describe('POST /api/tasks', () => {
     // requiresReview not set in insert values — DB default (false) applies
     expect(capturedValues.requiresReview).toBeUndefined();
   });
+
+  // ── outputSchema content-field denylist (sensitive workspaces) ──────────────
+
+  it('rejects outputSchema with denylist field "subject" in sensitive workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-sensitive',
+      gitConfig: { dataClass: 'sensitive' },
+    });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-sensitive',
+        title: 'Triage Email',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string' },
+            messageId: { type: 'string' },
+          },
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toContain('subject');
+    expect(data.error).toContain('sensitive workspaces');
+  });
+
+  it('rejects outputSchema with multiple denylist fields in sensitive workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-sensitive',
+      gitConfig: { dataClass: 'sensitive' },
+    });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-sensitive',
+        title: 'Bad Schema Task',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            body: { type: 'string' },
+            sender: { type: 'string' },
+            correlationKey: { type: 'string' },
+          },
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toContain('body');
+    expect(data.error).toContain('sender');
+  });
+
+  it('allows operational-only outputSchema in sensitive workspace', async () => {
+    const createdTask = { id: 'task-123', workspaceId: 'ws-sensitive', title: 'Heartbeat' };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-sensitive',
+      gitConfig: { dataClass: 'sensitive' },
+    });
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-sensitive',
+        title: 'Heartbeat',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['ok', 'action_taken', 'error'] },
+            tasksCreated: { type: 'integer' },
+            actionCount: { type: 'integer' },
+          },
+          required: ['status'],
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+  });
+
+  it('allows denylist field names that are non-string typed in sensitive workspace', async () => {
+    // e.g. an integer field named "to" should not be flagged
+    const createdTask = { id: 'task-123', workspaceId: 'ws-sensitive', title: 'Count Task' };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-sensitive',
+      gitConfig: { dataClass: 'sensitive' },
+    });
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-sensitive',
+        title: 'Count Task',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            // "email" typed as integer (e.g. email count) — not content-bearing
+            email: { type: 'integer' },
+            status: { type: 'string', enum: ['ok'] },
+          },
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+  });
+
+  it('allows content-field names in non-sensitive workspace outputSchema', async () => {
+    // Standard workspace: denylist check does not apply
+    const createdTask = { id: 'task-123', workspaceId: 'ws-standard', title: 'Any Task' };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-standard',
+      gitConfig: { dataClass: 'standard' },
+    });
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-standard',
+        title: 'Any Task',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string' },
+            body: { type: 'string' },
+          },
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+  });
 });

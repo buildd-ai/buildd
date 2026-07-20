@@ -2796,6 +2796,8 @@ type MemoryActionCtx = {
   knowledgeStore?: KnowledgeStore;
   embedder?: Embedder | null;
   api?: ApiFn;
+  /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
+  isSensitive?: boolean;
 };
 
 /**
@@ -2840,6 +2842,11 @@ export async function handleRecallAction(
   }
 
   const scope = ((params.scope as string) || 'memory') as Corpus;
+
+  if (ctx.isSensitive && scope === 'memory') {
+    return text('(No results — memory access is disabled for sensitive workspaces.)');
+  }
+
   const limit = Math.min((params.limit as number) || 10, 50);
   const query = params.query as string;
 
@@ -2897,6 +2904,10 @@ export async function handleLearnAction(
   const validTypes = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'];
   if (!validTypes.includes(params.type as string)) {
     return errorResult(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+  }
+
+  if (ctx.isSensitive) {
+    return errorResult('workspace is sensitive — memory writes disabled');
   }
 
   const supersedesParam = parseSupersedesParam(params.supersedes);
@@ -2972,16 +2983,7 @@ export async function handleMemoryAction(
   memoryClient: MemoryClient | null,
   action: string,
   params: Record<string, unknown>,
-  ctx: {
-    project?: string;
-    workerId?: string;
-    workspaceId?: string;
-    teamId?: string;
-    knowledgeStore?: KnowledgeStore;
-    embedder?: Embedder | null;
-    /** Optional API fn — when present, knowledge_query events are emitted after each query_knowledge call. */
-    api?: ApiFn;
-  },
+  ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
   // consolidate_knowledge and query_knowledge operate directly on the PgVectorStore
   // and do not call memoryClient — null is acceptable for those ops.
@@ -2994,12 +2996,14 @@ export async function handleMemoryAction(
 
   switch (action) {
     case 'context': {
+      if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const project = (params.project as string) || ctx.project;
       const data = await mc.getContext(project);
       return text(data.markdown || '(No memories yet)');
     }
 
     case 'search': {
+      if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const data = await mc.search({
         query: params.query as string | undefined,
         type: params.type as string | undefined,
@@ -3040,6 +3044,7 @@ export async function handleMemoryAction(
     }
 
     case 'save': {
+      if (ctx.isSensitive) return errorResult('workspace is sensitive — memory writes disabled');
       if (!params.type || !params.title || !params.content) throw new Error('type, title, and content are required');
 
       const validTypes = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'];
@@ -3101,6 +3106,7 @@ export async function handleMemoryAction(
     }
 
     case 'get': {
+      if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       if (!params.id) throw new Error('id is required');
       const data = await mc.get(params.id as string);
       const m = data.memory;
@@ -3115,6 +3121,7 @@ export async function handleMemoryAction(
     }
 
     case 'update': {
+      if (ctx.isSensitive) return errorResult('workspace is sensitive — memory writes disabled');
       if (!params.id) throw new Error('id is required');
 
       const updateFields: Record<string, unknown> = {};
@@ -3173,6 +3180,7 @@ export async function handleMemoryAction(
     }
 
     case 'delete': {
+      if (ctx.isSensitive) return errorResult('workspace is sensitive — memory writes disabled');
       if (!params.id) throw new Error('id is required');
       await mc.delete(params.id as string);
 
@@ -3189,6 +3197,11 @@ export async function handleMemoryAction(
       if (!params.query) throw new Error('query is required');
 
       const corpus = ((params.corpus as string) || 'memory') as Corpus;
+
+      if (ctx.isSensitive && corpus === 'memory') {
+        return text('(No results — memory access is disabled for sensitive workspaces.)');
+      }
+
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
 

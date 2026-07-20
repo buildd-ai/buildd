@@ -47,6 +47,7 @@ import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
+import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -588,7 +589,7 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1143,6 +1144,7 @@ export class WorkerManager {
       taskBackend: fullTask.backend || 'claude',
       workspaceId: fullTask.workspaceId,
       workspaceName: fullTask.workspace?.name || 'unknown',
+      workspaceDataClass: fullTask.workspace?.dataClass ?? 'standard',
       branch: claimedWorker.branch,
       status: 'working',
       hasNewActivity: false,
@@ -1359,6 +1361,8 @@ export class WorkerManager {
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
+    const isSensitive = worker.workspaceDataClass === 'sensitive';
+    if (isSensitive) activateRedaction();
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -2567,6 +2571,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         throw error;
       }
     } finally {
+      if (isSensitive) deactivateRedaction();
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {

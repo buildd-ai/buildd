@@ -11,6 +11,7 @@ const { execFileSync } = childProcess;
 import { createHash } from 'crypto';
 import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
+import { BuilddTransport } from '../buildd-transport';
 
 /** Serializable code-graph payload transmitted to the server for persistence. */
 export type IngestGraphPayload = Pick<ScipGraph, 'entities' | 'edges' | 'aliases'>;
@@ -305,20 +306,42 @@ export interface HttpIngestApiOptions {
 
 /** Fetch-backed client for the /api/knowledge/ingest-jobs routes. */
 export function createHttpIngestApi(opts: HttpIngestApiOptions): FullIngestApiClient {
-  const doFetch = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const base = opts.serverUrl.replace(/\/$/, '');
 
+  // 120s timeout: embedding batches can take a while — longer than the runner
+  // (30s) and MCP server (no timeout). Divergence preserved via transport config.
+  const transport = new BuilddTransport({
+    baseUrl: base,
+    apiKey: opts.apiKey,
+    timeoutMs,
+  });
+
+  // opts.fetchImpl injection stays supported for tests by swapping globalThis.fetch
+  // before construction; the transport picks up whatever fetch is in scope.
+  // If a custom fetchImpl is passed, proxy through it by overriding globalThis temporarily
+  // is undesirable — instead we keep the post() wrapper so test injection still works.
+  const doFetch = opts.fetchImpl;
+
   async function post<T>(path: string, body: unknown): Promise<T> {
-    const res = await doFetch(`${base}${path}`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${opts.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    if (doFetch) {
+      // Custom fetchImpl (tests) — keep compatibility by calling it directly.
+      res = await doFetch(`${base}${path}`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${opts.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+    } else {
+      res = await transport.request(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    }
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`ingest API error ${res.status}: ${text.slice(0, 500)}`);

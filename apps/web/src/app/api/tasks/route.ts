@@ -14,6 +14,28 @@ import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { pathsOverlap } from '@buildd/core/path-overlap';
 
+// Field names that must never appear as string properties in outputSchemas for
+// sensitive workspaces. These names are characteristic of content-bearing email
+// fields that would route real data through the structured-output carve-out.
+// Pointer fields (messageId, threadId, correlationKey, objectId) are fine.
+// TODO: extend list as new content patterns are identified.
+const OUTPUT_SCHEMA_CONTENT_DENYLIST = new Set([
+  'subject', 'body', 'snippet', 'sender', 'from', 'to', 'email', 'address',
+]);
+
+/**
+ * Returns property names from a JSON Schema that are both in the content denylist
+ * and typed as plain strings. Checks top-level properties only — sufficient for
+ * the cheap heuristic described in the sensitive-workspace spec.
+ */
+function detectContentBearingSchemaFields(schema: Record<string, unknown>): string[] {
+  const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties) return [];
+  return Object.entries(properties)
+    .filter(([name, def]) => OUTPUT_SCHEMA_CONTENT_DENYLIST.has(name.toLowerCase()) && def.type === 'string')
+    .map(([name]) => name);
+}
+
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
   if (process.env.NODE_ENV === 'development') {
@@ -337,6 +359,23 @@ export async function POST(req: NextRequest) {
     // Validate outputSchema is a valid JSON Schema object if provided
     if (outputSchema && (typeof outputSchema !== 'object' || Array.isArray(outputSchema))) {
       return NextResponse.json({ error: 'outputSchema must be a JSON Schema object' }, { status: 400 });
+    }
+
+    // Denylist: reject content-bearing field names in sensitive-workspace schemas.
+    // Sensitive workspaces (e.g. Cue email triage) use structured-only retention where
+    // structuredOutput is the one field that flows through even after free-text is dropped.
+    // An outputSchema with fields like `subject` or `body` would route real content through
+    // that carve-out. Use pointer fields (messageId, threadId, correlationKey) instead.
+    if (outputSchema && targetWorkspace.gitConfig?.dataClass === 'sensitive') {
+      const violations = detectContentBearingSchemaFields(outputSchema as Record<string, unknown>);
+      if (violations.length > 0) {
+        return NextResponse.json(
+          {
+            error: `outputSchema contains content-bearing fields not permitted in sensitive workspaces: ${violations.join(', ')}. Replace with pointer fields (messageId, threadId, correlationKey, objectId).`,
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Resolve category: use provided value, or auto-classify
