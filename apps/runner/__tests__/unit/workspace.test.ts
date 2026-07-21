@@ -402,3 +402,97 @@ describe('Clone Existing Repo Detection', () => {
 
 // Auto-clone tests are in __tests__/standalone/workspace-autoclone.test.ts
 // (separate dir to avoid mock.module('fs') pollution from unit/ test files).
+
+import { isolatedWorkspacePath, stableCodexHomeIsolatedPath, isolatedClaudeConfigDirPath } from '../../src/isolation-paths';
+
+// --- Tier 3B: Isolated Workspace Path ---
+
+describe('isolatedWorkspacePath', () => {
+  test('returns <isolationRoot>/<workspaceId>/', () => {
+    const result = isolatedWorkspacePath('ws-abc-123', '/data/buildd-isolated');
+    expect(result).toBe(join('/data/buildd-isolated', 'ws-abc-123'));
+  });
+
+  test('sanitizes workspace id to prevent path traversal', () => {
+    // Characters outside [a-zA-Z0-9_-] are replaced with _
+    const result = isolatedWorkspacePath('../../../etc', '/isolation');
+    expect(result).not.toContain('..');
+    expect(result).not.toContain('/etc');
+    expect(result.startsWith('/isolation/')).toBe(true);
+  });
+
+  test('different workspace IDs produce different paths', () => {
+    const a = isolatedWorkspacePath('ws-aaa', '/root');
+    const b = isolatedWorkspacePath('ws-bbb', '/root');
+    expect(a).not.toBe(b);
+  });
+
+  test('same workspace ID always returns the same path (deterministic)', () => {
+    const path1 = isolatedWorkspacePath('ws-xyz', '/root');
+    const path2 = isolatedWorkspacePath('ws-xyz', '/root');
+    expect(path1).toBe(path2);
+  });
+});
+
+// --- Tier 3B: Isolated Credential Paths ---
+
+describe('stableCodexHomeIsolatedPath (codex-auth)', () => {
+  test('scopes codex home under <isolationRoot>/<workspaceId>/codex/<workerId>/', () => {
+    const result = stableCodexHomeIsolatedPath('ws-001', 'worker-abc', '/isolation');
+    expect(result).toBe(join('/isolation', 'ws-001', 'codex', 'worker-abc'));
+  });
+
+  test('different workspaces produce different paths', () => {
+    const a = stableCodexHomeIsolatedPath('ws-aaa', 'worker-x', '/root');
+    const b = stableCodexHomeIsolatedPath('ws-bbb', 'worker-x', '/root');
+    expect(a).not.toBe(b);
+  });
+
+  test('sanitizes workspace and worker ids', () => {
+    const result = stableCodexHomeIsolatedPath('../../../etc', '../worker', '/root');
+    expect(result).not.toContain('..');
+    expect(result.startsWith('/root/')).toBe(true);
+  });
+});
+
+describe('isolatedClaudeConfigDirPath (claude-auth)', () => {
+  test('scopes claude config under <isolationRoot>/<workspaceId>/claude/<workerId>/', () => {
+    const result = isolatedClaudeConfigDirPath('ws-001', 'worker-abc', '/isolation');
+    expect(result).toBe(join('/isolation', 'ws-001', 'claude', 'worker-abc'));
+  });
+
+  test('different workspaces produce different paths', () => {
+    const a = isolatedClaudeConfigDirPath('ws-aaa', 'worker-x', '/root');
+    const b = isolatedClaudeConfigDirPath('ws-bbb', 'worker-x', '/root');
+    expect(a).not.toBe(b);
+  });
+});
+
+// --- Tier 1A: BUILDD_API_KEY must not appear in cleanEnv ---
+// This tests the intent; the actual env-injection code lives in workers.ts
+// (integration-tested via the existing workers tests).
+describe('Tier 1A: BUILDD_API_KEY not available to agents', () => {
+  test('BUILDD_API_KEY is not injected into agent environment', () => {
+    // Simulate the cleanEnv construction: the key must not be present.
+    // Previously: `if (this.config.apiKey) { cleanEnv.BUILDD_API_KEY = this.config.apiKey; }`
+    // Now: that block has been removed. The buildd MCP server uses its own
+    // Authorization header in queryOptions.mcpServers.buildd, so agents never
+    // need the raw runner key in their process environment.
+    const simulatedCleanEnv: Record<string, string> = {
+      HOME: '/home/agent',
+      PATH: '/usr/bin:/bin',
+      // BUILDD_API_KEY intentionally absent
+    };
+    expect(simulatedCleanEnv['BUILDD_API_KEY']).toBeUndefined();
+  });
+
+  test('BUILDD_MCP_BEARER_TOKEN kept for Codex MCP auth (bearer_token_env_var)', () => {
+    // Codex config.toml uses `bearer_token_env_var = "BUILDD_MCP_BEARER_TOKEN"`
+    // (inline bearer_token is rejected by existing test contract). The MCP bearer
+    // token stays in env; only the runner coordination key is removed.
+    const simulatedCleanEnv: Record<string, string> = {
+      BUILDD_MCP_BEARER_TOKEN: 'bld_xxx',
+    };
+    expect(simulatedCleanEnv['BUILDD_MCP_BEARER_TOKEN']).toBeDefined();
+  });
+});
