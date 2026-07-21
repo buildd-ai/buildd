@@ -157,6 +157,11 @@ export interface LocalWorker {
   milestones: Milestone[];
   currentAction: string;
   commits: Array<{ sha: string; message: string }>;
+  // Set true once a create_pr tool result confirms a real PR was opened (not
+  // merely that the tool was called). Gates the pr_required output requirement.
+  prCreated?: boolean;
+  // PR URL captured from a successful create_pr result, when parseable.
+  prUrl?: string;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
