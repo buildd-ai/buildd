@@ -1711,6 +1711,44 @@ export class WorkerManager {
             console.warn(`[Worker ${worker.id}] Failed to parse .mcp.json for Codex MCP injection:`, err);
           }
         }
+
+        // Inject claim-time connectors (worker.mcpConnectors) into Codex config.toml.
+        // For Claude workers, connectors reach queryOptions.mcpServers (below). Codex
+        // ignores queryOptions and reads only config.toml, so connectors were silently
+        // dropped for Codex tasks. Only http+Bearer connectors are supported by the
+        // `bearer_token_env_var` config.toml field; non-Bearer and stdio connectors
+        // cannot be modelled in config.toml and are skipped with a warning.
+        const claimConnsForCodex = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
+        if (claimConnsForCodex && claimConnsForCodex.length > 0) {
+          for (const conn of claimConnsForCodex) {
+            if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
+            if (conn.assertionMode) continue; // async mint+exchange not supported here
+            if ((conn.transport ?? 'http') !== 'http') {
+              console.warn(`[Worker ${worker.id}] Codex: skipping stdio connector "${conn.name}" (not supported in config.toml)`);
+              continue;
+            }
+            // Skip if .mcp.json already registered this server name (prefer .mcp.json entry)
+            if (codexAdditionalServers.find(s => s.name === conn.name)) continue;
+            const authHeader = conn.headers?.Authorization || conn.headers?.authorization;
+            if (!authHeader) {
+              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" has no Authorization header — cannot inject into config.toml`);
+              continue;
+            }
+            const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+            if (!bearerMatch) {
+              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" uses non-Bearer auth — cannot inject into config.toml`);
+              continue;
+            }
+            const envVarName = `MCP_BEARER_CONN_${conn.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+            cleanEnv[envVarName] = bearerMatch[1];
+            codexAdditionalServers.push({ name: conn.name, url: conn.url, bearerTokenEnvVar: envVarName });
+          }
+          const injected = codexAdditionalServers.filter(s => s.bearerTokenEnvVar.startsWith('MCP_BEARER_CONN_'));
+          if (injected.length > 0) {
+            console.log(`[Worker ${worker.id}] Injected ${injected.length} claim-time connector(s) into Codex config: ${injected.map(s => s.name).join(', ')}`);
+          }
+        }
+
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
