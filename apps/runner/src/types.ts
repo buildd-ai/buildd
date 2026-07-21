@@ -183,6 +183,9 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // MCP credential secrets (label → value) delivered inline at claim time.
+  // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
+  mcpSecrets?: Record<string, string>;
   // Server-managed API key (delivered inline during claim, injected into subprocess env)
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)

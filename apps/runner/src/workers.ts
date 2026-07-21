@@ -1060,7 +1060,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig },
     fullTask: BuilddTask,
     workspacePath: string,
   ): Promise<LocalWorker | null> {
@@ -1181,6 +1181,10 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
     }
 
+    if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
+      worker.mcpSecrets = claimedWorker.mcpSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s): ${Object.keys(claimedWorker.mcpSecrets).join(', ')}`);
+    }
     if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
       (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
       console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
@@ -1578,6 +1582,17 @@ export class WorkerManager {
       // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
       if (this.config.apiKey) {
         cleanEnv.BUILDD_API_KEY = this.config.apiKey;
+      }
+
+      // Inject mcp_credential secrets (DISPATCH_API_KEY, TENANT_ID, etc.) so
+      // ${VAR} references in .mcp.json HTTP headers are expanded by the injection
+      // code below (lines 2031–2068). The connector system only supports a single
+      // headerName per connector and cannot model servers that require two headers.
+      if (worker.mcpSecrets) {
+        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
+          cleanEnv[envVar] = value;
+        }
+        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s): ${Object.keys(worker.mcpSecrets).join(', ')}`);
       }
 
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
