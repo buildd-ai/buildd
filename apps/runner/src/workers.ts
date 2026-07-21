@@ -67,6 +67,11 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
 function isBwrapSupported(): boolean {
+  // Operator escape hatch: BUILDD_DISABLE_SANDBOX=1 forces sandbox off regardless
+  // of what the bwrap test returns. Use this when checkBwrapSupport() produces a
+  // false positive (e.g. setuid bwrap passes the test but Claude Code still fails).
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     if (!_bwrapSupported) {

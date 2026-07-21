@@ -21,12 +21,20 @@ import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanCo
 describe('checkBwrapSupport', () => {
   beforeEach(() => {
     mockExecSync.mockReset();
+    mockReadFileSync.mockReset();
+    // Default: sysctl not present — fall through to bwrap test
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) {
+        throw new Error('ENOENT');
+      }
+      throw new Error('ENOENT');
+    });
   });
 
-  it('returns true when bwrap is installed and namespace test passes', () => {
+  it('returns true when bwrap is installed and --unshare-user namespace test passes', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
-      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('echo')) return Buffer.from('ok\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('--unshare-user')) return Buffer.from('ok\n');
       throw new Error('not found');
     });
     expect(checkBwrapSupport()).toBe(true);
@@ -40,12 +48,53 @@ describe('checkBwrapSupport', () => {
     expect(checkBwrapSupport()).toBe(false);
   });
 
-  it('returns false when bwrap is installed but namespace creation fails', () => {
+  it('returns false when bwrap is installed but --unshare-user namespace creation fails', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
-      if (typeof cmd === 'string' && cmd.includes('bwrap')) {
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('--unshare-user')) {
         throw new Error('bwrap: No permissions to create a new namespace');
       }
+      throw new Error('not found');
+    });
+    expect(checkBwrapSupport()).toBe(false);
+  });
+
+  it('returns false immediately when kernel sysctl unprivileged_userns_clone=0', () => {
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) {
+        return '0\n';
+      }
+      throw new Error('ENOENT');
+    });
+    // execSync should never be called when sysctl short-circuits
+    mockExecSync.mockImplementation(() => { throw new Error('should not be called'); });
+    expect(checkBwrapSupport()).toBe(false);
+  });
+
+  it('returns true when kernel sysctl is 1 and bwrap namespace test passes', () => {
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) {
+        return '1\n';
+      }
+      throw new Error('ENOENT');
+    });
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('--unshare-user')) return Buffer.from('ok\n');
+      throw new Error('not found');
+    });
+    expect(checkBwrapSupport()).toBe(true);
+  });
+
+  it('returns false when setuid bwrap passes basic test but --unshare-user fails (false-positive scenario)', () => {
+    // This is the key scenario: setuid bwrap can bind-mount without user namespaces,
+    // but --unshare-user explicitly tests user namespace creation and fails.
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('--unshare-user')) {
+        throw new Error('bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.');
+      }
+      if (typeof cmd === 'string' && cmd.includes('bwrap')) return Buffer.from('ok\n'); // old test would pass
       throw new Error('not found');
     });
     expect(checkBwrapSupport()).toBe(false);

@@ -314,7 +314,7 @@ function checkBwrap(): CheckResult {
   return {
     name: 'bwrap',
     status: 'warn',
-    message: 'bwrap installed but user namespaces unavailable (kernel.unprivileged_userns_clone=0?) — runner will force sandbox disabled',
+    message: 'bwrap installed but user namespaces unavailable — runner forces sandbox disabled. If commands still fail, set BUILDD_DISABLE_SANDBOX=1 in your runner env.',
   };
 }
 

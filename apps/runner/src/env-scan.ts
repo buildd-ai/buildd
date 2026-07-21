@@ -50,15 +50,31 @@ const DEFAULT_ENV_KEYS = [
  * if bwrap is missing or if the kernel has unprivileged_userns_clone=0. The result
  * is used by the runner to force-disable Claude Code sandboxing when namespaces are
  * unavailable — preventing every Bash tool call from failing with a bwrap error.
+ *
+ * Important: we test with --unshare-user to match what Claude Code's sandbox does.
+ * A plain bwrap invocation can succeed on systems with setuid bwrap even when
+ * kernel.unprivileged_userns_clone=0, causing a false positive that leaves the
+ * sandbox enabled and every agent Bash call failing at runtime.
  */
 export function checkBwrapSupport(): boolean {
+  // Fast path: if the kernel explicitly disables unprivileged user namespaces,
+  // bwrap cannot create them — skip the expensive process spawn.
+  try {
+    const val = readFileSync('/proc/sys/kernel/unprivileged_userns_clone', 'utf-8').trim();
+    if (val === '0') return false;
+  } catch { /* not present on all kernels — fall through to bwrap test */ }
+
   try {
     execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
   } catch {
     return false; // not installed — sandbox won't be attempted
   }
+
+  // Explicitly test --unshare-user to mirror what Claude Code's sandbox does.
+  // Without this flag, setuid bwrap can bind-mount without user namespaces,
+  // producing a false positive on machines with unprivileged_userns_clone=0.
   try {
-    execSync('bwrap --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
+    execSync('bwrap --unshare-user --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
       timeout: 5000,
       stdio: 'pipe',
     });
