@@ -50,6 +50,7 @@ import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -1886,6 +1887,12 @@ export class WorkerManager {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
 
+      // Tool channel policy: agents must not improvise when an MCP tool channel
+      // is unavailable. This instruction prevents the credential-scavenging pattern
+      // (reading secrets from disk, env vars, or response headers and calling APIs
+      // directly) that two incidents demonstrated agents will attempt on their own.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
+
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
       const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
@@ -2101,6 +2108,43 @@ export class WorkerManager {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
           }
         }
+      }
+
+      // MCP pre-flight: verify all connector-required servers are mounted and
+      // reachable BEFORE the agent loop starts. Connectors are servers the role
+      // explicitly opted into via connectorRefs — their absence means the agent
+      // cannot perform its primary function and will improvise (historical
+      // incidents: Cue secret scavenged from disk, DISPATCH_API_KEY resolved from
+      // headers and called directly). Hard-fail here so the failure surfaces in
+      // Health and get_error_traces rather than propagating as a silent workaround.
+      const requiredConnectorNames = (claimConnectors ?? []).map(c => c.name);
+      if (requiredConnectorNames.length > 0) {
+        const preflightResult = await runMcpPreflight({
+          mcpServers: queryOptions.mcpServers as Record<string, { type: string; url?: string; headers?: Record<string, string>; command?: string }>,
+          requiredConnectorNames,
+        });
+        if (!preflightResult.ok) {
+          for (const failure of preflightResult.failures) {
+            console.error(`[Worker ${worker.id}] MCP pre-flight FAILED: ${failure.server} — ${failure.reason}`);
+          }
+          const firstFailure = preflightResult.failures[0];
+          const errorMsg = `MCP_PREFLIGHT_FAILED: ${firstFailure.server} unreachable — ${firstFailure.reason}. Check workspace resolution and connector credential injection.`;
+          // Buffer error traces so they surface in get_error_traces
+          worker.pendingErrorTraces ??= [];
+          for (const failure of preflightResult.failures) {
+            worker.pendingErrorTraces.push({
+              pattern: 'mcp_preflight_failed',
+              excerpt: `MCP_PREFLIGHT_FAILED: ${failure.server} — ${failure.reason}`,
+              source: 'preflight',
+            });
+          }
+          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${preflightResult.failures.map(f => f.server).join(', ')}`, ts: Date.now() });
+          const preflightErr = new Error(errorMsg) as Error & { mcpPreflightFailures?: McpPreflightFailure[] };
+          preflightErr.mcpPreflightFailures = preflightResult.failures;
+          throw preflightErr;
+        }
+        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
+        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
@@ -2664,11 +2708,15 @@ If something is missing or incomplete, describe what and fix it now.`;
         // (escalate a missing secret vs. retry a flaky readiness) rather than
         // regex-matching the free-text error.
         const provisionFailure = (error as { provisionFailure?: unknown })?.provisionFailure;
+        // MCP pre-flight failures carry structured failure info for each failed
+        // server — surface so the organizer can escalate a missing connector credential.
+        const mcpPreflightFailures = (error as { mcpPreflightFailures?: McpPreflightFailure[] })?.mcpPreflightFailures;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
+          ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });

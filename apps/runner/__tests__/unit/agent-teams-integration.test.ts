@@ -318,8 +318,9 @@ describe('Integration: full claim → session flow', () => {
     // No Skill tool scoping
     expect(opts.allowedTools).toBeUndefined();
 
-    // No system prompt append for skill invocation
-    expect(opts.systemPrompt.append).toBeUndefined();
+    // No skill-invocation directive in system prompt (agents mode uses definitions, not Skill tool)
+    expect(opts.systemPrompt.append ?? '').not.toContain('MUST use');
+    expect(opts.systemPrompt.append ?? '').not.toContain('Use these skills');
 
     // Skills were synced to disk
     expect(mockSyncSkillToLocal.mock.calls.length).toBe(2);
