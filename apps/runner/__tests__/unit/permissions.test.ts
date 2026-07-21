@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
 
 // Helper to check if a command matches any dangerous pattern
 function isDangerousCommand(command: string): boolean {
@@ -18,6 +18,16 @@ function isDangerousCommand(command: string): boolean {
 // Helper to check if a path is sensitive
 function isSensitivePath(filePath: string): boolean {
   return SENSITIVE_PATHS.some(pattern => pattern.test(filePath));
+}
+
+// Helper to check if a path is a sensitive read target (runner credential files)
+function isSensitiveReadPath(filePath: string): boolean {
+  return SENSITIVE_READ_PATHS.some(pattern => pattern.test(filePath));
+}
+
+// Helper to check if a bash command reads runner credential files
+function isCredentialReadCommand(command: string): boolean {
+  return DANGEROUS_CREDENTIAL_READ_PATTERNS.some(pattern => pattern.test(command));
 }
 
 describe('DANGEROUS_PATTERNS', () => {
@@ -402,5 +412,70 @@ describe('Edge Cases', () => {
   test('case sensitivity for paths', () => {
     // /etc/ pattern is case-sensitive
     expect(isSensitivePath('/ETC/passwd')).toBe(false);
+  });
+});
+
+describe('SENSITIVE_READ_PATHS — runner credential files blocked from Read tool', () => {
+  test('blocks ~/.buildd/config.json (runner API key)', () => {
+    expect(isSensitiveReadPath('/home/user/.buildd/config.json')).toBe(true);
+  });
+
+  test('blocks ~/.buildd/config (legacy no extension)', () => {
+    expect(isSensitiveReadPath('/home/user/.buildd/config')).toBe(true);
+  });
+
+  test('blocks .buildd/config.json at any nesting depth', () => {
+    expect(isSensitiveReadPath('/root/.buildd/config.json')).toBe(true);
+    expect(isSensitiveReadPath('C:\\Users\\foo\\.buildd\\config.json')).toBe(true);
+  });
+
+  test('blocks Claude credentials file', () => {
+    expect(isSensitiveReadPath('/home/user/.claude/.credentials.json')).toBe(true);
+  });
+
+  test('allows normal project files', () => {
+    expect(isSensitiveReadPath('/project/src/index.ts')).toBe(false);
+    expect(isSensitiveReadPath('/home/user/project/config.json')).toBe(false);
+    expect(isSensitiveReadPath('package.json')).toBe(false);
+  });
+
+  test('allows .buildd/env.yaml (non-secret declaration file)', () => {
+    expect(isSensitiveReadPath('/project/.buildd/env.yaml')).toBe(false);
+  });
+});
+
+describe('DANGEROUS_CREDENTIAL_READ_PATTERNS — bash reads of runner secrets', () => {
+  test('blocks cat ~/.buildd/config.json', () => {
+    expect(isCredentialReadCommand('cat ~/.buildd/config.json')).toBe(true);
+  });
+
+  test('blocks cat /home/user/.buildd/config', () => {
+    expect(isCredentialReadCommand('cat /home/user/.buildd/config')).toBe(true);
+  });
+
+  test('blocks head of .buildd config', () => {
+    expect(isCredentialReadCommand('head -n 5 ~/.buildd/config.json')).toBe(true);
+  });
+
+  test('blocks tail of .buildd config', () => {
+    expect(isCredentialReadCommand('tail ~/.buildd/config')).toBe(true);
+  });
+
+  test('blocks reading .credentials.json', () => {
+    expect(isCredentialReadCommand('cat ~/.claude/.credentials.json')).toBe(true);
+  });
+
+  test('blocks printenv BUILDD_API_KEY', () => {
+    expect(isCredentialReadCommand('printenv BUILDD_API_KEY')).toBe(true);
+  });
+
+  test('allows normal cat commands', () => {
+    expect(isCredentialReadCommand('cat src/index.ts')).toBe(false);
+    expect(isCredentialReadCommand('cat package.json')).toBe(false);
+  });
+
+  test('allows cat of non-sensitive config files', () => {
+    expect(isCredentialReadCommand('cat .buildd/env.yaml')).toBe(false);
+    expect(isCredentialReadCommand('cat tsconfig.json')).toBe(false);
   });
 });
