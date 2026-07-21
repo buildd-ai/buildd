@@ -1529,12 +1529,43 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
 
-      // Filter out potentially problematic env vars (expired OAuth tokens)
-      const cleanEnv = Object.fromEntries(
-        Object.entries(process.env).filter(([k]) =>
-          !k.includes('CLAUDE_CODE_OAUTH_TOKEN')  // Can contain expired tokens
-        )
-      );
+      // Build the agent subprocess environment from an allowlist rather than
+      // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
+      // DISPATCH_API_KEY, TENANT_MASTER_KEY, etc.) must never appear in the env
+      // visible to the agent — capability scoping, not permission prompts.
+      // Credentials the agent actually needs are injected explicitly below.
+      const RUNNER_ENV_PASSTHROUGH = new Set([
+        // Shell essentials
+        'HOME', 'USER', 'LOGNAME', 'USERNAME', 'SHELL', 'PATH',
+        'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_NUMERIC', 'LC_TIME',
+        'TZ', 'TERM', 'COLORTERM', 'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR',
+        // Git identity (may also be in git config, but SDK may read env)
+        'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+        // Node / Bun runtime (needed for tools the agent runs)
+        'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
+        // Proxy / network (needed for egress from agent tools)
+        'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+        'http_proxy', 'https_proxy', 'no_proxy',
+        // Display (Linux headless — needed for Playwright/browser tools)
+        'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY',
+        // GitHub CLI (non-secret — identifies endpoint only)
+        'GH_HOST', 'GITHUB_SERVER_URL',
+        // Anthropic SDK: endpoint override (not secret) + operator-configured LLM creds.
+        // Operator API keys are intentionally passed through — they are the agent's own
+        // LLM credentials, not runner coordination secrets. Server-managed keys (below)
+        // override them when present.
+        'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+        // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs
+        'OPENAI_API_KEY',
+        // GitHub token — needed for gh CLI (PRs, issues). Not a runner secret.
+        'GITHUB_TOKEN', 'GH_TOKEN',
+      ]);
+      const cleanEnv: Record<string, string> = {};
+      for (const key of RUNNER_ENV_PASSTHROUGH) {
+        const val = process.env[key];
+        if (val !== undefined) cleanEnv[key] = val;
+      }
 
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
@@ -1595,20 +1626,18 @@ export class WorkerManager {
         }
       }
 
-      // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
-      if (this.config.apiKey) {
-        cleanEnv.BUILDD_API_KEY = this.config.apiKey;
-      }
-
-      // Inject mcp_credential secrets (DISPATCH_API_KEY, TENANT_ID, etc.) so
-      // ${VAR} references in .mcp.json HTTP headers are expanded by the injection
-      // code below (lines 2031–2068). The connector system only supports a single
-      // headerName per connector and cannot model servers that require two headers.
-      if (worker.mcpSecrets) {
-        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
-          cleanEnv[envVar] = value;
-        }
-        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s): ${Object.keys(worker.mcpSecrets).join(', ')}`);
+      // Build a separate expansion env for resolving ${VAR} references in .mcp.json
+      // HTTP server headers. This env is NEVER passed to the agent subprocess — it
+      // exists only so the header-resolution code below can bake credentials into
+      // the MCP server entries before mounting them. The agent only sees the already-
+      // resolved Authorization headers inside queryOptions.mcpServers, not the raw keys.
+      const headerExpansionEnv: Record<string, string> = {
+        ...cleanEnv,
+        ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
+        ...(worker.mcpSecrets ?? {}),
+      };
+      if (worker.mcpSecrets && Object.keys(worker.mcpSecrets).length > 0) {
+        console.log(`[Worker ${worker.id}] MCP credential secrets available for header resolution (NOT in agent env): ${Object.keys(worker.mcpSecrets).join(', ')}`);
       }
 
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
@@ -1698,7 +1727,13 @@ export class WorkerManager {
                 const match = authHeader.match(/\$\{([^}]+)\}/);
                 if (match) {
                   const sourceVar = match[1];
-                  const tokenValue = cleanEnv[sourceVar];
+                  // Resolve from headerExpansionEnv (includes mcpSecrets) — do NOT
+                  // copy the raw secret under its original name into cleanEnv.
+                  const tokenValue = headerExpansionEnv[sourceVar];
+                  // Put the resolved token under a per-server bearer name. This is
+                  // still in Codex cleanEnv (needed by the Codex CLI subprocess to
+                  // authenticate with the MCP server) but renamed away from the
+                  // original secret label so it's not trivially guessable.
                   if (tokenValue) cleanEnv[envVarName] = tokenValue;
                 }
               }
@@ -2064,12 +2099,13 @@ export class WorkerManager {
       }
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
-      // resolving ${VAR} references using cleanEnv. Claude Code SDK does not expand
-      // ${VAR} in HTTP server headers when reading .mcp.json — servers with unresolved
-      // refs connect without auth and receive 401 (which the agent sees as "OAuth
-      // required"). Connectors already in queryOptions.mcpServers take precedence.
+      // resolving ${VAR} references using headerExpansionEnv (which includes
+      // BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not expand ${VAR} in
+      // HTTP server headers when reading .mcp.json — servers with unresolved refs
+      // connect without auth and receive 401 (which the agent sees as "OAuth required").
+      // Connectors already in queryOptions.mcpServers take precedence.
       // Skip buildd (reserved) and already-mounted names. Codex path handles its own
-      // .mcp.json injection above (lines 1605-1640).
+      // .mcp.json injection above.
       if (!isCodexTask) {
         const cwdMcpJsonPath = join(cwd, '.mcp.json');
         if (existsSync(cwdMcpJsonPath)) {
@@ -2081,11 +2117,11 @@ export class WorkerManager {
               if (name === 'buildd') continue; // reserved — never override coordination server
               if (queryOptions.mcpServers[name]) continue; // connector already mounted — skip
               if (serverCfg?.type === 'http' && serverCfg?.url) {
-                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
                 const resolvedHeaders: Record<string, string> = {};
                 let hasUnresolved = false;
                 for (const [hk, hv] of Object.entries(serverCfg.headers ?? {})) {
-                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
                   if (/\$\{/.test(resolved)) { hasUnresolved = true; break; }
                   resolvedHeaders[hk] = resolved;
                 }
@@ -2093,7 +2129,7 @@ export class WorkerManager {
                   queryOptions.mcpServers[name] = { type: 'http', url: resolvedUrl, headers: resolvedHeaders };
                   console.log(`[Worker ${worker.id}] Injected .mcp.json server "${name}" into queryOptions (${Object.keys(resolvedHeaders).length} header(s))`);
                 } else {
-                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not injected? Check claim route.`);
+                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not delivered by claim route?`);
                 }
               }
             }
