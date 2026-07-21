@@ -385,7 +385,7 @@ describe('Skills as subagents (useSkillAgents)', () => {
     expect(allowedTools).toBeUndefined();
   });
 
-  test('does NOT add system prompt append when useSkillAgents is true', async () => {
+  test('does NOT add skill-directive system prompt append when useSkillAgents is true', async () => {
     manager = new WorkerManager(makeConfig());
 
     await startWorkerWithTask(manager, {
@@ -397,7 +397,9 @@ describe('Skills as subagents (useSkillAgents)', () => {
     });
 
     const systemPrompt = lastQueryOpts.options.systemPrompt;
-    expect(systemPrompt.append).toBeUndefined();
+    // Skill-scoping directive is absent (agents mode uses agent definitions, not the Skill tool)
+    expect(systemPrompt.append ?? '').not.toContain('MUST use the deploy skill');
+    expect(systemPrompt.append ?? '').not.toContain('Use these skills');
   });
 
   test('does NOT create agents when useSkillAgents is false', async () => {
@@ -493,7 +495,10 @@ describe('Backwards compatibility', () => {
 
     expect(lastQueryOpts.options.agents).toBeUndefined();
     expect(lastQueryOpts.options.allowedTools).toBeUndefined();
-    expect(lastQueryOpts.options.systemPrompt.append).toBeUndefined();
+    // No skill-specific directive — only the always-present tool channel policy
+    const append = lastQueryOpts.options.systemPrompt.append ?? '';
+    expect(append).not.toContain('MUST use');
+    expect(append).not.toContain('Use these skills');
   });
 
   test('task with no context at all works', async () => {
