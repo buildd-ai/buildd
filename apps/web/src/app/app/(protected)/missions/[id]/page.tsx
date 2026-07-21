@@ -34,6 +34,8 @@ import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
+import RaiseBudgetButton from './RaiseBudgetButton';
+import { getMissionSpendUsd } from '@/lib/mission-budget';
 
 export const dynamic = 'force-dynamic';
 
@@ -211,6 +213,10 @@ export default async function MissionDetailPage({
 
   // Configuration from schedule template
   const configModel = (templateContext?.model as string) || null;
+
+  // Cost budget
+  const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
+  const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -425,6 +431,51 @@ export default async function MissionDetailPage({
                   ? `${completedTasks}/${totalTasks} done · ${awaitingMerge} awaiting merge`
                   : `${completedTasks} of ${totalTasks} tasks complete`}
             </div>
+          </div>
+        )}
+
+        {/* Budget exhausted banner */}
+        {mission.status === 'budget_exhausted' && costBudgetUsd != null && (
+          <div className="card p-4 mb-4 border-status-error/40 border-l-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[12px] font-semibold text-status-error uppercase tracking-wider">Budget exhausted</span>
+                </div>
+                <p className="text-[13px] text-text-secondary">
+                  {spendUsd != null
+                    ? `$${spendUsd.toFixed(4)} spent vs $${parseFloat(costBudgetUsd).toFixed(2)} budget — no new tasks will spawn.`
+                    : `Budget of $${parseFloat(costBudgetUsd).toFixed(2)} reached — no new tasks will spawn.`}
+                  {' '}Raise the budget to resume.
+                </p>
+              </div>
+              <div className="shrink-0">
+                <RaiseBudgetButton missionId={id} currentBudget={costBudgetUsd} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Spend vs budget (non-exhausted missions with a budget set) */}
+        {costBudgetUsd != null && mission.status !== 'budget_exhausted' && spendUsd != null && (
+          <div className="card p-3 mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] text-text-muted">Cost budget</span>
+              <span className={`text-[12px] font-mono tabular-nums ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'text-status-warning' : 'text-text-secondary'}`}>
+                ${spendUsd.toFixed(2)} / ${parseFloat(costBudgetUsd).toFixed(2)}
+              </span>
+            </div>
+            <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${spendUsd / parseFloat(costBudgetUsd) >= 0.8 ? 'bg-status-warning' : 'bg-status-success'}`}
+                style={{ width: `${Math.min(100, (spendUsd / parseFloat(costBudgetUsd)) * 100).toFixed(1)}%` }}
+              />
+            </div>
+            {spendUsd / parseFloat(costBudgetUsd) >= 0.8 && (
+              <p className="text-[11px] text-status-warning mt-1">
+                {Math.round((spendUsd / parseFloat(costBudgetUsd)) * 100)}% of budget used
+              </p>
+            )}
           </div>
         )}
 
@@ -950,6 +1001,7 @@ export default async function MissionDetailPage({
               workspaces={teamWorkspaces}
               maxConcurrentTasks={mission.maxConcurrentTasks}
               activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
+              costBudgetUsd={costBudgetUsd}
             />
           )}
         </MissionSecondaryPanel>

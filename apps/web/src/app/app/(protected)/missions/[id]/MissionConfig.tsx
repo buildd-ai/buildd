@@ -17,6 +17,7 @@ interface MissionConfigProps {
   workspaces: WorkspaceOption[];
   maxConcurrentTasks: number | null;
   activeTasks: number;
+  costBudgetUsd: string | null;
 }
 
 export default function MissionConfig({
@@ -26,6 +27,7 @@ export default function MissionConfig({
   workspaces,
   maxConcurrentTasks: initialMaxConcurrent,
   activeTasks,
+  costBudgetUsd: initialCostBudgetUsd,
 }: MissionConfigProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -40,6 +42,9 @@ export default function MissionConfig({
 
   // Max concurrent tasks state
   const [maxConcurrent, setMaxConcurrent] = useState<string>(initialMaxConcurrent != null ? String(initialMaxConcurrent) : '');
+
+  // Cost budget state
+  const [costBudget, setCostBudget] = useState<string>(initialCostBudgetUsd != null ? String(parseFloat(initialCostBudgetUsd)) : '');
 
   const disabled = saving !== null || isPending;
 
@@ -78,6 +83,15 @@ export default function MissionConfig({
     patchMission({ maxConcurrentTasks: parsed }, 'maxConcurrentTasks');
   }
 
+  function handleCostBudgetBlur() {
+    const trimmed = costBudget.trim();
+    const parsed = trimmed ? parseFloat(trimmed) : null;
+    if (trimmed && (isNaN(parsed!) || parsed! <= 0)) return;
+    const initial = initialCostBudgetUsd != null ? parseFloat(initialCostBudgetUsd) : null;
+    if (parsed === initial) return;
+    patchMission({ costBudgetUsd: parsed }, 'costBudgetUsd');
+  }
+
   const workspaceOptions = [
     { value: '', label: 'No workspace' },
     ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
@@ -87,6 +101,7 @@ export default function MissionConfig({
   const configSummary = [
     model && MODEL_OPTIONS.find(m => m.value === model)?.label,
     initialMaxConcurrent != null && `Max ${initialMaxConcurrent} concurrent`,
+    initialCostBudgetUsd != null && `Budget $${parseFloat(initialCostBudgetUsd).toFixed(2)}`,
   ].filter(Boolean);
 
   return (
@@ -162,6 +177,39 @@ export default function MissionConfig({
             </div>
             <p className="text-[11px] text-text-muted mt-1">
               Cap how many tasks this mission can run at once.
+            </p>
+          </div>
+
+          {/* Cost budget */}
+          <div>
+            <label className="block text-[11px] text-text-muted mb-1.5">Cost budget (USD)</label>
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-text-muted">$</span>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={costBudget}
+                onChange={e => setCostBudget(e.target.value)}
+                onBlur={handleCostBudgetBlur}
+                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                placeholder="No limit"
+                disabled={disabled}
+                className="w-28 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
+              />
+              {initialCostBudgetUsd != null && (
+                <button
+                  type="button"
+                  onClick={() => { setCostBudget(''); patchMission({ costBudgetUsd: null }, 'costBudgetUsd'); }}
+                  disabled={disabled}
+                  className="text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50"
+                >
+                  Remove limit
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-text-muted mt-1">
+              Mission pauses when spend reaches this limit. Empty = uncapped.
             </p>
           </div>
 

@@ -262,6 +262,10 @@ select {
     color: var(--text-muted);
     border-color: var(--border-strong);
   }
+  .health-pill-budget-exhausted {
+    color: var(--status-error);
+    border-color: var(--status-error);
+  }
 }
 
 @layer components {
