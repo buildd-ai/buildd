@@ -1,12 +1,147 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-07-13
-**Previous scan**: 2026-06-08
-**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.207)
-**Python SDK**: v0.2.87+ (tracking CLI parity)
-**Claude Code CLI**: v2.1.207 (released July 11, 2026)
+**Last updated**: 2026-07-20
+**Previous scan**: 2026-07-13
+**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.215)
+**Python SDK**: v0.2.123 (bundled with CLI v2.1.215)
+**Claude Code CLI**: v2.1.215 (released July 19, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## SDK Releases (v0.3.208 - v0.3.215) — July 14–19, 2026
+
+### TypeScript SDK v0.3.215 (July 19, 2026) — current latest
+- **Parity**: Updated to parity with Claude Code v2.1.215
+
+### TypeScript SDK v0.3.214 (July 18, 2026)
+- **New**: `set_permission_mode` now rejects unrecognized permission modes with a clear error; `'manual'` alias accepted at every ingress point
+- **New**: Optional `subkind: 'scheduled-trigger'` on `task-notification` `SDKMessageOrigin` — marks sessions that are the fired prompt of a user-configured scheduled task
+- **Fixed**: `applyFlagSettings({effortLevel})` now accepts `'max'` in its TypeScript type (runtime already supported it)
+- **New**: Assistant messages truncated by `interrupt()` now carry `aborted: true` — consumers can distinguish a mid-stream partial from a completed message
+- **New**: `subagent_type` and `subagent_retry` optional fields on `tool_progress` messages — clients can show when a subagent is waiting out an API rate-limit retry
+- **New**: `system/init` `plugins` entries and `reload_plugins` response now include each plugin's manifest `version`
+- **Fixed**: `SessionStart` hooks now correctly report source `"fork"` instead of `"resume"` when the session begins as a fork
+
+### TypeScript SDK v0.3.212 (July 17, 2026)
+- **Fixed**: Dash-leading `resumeSessionAt` and `sessionId` values now passed with equals-form argv (`--flag=value`) — prevents them being parsed as separate CLI flags
+- **New**: Agent tool output now includes the resolved model when a mid-turn model swap changed the subagent's model
+
+### TypeScript SDK v0.3.211 (July 15, 2026)
+- **New**: `SDKAssistantMessage.timestamp` (ISO-8601) added to the live stream, matching `SDKUserMessage`; older emitters omit it — consumers should fall back to receive time
+- **New**: `USAGE_LIMIT_ERROR_PREFIXES` and sibling exports (`@alpha`) — classify rate-limit error messages without hand-mirrored string lists
+- **Fixed**: `--replay-user-messages` with `--include-partial-messages` emitting the turn-start user replay after the first content block instead of before the turn's content events
+- **Fixed**: Process-exit errors now include CLI stderr output — failed child processes report their actual cause instead of only an exit code
+
+### TypeScript SDK v0.3.210 (July 14, 2026)
+- **New**: `timedOutAfterMs` field on `BashToolOutput` — set when a command is auto-backgrounded on timeout
+
+### TypeScript SDK v0.3.209 (July 14, 2026)
+- **Parity**: Updated to parity with Claude Code v2.1.209
+
+### TypeScript SDK v0.3.208 (July 14, 2026) — bug fix release
+- **Fixed**: Caller abort during a pending SDK hook callback was converted into hook success — PreToolUse-gated tools were executing after abort
+- **Fixed**: Per-query resource leak in process tracking when CLI spawn fails (nonexistent or inaccessible executable path)
+- **Fixed**: `UserPromptSubmit` hook exceeding its timeout killed the entire query with an empty error; now blocks the prompt with a clear timeout message and the session continues
+- **Fixed**: `extraArgs` values that look like flags (e.g., `resume: '--version'`) being parsed as their own CLI flags; dash-leading values now bound with equals-form argv
+- **Fixed**: Abort-listener leak: streaming queries sharing one `AbortController` no longer accumulate `abort` listeners on its signal after each completed query
+- **Fixed**: `createSdkMcpServer` docs pointed at a nonexistent env var; MCP tool-call timeout knob is `MCP_TOOL_TIMEOUT`
+- **Fixed**: Uncaught exception when writing to stdin after the Claude Code subprocess has exited
+
+### Python SDK (July 14–19, 2026)
+- **v0.2.123**: Bundled CLI updated to v2.1.215 (current latest)
+- **v0.2.122**: Bundled CLI updated to v2.1.214
+- **v0.2.121**: Bug fixes for argv flag injection; hardened build scripts
+
+---
+
+## Claude Code CLI Releases (v2.1.208 - v2.1.215) — July 14–19, 2026
+
+### v2.1.215 (July 19, 2026) — current latest
+- **Changed**: `/verify` and `/code-review` now only run when **directly invoked** — no longer trigger automatically
+
+### v2.1.214 (July 18, 2026)
+- **Security**: Fixed permission bypass in Windows PowerShell 5.1 sessions
+- **Security**: Fixed Bash permission analysis for file-descriptor redirects and long commands
+- **Security**: Enhanced safety for `help` and `man` command execution; strengthened Docker command permission prompts
+- **New**: `EndConversation` tool for managing abusive interactions
+- **New**: Progress heartbeats for extended tool operations
+- **Fixed**: PowerShell Unicode handling and background session management
+
+### v2.1.212 (July 17, 2026)
+- **New**: `/fork` creates **background session copies** while maintaining current work — each fork becomes an agent row
+- **New**: Session-wide **WebSearch call limit** (default: 200) prevents runaway search agents
+- **New**: Per-session **subagent spawn cap** (default: 200) prevents unbounded agent trees
+- **New**: MCP tool calls exceeding 2 minutes **auto-move to background** — session stays responsive
+- **New**: `/resume` command now provides a **session picker** for past sessions
+
+### v2.1.211 (July 16, 2026)
+- **New**: `--forward-subagent-text` flag for stream-json output — captures subagent text as it streams
+- **Security**: Fixed permission preview character neutralization
+- **Fixed**: Auto mode override behavior for `PreToolUse` hooks; Chrome file upload issues
+
+### v2.1.210 (July 15, 2026)
+- **New**: **Elapsed-time counter** on tool summary lines — live counter shows long-running tools are working instead of appearing frozen
+- **Fixed**: Worktree isolation for subagents; permission rule compilation and caching; background agent result reporting
+
+### v2.1.209 (July 14, 2026)
+- **Fixed**: `/model` and other dialogs blocked in background agent sessions
+
+### v2.1.208 (July 14, 2026)
+- **New**: **Screen reader mode** — opt-in plain-text rendering via `--ax-screen-reader`, `CLAUDE_AX_SCREEN_READER=1`, or `"axScreenReader": true` in settings
+- **New**: `vimInsertModeRemaps` setting — map two-key insert-mode sequences (e.g., `jj`) to Escape in vim mode
+- **New**: `CLAUDE_CODE_PROCESS_WRAPPER` env var for corporate launcher support
+- **New**: Mouse-click support in fullscreen menus
+- **Improved**: Significant memory and performance optimizations
+
+---
+
+## Fable 5: Free Window Closed July 19, 2026
+
+The twice-extended free period ended on schedule. Starting July 20, 2026:
+
+| Plan | Fable 5 Access |
+|------|----------------|
+| Max / Team Premium | Permanently included at reduced rate — no per-token billing |
+| Pro / Team Standard | One-time $100 usage credit granted; afterwards API billing at $10/$50 per MTok |
+| Without usage credits enabled | Access stops — no grace period |
+
+**Action for Buildd**: Add a visible warning to role cards using `claude-fable-5` for Pro/Standard workspace users. The `model-tiers` spec (`docs/design/model-tiers.md`) should reflect Fable 5 as `premium` tier with a plan-gated access note.
+
+---
+
+## Platform Announcements (July 14–20, 2026)
+
+### Claude for Teachers (July 14, 2026)
+Free for US K-12 educators. Library of teaching skills with direct connection to evidence-based curricula mapped to academic standards in all 50 states.
+
+### Claude for Government (Beta)
+Claude Code and Claude Cowork now available in a government-compliant environment.
+
+### Cowork Mobile/Web Expansion
+Sessions and files follow across devices. Background work, scheduled tasks, shared chat/projects, and mobile approvals work cross-device.
+
+### Memory: Categorized Entries
+Memory now stores individual categorized entries instead of a daily summary — richer per-category context injected into conversations.
+
+### HIPAA Self-Serve Configuration
+Enterprise and API orgs with a BAA can enable HIPAA configuration via a self-serve flow in the console.
+
+### Admin API User Management (Beta)
+Enterprise organizations can manage users programmatically — list/role/remove members, send invites, manage groups and custom roles.
+
+---
+
+## New Ecosystem Projects (Since July 13, 2026)
+
+| Project | Stars | Description |
+|---------|-------|-------------|
+| **AAS Core** | 43.6K | Agent-first control plane for catalog discovery backed by 1,969+ agentic skills; CLI, local MCP, catalog, and plugin integration |
+| **ARIS** (Auto-Research-In-Sleep) | 13.6K | Autonomous ML research agent with lightweight Markdown-only skills; runs overnight research loops and synthesizes findings |
+| **Java Claude Code Plugins** | 323 | 23 production-grade Claude Code plugins: TDD enforcement hooks, git/PR workflows, spec-driven development, code review, project lifecycle automation |
+| **Blueprint-Driven Dev** | 192 | 186 skills, 128 commands, 54 agents for structured Python project development using blueprint specs |
+| **VILA-Lab/Dive-into-Claude-Code** | — | Systematic academic analysis of Claude Code for designing AI agent systems; includes architectural patterns and evaluation frameworks |
 
 ---
 
@@ -560,40 +695,40 @@ Anthropic rebuilt the Claude Code desktop experience around:
 
 ## Recommendations for Buildd
 
-### This Week (July 13, 2026)
+### This Week (July 20, 2026)
 
-**#0 — Bump SDK version in Buildd to ^0.3.207**
-Current Buildd version is `^0.3.168`; latest is `0.3.207`. Key fixes include: `canUseTool` bug (tools ran with wrong input), workflow agent tracking issues, and `AgentToolCompletedOutput` types. Location: `packages/core/package.json`. Effort: Trivial.
+**#0 — Bump SDK to ^0.3.215 (was ^0.3.207)**
+Buildd is still pinned to `^0.3.168`. Latest is `0.3.215`. Key fixes since last scan: `UserPromptSubmit` hook timeout killing entire sessions, abort-listener leak accumulation in concurrent queries, `extraArgs` flag parsing breaking session CLI args, PreToolUse gate bypass on caller abort. Location: `packages/core/package.json`. Effort: Trivial.
 
-**#1 — Adopt Claude Sonnet 5 as default worker model**
-`claude-sonnet-5` is now the Claude Code default. Near-Opus 4.8 quality at half the cost, 1M-token context, `xhigh` effort support. Update default-roles model references and any hardcoded model strings in `packages/core/model-aliases.ts`. Note: Sonnet 5 uses an updated tokenizer that may produce 1.0–1.35× more tokens — verify token budget calculations still hold. Effort: Low.
+**#1 — Use `subkind: 'scheduled-trigger'` to distinguish scheduled task sessions**
+SDK v0.3.214 added `subkind: 'scheduled-trigger'` to `task-notification` session events. This directly matches Buildd's `taskSchedules` system — workers spawned by a schedule can now self-identify without parsing the task description. Wire this into `worker-runner.ts` to tag schedule-originated runs in analytics and dashboard display. Effort: Low.
 
-**#2 — Add `claude-fable-5` to model catalog with usage warnings**
-Fable 5 is available until July 19 at no extra cost (subscription), then $10/$50 per MTok. Add it to role model options in `apps/web/src/lib/default-roles.ts` with a clear warning about its faster weekly limit consumption and the July 19 pricing switch. Effort: Low.
+**#2 — Surface `aborted: true` in task timeline for interrupted turns**
+SDK v0.3.214: assistant messages truncated by `interrupt()` now carry `aborted: true`. Buildd's task detail page can use this to show a visual "⚠ Interrupted" badge on partial turns, distinguishing them from completed turns. Location: `apps/web/src/app/app/(protected)/tasks/[id]/` and related event rendering. Effort: Low.
 
-**#3 — Adopt `background_tasks_changed` system message for live agent tracking**
-New in v0.3.203: the SDK now emits `background_tasks_changed` on every change to the live background task set. Buildd's task detail page could subscribe to this to show which sub-agents are running in real time without polling. Location: `packages/core/worker-runner.ts`. Effort: Low.
+**#3 — Show subagent rate-limit retry state in live task view**
+SDK v0.3.214: `subagent_type` and `subagent_retry` fields on `tool_progress` messages. When a subagent is waiting out an API rate-limit retry, Buildd can surface this as "⏳ subagent retrying (429)" instead of appearing frozen. Helps users understand long-running tasks vs stuck tasks. Effort: Low.
 
-**#4 — Exploit `parent_agent_id` for depth-2+ agent trees in work tracker**
-SDK v0.3.202 added `parent_agent_id` on subagent session messages, enabling multi-level agent hierarchies. If Buildd workers use nested agent delegation, the work-tracker can now reconstruct full agent trees up to any depth. Location: `apps/web/src/lib/work-tracker.ts`. Effort: Medium.
+**#4 — Track `timedOutAfterMs` on Bash outputs for performance analysis**
+SDK v0.3.210: `BashToolOutput.timedOutAfterMs` set when a command is auto-backgrounded. Buildd could capture this in task metadata to surface commands that consistently time out, helping workspace admins identify slow scripts. Effort: Low.
 
-**#5 — Use `command_lifecycle` frames for more granular task progress**
-SDK v0.3.206 emits `command_lifecycle` frames with per-command states (queued/started/completed/cancelled/discarded). Buildd runners could use these to emit finer-grained `update_progress` calls without manual instrumentation. Effort: Medium.
+**#5 — Warning: Add Fable 5 credit-burn notice to role cards**
+Free period ended July 19. Pro/Standard users now burn usage credits at $10/$50/MTok when using `claude-fable-5` roles. Add a visible warning badge on role cards using Fable 5 for these plan tiers. Location: `apps/web/src/app/app/(protected)/team/page.tsx`, role card component. Effort: Low.
 
-**#6 — Implement `sessionStore` for task transcript persistence**
-SDK v0.3.169+ added `sessionStore` (alpha) to mirror session transcripts to external storage. For Buildd, this means task transcripts could be persisted to R2 or Neon and made available as artifacts, enabling replay and analysis without relying on CLI disk state. Effort: Medium.
+**#6 — Adopt `USAGE_LIMIT_ERROR_PREFIXES` for rate-limit error classification**
+SDK v0.3.211 exports `USAGE_LIMIT_ERROR_PREFIXES` and siblings (`@alpha`). Buildd's worker-runner currently hand-matches rate-limit error strings. Replace with the official prefix list to stay in sync with new rate-limit message formats as Anthropic evolves them. Location: `packages/core/worker-runner.ts`. Effort: Low.
 
-**#7 — Evaluate Sonnet 5 tokenizer impact on cost estimates**
-Sonnet 5's updated tokenizer outputs 1.0–1.35× more tokens for the same input. Any token budget calculations, cost estimates, or rate limit checks in Buildd that reference per-task token counts need to be recalibrated. Effort: Low–Medium.
+**#7 — Enforce subagent spawn cap in Buildd mission config**
+CLI v2.1.212 added per-session subagent spawn cap (default: 200). For Buildd's cost-control use case, exposing this cap in mission settings would let workspace admins bound the blast radius of a single mission run. Pair with the existing `maxConcurrentTasks` setting. Effort: Low–Medium.
 
-**#8 — Handle Sonnet 5 `effort` API (replaces thinking params)**
-Sonnet 5 returns 400 if you set `temperature`, `top_p`, `top_k` to non-defaults or use manual `thinking: {type: "enabled"}`. Workers that pass these params will fail on Sonnet 5. Migrate to `effort: "low"|"medium"|"high"|"xhigh"`. Location: `packages/core/worker-runner.ts`, `apps/web/src/lib/role-config.ts`. Effort: Low.
+**#8 — Use `/fork` pattern for mission branching (new CLI v2.1.212)**
+`/fork` creates a background session copy while the current session continues. This maps well to Buildd's mission orchestrator pattern — an organizer can fork a session mid-task to explore an alternative approach without blocking the main branch. Relevant for the orchestrator design in `apps/web/src/lib/orchestrator-workspace.ts`. Effort: Medium.
 
-**#9 — Expose `fallbackModel` in role config (now stable)**
-Introduced in v2.1.160, `fallbackModel` allows up to 3 fallback models when the primary is overloaded. Now stable and in wide use. Wire this into role configuration so workspace admins can set fallback chains (e.g., Sonnet 5 → Sonnet 4.6 during Sonnet 5 capacity spikes). Effort: Low.
+**#9 — Add `SDKAssistantMessage.timestamp` to task event timeline**
+SDK v0.3.211 adds ISO-8601 timestamps on assistant messages in the live stream. Buildd can use these for precise per-message timing in the task detail timeline, enabling latency analysis (time from tool call to response). Effort: Low.
 
-**#10 — Fix headless hook streaming (critical for background workers)**
-CLI v2.1.204 fixed hook events not streaming during `SessionStart` hooks in headless sessions — this was causing remote workers to be idle-reaped mid-hook. Verify Buildd workers are on CLI v2.1.204+. Effort: Verify only.
+**#10 — Upgrade Python SDK to v0.2.123**
+Python SDK now at v0.2.123 (bundled CLI v2.1.215). If Buildd has any Python worker integrations or uses the Python SDK in tooling, bump to pick up the argv bug fixes in v0.2.121. Effort: Trivial.
 
 ### Still Relevant (From Previous Weeks)
 
@@ -621,6 +756,7 @@ Still needs a product decision: should Buildd workers be allowed to spawn Dynami
 
 | Date | SDK Versions (TS) | SDK Versions (Py) | CLI Versions | Key Changes |
 |------|-------------------|-------------------|-------------|-------------|
+| 2026-07-20 | 0.3.208-0.3.215 | 0.2.121-0.2.123 | 2.1.208-2.1.215 | Fable 5 free period ended (Jul 19), /fork background sessions, subagent spawn cap (200), WebSearch cap (200), MCP >2min auto-background, elapsed-time counter on tool lines, subkind:scheduled-trigger, aborted:true on interrupted turns, subagent_type/retry on tool_progress, USAGE_LIMIT_ERROR_PREFIXES, timedOutAfterMs on Bash, screen reader mode, /verify /code-review now invoke-only, Claude for Teachers, Cowork mobile/web, Memory categorized entries |
 | 2026-07-13 | 0.3.169-0.3.207 | SessionStore parity | 2.1.169-2.1.207 | Sonnet 5 default (1M ctx), Fable 5 launch/suspension/return, background subagents non-blocking, Agent Teams simplified, Chrome GA, command_lifecycle frames, parent_agent_id (depth-2+ trees), background_tasks_changed, sessionStore (alpha), /dataviz skill, Manual default permission mode, /doctor enhancements |
 | 2026-06-08 | 0.3.160-0.3.168 | 0.2.87+ | 2.1.160-2.1.168 | agentProgressSummaries, reloadPlugins(), fallbackModel, getSettings().applied, cross-session messaging hardening, glob deny rules, Managed Agents GA (Outcomes/Orchestration/Webhooks), Security Plugin GA, rate limits doubled, model retirement June 15 |
 | 2026-06-01 | 0.3.159 | 0.2.87 | 2.1.159 | Dynamic Workflows + Ultracode (up to 1,000 subagents), Opus 4.8, billing split June 15, OpenInference OTEL, Python SDK major version bump to 0.2.x, Xcode 26.3 integration |
