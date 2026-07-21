@@ -26,7 +26,7 @@ import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from '
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
-import { scanEnvironment, checkMcpPreFlight } from './env-scan';
+import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
 import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
@@ -58,6 +58,21 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
 // RUNNER_POLL_MIN and RUNNER_HEARTBEAT_INTERVAL_MS come from @buildd/shared so
 // the server-side liveness thresholds always use the same value as the runner.
+
+// Cached bwrap namespace check — runs once per process. When bwrap is installed
+// but unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=0),
+// Claude Code's sandbox makes every Bash call fail with a bwrap error. We detect
+// this once and force sandbox:disabled for all tasks on this runner.
+let _bwrapSupported: boolean | null = null;
+function isBwrapSupported(): boolean {
+  if (_bwrapSupported === null) {
+    _bwrapSupported = checkBwrapSupport();
+    if (!_bwrapSupported) {
+      console.log('[runner] bwrap user namespaces unavailable — will force sandbox disabled for all tasks');
+    }
+  }
+  return _bwrapSupported;
+}
 
 // Async message stream for multi-turn conversations
 class MessageStream implements AsyncIterable<SDKUserMessage> {
@@ -1913,8 +1928,12 @@ export class WorkerManager {
         }
       }
 
-      // Build sandbox config from workspace config
-      const sandboxConfig = gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined;
+      // Build sandbox config from workspace config.
+      // If bwrap user namespaces are unavailable on this kernel, force sandbox
+      // disabled so Claude Code doesn't attempt bwrap and fail every Bash call.
+      const sandboxConfig = !isBwrapSupported()
+        ? { enabled: false }
+        : (gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined);
 
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);

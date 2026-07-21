@@ -9,6 +9,7 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { checkBwrapSupport } from './env-scan';
 import {
   parseWorktreeList,
   isBuilddTaskBranch,
@@ -298,6 +299,22 @@ export function checkStaleWorktrees(): CheckResult {
     message: `${removable.length} stale worktree(s) using ~${totalSizeMB}MB`,
     detail: staleDetails.join('\n'),
     fixable: true,
+  };
+}
+
+function checkBwrap(): CheckResult {
+  try {
+    execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
+  } catch {
+    return { name: 'bwrap', status: 'ok', message: 'bwrap not installed — sandboxing disabled (expected)' };
+  }
+  if (checkBwrapSupport()) {
+    return { name: 'bwrap', status: 'ok', message: 'bwrap user namespaces supported' };
+  }
+  return {
+    name: 'bwrap',
+    status: 'warn',
+    message: 'bwrap installed but user namespaces unavailable (kernel.unprivileged_userns_clone=0?) — runner will force sandbox disabled',
   };
 }
 
@@ -595,6 +612,7 @@ export function runDiagnostics(): DoctorReport {
     checkGitState(),
     checkGitDirty(),
     checkBunInstall(),
+    checkBwrap(),
     checkScreenSession(),
     checkRunnerLog(),
     checkDiskUsage(),
