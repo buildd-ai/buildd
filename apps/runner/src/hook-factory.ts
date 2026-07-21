@@ -1,7 +1,7 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
@@ -118,7 +118,7 @@ export class HookFactory {
         };
       }
 
-      // Block dangerous bash commands
+      // Block dangerous bash commands (destructive ops + credential file reads)
       if (toolName === 'Bash') {
         const command = (toolInput.command as string) || '';
         for (const pattern of DANGEROUS_PATTERNS) {
@@ -133,6 +133,19 @@ export class HookFactory {
             };
           }
         }
+        // Block bash reads of runner credential files (second layer after env scoping)
+        for (const pattern of DANGEROUS_CREDENTIAL_READ_PATTERNS) {
+          if (pattern.test(command)) {
+            console.log(`[Worker ${worker.id}] Blocked credential read via bash: ${command.slice(0, 80)}`);
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: 'Reading runner credential files is not permitted',
+              },
+            };
+          }
+        }
 
         // Explicitly allow safe bash commands (prevents acceptEdits stall)
         return {
@@ -142,6 +155,23 @@ export class HookFactory {
             permissionDecisionReason: 'Allowed by buildd permission hook',
           },
         };
+      }
+
+      // Block reads of runner credential files (capability scoping — not a permission prompt)
+      if (toolName === 'Read') {
+        const filePath = (toolInput.file_path as string) || '';
+        for (const pattern of SENSITIVE_READ_PATHS) {
+          if (pattern.test(filePath)) {
+            console.log(`[Worker ${worker.id}] Blocked read of runner credential file: ${filePath}`);
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `Reading runner credential files is not permitted: ${filePath}`,
+              },
+            };
+          }
+        }
       }
 
       // Block writes to sensitive paths
