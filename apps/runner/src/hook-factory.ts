@@ -1,6 +1,6 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, RUNNER_CREDENTIAL_PATHS } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
@@ -109,6 +109,25 @@ export class HookFactory {
             permissionDecisionReason: 'Allowed by buildd permission hook',
           },
         };
+      }
+
+      // Block reads of runner credential files — these contain the runner's own API key
+      // and per-worker auth tokens that must not be visible to agent subprocesses.
+      // File-permission bits (0600/0700) are ineffective when all agents share the runner UID.
+      if (toolName === 'Read') {
+        const filePath = (toolInput.file_path as string) || '';
+        for (const pattern of RUNNER_CREDENTIAL_PATHS) {
+          if (pattern.test(filePath)) {
+            console.log(`[Worker ${worker.id}] Blocked credential path read: ${filePath}`);
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `Cannot read runner credential path: ${filePath}`,
+              },
+            };
+          }
+        }
       }
 
       // Block writes to sensitive paths

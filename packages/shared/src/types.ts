@@ -996,6 +996,9 @@ export const DANGEROUS_PATTERNS = [
   /:(){.*};:/,
   /chmod\s+777/,
   /curl.*\|\s*sh/,
+  // Tier 1 isolation: block bash reads of runner credential files
+  /\.buildd[/\\]config\.json/,  // runner API key (e.g. cat ~/.buildd/config.json)
+  /buildd-codex-homes/,         // Codex per-worker auth directories
 ] as const;
 
 export const SENSITIVE_PATHS = [
@@ -1006,6 +1009,16 @@ export const SENSITIVE_PATHS = [
   /\.env$/,
   /\.ssh\//,
   /id_rsa/,
+] as const;
+
+// Paths that the runner protects from agent READ access (in addition to SENSITIVE_PATHS writes).
+// Used by the PreToolUse hook to deny `Read` calls targeting runner credential files.
+// These paths are owned by the runner process and must not be readable by agent subprocesses.
+export const RUNNER_CREDENTIAL_PATHS = [
+  /[/\\]\.buildd[/\\]config\.json$/,    // runner API key
+  /[/\\]\.buildd[/\\]workers[/\\]/,     // runner worker state files
+  /buildd-codex-homes[/\\]/,            // Codex per-worker auth directories
+  /[/\\]claude-cfg-[a-zA-Z0-9]/,        // Claude per-worker config directories
 ] as const;
 
 // Runner capability keys — advertised in WorkerEnvironment.envKeys, matched

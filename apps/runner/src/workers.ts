@@ -1595,10 +1595,12 @@ export class WorkerManager {
         }
       }
 
-      // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
-      if (this.config.apiKey) {
-        cleanEnv.BUILDD_API_KEY = this.config.apiKey;
-      }
+      // SECURITY: Do NOT inject BUILDD_API_KEY into cleanEnv. The runner's coordination
+      // key must not be reachable via `env` in agent Bash calls. The buildd MCP server
+      // already receives the key via queryOptions.mcpServers.buildd.headers.Authorization
+      // (set below), which is passed directly to the SDK — not via the subprocess env.
+      // Any .mcp.json `buildd` entry using ${BUILDD_API_KEY} is skipped at line ~2081.
+      // (Tier 1 / Option A — docs/design/runner-workspace-isolation.md)
 
       // Inject mcp_credential secrets (DISPATCH_API_KEY, TENANT_ID, etc.) so
       // ${VAR} references in .mcp.json HTTP headers are expanded by the injection
