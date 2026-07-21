@@ -18,6 +18,32 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Lint workflow name fields
+        run: |
+          # Self-test: verify the linter catches a workflow without a name: key
+          printf 'on: [push]\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' \
+            > /tmp/_lint_test_no_name.yml
+          if grep -q '^name:' /tmp/_lint_test_no_name.yml; then
+            echo "::error::Self-test bug — grep matched name: in a file that has none"
+            exit 1
+          fi
+          echo "Self-test passed: linter correctly identifies missing name: ✓"
+
+          # Lint every workflow file — unnamed files are the fingerprint of agent scratch work
+          failed=0
+          for f in .github/workflows/*.yml; do
+            if ! grep -q '^name:' "$f"; then
+              echo "::error file=$f::Missing top-level 'name:' key — add 'name: <descriptive-name>' as the first field"
+              failed=1
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then
+            echo "One or more workflow files are missing a 'name:' key."
+            echo "Every .github/workflows/*.yml must have a top-level name: to prevent unnamed scratch workflows from accumulating on dev."
+            exit 1
+          fi
+          echo "All workflow files have a name: key ✓"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
