@@ -37,7 +37,7 @@ interface Worker {
   linesRemoved: number | null;
   lastCommitSha: string | null;
   waitingFor: { type: string; prompt: string; options?: (string | { label: string; description?: string; recommended?: boolean })[] } | null;
-  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response' }>;
+  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
   account?: { authType: string } | null;
@@ -507,7 +507,6 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         <>
           <InstructionHistory
             history={worker.instructionHistory || []}
-            pendingInstruction={worker.pendingInstructions}
           />
           <InstructWorkerForm
             workerId={worker.id}

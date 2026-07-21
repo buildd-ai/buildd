@@ -1128,8 +1128,18 @@ export async function PATCH(
   const pendingInstructions = worker.pendingInstructions;
 
   // Clear pending instructions on update (they'll be delivered in response)
+  // Also mark the most recent 'pending' history entry as 'delivered'
   if (pendingInstructions) {
     updates.pendingInstructions = null;
+    const currentHistory = (worker.instructionHistory as any[]) || [];
+    // Find the last 'pending' instruction entry and mark it delivered
+    const lastPendingIdx = currentHistory.map((e: any) => e.deliveryState).lastIndexOf('pending');
+    if (lastPendingIdx !== -1) {
+      const updatedHistory = currentHistory.map((e: any, i: number) =>
+        i === lastPendingIdx ? { ...e, deliveryState: 'delivered' } : e
+      );
+      updates.instructionHistory = updatedHistory;
+    }
   }
 
   const [updated] = await db

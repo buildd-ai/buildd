@@ -2645,7 +2645,7 @@ export async function handleBuilddAction(
       if (!params.taskId) throw new Error('taskId is required');
 
       const data = await api(`/api/tasks/${params.taskId}/messages`);
-      const messages: Array<{ type: string; message: string; timestamp: number }> = data.messages || [];
+      const messages: Array<{ type: string; message: string; timestamp: number; deliveryState?: 'pending' | 'delivered' }> = data.messages || [];
 
       if (messages.length === 0) {
         return text(`No messages for task ${params.taskId}. Messages appear when instructions are sent to or responses received from the running agent.`);
@@ -2654,10 +2654,16 @@ export async function handleBuilddAction(
       const lines = messages.map((m) => {
         const when = new Date(m.timestamp).toISOString();
         const label = m.type === 'instruction' ? '→ [human→agent]' : '← [agent→human]';
-        return `${when} ${label}\n  ${m.message}`;
+        const deliveryTag = m.type === 'instruction' && m.deliveryState === 'pending' ? ' ⏳ UNDELIVERED' : '';
+        return `${when} ${label}${deliveryTag}\n  ${m.message}`;
       });
 
-      return text(`${messages.length} message(s) for task ${params.taskId}:\n\n${lines.join('\n\n')}`);
+      const hasUndelivered = messages.some(m => m.type === 'instruction' && m.deliveryState === 'pending');
+      const header = hasUndelivered
+        ? `⚠️  ${messages.length} message(s) for task ${params.taskId} — some are undelivered (agent has not checked in):`
+        : `${messages.length} message(s) for task ${params.taskId}:`;
+
+      return text(`${header}\n\n${lines.join('\n\n')}`);
     }
 
     case 'send_agent_message': {

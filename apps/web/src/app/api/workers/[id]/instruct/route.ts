@@ -77,9 +77,10 @@ export async function POST(
 
   // Add to history and set as pending
   // Sensitive: keep {type, ts} only — drop message text
+  // deliveryState: urgent messages go via Pusher immediately (delivered), others queue (pending)
   const newHistoryEntry = isSensitive
-    ? { type: 'instruction' as const, timestamp: Date.now() }
-    : { type: 'instruction' as const, message, timestamp: Date.now() };
+    ? { type: 'instruction' as const, timestamp: Date.now(), deliveryState: (priority === 'urgent' ? 'delivered' : 'pending') as 'pending' | 'delivered' }
+    : { type: 'instruction' as const, message, timestamp: Date.now(), deliveryState: (priority === 'urgent' ? 'delivered' : 'pending') as 'pending' | 'delivered' };
 
   // Cap history at 30 entries to prevent JSONB bloat
   const updatedHistory = [...currentHistory, newHistoryEntry];
