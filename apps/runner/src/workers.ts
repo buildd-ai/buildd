@@ -67,6 +67,10 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
 function isBwrapSupported(): boolean {
+  // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
+  // also reads it, but checking here ensures the cached value reflects the flag
+  // even if the env var is set after the first call.
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     if (!_bwrapSupported) {

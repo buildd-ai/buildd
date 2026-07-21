@@ -50,6 +50,41 @@ describe('checkBwrapSupport', () => {
     });
     expect(checkBwrapSupport()).toBe(false);
   });
+
+  it('returns false when kernel proc file reports unprivileged_userns_clone=0', () => {
+    mockReadFileSync.mockImplementationOnce((path: string) => {
+      if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) return '0';
+      return '';
+    });
+    // execSync should not be called — proc check short-circuits
+    expect(checkBwrapSupport()).toBe(false);
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  it('returns false when BUILDD_DISABLE_SANDBOX=1 is set', () => {
+    const orig = process.env.BUILDD_DISABLE_SANDBOX;
+    process.env.BUILDD_DISABLE_SANDBOX = '1';
+    try {
+      expect(checkBwrapSupport()).toBe(false);
+      expect(mockExecSync).not.toHaveBeenCalled();
+    } finally {
+      if (orig === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
+      else process.env.BUILDD_DISABLE_SANDBOX = orig;
+    }
+  });
+
+  it('uses --unshare-user in the bwrap test command', () => {
+    const calledCmds: string[] = [];
+    mockExecSync.mockImplementation((cmd: string) => {
+      calledCmds.push(cmd);
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      if (typeof cmd === 'string' && cmd.includes('bwrap') && cmd.includes('echo')) return Buffer.from('ok\n');
+      throw new Error('not found');
+    });
+    checkBwrapSupport();
+    const bwrapCmd = calledCmds.find(c => c.includes('--unshare-user'));
+    expect(bwrapCmd).toBeDefined();
+  });
 });
 
 describe('checkBrowserCapability', () => {
