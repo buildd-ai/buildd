@@ -540,7 +540,8 @@ export const missions = pgTable('missions', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted'>(),
+  costBudgetUsd: decimal('cost_budget_usd', { precision: 10, scale: 2 }),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // Default agent backend for tasks generated under this mission. An explicit
@@ -866,7 +867,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual' | 'budget_exhausted'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),

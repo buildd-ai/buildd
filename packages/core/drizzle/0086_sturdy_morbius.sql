@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "cost_budget_usd" numeric(10, 2);
