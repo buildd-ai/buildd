@@ -1,5 +1,6 @@
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
+import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
@@ -34,6 +35,38 @@ export interface HookFactoryContext {
  */
 export class HookFactory {
   constructor(private ctx: HookFactoryContext) {}
+
+  createReadJailHook(
+    worker: LocalWorker,
+    worktreePath: string,
+    deniedPrefixes: string[],
+  ): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      const toolName = (input as any).tool_name as string;
+      if (toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return {};
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+      // Read uses file_path; Glob/Grep use path as an optional base dir
+      const rawPath = toolName === 'Read'
+        ? (toolInput.file_path as string | undefined)
+        : (toolInput.path as string | undefined);
+      if (!rawPath) return {};
+      const absPath = resolveToolPath(rawPath, worktreePath);
+      if (isPathDeniedByReadJail(absPath, worktreePath, deniedPrefixes)) {
+        console.log(`[Worker ${worker.id}] Read-jail: denied ${toolName} → ${absPath}`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse' as const,
+            permissionDecision: 'deny' as const,
+            permissionDecisionReason:
+              'Read access denied: path is outside this worker\'s worktree. ' +
+              'Agent reads are confined to the worker\'s own checkout.',
+          },
+        };
+      }
+      return {};
+    };
+  }
 
   createPermissionHook(worker: LocalWorker, opts?: { inputPolicy?: string }): HookCallback {
     return async (input) => {

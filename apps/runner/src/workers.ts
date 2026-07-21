@@ -27,6 +27,7 @@ import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowl
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
+import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
@@ -2103,11 +2104,24 @@ export class WorkerManager {
         }
       }
 
+      // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
+      // Denies Read/Glob/Grep calls to sibling worktrees, ~/.buildd/, and per-worker
+      // credential dirs — enforced as the first PreToolUse hook so it fires before
+      // the permission hook and cannot be overridden by permission suggestions.
+      const readJailPrefixes = !isCodexTask
+        ? buildReadJailDeniedPrefixes(repoPath)
+        : null;
+
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] }],
+        PreToolUse: [
+          ...(readJailPrefixes
+            ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
+            : []),
+          { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+        ],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -2258,6 +2272,7 @@ export class WorkerManager {
         ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
+        bwrapSupported: isBwrapSupported(),
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling

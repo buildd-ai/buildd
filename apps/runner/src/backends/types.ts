@@ -30,6 +30,14 @@ export interface RunStreamedOpts {
    * own `resume:` query option keyed on `worker.sessionId`.
    */
   resumeThreadId?: string
+  /**
+   * Whether bwrap user namespaces are available on this runner (from
+   * checkBwrapSupport() in env-scan.ts, cached in workers.ts). Used by the
+   * Codex backend to select the correct sandbox mode: workspace-write requires
+   * bwrap; when unavailable the backend falls back to danger-full-access with
+   * a warning so shell commands can run. Defaults to true if not provided.
+   */
+  bwrapSupported?: boolean
 }
 
 export type BackendEvent =
