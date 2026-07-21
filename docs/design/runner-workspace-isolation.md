@@ -1,7 +1,28 @@
 # Runner Workspace Isolation
 
-**Status:** Proposed
-**Related:** `apps/runner/src/workers.ts`, `apps/runner/src/codex-auth.ts`, `apps/runner/src/claude-auth.ts`, `apps/runner/src/hook-factory.ts`, `apps/runner/src/git-operations.ts`, `apps/runner/src/history-store.ts`, `packages/core/mcp-tools.ts`, `packages/shared/src/types.ts`
+**Status:** Partially Implemented — Tier 1 Option A + Tier 3 Option B shipped (2026-07-21)
+**Related:** `apps/runner/src/workers.ts`, `apps/runner/src/codex-auth.ts`, `apps/runner/src/claude-auth.ts`, `apps/runner/src/isolation-paths.ts`, `apps/runner/src/workspace.ts`, `apps/runner/src/hook-factory.ts`, `apps/runner/src/git-operations.ts`, `apps/runner/src/history-store.ts`, `packages/core/mcp-tools.ts`, `packages/shared/src/types.ts`
+
+## What Has Shipped
+
+### Tier 1 Option A — BUILDD_API_KEY removed from agent subprocess env
+
+`BUILDD_API_KEY` is **no longer injected** into `cleanEnv` in `workers.ts`. Agent Bash tool calls cannot read the runner's coordination key. The buildd MCP server receives its bearer token via `queryOptions.mcpServers.buildd.headers`, not through the subprocess environment.
+
+**Operator migration note:** Any `.mcp.json` that previously referenced `${BUILDD_API_KEY}` must switch to per-workspace `mcpSecrets` (delivered at claim time and injected as `${VAR}` env refs). `BUILDD_MCP_BEARER_TOKEN` is **kept** for Codex tasks because `config.toml` uses `bearer_token_env_var = "BUILDD_MCP_BEARER_TOKEN"` — the existing test contract rejects an inline `bearer_token`.
+
+### Tier 3 Option B — per-workspace isolated git clones
+
+Setting `BUILDD_WORKSPACE_ISOLATION_ROOT=<path>` activates structural filesystem isolation:
+
+- Each workspace gets its own git clone at `<root>/<workspaceId>/`
+- Worktrees for that workspace live under `<root>/<workspaceId>/.buildd-worktrees/`
+- `CODEX_HOME` is scoped to `<root>/<workspaceId>/codex/<workerId>/`
+- `CLAUDE_CONFIG_DIR` is scoped to `<root>/<workspaceId>/claude/<workerId>/`
+
+Cross-workspace traversal via `git worktree list` or `../sibling` paths becomes structurally impossible rather than just undesirable — you'd need to know another workspace's UUID, and those directories are owned by the same UID, so the path traversal is blocked only by obscurity, not a kernel boundary. Full kernel isolation requires Tier 4 (separate UID per workspace or container-per-tenant — not yet implemented).
+
+**Remaining attack surface:** a prompt-injected agent can still read `/proc/self/environ` (for `BUILDD_MCP_BEARER_TOKEN` and any other injected env vars), the runner's `~/.buildd/config.json`, and any world-readable path. Tier 4 UID isolation would close this.
 
 ## Problem
 

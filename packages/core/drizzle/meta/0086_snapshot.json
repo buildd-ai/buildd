@@ -1,6 +1,6 @@
 {
-  "id": "e090eef7-5334-4b03-933c-c0fdcc1250a2",
-  "prevId": "1c83148e-725b-4bc5-9f4d-70c67ecdc1ca",
+  "id": "83df8acc-c880-432e-8426-be22b2cf6ae7",
+  "prevId": "e090eef7-5334-4b03-933c-c0fdcc1250a2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2561,6 +2561,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'active'"
+        },
+        "cost_budget_usd": {
+          "name": "cost_budget_usd",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
         },
         "priority": {
           "name": "priority",

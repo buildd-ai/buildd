@@ -44,7 +44,7 @@ export class CodexBackend implements AgentBackend {
     }
 
     const auth = this.resolveAuth(opts);
-    const sandbox = this.mapSandboxMode(opts.sandboxMode);
+    const sandbox = this.mapSandboxMode(opts.sandboxMode, opts.bwrapSupported ?? true);
     const prompt = await this.resolvePrompt(opts.prompt);
     const modelId = opts.model || 'codex';
     const signal = opts.signal;
@@ -333,8 +333,16 @@ export class CodexBackend implements AgentBackend {
     );
   }
 
-  private mapSandboxMode(mode?: 'read-only' | 'workspace-write'): string {
+  private mapSandboxMode(mode?: 'read-only' | 'workspace-write', bwrapSupported = true): string {
     if (mode === 'read-only') return 'read-only';
+    if (!bwrapSupported) {
+      console.warn(
+        '[CodexBackend] bwrap user namespaces unavailable — workspace-write sandbox cannot start. ' +
+        'Falling back to danger-full-access (write isolation reduced). ' +
+        'To restore full sandboxing, run the runner container with: --security-opt seccomp=unconfined',
+      );
+      return 'danger-full-access';
+    }
     return 'workspace-write';
   }
 

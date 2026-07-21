@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
+
+export { stableCodexHomeIsolatedPath } from './isolation-paths.js';
 
 export interface CodexCredential {
   credentialType: 'oauth' | 'api_key';
@@ -64,8 +67,8 @@ export function materializeStableCodexHome(
  * Codex config (no OAuth credential — e.g. API-key auth via OPENAI_API_KEY).
  * Idempotent; preserves `sessions/`.
  */
-export function ensureStableCodexHome(workerId: string): { codexHome: string } {
-  const codexHome = stableCodexHomePath(workerId);
+export function ensureStableCodexHome(workerId: string, explicitPath?: string): { codexHome: string } {
+  const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
   return { codexHome };
@@ -117,8 +120,8 @@ export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void 
  * tokens that the Codex CLI refreshed during a previous run — mirroring
  * OpenAI's "seed only if missing" CI/CD guidance. Idempotent and non-throwing.
  */
-export function seedCodexAuthIfMissing(workerId: string, credential: CodexCredential): { codexHome: string } {
-  const codexHome = stableCodexHomePath(workerId);
+export function seedCodexAuthIfMissing(workerId: string, credential: CodexCredential, explicitPath?: string): { codexHome: string } {
+  const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
   const authPath = join(codexHome, 'auth.json');
@@ -182,12 +185,18 @@ export function checkCodexCredentialExpiry(credential: Pick<CodexCredential, 'cr
  * terminal (purged past the follow-up TTL) — never on normal run cleanup, or
  * resumable sessions would be destroyed. Idempotent and non-throwing.
  */
-export function teardownStableCodexHome(workerId: string): void {
-  const codexHome = stableCodexHomePath(workerId);
-  try {
-    fs.rmSync(codexHome, { recursive: true, force: true });
-  } catch (err) {
-    console.warn(`[Worker ${workerId}] Failed to tear down stable Codex home:`, err);
+export function teardownStableCodexHome(workerId: string, isolationRoot?: string, workspaceId?: string): void {
+  const paths: string[] = [stableCodexHomePath(workerId)];
+  if (isolationRoot && workspaceId) {
+    paths.push(_stableCodexHomeIsolatedPath(workspaceId, workerId, isolationRoot));
+  }
+  for (const codexHome of paths) {
+    if (!fs.existsSync(codexHome)) continue;
+    try {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] Failed to tear down stable Codex home at ${codexHome}:`, err);
+    }
   }
 }
 

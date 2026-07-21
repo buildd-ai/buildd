@@ -645,6 +645,10 @@ export const tasks = pgTable('tasks', {
   // See plans/buildd/smart-model-routing.md for the taxonomy + routing logic.
   kind: text('kind').$type<'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation'>(),
   complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
+  // Requested intelligence tier — set at creation time, immutable after.
+  // Resolved to a concrete model ID via the team's model_tier_registry at claim time.
+  // NULL means "use the resolution chain starting from the role."
+  tier: text('tier').$type<'premium' | 'standard' | 'budget'>(),
   predictedModel: text('predicted_model'),   // model chosen by router at claim
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
   // Agent backend that executes this task
@@ -1644,6 +1648,30 @@ export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ on
 export const connectorSharesRelations = relations(connectorShares, ({ one }) => ({
   connector: one(connectors, { fields: [connectorShares.connectorId], references: [connectors.id] }),
   sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
+}));
+
+// Model tier registry — maps premium/standard/budget → concrete provider + model per team.
+// workspace_id = NULL means team-wide default; non-NULL is a workspace override.
+// See docs/design/model-tiers.md for the resolution chain.
+export const modelTierRegistry = pgTable('model_tier_registry', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  tier: text('tier').notNull().$type<'premium' | 'standard' | 'budget'>(),
+  provider: text('provider').notNull().$type<'anthropic' | 'openai-codex' | 'openrouter'>(),
+  model: text('model').notNull(),
+  defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
+  defaultMaxTurns: integer('default_max_turns'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier),
+  teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
+}));
+
+export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one }) => ({
+  team: one(teams, { fields: [modelTierRegistry.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
 }));
 
 // TypeScript types for new tables

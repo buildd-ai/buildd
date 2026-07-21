@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } f
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
@@ -27,6 +27,7 @@ import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowl
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
+import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
@@ -667,7 +668,7 @@ export class WorkerManager {
         storeDeleteWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
         // resumable sessions) — the worker is fully purged, no follow-up possible.
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -675,7 +676,7 @@ export class WorkerManager {
     for (const worker of loadAllWorkers()) {
       if (worker.status === 'done' || worker.status === 'error') {
         storeDeleteWorker(worker.id);
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -1657,11 +1658,16 @@ export class WorkerManager {
       // For non-Codex tasks that still carry a codexCredential (legacy/transient),
       // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
       if (isCodexTask) {
+        // Tier 3B: when isolation is active, scope the Codex home under the workspace dir.
+        const codexIsolatedPath = this.config.workspaceIsolationRoot
+          ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
+          : undefined;
+
         let _ch: string;
         if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
-          const { codexHome: home } = ensureStableCodexHome(worker.id);
+          const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
           _ch = home;
           // Write api_key into auth.json so resolveAuth picks it up (codex-backend.ts
           // reads CODEX_HOME/auth.json; api_key there maps to OPENAI_API_KEY internally).
@@ -1671,10 +1677,10 @@ export class WorkerManager {
           // B (seed-if-missing): only write auth.json the first time. If auth.json
           // already exists (from a prior run), the CLI may have refreshed the tokens
           // — don't overwrite with the potentially staler stored snapshot.
-          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential);
+          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential, codexIsolatedPath);
           _ch = home;
         } else {
-          _ch = ensureStableCodexHome(worker.id).codexHome;
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
         // No server-injected credential: fall back to the operator's local Codex
         // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
@@ -1815,6 +1821,9 @@ export class WorkerManager {
           worker.id,
           worker.claudeAccessToken,
           worker.claudeTokenExpiresAt ?? null,
+          this.config.workspaceIsolationRoot
+            ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+            : undefined,
         );
         claudeConfigDir = _cd;
         cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
@@ -2221,11 +2230,24 @@ export class WorkerManager {
         this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
+      // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
+      // Denies Read/Glob/Grep calls to sibling worktrees, ~/.buildd/, and per-worker
+      // credential dirs — enforced as the first PreToolUse hook so it fires before
+      // the permission hook and cannot be overridden by permission suggestions.
+      const readJailPrefixes = !isCodexTask
+        ? buildReadJailDeniedPrefixes(repoPath)
+        : null;
+
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] }],
+        PreToolUse: [
+          ...(readJailPrefixes
+            ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
+            : []),
+          { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+        ],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -2376,6 +2398,7 @@ export class WorkerManager {
         ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
+        bwrapSupported: isBwrapSupported(),
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling
