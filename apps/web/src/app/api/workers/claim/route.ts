@@ -15,6 +15,7 @@ import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
 import { resolveClaudeCredential, refreshClaudeCredential, getClaudeSecretId } from '@/lib/claude-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
+import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { findBlockingPr } from '@buildd/core/path-overlap';
@@ -717,14 +718,24 @@ export async function POST(req: NextRequest) {
     // injected into task.context.model so worker-runner picks it up.
     const roleSlug = (task as any).roleSlug as string | null;
     const explicit = (taskContext?.model as string | undefined) || null;
-    const TIER_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
+    const TIER_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'inherit', 'premium', 'standard', 'budget']);
     const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
     const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
+
+    // Map role model alias to the old-vocabulary tier floor used by the router.
+    // 'premium'/'standard'/'budget' are translated to 'opus'/'sonnet'/'haiku' for
+    // backward compat with the router's internal Tier type.
+    const roleFloorRaw = roleIsFullId ? null : (roleModel as string | null);
+    const routerRoleFloor = roleFloorRaw === 'premium' ? 'opus'
+      : roleFloorRaw === 'standard' ? 'sonnet'
+      : roleFloorRaw === 'budget' ? 'haiku'
+      : (roleFloorRaw as Tier | 'inherit' | null);
+
     const routingDecision = resolveEffectiveModel({
       explicitModel: explicit ?? (roleIsFullId ? roleModel : null),
       kind: (task as any).kind || null,
       complexity: (task as any).complexity || null,
-      roleFloor: roleIsFullId ? null : (roleModel as Tier | 'inherit' | null),
+      roleFloor: routerRoleFloor,
       dailyBudgetPct,
       recentClaimCount,
       priority: task.priority ?? 0,
@@ -735,11 +746,36 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Resolve the concrete model ID via the tier registry.
+    // - explicit override: bypass registry, pass full ID to runner as-is.
+    // - tier path: task.tier → router alias → registry → full model ID.
+    // taskTeamId already defined above (line ~619)
+    let resolvedModel: string;
+    let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+
+    if (routingDecision.reason === 'explicit_override') {
+      resolvedModel = routingDecision.model;
+    } else {
+      // Determine the tier to look up: task.tier takes precedence, then derive from router alias.
+      const taskTier = (task as any).tier as 'premium' | 'standard' | 'budget' | null | undefined;
+      const derivedTier = taskTier ?? mapRouterAlias(routingDecision.model);
+
+      if (taskTeamId) {
+        const entry = await resolveTierEntry(derivedTier, taskTeamId, task.workspaceId);
+        resolvedModel = entry.model;
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+      } else {
+        // No team — fall back to router alias (resolver would fail without teamId)
+        resolvedModel = routingDecision.model;
+      }
+    }
+
     // Persist the routing decision in task context so the runner consumes it
     // without extra lookups. We also write predictedModel for analytics.
     const patchedContext = {
       ...(taskContext || {}),
-      model: routingDecision.model,
+      model: resolvedModel,
+      ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -750,7 +786,7 @@ export async function POST(req: NextRequest) {
         claimedAt: now,
         expiresAt,
         status: 'assigned',
-        predictedModel: routingDecision.model,
+        predictedModel: resolvedModel,
         context: patchedContext,
       })
       .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
@@ -764,7 +800,7 @@ export async function POST(req: NextRequest) {
     // Keep the in-memory task copy in sync so downstream enrichment and the
     // returned worker payload see the patched context.
     (task as any).context = patchedContext;
-    (task as any).predictedModel = routingDecision.model;
+    (task as any).predictedModel = resolvedModel;
 
     // Generate branch name based on workspace gitConfig
     const gitConfig = task.workspace?.gitConfig as {
