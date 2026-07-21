@@ -405,6 +405,14 @@ export async function PATCH(
     body.budgetExhausted === true ||
     isBudgetExhaustionError(error)
   );
+
+  // Classify exit cause for taxonomy — written to the worker record on terminal update.
+  // budget_limited: task auto-resumes; not a real failure; excluded from retry caps.
+  // code_failure: default for any other terminal failure.
+  // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
+  if (status === 'failed' || status === 'error') {
+    updates.exitCause = isBudgetError ? 'budget_limited' : 'code_failure';
+  }
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
   // error. These aren't real failures — re-queue the task so it's retried once

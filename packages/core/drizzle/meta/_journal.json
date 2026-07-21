@@ -610,6 +610,13 @@
       "when": 1784641097368,
       "tag": "0086_sturdy_morbius",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1784651279439,
+      "tag": "0087_thick_radioactive_man",
+      "breakpoints": true
     }
   ]
 }

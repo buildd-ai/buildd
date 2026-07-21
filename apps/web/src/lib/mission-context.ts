@@ -344,15 +344,21 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     });
   }
 
-  // Active tasks
-  const activeTasks = await db.query.tasks.findMany({
+  // Active tasks — separate out budget-waiting ones so the organizer knows not to retry them
+  const allActiveTasks = await db.query.tasks.findMany({
     where: and(
       eq(tasks.missionId, missionId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
     limit: 20,
-    columns: { id: true, title: true, status: true, description: true, dependsOn: true },
+    columns: { id: true, title: true, status: true, description: true, dependsOn: true, context: true },
   });
+  const budgetWaitingTasks = allActiveTasks.filter(
+    t => t.status === 'pending' && !!(t.context as any)?.budgetExhausted
+  );
+  const activeTasks = allActiveTasks.filter(
+    t => !(t.context as any)?.budgetExhausted
+  );
 
   // Recent failed tasks (include more for grouping)
   const failedTasks = await db.query.tasks.findMany({
@@ -512,6 +518,19 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       const task = w.task as { title: string } | null;
       const wf = w.waitingFor as { prompt: string } | null;
       descParts.push(`- [${task?.title || 'Unknown'}] Question: "${wf?.prompt || 'unknown'}"`);
+    }
+  }
+
+  if (budgetWaitingTasks.length > 0) {
+    descParts.push('\n## Tasks Waiting on Budget Reset (DO NOT RETRY)');
+    descParts.push('These tasks hit a session/usage limit and are queued to auto-resume when the budget window reopens. They are NOT failed — do NOT create retry children. They count as active work in progress.');
+    for (const t of budgetWaitingTasks) {
+      const ctx = t.context as Record<string, unknown> | null;
+      const resetsAt = ctx?.budgetResetsAt as string | undefined;
+      const resetStr = resetsAt
+        ? ` (budget resets ~${new Date(resetsAt).toISOString().slice(11, 16)} UTC)`
+        : '';
+      descParts.push(`- [${t.title}] waiting for budget${resetStr}`);
     }
   }
 

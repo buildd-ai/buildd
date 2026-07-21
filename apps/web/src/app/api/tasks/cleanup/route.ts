@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, and, lt, inArray } from 'drizzle-orm';
+import { eq, and, lt, inArray, or, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
@@ -15,14 +15,19 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 const MAX_TASK_FAILURES = 3;
 
 async function resetOrFailTask(taskId: string, now: Date, reason: string) {
+  // Only count code_failure workers against the cap — budget_limited and
+  // infra_failure exits reflect external constraints and should not burn retries.
+  // Workers predating exitCause (null) default to code_failure for safety.
   const prior = await db.query.workers.findMany({
     where: and(
       eq(workers.taskId, taskId),
       inArray(workers.status, ['error', 'failed']),
     ),
-    columns: { id: true },
+    columns: { id: true, exitCause: true },
   });
-  const failureCount = prior.length;
+  const failureCount = prior.filter(
+    w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure'
+  ).length;
 
   if (failureCount >= MAX_TASK_FAILURES) {
     const existing = await db.query.tasks.findFirst({
@@ -104,6 +109,7 @@ export async function POST(req: NextRequest) {
       .update(workers)
       .set({
         status: 'failed',
+        exitCause: 'infra_failure',
         error: 'Worker timed out - no activity for over 1 hour',
         completedAt: now,
         updatedAt: now,
@@ -234,6 +240,7 @@ export async function POST(req: NextRequest) {
         .update(workers)
         .set({
           status: 'failed',
+          exitCause: 'infra_failure',
           error: 'Worker runner went offline (heartbeat expired)',
           completedAt: now,
           updatedAt: now,
