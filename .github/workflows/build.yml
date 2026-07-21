@@ -69,6 +69,9 @@ jobs:
             --form-string "url_title=View CI run" \
             https://api.pushover.net/1/messages.json || true
 
+      - name: Lint hardcoded model IDs
+        run: bash scripts/lint-model-ids.sh
+
       - name: Type check
         run: cd apps/web && bunx tsc --noEmit
 

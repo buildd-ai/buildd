@@ -204,6 +204,8 @@ export async function POST(req: NextRequest) {
       // Declared file paths/globs this task expects to create or modify.
       // Used to auto-add dependsOn edges between tasks that touch the same files.
       pathManifest: rawPathManifest,
+      // Intelligence tier — resolved to a concrete model at claim time via the team's registry.
+      tier: rawTier,
     } = body;
 
     if (!title) {
@@ -461,6 +463,7 @@ export async function POST(req: NextRequest) {
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(pathManifest ? { pathManifest } : {}),
+        ...(['premium', 'standard', 'budget'].includes(rawTier) ? { tier: rawTier as 'premium' | 'standard' | 'budget' } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),

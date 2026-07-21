@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
@@ -424,7 +425,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || 'claude-sonnet-4-6',
+  model: process.env.MODEL || savedConfig.model || TIER_DEFAULTS.standard.model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
   // Serverless only if no API key configured
