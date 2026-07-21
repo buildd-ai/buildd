@@ -50,6 +50,7 @@ export async function GET(
       type: string;
       message: string;
       timestamp: number;
+      deliveryState?: 'pending' | 'delivered';
     }> | null) ?? [];
 
     return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, messages });

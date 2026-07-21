@@ -326,6 +326,64 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(data.ok).toBe(true);
   });
 
+  describe('delivery state tracking', () => {
+    it('sets deliveryState to "pending" for non-urgent messages', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Check the auth module' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const entry = capturedSet.instructionHistory[0];
+      expect(entry.deliveryState).toBe('pending');
+      // Non-urgent: message is stored in pendingInstructions
+      expect(capturedSet.pendingInstructions).toBe('Check the auth module');
+    });
+
+    it('sets deliveryState to "delivered" for urgent messages', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Stop and pivot', priority: 'urgent' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const entry = capturedSet.instructionHistory[0];
+      expect(entry.deliveryState).toBe('delivered');
+      // Urgent: NOT stored in pendingInstructions (sent via Pusher)
+      expect(capturedSet.pendingInstructions).toBeNull();
+    });
+  });
+
   describe('sensitive workspace — instructionHistory redaction', () => {
     it('stores {type, ts} only in instructionHistory for sensitive workspaces', async () => {
       let capturedSet: any = null;

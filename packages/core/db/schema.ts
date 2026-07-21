@@ -734,6 +734,8 @@ export const workers = pgTable('workers', {
     type: 'instruction' | 'response';
     message: string;
     timestamp: number;
+    // 'pending' = queued, not yet picked up; 'delivered' = worker received it
+    deliveryState?: 'pending' | 'delivered';
   }>>(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
