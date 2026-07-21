@@ -455,6 +455,20 @@ export async function retriggerMissionOnFailure(
     return { action: 'failure_limit' };
   }
 
+  // Budget/session-limit exhaustion: the planning task is already reset to pending
+  // (budget-reset path in the workers PATCH handler). Do not spawn an immediate
+  // retry — that would race against the still-exhausted budget and guarantee another
+  // failure. The task auto-resumes when the budget window reopens.
+  if (failureClass === 'budget_limited') {
+    console.log(`[mission-loop] Mission ${missionId}: budget/session-limit — skipping immediate retry; task will auto-resume`);
+    await triggerEvent(
+      channels.mission(missionId),
+      events.TASK_RETRY_CAP,
+      { missionId, failedTaskId, failureClass, lastError: errorText.slice(0, 200), reason: 'budget_limited' }
+    );
+    return { action: 'skipped' };
+  }
+
   // 4. Count recent failures — guard against infinite retry loops
   const failureWindowStart = new Date(Date.now() - FAILURE_WINDOW_MS);
   const recentFailures = await db

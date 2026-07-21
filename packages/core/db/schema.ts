@@ -745,6 +745,13 @@ export const workers = pgTable('workers', {
     ok: boolean;
     durationMs?: number;
   }>>(),
+  // Exit cause taxonomy — set when a worker reaches a terminal state.
+  // code_failure:   the agent or task logic failed (default for unknown failures).
+  // budget_limited: session/usage cap hit — not a real failure; task auto-resumes.
+  // infra_failure:  runner went offline or worker timed out (heartbeat/stale kill).
+  // reassigned:     worker was superseded by a newer session.
+  // null: worker is still active, completed successfully, or predates this column.
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -3,7 +3,7 @@
  * Categorizes task failure errors to inform retry decisions.
  */
 
-export type FailureClass = 'transient' | 'environmental' | 'logic' | 'unknown';
+export type FailureClass = 'transient' | 'environmental' | 'logic' | 'budget_limited' | 'unknown';
 
 /**
  * Classify a failure error string into a category:
@@ -14,6 +14,10 @@ export type FailureClass = 'transient' | 'environmental' | 'logic' | 'unknown';
  */
 export function classifyFailure(error: string): FailureClass {
   if (!error) return 'unknown';
+
+  // Budget / session-limit exhaustion — not a code failure; task auto-resumes after reset.
+  // Classified before other patterns so it isn't mistakenly labelled 'transient'.
+  if (/session limit|hit your session|budget limit exceeded|out of extra usage|error_max_budget_usd|max budget/i.test(error)) return 'budget_limited';
 
   // Environmental — same environment = same failure, never retry
   if (/cannot find module|framework not found|canImport|linker error|no such module|xcrun|xcodebuild|platform.*not supported/i.test(error)) return 'environmental';
