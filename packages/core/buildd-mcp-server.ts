@@ -7,6 +7,7 @@
  */
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod/v4';
+import { BuilddTransport } from './buildd-transport';
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -44,14 +45,15 @@ export interface BuilddMcpServerOptions {
   appBaseUrl?: string;
 }
 
+// No timeout: apiCall is used in the MCP server where requests are short-lived
+// and the caller has no need to abort — divergence from BuilddClient (30s) and
+// createHttpIngestApi (120s) is intentional; preserved via transport config.
 function apiCall(serverUrl: string, apiKey: string, endpoint: string, options: RequestInit = {}) {
-  return fetch(`${serverUrl}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      ...options.headers,
-    },
+  const transport = new BuilddTransport({ baseUrl: serverUrl, apiKey });
+  return transport.request(endpoint, {
+    method: options.method as string | undefined,
+    body: options.body as string | undefined,
+    headers: options.headers as Record<string, string> | undefined,
   }).then(async (response) => {
     if (!response.ok) {
       const error = await response.text();

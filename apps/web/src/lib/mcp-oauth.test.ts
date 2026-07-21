@@ -336,6 +336,7 @@ describe('buildAuthorizationUrl', () => {
       'https://mcp.example.com',
       'state',
       'challenge',
+      undefined,
       ['read'],
     );
     const parsed = new URL(url);
@@ -350,6 +351,34 @@ describe('buildAuthorizationUrl', () => {
     };
     const url = buildAuthorizationUrl(noScopeAS, 'cid', 'https://mcp.example.com', 's', 'ch');
     expect(new URL(url).searchParams.has('scope')).toBe(false);
+  });
+
+  it('falls back to request origin for redirect_uri when no issuer env vars are set', () => {
+    const original = {
+      OAUTH_ISSUER: process.env.OAUTH_ISSUER,
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL,
+      AUTH_URL: process.env.AUTH_URL,
+    };
+    delete process.env.OAUTH_ISSUER;
+    delete process.env.NEXTAUTH_URL;
+    delete process.env.AUTH_URL;
+    try {
+      const url = buildAuthorizationUrl(
+        asMetadata,
+        'client-id',
+        'https://mcp.example.com',
+        'state',
+        'challenge',
+        'https://preview-123.vercel.app',
+      );
+      expect(new URL(url).searchParams.get('redirect_uri')).toBe(
+        'https://preview-123.vercel.app/api/connectors/callback',
+      );
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value !== undefined) process.env[key] = value;
+      }
+    }
   });
 });
 
@@ -392,10 +421,13 @@ describe('validateTokenAudience', () => {
     expect(() => validateTokenAudience(token, 'https://mcp.example.com')).not.toThrow();
   });
 
-  it('throws on invalid JWT format', () => {
-    expect(() => validateTokenAudience('notajwt', 'https://mcp.example.com')).toThrow(
-      'Invalid JWT format',
-    );
+  it('does not throw on an opaque (non-JWT) bearer token', () => {
+    expect(() => validateTokenAudience('mcp_a1b2c3d4e5f6', 'https://mcp.example.com')).not.toThrow();
+    expect(() => validateTokenAudience('notajwt', 'https://mcp.example.com')).not.toThrow();
+  });
+
+  it('does not throw when the token has 3 parts but an undecodable payload', () => {
+    expect(() => validateTokenAudience('a.b.c', 'https://mcp.example.com')).not.toThrow();
   });
 });
 
@@ -455,6 +487,53 @@ describe('getCallbackUrl', () => {
     process.env.OAUTH_ISSUER = 'https://buildd.test';
     expect(getCallbackUrl()).toBe('https://buildd.test/api/connectors/callback');
     process.env.OAUTH_ISSUER = original;
+  });
+
+  it('prefers OAUTH_ISSUER over a supplied origin', () => {
+    const original = process.env.OAUTH_ISSUER;
+    process.env.OAUTH_ISSUER = 'https://buildd.test';
+    expect(getCallbackUrl('https://buildd-git-some-branch.vercel.app')).toBe(
+      'https://buildd.test/api/connectors/callback',
+    );
+    process.env.OAUTH_ISSUER = original;
+  });
+
+  it('falls back to the supplied origin when no issuer env vars are set', () => {
+    const original = {
+      OAUTH_ISSUER: process.env.OAUTH_ISSUER,
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL,
+      AUTH_URL: process.env.AUTH_URL,
+    };
+    delete process.env.OAUTH_ISSUER;
+    delete process.env.NEXTAUTH_URL;
+    delete process.env.AUTH_URL;
+    try {
+      expect(getCallbackUrl('https://buildd-git-some-branch.vercel.app')).toBe(
+        'https://buildd-git-some-branch.vercel.app/api/connectors/callback',
+      );
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value !== undefined) process.env[key] = value;
+      }
+    }
+  });
+
+  it('falls back to localhost:3000 when neither env vars nor origin are available', () => {
+    const original = {
+      OAUTH_ISSUER: process.env.OAUTH_ISSUER,
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL,
+      AUTH_URL: process.env.AUTH_URL,
+    };
+    delete process.env.OAUTH_ISSUER;
+    delete process.env.NEXTAUTH_URL;
+    delete process.env.AUTH_URL;
+    try {
+      expect(getCallbackUrl()).toBe('http://localhost:3000/api/connectors/callback');
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value !== undefined) process.env[key] = value;
+      }
+    }
   });
 });
 

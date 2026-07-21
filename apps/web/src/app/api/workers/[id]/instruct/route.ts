@@ -34,7 +34,7 @@ export async function POST(
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    with: { workspace: true },
+    with: { workspace: { columns: { dataClass: true } } },
   });
 
   if (!worker) {
@@ -67,6 +67,8 @@ export async function POST(
     );
   }
 
+  const isSensitive = (worker.workspace as any)?.dataClass === 'sensitive';
+
   // Get current instruction history
   const currentHistory = (worker.instructionHistory as any[]) || [];
 
@@ -74,11 +76,10 @@ export async function POST(
   const pendingPayload = message;
 
   // Add to history and set as pending
-  const newHistoryEntry = {
-    type: 'instruction' as const,
-    message,
-    timestamp: Date.now(),
-  };
+  // Sensitive: keep {type, ts} only — drop message text
+  const newHistoryEntry = isSensitive
+    ? { type: 'instruction' as const, timestamp: Date.now() }
+    : { type: 'instruction' as const, message, timestamp: Date.now() };
 
   // Cap history at 30 entries to prevent JSONB bloat
   const updatedHistory = [...currentHistory, newHistoryEntry];

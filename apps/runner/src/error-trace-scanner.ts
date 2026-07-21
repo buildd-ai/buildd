@@ -44,6 +44,8 @@ const PATTERNS: PatternDef[] = [
   { slug: 'rate_limit', re: /\b(rate.?limit(ed)?|429 Too Many Requests)\b/i },
   { slug: 'connection_refused', re: /\bECONNREFUSED\b/ },
   { slug: 'timeout', re: /\bETIMEDOUT\b/ },
+  // bwrap sandbox fails in kernels with unprivileged_userns_clone=0 — all Bash commands fail
+  { slug: 'bwrap_namespace_denied', re: /bwrap: No permissions to create a new namespace/ },
 ];
 
 const WINDOW_MS = 60_000;

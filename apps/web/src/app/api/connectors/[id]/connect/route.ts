@@ -105,6 +105,7 @@ export async function POST(
       connector.url,
       state,
       codeChallenge,
+      req.nextUrl.origin,
     );
 
     const response = NextResponse.json({ authorizationUrl });

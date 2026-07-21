@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
+import { ScopeSelector } from '@/components/ScopeSelector';
 
 const MODEL_OPTIONS = [
   { value: 'inherit', label: 'Inherit' },
@@ -25,6 +26,7 @@ const COLOR_PALETTE = [
   '#9B59B6', '#2C8C99', '#D4A24A', '#8A8478',
 ];
 
+// Role scopes map directly onto ShareScope ('team' | 'workspace'); 'all_teams' not shown.
 type Scope = 'team' | 'workspace';
 
 /**
@@ -339,16 +341,29 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   // Scope (applies-to) state — workspace-scoped roles always start as 'workspace'
   const [scope, setScope] = useState<Scope>('workspace');
 
-  // Load the team's connectors for the picker.
+  // IDs of connectors explicitly enabled for this workspace (connector_workspaces rows).
+  // Used to validate that a role only mounts connectors in scope for its workspace.
+  const [wsEnabledIds, setWsEnabledIds] = useState<Set<string>>(new Set());
+
+  // Load team connectors + workspace-enabled connector ids for the scope validator.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setConnectorsLoading(true);
       try {
-        const res = await fetch(`/api/connectors?teamId=${encodeURIComponent(skill.teamId)}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) setTeamConnectors(data.connectors || []);
+        const [teamRes, wsRes] = await Promise.all([
+          fetch(`/api/connectors?teamId=${encodeURIComponent(skill.teamId)}`),
+          fetch(`/api/workspaces/${workspaceId}/connectors`),
+        ]);
+        if (!cancelled) {
+          if (teamRes.ok) {
+            const data = await teamRes.json() as { connectors?: Connector[] };
+            setTeamConnectors(data.connectors ?? []);
+          }
+          if (wsRes.ok) {
+            const data = await wsRes.json() as { connectors?: { id: string }[] };
+            setWsEnabledIds(new Set((data.connectors ?? []).map((c) => c.id)));
+          }
         }
       } catch {
         // silent — picker just shows empty
@@ -357,7 +372,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
       }
     })();
     return () => { cancelled = true; };
-  }, [skill.teamId]);
+  }, [skill.teamId, workspaceId]);
 
   const toggleTool = (tool: string) => {
     setAllowedTools(prev =>
@@ -538,44 +553,18 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
           </div>
         )}
 
-        {/* Applies to */}
+        {/* Applies to — uses the shared ScopeSelector vocab (unified-sharing-model). */}
         <div className="border border-border-default rounded-lg p-4 mb-8">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-sm font-medium text-text-secondary">Applies to</span>
-          </div>
-          <div className="flex rounded-md border border-border-default overflow-hidden w-fit">
-            <button
-              type="button"
-              onClick={() => setScope('workspace')}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                scope === 'workspace'
-                  ? 'bg-surface-3 text-text-primary'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              One workspace
-            </button>
-            <button
-              type="button"
-              onClick={() => setScope('team')}
-              className={`px-4 py-2 text-sm font-medium border-l border-border-default transition-colors ${
-                scope === 'team'
-                  ? 'bg-surface-3 text-text-primary'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              All workspaces in team
-            </button>
-          </div>
-
-          {scope === 'workspace' && (
-            <p className="text-xs text-text-muted mt-2">
-              This role is scoped to <span className="font-medium text-text-primary">{workspaceName}</span>.
-            </p>
-          )}
-
+          <ScopeSelector
+            scope={scope}
+            onScopeChange={(s) => { if (s === 'team' || s === 'workspace') setScope(s); }}
+            workspaceId={workspaceId}
+            onWorkspaceChange={() => { /* workspace-scoped role is fixed to its workspace */ }}
+            workspaces={[{ id: workspaceId, name: workspaceName }]}
+            allowAllTeams={false}
+          />
           {scope === 'team' && (
-            <p className="text-xs text-text-muted mt-2">
+            <p className="text-xs text-text-muted mt-3">
               Saving will promote this role to team-level, making it the default for all workspaces.
             </p>
           )}
@@ -703,13 +692,8 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 )}
                 {teamConnectors.map((connector) => {
                   const active = connectorRefs.includes(connector.id);
-                  // TODO(spec §2): mounting needs BOTH a role ref AND workspace enablement.
-                  // If GET /api/connectors omits enabledWorkspaceIds we cannot detect the
-                  // "enabled for this workspace" case here — reconcile the payload with the
-                  // connectors API agent so this note fires accurately.
-                  const enabledHere = connector.enabledWorkspaceIds
-                    ? connector.enabledWorkspaceIds.includes(workspaceId)
-                    : true;
+                  // Accurate workspace-enablement check using the dedicated workspace connectors fetch.
+                  const enabledHere = wsEnabledIds.has(connector.id);
                   return (
                     <div
                       key={connector.id}
@@ -743,6 +727,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                           {connector.url && (
                             <span className="block text-[11px] text-text-muted font-mono truncate">{connector.url}</span>
                           )}
+                          {/* Scope label — mirrors the connector-add ScopeSelector vocab */}
+                          <span className={`text-[10px] font-medium ${enabledHere ? 'text-status-success' : 'text-text-muted'}`}>
+                            {enabledHere ? 'Enabled for this workspace' : 'Not yet enabled for this workspace'}
+                          </span>
                         </div>
                         <div className="flex-shrink-0 flex items-center gap-1.5">
                           {connector.needsReview && (
@@ -756,7 +744,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                       {active && !enabledHere && (
                         <div className="px-3 py-1.5 bg-surface-2 border-t border-border-default">
                           <p className="text-[11px] text-text-muted">
-                            Enable this connector for <span className="font-medium text-text-primary">{workspaceName}</span> in Settings → Connectors to mount it.
+                            Enable this connector for <span className="font-medium text-text-primary">{workspaceName}</span> in Settings → Connectors to mount it here.
                           </p>
                         </div>
                       )}

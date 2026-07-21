@@ -142,6 +142,7 @@ export interface LocalWorker {
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
   workspaceName: string;
+  workspaceDataClass: 'standard' | 'sensitive';
   branch: string;
   status: WorkerStatus;
   hasNewActivity: boolean;  // Blue dot
@@ -156,6 +157,11 @@ export interface LocalWorker {
   milestones: Milestone[];
   currentAction: string;
   commits: Array<{ sha: string; message: string }>;
+  // Set true once a create_pr tool result confirms a real PR was opened (not
+  // merely that the tool was called). Gates the pr_required output requirement.
+  prCreated?: boolean;
+  // PR URL captured from a successful create_pr result, when parseable.
+  prUrl?: string;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
@@ -182,6 +188,9 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // MCP credential secrets (label → value) delivered inline at claim time.
+  // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
+  mcpSecrets?: Record<string, string>;
   // Server-managed API key (delivered inline during claim, injected into subprocess env)
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
@@ -264,6 +273,7 @@ export interface BuilddTask {
     gitConfig?: WorkspaceGitConfig;
     configStatus?: 'unconfigured' | 'admin_confirmed';
     teamId?: string;
+    dataClass?: 'standard' | 'sensitive';
   };
   status: string;
   priority: number;

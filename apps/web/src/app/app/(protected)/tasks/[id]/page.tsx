@@ -352,7 +352,7 @@ export default async function TaskDetailPage({
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap shrink-0 md:justify-end md:max-w-[55%]">
             {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
             <EditTaskButton
               task={{
@@ -365,9 +365,10 @@ export default async function TaskDetailPage({
                 dependsOn: (task.dependsOn as string[]) || [],
                 mode: task.mode,
                 status: task.status,
+                backend: (task.backend as 'claude' | 'codex' | null) ?? null,
               }}
             />
-            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} />}
+            {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
             {task.externalUrl && (
               <a
                 href={task.externalUrl}
@@ -888,7 +889,7 @@ export default async function TaskDetailPage({
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
                       {worker.error && (
-                        <p className="font-mono text-[11px] text-status-error mt-0.5 truncate">{worker.error}</p>
+                        <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
                       )}
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>

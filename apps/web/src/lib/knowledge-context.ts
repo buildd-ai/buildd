@@ -30,12 +30,13 @@ async function buildCorporaHint(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   ks: KnowledgeQuerier,
+  sensitive?: boolean,
 ): Promise<string> {
   if (!ks.countNamespace) return '';
   try {
     const parts: string[] = [];
 
-    if (teamId) {
+    if (teamId && !sensitive) {
       const memCount = await ks.countNamespace(buildNamespace(teamId, 'memory')).catch(() => 0);
       parts.push(`memory ${memCount}`);
     }
@@ -60,15 +61,17 @@ export async function buildKnowledgeContext(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store?: KnowledgeQuerier,
+  opts?: { sensitive?: boolean },
 ): Promise<string[]> {
   if (!query.trim()) return [];
+  const sensitive = opts?.sensitive ?? false;
   try {
     const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
 
-    const hint = await buildCorporaHint(workspaceId, teamId, ks);
+    const hint = await buildCorporaHint(workspaceId, teamId, ks, sensitive);
 
     const sources: Array<{ label: string; ns: string }> = [];
-    if (teamId) sources.push({ label: 'Team memory', ns: buildNamespace(teamId, 'memory') });
+    if (teamId && !sensitive) sources.push({ label: 'Team memory', ns: buildNamespace(teamId, 'memory') });
     if (workspaceId) {
       sources.push({ label: 'Prior plans', ns: buildNamespace(workspaceId, 'plan') });
       sources.push({ label: 'Past task outcomes', ns: buildNamespace(workspaceId, 'task') });

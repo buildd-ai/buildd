@@ -1165,7 +1165,8 @@ export async function POST(req: NextRequest) {
     if (!task) continue;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
     const teamId = (task as any).workspace?.teamId;
-    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId);
+    const sensitive = (task as any).workspace?.dataClass === 'sensitive';
+    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
     // Known-entities catalog (§8.4): canonical entity names for the task's
     // likely files so agents don't invent loose refs. Best-effort — returns ''
     // on any failure; the extra .catch is belt-and-braces (claim must not 500).
@@ -1219,7 +1220,7 @@ export async function POST(req: NextRequest) {
         const workerSecrets = await db.query.secrets.findMany({
           where: and(
             eq(secrets.teamId, workspaceTeamId),
-            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token']),
+            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
             or(
               isNull(secrets.accountId),
               eq(secrets.accountId, account.id),
@@ -1260,9 +1261,25 @@ export async function POST(req: NextRequest) {
         if (decryptedOauthToken) {
           (cw as any).serverOauthToken = decryptedOauthToken;
         }
-        // NOTE: mcp_credential secrets are no longer injected as a flat `mcpSecrets`
-        // env map here. MCP servers now flow exclusively through connectors (below);
-        // stdio-connector env vars are resolved from mcp_credential secrets there.
+        // Inject mcp_credential secrets as flat mcpSecrets so the runner can resolve
+        // ${VAR} references in .mcp.json HTTP headers. The connector system only
+        // supports a single headerName per connector — it cannot model servers like
+        // Cue that require two headers (x-api-key + x-tenant-id). mcp_credential
+        // secrets keyed by their label (the env var name) remain the viable path
+        // until connectors gain a headers JSONB column.
+        const mcpCredSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential');
+        if (mcpCredSecrets.length > 0) {
+          const mcpSecretsMap: Record<string, string> = {};
+          await Promise.all(mcpCredSecrets.map(async (s) => {
+            if (!s.label) return;
+            const val = await provider.get(s.id).catch(() => null);
+            if (val) mcpSecretsMap[s.label] = val;
+          }));
+          if (Object.keys(mcpSecretsMap).length > 0) {
+            (cw as any).mcpSecrets = mcpSecretsMap;
+            console.log(`[claim] Injected ${Object.keys(mcpSecretsMap).length} mcp_credential secret(s) for worker ${cw.id}: ${Object.keys(mcpSecretsMap).join(', ')}`);
+          }
+        }
       }
     } catch (err) {
       // Non-fatal: worker can still use local credentials
@@ -1572,6 +1589,7 @@ export async function POST(req: NextRequest) {
                   accessToken: cred.accessToken,
                   refreshToken: cred.refreshToken,
                   accountId: cred.accountId,
+                  idToken: cred.idToken,
                 }
               : {}),
             // API key (only set for api_key credentials)

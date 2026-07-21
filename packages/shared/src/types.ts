@@ -244,6 +244,8 @@ export interface Workspace {
   memory: Record<string, unknown>;
   projects?: WorkspaceProject[];
   webhookConfig?: WebhookConfig | null;
+  accessMode?: 'open' | 'restricted';
+  dataClass?: 'standard' | 'sensitive';
   createdAt: Date;
   updatedAt: Date;
   taskCount?: number;
@@ -1004,6 +1006,27 @@ export const SENSITIVE_PATHS = [
   /\.env$/,
   /\.ssh\//,
   /id_rsa/,
+] as const;
+
+// Paths that must not be readable by the agent (runner credential files at known locations).
+// Enforced in PreToolUse hook for the Read tool — capability scoping: the env
+// simply should not contain these files in readable form from agent context.
+export const SENSITIVE_READ_PATHS = [
+  /[/\\]\.buildd[/\\]config(\.json)?$/,      // runner API key (~/.buildd/config.json)
+  /[/\\]\.claude[/\\]\.credentials\.json$/,  // Claude OAuth token file
+] as const;
+
+// Bash command patterns that read runner-level credential files.
+// Used by the permission hook alongside DANGEROUS_PATTERNS to block bash
+// commands that would exfiltrate runner secrets even if the Read tool is blocked.
+export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
+  // Matches cat/head/tail/less/more reading the runner config file
+  /\b(?:cat|head|tail|less|more|bat)\b[^|]*[/\\]\.buildd[/\\]config/,
+  // Matches reading Claude credential files
+  /\b(?:cat|head|tail|less|more|bat)\b[^|]*\.credentials\.json/,
+  // Direct printenv/env output that names the runner coordination key
+  /\bprintenv\s+BUILDD_API_KEY\b/,
+  /\benv\b.*\bBUILD_API_KEY\b/,
 ] as const;
 
 // Runner capability keys — advertised in WorkerEnvironment.envKeys, matched

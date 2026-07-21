@@ -1,5 +1,5 @@
 {
-  "id": "a599c758-3cfd-43d5-b6a9-0d8b77c56efe",
+  "id": "1c83148e-725b-4bc5-9f4d-70c67ecdc1ca",
   "prevId": "971c2401-8935-459a-bf57-69a54f20091b",
   "version": "7",
   "dialect": "postgresql",
@@ -2561,12 +2561,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'active'"
-        },
-        "cost_budget_usd": {
-          "name": "cost_budget_usd",
-          "type": "numeric(10, 2)",
-          "primaryKey": false,
-          "notNull": false
         },
         "priority": {
           "name": "priority",
@@ -6696,6 +6690,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'open'"
+        },
+        "data_class": {
+          "name": "data_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'standard'"
         },
         "max_concurrent_tasks": {
           "name": "max_concurrent_tasks",

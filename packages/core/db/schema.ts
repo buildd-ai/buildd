@@ -258,6 +258,14 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
+  // Data classification for privacy enforcement. Absent / 'standard' = normal retention.
+  // 'sensitive' = structured-only retention: free-text fields (progress messages, summaries,
+  // artifacts, error traces) are dropped at the control-plane boundary; only schema-validated
+  // structuredOutput flows through. The outputSchema denylist in create_task enforces
+  // that even the schema-validated carve-out contains no content-bearing field names.
+  // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
+  dataClass?: 'standard' | 'sensitive';
+
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -474,6 +482,9 @@ export const workspaces = pgTable('workspaces', {
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
   accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+  // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
+  // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
+  dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;

@@ -81,4 +81,11 @@ describe('error-trace-scanner', () => {
     // @ts-expect-error testing defensive guard
     expect(scanToolResult('w1', undefined)).toEqual([]);
   });
+
+  it('detects bwrap namespace permission error', () => {
+    const out = scanToolResult('w1', 'bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.', 'bash');
+    expect(out).toHaveLength(1);
+    expect(out[0].pattern).toBe('bwrap_namespace_denied');
+    expect(out[0].source).toBe('bash');
+  });
 });

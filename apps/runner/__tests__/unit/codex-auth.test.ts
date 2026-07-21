@@ -52,9 +52,11 @@ function fsTest(name: string, fn: () => void | Promise<void>) {
 }
 
 const oauthCred = {
+  credentialType: 'oauth' as const,
   accessToken: 'at_fresh',
   refreshToken: 'rt_fresh',
   accountId: 'acct_123',
+  idToken: 'id_fresh',
   expiresAt: new Date(Date.now() + 3600_000), // 1h from now
 };
 
@@ -133,9 +135,11 @@ describe('seedCodexAuthIfMissing', () => {
     const codexHome = stableCodexHomePath(workerId);
     expect(existsSync(codexHome)).toBe(true);
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth.access_token).toBe('at_fresh');
-    expect(auth.refresh_token).toBe('rt_fresh');
-    expect(auth.account_id).toBe('acct_123');
+    // Nested shape required by codex-cli 0.144 (tokens.{...} + id_token).
+    expect(auth.tokens.access_token).toBe('at_fresh');
+    expect(auth.tokens.refresh_token).toBe('rt_fresh');
+    expect(auth.tokens.account_id).toBe('acct_123');
+    expect(auth.tokens.id_token).toBe('id_fresh');
   });
 
   fsTest('does NOT overwrite auth.json when one already exists (seed-if-missing)', () => {
@@ -159,7 +163,7 @@ describe('seedCodexAuthIfMissing', () => {
     seedCodexAuthIfMissing(workerId, oauthCred); // second call — no-op
     const codexHome = stableCodexHomePath(workerId);
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth.access_token).toBe('at_fresh');
+    expect(auth.tokens.access_token).toBe('at_fresh');
   });
 });
 

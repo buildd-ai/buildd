@@ -315,6 +315,7 @@ export function deriveCodeChallenge(codeVerifier: string): string {
  * @param connectorUrl  - The connector resource URL (used to determine scopes)
  * @param state         - Random hex state value (caller stores in session/cookie)
  * @param codeChallenge - S256 PKCE code challenge (base64url SHA-256 of verifier)
+ * @param origin        - Requesting request's origin, for redirect_uri (see getCallbackUrl)
  * @param scopes        - Optional scope list; falls back to AS scopes_supported
  */
 export function buildAuthorizationUrl(
@@ -323,13 +324,14 @@ export function buildAuthorizationUrl(
   connectorUrl: string,
   state: string,
   codeChallenge: string,
+  origin?: string,
   scopes?: string[],
 ): string {
   const url = new URL(asMetadata.authorization_endpoint);
 
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', clientId);
-  url.searchParams.set('redirect_uri', getCallbackUrl());
+  url.searchParams.set('redirect_uri', getCallbackUrl(origin));
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', codeChallenge);
   url.searchParams.set('code_challenge_method', 'S256');
@@ -396,12 +398,15 @@ export async function exchangeCodeForToken(
 /**
  * Validate that the access token's `aud` claim contains the connector resource URL.
  * Decodes without verifying signature — we only care about the claim value.
- * Throws if audience is missing or does not match.
+ * Throws only if an `aud` claim is present and doesn't match — many AS
+ * implementations issue opaque bearer tokens (not JWTs) or omit `aud`
+ * entirely, and neither is something the client can or should reject.
  */
 export function validateTokenAudience(token: string, connectorUrl: string): void {
   const parts = token.split('.');
-  if (parts.length < 2) {
-    throw new Error('Invalid JWT format');
+  if (parts.length !== 3) {
+    // Not a JWT (e.g. an opaque bearer token) — no claim to check.
+    return;
   }
 
   let payload: Record<string, unknown>;
@@ -409,7 +414,8 @@ export function validateTokenAudience(token: string, connectorUrl: string): void
     const decoded = Buffer.from(parts[1], 'base64url').toString('utf8');
     payload = JSON.parse(decoded) as Record<string, unknown>;
   } catch {
-    throw new Error('Failed to decode JWT payload');
+    // Doesn't decode as a JWT payload — treat like an opaque token.
+    return;
   }
 
   const aud = payload['aud'];
@@ -476,12 +482,21 @@ export async function verifyOAuthState(token: string): Promise<OAuthStateClaims 
 
 // ─── Callback URL helper ──────────────────────────────────────────────────────
 
-/** Absolute callback URL for this app (used as redirect_uri). */
-export function getCallbackUrl(): string {
+/**
+ * Absolute callback URL for this app (used as redirect_uri).
+ *
+ * `origin` should be the requesting request's origin (e.g. `req.nextUrl.origin`) —
+ * it's the only source that's correct on every environment (prod, every preview
+ * deploy, local dev) without needing an env var set per-environment. Env vars still
+ * take priority so operators can force a specific issuer (e.g. behind a proxy where
+ * the public host differs from the request's Host header).
+ */
+export function getCallbackUrl(origin?: string): string {
   const base =
     process.env.OAUTH_ISSUER ||
     process.env.NEXTAUTH_URL ||
     process.env.AUTH_URL ||
+    origin ||
     'http://localhost:3000';
   return `${base.replace(/\/$/, '')}/api/connectors/callback`;
 }

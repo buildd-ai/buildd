@@ -106,6 +106,22 @@ async function resolveTeamId(workspaceId: string | null | undefined, fallbackTea
   return fallbackTeamId ?? null;
 }
 
+/**
+ * Resolve workspace dataClass. Returns 'sensitive' on DB failure (fail-closed).
+ */
+async function resolveWorkspaceDataClass(workspaceId: string | null | undefined): Promise<'standard' | 'sensitive'> {
+  if (!workspaceId) return 'standard';
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { dataClass: true },
+    });
+    return (ws?.dataClass as 'standard' | 'sensitive') ?? 'standard';
+  } catch {
+    return 'sensitive'; // fail-closed
+  }
+}
+
 async function getMemoryClientForTeam(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<MemoryClient | null> {
   const url = process.env.MEMORY_API_URL;
   if (!url) return null;
@@ -162,7 +178,7 @@ async function getMemoryClientForTeam(workspaceId: string | null | undefined, fa
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean) {
   const filteredActions = accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -247,8 +263,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
   // ── Tools ────────────────────────────────────────────────────────────────
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools: object[] = [
       {
         name: "buildd",
         description: buildToolDescription(filteredActions),
@@ -273,119 +289,126 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           required: ["action"],
         },
       },
-      {
-        name: "buildd_memory",
-        description: `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${[...memoryActions].join(', ')}`,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          openWorldHint: true,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            action: {
-              type: "string" as const,
-              description: `Action: ${[...memoryActions].join(', ')}`,
-              enum: [...memoryActions],
-            },
-            params: {
-              type: "object" as const,
-              description: buildMemoryDescription(memoryActions),
-            },
+    ];
+
+    if (!isSensitive) {
+      tools.push(
+        {
+          name: "buildd_memory",
+          description: `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${[...memoryActions].join(', ')}`,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: true,
           },
-          required: ["action"],
-        },
-      },
-      {
-        name: "recall",
-        description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.",
-        annotations: {
-          readOnlyHint: true,
-          destructiveHint: false,
-          openWorldHint: false,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            query: {
-              type: "string" as const,
-              description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              action: {
+                type: "string" as const,
+                description: `Action: ${[...memoryActions].join(', ')}`,
+                enum: [...memoryActions],
+              },
+              params: {
+                type: "object" as const,
+                description: buildMemoryDescription(memoryActions),
+              },
             },
-            scope: {
-              type: "string" as const,
-              description: "Corpus to search. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
-              enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
-            },
-            type: {
-              type: "string" as const,
-              description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
-            },
-            files: {
-              type: "array" as const,
-              items: { type: "string" as const },
-              description: "Narrow results to entries touching these file paths.",
-            },
-            limit: {
-              type: "number" as const,
-              description: "Max results to return. Default: 10.",
-            },
-            id: {
-              type: "string" as const,
-              description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
-            },
+            required: ["action"],
           },
         },
-      },
-      {
-        name: "learn",
-        description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          openWorldHint: false,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            type: {
-              type: "string" as const,
-              description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
-              enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
-            },
-            title: {
-              type: "string" as const,
-              description: "Short title for this lesson.",
-            },
-            content: {
-              type: "string" as const,
-              description: "The lesson content — what the next agent should know.",
-            },
-            files: {
-              type: "array" as const,
-              items: { type: "string" as const },
-              description: "File paths this lesson relates to.",
-            },
-            tags: {
-              type: "array" as const,
-              items: { type: "string" as const },
-              description: "Tags for categorisation.",
-            },
-            scope: {
-              type: "string" as const,
-              description: "Project/monorepo scope for this memory.",
-            },
-            supersedes: {
-              type: "array" as const,
-              items: { type: "string" as const },
-              description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
+        {
+          name: "recall",
+          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.",
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            openWorldHint: false,
+          },
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              query: {
+                type: "string" as const,
+                description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
+              },
+              scope: {
+                type: "string" as const,
+                description: "Corpus to search. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+                enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+              },
+              type: {
+                type: "string" as const,
+                description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
+              },
+              files: {
+                type: "array" as const,
+                items: { type: "string" as const },
+                description: "Narrow results to entries touching these file paths.",
+              },
+              limit: {
+                type: "number" as const,
+                description: "Max results to return. Default: 10.",
+              },
+              id: {
+                type: "string" as const,
+                description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+              },
             },
           },
-          required: ["type", "title", "content"],
         },
-      },
-    ],
-  }));
+        {
+          name: "learn",
+          description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: false,
+          },
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              type: {
+                type: "string" as const,
+                description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
+                enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+              },
+              title: {
+                type: "string" as const,
+                description: "Short title for this lesson.",
+              },
+              content: {
+                type: "string" as const,
+                description: "The lesson content — what the next agent should know.",
+              },
+              files: {
+                type: "array" as const,
+                items: { type: "string" as const },
+                description: "File paths this lesson relates to.",
+              },
+              tags: {
+                type: "array" as const,
+                items: { type: "string" as const },
+                description: "Tags for categorisation.",
+              },
+              scope: {
+                type: "string" as const,
+                description: "Project/monorepo scope for this memory.",
+              },
+              supersedes: {
+                type: "array" as const,
+                items: { type: "string" as const },
+                description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
+              },
+            },
+            required: ["type", "title", "content"],
+          },
+        },
+      );
+    }
+
+    return { tools };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -435,6 +458,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
         return await handleBuilddAction(api, action, params, ctx);
       } else if (name === "buildd_memory") {
+        // Defense-in-depth: gate even if the tool was somehow called despite being
+        // absent from the ListTools response for sensitive workspaces.
+        if (isSensitive) {
+          return {
+            content: [{ type: "text" as const, text: "Error: buildd_memory is not available in sensitive workspaces." }],
+            isError: true,
+          };
+        }
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
@@ -467,8 +498,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           knowledgeStore,
           embedder,
           api,
+          isSensitive,
         });
       } else if (name === "recall" || name === "learn") {
+        // Defense-in-depth: gate even if the tool was somehow called despite being
+        // absent from the ListTools response for sensitive workspaces.
+        if (isSensitive) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${name} is not available in sensitive workspaces.` }],
+            isError: true,
+          };
+        }
         // Workspace / memory client resolution shared with buildd_memory
         const wsId = await getWorkspaceId();
         if (!wsId && authType === 'oauth') {
@@ -496,6 +536,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           knowledgeStore,
           embedder,
           api,
+          isSensitive,
         };
 
         if (name === "recall") {
@@ -652,7 +693,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
   const workerParam = url.searchParams.get("worker");
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl);
+  const dataClass = await resolveWorkspaceDataClass(workspaceId);
+  const isSensitive = dataClass === 'sensitive';
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

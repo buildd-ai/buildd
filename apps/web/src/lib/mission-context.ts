@@ -5,13 +5,21 @@ import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { LIVE_WORKER_STATUSES } from './task-timestamps';
 
+// Operational-only schema: no free-text string fields that could capture email
+// subjects, bodies, or sender addresses from sensitive workspaces. Consumers that
+// previously read `summary` / `checksPerformed` / `actionsPerformed` now use the
+// count fields below instead — see buildHeartbeatContext and the prior-heartbeats
+// display loop further down this file.
 const HEARTBEAT_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
     status: { type: 'string', enum: ['ok', 'action_taken', 'error'] },
-    summary: { type: 'string' },
-    checksPerformed: { type: 'array', items: { type: 'string' } },
-    actionsPerformed: { type: 'array', items: { type: 'string' } },
+    // Operational counts — safe for sensitive workspaces (no content, just numbers)
+    tasksCreated: { type: 'integer', description: 'Number of child tasks spawned this run' },
+    tasksRetried: { type: 'integer', description: 'Number of failed tasks retried this run' },
+    actionCount: { type: 'integer', description: 'Total discrete actions taken (classify, archive, notify…)' },
+    checkCount: { type: 'integer', description: 'Total checks performed' },
+    missionComplete: { type: 'boolean', description: 'Signal that all mission goals are met' },
   },
   required: ['status'],
 };
@@ -278,10 +286,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   let teamWorkspacesList: Array<{ id: string; name: string; repo: string | null }> = [];
 
+  let missionWorkspaceSensitive = false;
   if (mission.workspaceId) {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, mission.workspaceId),
-      columns: { id: true, name: true, repo: true, githubInstallationId: true },
+      columns: { id: true, name: true, repo: true, githubInstallationId: true, dataClass: true },
     });
     if (ws) {
       workspaceState = {
@@ -290,6 +299,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
         isCoordination: ws.name === '__coordination',
         hasGitHubApp: !!ws.githubInstallationId,
       };
+      missionWorkspaceSensitive = (ws.dataClass as string) === 'sensitive';
     }
   }
 
@@ -559,7 +569,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Knowledge bridge — inject relevant prior work (team memory, prior plans,
   // past task outcomes) retrieved from the KnowledgeStore. Best-effort.
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
-  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId);
+  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId, undefined, { sensitive: missionWorkspaceSensitive });
   descParts.push(...knowledgeParts);
 
   // Known-entities catalog (§8.4) — canonical vocabulary hint. Best-effort ''.
@@ -879,15 +889,18 @@ Only create child tasks when the work requires:
 - A different role's expertise (e.g., builder for code)
 - More than ~5 minutes of work`);
 
-  // Prior heartbeats
+  // Prior heartbeats — read only operational count fields (no content-bearing strings)
   if (priorHeartbeats.length > 0) {
     descParts.push('\n## Prior Heartbeats');
     for (const t of priorHeartbeats) {
       const result = t.result as Record<string, unknown> | null;
       const so = result?.structuredOutput as Record<string, unknown> | undefined;
       const status = so?.status || 'unknown';
-      const summary = so?.summary || result?.summary || 'no summary';
-      descParts.push(`- ${timeAgo(t.createdAt)}: [${status}] ${summary}`);
+      const counts: string[] = [];
+      if (typeof so?.tasksCreated === 'number') counts.push(`${so.tasksCreated} task(s) created`);
+      if (typeof so?.tasksRetried === 'number' && so.tasksRetried > 0) counts.push(`${so.tasksRetried} retried`);
+      if (typeof so?.actionCount === 'number') counts.push(`${so.actionCount} action(s)`);
+      descParts.push(`- ${timeAgo(t.createdAt)}: [${status}]${counts.length ? ` ${counts.join(', ')}` : ''}`);
     }
   }
 

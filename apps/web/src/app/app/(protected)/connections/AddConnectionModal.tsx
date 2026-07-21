@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 
 interface CreatedConnector {
   id: string;
@@ -28,11 +29,62 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Scope control — mirrors AgentBackendsSection (docs/design/unified-sharing-model.md)
+  const [scope, setScope] = useState<ShareScope>('team');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
+  const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+
   useEffect(() => {
     nameRef.current?.focus();
   }, []);
 
-  // Called when user clicks "Add connection" in the form step.
+  useEffect(() => {
+    async function loadScopeData() {
+      const [wsRes, teamsRes] = await Promise.all([
+        fetch('/api/workspaces'),
+        fetch('/api/teams'),
+      ]);
+      if (wsRes.ok) {
+        const data = await wsRes.json() as { workspaces?: { id: string; name: string }[] };
+        const wsList = (data.workspaces ?? []).map((w) => ({ id: w.id, name: w.name }));
+        setWorkspaces(wsList);
+        if (wsList.length > 0) setSelectedWorkspaceId(wsList[0].id);
+      }
+      if (teamsRes.ok) {
+        const data = await teamsRes.json() as { teams?: { id: string; name: string }[] };
+        setTeams(data.teams ?? []);
+      }
+    }
+    void loadScopeData();
+  }, []);
+
+  // Apply scope after connector creation:
+  //   'team'      → default, connector is already team-wide, no extra step.
+  //   'workspace' → enable the connector for the chosen workspace mount.
+  //   'all_teams' → share with every other team the user manages.
+  async function applyScope(connectorId: string, ownerTeamId: string) {
+    if (scope === 'workspace' && selectedWorkspaceId) {
+      await fetch(`/api/workspaces/${selectedWorkspaceId}/connectors`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ connectorId, enabled: true }),
+      }).catch(() => null);
+    } else if (scope === 'all_teams') {
+      const toShare = teams.filter((t) => t.id !== ownerTeamId);
+      await Promise.all(
+        toShare.map((team) =>
+          fetch(`/api/connectors/${connectorId}/shares`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ teamId: team.id }),
+          }).catch(() => null),
+        ),
+      );
+    }
+  }
+
+  // Called when user clicks "Continue" in the form step.
   // POST to /api/connectors with authMode='oauth' to trigger auto-discovery.
   async function handleDiscover(e: React.FormEvent) {
     e.preventDefault();
@@ -49,15 +101,19 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
         body: JSON.stringify({ name: name.trim(), url: url.trim() }),
       });
       if (res.ok) {
-        const data = await res.json();
-        const connector = data.connector as CreatedConnector;
-        // Determine effective discovered auth mode from discoveredMetadata
-        const meta = (data.connector.discoveredMetadata as Record<string, unknown> | null);
-        const discoveredAuthMode = (meta?.authMode as string) ?? 'none';
+        const data = await res.json() as { connector: CreatedConnector & { teamId?: string; discoveredMetadata?: Record<string, unknown> | null } };
+        const connector = data.connector;
+        const discoveredAuthMode = (connector.discoveredMetadata?.authMode as string) ?? 'none';
+
+        // Apply scope (workspace mount or cross-team shares) before moving to step 2.
+        if (connector.id && connector.teamId) {
+          await applyScope(connector.id, connector.teamId);
+        }
+
         setCreatedConnector({ ...connector, discoveredAuthMode, status: 'not_connected' });
         setStep('discovered');
       } else {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         setError(data.error || 'Failed to add connection');
       }
     } catch {
@@ -75,10 +131,10 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
     try {
       const res = await fetch(`/api/connectors/${createdConnector.id}/connect`, { method: 'POST' });
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { authorizationUrl: string };
         window.location.href = data.authorizationUrl;
       } else {
-        const err = await res.json();
+        const err = await res.json() as { error?: string };
         setError(err.error || 'Failed to start OAuth flow');
         setSubmitting(false);
       }
@@ -112,10 +168,14 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
         }),
       });
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as { connector: CreatedConnector & { teamId?: string } };
+        // Re-apply scope on the newly created (header-mode) connector.
+        if (data.connector.id && data.connector.teamId) {
+          await applyScope(data.connector.id, data.connector.teamId);
+        }
         onAdded({ ...data.connector, status: 'connected' });
       } else {
-        const data = await res.json();
+        const data = await res.json() as { error?: string };
         setError(data.error || 'Failed to save API key');
       }
     } catch {
@@ -186,6 +246,17 @@ export default function AddConnectionModal({ onClose, onAdded }: AddConnectionMo
                   className="w-full px-3 py-2 bg-surface-3 border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
                 />
               </div>
+              {workspaces.length > 0 && (
+                <ScopeSelector
+                  scope={scope}
+                  onScopeChange={setScope}
+                  workspaceId={selectedWorkspaceId}
+                  onWorkspaceChange={setSelectedWorkspaceId}
+                  workspaces={workspaces}
+                  allowAllTeams={teams.length > 1}
+                  allTeamsCount={teams.length}
+                />
+              )}
               {error && (
                 <div className="px-3 py-2 rounded-md text-xs bg-status-error/10 text-status-error border border-status-error/30">
                   {error}
