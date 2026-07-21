@@ -303,3 +303,130 @@ describe('PII_PATTERNS', () => {
     expect(types.has('order_ref')).toBe(true);
   });
 });
+
+// ── createSecretRedactor ──────────────────────────────────────────────────────
+
+import { createSecretRedactor, redactSecretsInBody } from '../redaction';
+
+describe('createSecretRedactor', () => {
+  it('redacts a single secret value from text', () => {
+    const redact = createSecretRedactor(['bld_abc123secretvalue']);
+    expect(redact('my key is bld_abc123secretvalue!')).toBe('my key is [REDACTED]!');
+  });
+
+  it('redacts multiple secret values', () => {
+    const redact = createSecretRedactor(['secret1value', 'secret2value']);
+    expect(redact('first=secret1value second=secret2value')).toBe('first=[REDACTED] second=[REDACTED]');
+  });
+
+  it('redacts all occurrences in a string', () => {
+    const redact = createSecretRedactor(['mysecret']);
+    expect(redact('mysecret then again mysecret')).toBe('[REDACTED] then again [REDACTED]');
+  });
+
+  it('skips short values (< 8 chars) to avoid false positives', () => {
+    const redact = createSecretRedactor(['abc', 'short']);
+    expect(redact('value is abc or short here')).toBe('value is abc or short here');
+  });
+
+  it('skips empty values', () => {
+    const redact = createSecretRedactor(['', '  ']);
+    expect(redact('some text')).toBe('some text');
+  });
+
+  it('returns identity function when no valid secrets provided', () => {
+    const redact = createSecretRedactor([]);
+    expect(redact('some text')).toBe('some text');
+  });
+
+  it('matches secrets of exactly 8 chars', () => {
+    const redact = createSecretRedactor(['12345678']);
+    expect(redact('value=12345678!')).toBe('value=[REDACTED]!');
+  });
+
+  it('redacts longer secret first when one is a prefix of another', () => {
+    const redact = createSecretRedactor(['bld_short123', 'bld_short123extra']);
+    // The longer one must be replaced first so 'bld_short123extra' is not left as '[REDACTED]extra'
+    const result = redact('key=bld_short123extra or key2=bld_short123');
+    expect(result).not.toContain('extra');
+    expect(result).toBe('key=[REDACTED] or key2=[REDACTED]');
+  });
+
+  it('handles a buildd API key (bld_ + 64 hex chars)', () => {
+    const apiKey = 'bld_' + 'a'.repeat(64);
+    const redact = createSecretRedactor([apiKey]);
+    expect(redact(`Authorization: Bearer ${apiKey}`)).toBe('Authorization: Bearer [REDACTED]');
+  });
+
+  it('does not redact unrelated text', () => {
+    const redact = createSecretRedactor(['secretvalue12345']);
+    expect(redact('this is safe text')).toBe('this is safe text');
+  });
+});
+
+// ── redactSecretsInBody ───────────────────────────────────────────────────────
+
+describe('redactSecretsInBody', () => {
+  const secrets = ['mysupersecretkey'];
+
+  it('redacts from currentAction string field', () => {
+    const body = { currentAction: 'Running: printenv mysupersecretkey...' };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.currentAction).toBe('Running: printenv [REDACTED]...');
+  });
+
+  it('redacts from milestones label', () => {
+    const body = { milestones: [{ type: 'action', label: 'Used key mysupersecretkey', ts: 1 }] };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.milestones[0].label).toBe('Used key [REDACTED]');
+  });
+
+  it('redacts from appendMilestones label', () => {
+    const body = { appendMilestones: [{ type: 'status', label: 'Key=mysupersecretkey', ts: 1 }] };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.appendMilestones[0].label).toBe('Key=[REDACTED]');
+  });
+
+  it('redacts from appendErrorTraces excerpt', () => {
+    const body = { appendErrorTraces: [{ pattern: 'git_fatal', excerpt: 'fatal: token mysupersecretkey invalid', source: 'bash' }] };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.appendErrorTraces[0].excerpt).toBe('fatal: token [REDACTED] invalid');
+  });
+
+  it('redacts from error string', () => {
+    const body = { error: 'Auth failed with key mysupersecretkey' };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.error).toBe('Auth failed with key [REDACTED]');
+  });
+
+  it('redacts from summary string', () => {
+    const body = { summary: 'Completed task with token mysupersecretkey' };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.summary).toBe('Completed task with token [REDACTED]');
+  });
+
+  it('redacts from waitingFor.prompt', () => {
+    const body = { waitingFor: { type: 'question', prompt: 'Use key mysupersecretkey to continue' } };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result.waitingFor.prompt).toBe('Use key [REDACTED] to continue');
+  });
+
+  it('returns body unchanged when secrets is empty', () => {
+    const body = { currentAction: 'Running: something', error: 'failed' };
+    const result = redactSecretsInBody(body, []);
+    expect(result).toEqual(body);
+  });
+
+  it('returns body unchanged when no secrets appear in it', () => {
+    const body = { currentAction: 'Running: ls -la', milestones: [{ label: 'Done', ts: 1 }] };
+    const result = redactSecretsInBody(body, secrets);
+    expect(result).toEqual(body);
+  });
+
+  it('does not mutate the original body', () => {
+    const body = { currentAction: 'key: mysupersecretkey' };
+    const original = JSON.parse(JSON.stringify(body));
+    redactSecretsInBody(body, secrets);
+    expect(body).toEqual(original);
+  });
+});
