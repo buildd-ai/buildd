@@ -889,7 +889,7 @@ export default async function TaskDetailPage({
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
                       {worker.error && (
-                        <p className="font-mono text-[11px] text-status-error mt-0.5 truncate">{worker.error}</p>
+                        <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
                       )}
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>

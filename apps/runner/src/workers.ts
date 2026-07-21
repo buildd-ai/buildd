@@ -45,6 +45,7 @@ import {
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
+import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
@@ -2255,8 +2256,12 @@ export class WorkerManager {
           let outputReqNudged = false;
           const outputReq = task.outputRequirement || 'auto';
           if ((outputReq === 'pr_required' || outputReq === 'artifact_required') && outputReqNudgeCount < maxOutputReqNudges) {
-            const hasPR = worker.commits.some((c: any) => c.prUrl || c.prNumber) ||
-              worker.toolCalls?.some((tc: any) => tc.name === 'create_pr' || (tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_pr'));
+            // A create_pr *call* is not proof of a PR — GitHub can reject it
+            // (e.g. 422 when the branch was never pushed). Only count a PR that
+            // a create_pr result actually confirmed (worker.prCreated, set in
+            // handleMessage from the tool result), or a commit carrying PR info.
+            const hasPR = worker.prCreated === true ||
+              worker.commits.some((c: any) => c.prUrl || c.prNumber);
             const hasArtifact = worker.toolCalls?.some((tc: any) =>
               tc.name === 'mcp__buildd__buildd' && tc.input?.action === 'create_artifact');
 
@@ -2430,6 +2435,36 @@ If something is missing or incomplete, describe what and fix it now.`;
           budgetExhausted: true,
           milestones: worker.milestones,
           ...gitStats,
+        });
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+      } else if (shouldFailForMissingPr({
+        outputRequirement: task.outputRequirement,
+        prCreated: worker.prCreated,
+        commitCount: worker.commits.length,
+      })) {
+        // pr_required, but the session produced NO confirmed PR and NO commits —
+        // there is nothing to open a PR from (e.g. a blocked environment where the
+        // agent could not run shell commands). Attempting completion would only
+        // earn the server's generic "requires a pull request" 400, whose text
+        // buries the agent's real explanation. Fail with the agent's own report so
+        // the failure is truthful. (When commits exist we fall through to the
+        // server, which can still auto-detect a PR opened via `gh pr create`.)
+        sessionLog(worker.id, 'warn', 'output_requirement_unmet', 'pr_required (no commits)', worker.taskId);
+        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+        const diagnosis = (worker.lastAssistantMessage || '').trim();
+        const errMsg = diagnosis
+          ? `No PR was created and no commits were made. Agent's final report:\n\n${diagnosis}`
+          : 'No PR was created and no commits were made before the session ended (pr_required).';
+        worker.status = 'error';
+        worker.error = errMsg;
+        worker.currentAction = 'No deliverable produced';
+        worker.hasNewActivity = true;
+        worker.completedAt = Date.now();
+        await this.buildd.updateWorker(worker.id, {
+          status: 'failed',
+          error: errMsg,
+          milestones: worker.milestones,
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
@@ -3170,14 +3205,29 @@ If something is missing or incomplete, describe what and fix it now.`;
           // Best-effort — if we can't find it, the trace still records useful info.
           const toolUseId = block.tool_use_id as string | undefined;
           let source: string | undefined;
+          let sourceInput: unknown;
           if (toolUseId) {
             for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
               const tc: any = worker.toolCalls[i];
               if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
                 source = tc.name;
+                sourceInput = tc.input;
                 break;
               }
             }
+          }
+
+          // Confirm a real PR from the create_pr result (not just the call).
+          // Gates the pr_required output requirement — see pr-detection.ts.
+          const prResult = detectCreatedPr({
+            toolName: source,
+            input: sourceInput,
+            resultText: text,
+            isError: block.is_error === true,
+          });
+          if (prResult.created) {
+            worker.prCreated = true;
+            if (prResult.url) worker.prUrl = prResult.url;
           }
 
           const traces = scanToolResult(worker.id, text, source);
