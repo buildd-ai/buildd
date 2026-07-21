@@ -1318,7 +1318,7 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers[0].taskId).toBe('task-1');
   });
 
-  it('no longer flat-injects mcp_credential secrets as mcpSecrets (connectors are the only path)', async () => {
+  it('does not attach mcpSecrets when mcp_credential decrypt returns null', async () => {
     // Set ENCRYPTION_KEY so secrets branch executes
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
@@ -1361,13 +1361,12 @@ describe('POST /api/workers/claim', () => {
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
     }));
 
-    // Even if mcp_credential secrets exist, they must NOT surface as a flat
-    // `mcpSecrets` map — that legacy role-MCP env injection path was retired.
-    // The anthropic/oauth secrets query now only asks for those two purposes,
-    // so this row would never be returned; assert nothing leaks.
+    // mcp_credential exists but decrypt returns null → mcpSecrets must not be attached
+    // (the code skips entries where provider.get returns null).
     mockSecretsFindMany.mockResolvedValue([
       { id: 'secret-1', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
     ]);
+    // mockSecretsProviderGet default is null (set in beforeEach) — no explicit mock needed.
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1379,6 +1378,86 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers.length).toBe(1);
     expect(data.workers[0].mcpSecrets).toBeUndefined();
+
+    // Restore
+    if (origKey !== undefined) {
+      process.env.ENCRYPTION_KEY = origKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  // Regression: mcp_credential secrets (e.g. Cue DISPATCH_API_KEY) must be delivered
+  // as a flat mcpSecrets map so the runner can inject them as env vars for .mcp.json
+  // ${VAR} expansion. Without this, Codex workers (which can't use arbitrary-header
+  // connectors) have no channel to receive multi-header MCP creds.
+  it('delivers decrypted mcp_credential secrets as mcpSecrets when decrypt succeeds', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+      dailyCostLimitCents: 10000,
+      currentDailyCostCents: 0,
+    });
+
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true },
+    ]);
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Test task',
+        dependsOn: [],
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      },
+    ]);
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'secret-dispatch', purpose: 'mcp_credential', label: 'DISPATCH_API_KEY' },
+      { id: 'secret-tenant', purpose: 'mcp_credential', label: 'TENANT_ID' },
+    ]);
+    // Decrypt returns the plaintext value for each secret id.
+    mockSecretsProviderGet.mockImplementation((id: string) => {
+      if (id === 'secret-dispatch') return Promise.resolve('actual-api-key');
+      if (id === 'secret-tenant') return Promise.resolve('actual-tenant-id');
+      return Promise.resolve(null);
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+    // Both decrypted values must reach the runner as mcpSecrets
+    expect(data.workers[0].mcpSecrets).toEqual({
+      DISPATCH_API_KEY: 'actual-api-key',
+      TENANT_ID: 'actual-tenant-id',
+    });
 
     // Restore
     if (origKey !== undefined) {
@@ -2737,6 +2816,133 @@ describe('POST /api/workers/claim', () => {
       const data = await res.json();
 
       expect(res.status).toBe(200);
+      expect(data.workers[0].mcpConnectors).toBeUndefined();
+    });
+
+    // Regression: task in workspace A with a role whose connectorRefs includes connector X
+    // must produce a claim response containing X's endpoint AND its decrypted credentials.
+    // A mismatch (wrong workspace team, cross-team connector without share grant) must
+    // yield no mcpConnectors entry for X. This guards the scenario where Cue MCP
+    // credentials were missing because the task ran in the wrong workspace.
+    it('delivers connector endpoint and credentials for a task in its correct workspace', async () => {
+      // Workspace ws-task (team: team-task) has a role with connector conn-cue.
+      // The runner is identified by ws-runner but the TASK belongs to ws-task.
+      // Connector and role must be resolved from team-task (task workspace team),
+      // not team-runner.
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 5,
+        type: 'user',
+        authType: 'api',
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-task', canClaim: true },
+      ]);
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-task' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        id: 'task-cue',
+        workspaceId: 'ws-task',
+        title: 'Classify emails',
+        dependsOn: [],
+        roleSlug: 'builder',
+        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: null },
+      }]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-cue' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-cue', task_id: 'task-cue', branch: 'buildd/test', status: 'idle' }],
+      }));
+      // Role owned by team-task, referencing conn-cue
+      mockWorkspaceSkillsFindMany.mockResolvedValue([
+        { slug: 'builder', isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs: ['conn-cue'] },
+      ]);
+      // Connector owned by team-task (must resolve only for tasks in team-task workspaces)
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-cue', teamId: 'team-task', name: 'cue', url: 'https://cue.example.com/api/mcp',
+          authMode: 'header', headerName: 'Authorization', transport: 'http', command: null, args: [], envMapping: {},
+        },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-cue', workspaceId: 'ws-task', enabled: true },
+      ]);
+      // main secrets call → []; connector credential call → the connector secret
+      mockSecretsFindMany
+        .mockResolvedValueOnce([]) // main secrets (anthropic/oauth/mcp_credential)
+        .mockResolvedValueOnce([{ id: 'cs-cue', label: 'conn-cue', tokenExpiresAt: null }]);
+      mockSecretsProviderGet.mockResolvedValue('Bearer cue-decrypted-token');
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      // Connector endpoint and decrypted credentials must reach the runner
+      expect(data.workers[0].mcpConnectors).toEqual([{
+        id: 'conn-cue',
+        name: 'cue',
+        transport: 'http',
+        url: 'https://cue.example.com/api/mcp',
+        headers: { Authorization: 'Bearer cue-decrypted-token' },
+      }]);
+    });
+
+    // Regression: a connector owned by a DIFFERENT team (not the task workspace team and
+    // not shared-in) must NOT appear in mcpConnectors — cross-team isolation must hold.
+    it('excludes connectors owned by a different team when not shared-in', async () => {
+      // Task is in ws-task (team-task). Connector is owned by team-other.
+      // No share row exists. The connector must not mount.
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 5,
+        type: 'user',
+        authType: 'api',
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-task', canClaim: true },
+      ]);
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-task' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        id: 'task-cross',
+        workspaceId: 'ws-task',
+        title: 'Cross-team task',
+        dependsOn: [],
+        roleSlug: 'builder',
+        workspace: { id: 'ws-task', teamId: 'team-task', gitConfig: null },
+      }]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-cross' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-cross', task_id: 'task-cross', branch: 'buildd/test', status: 'idle' }],
+      }));
+      // Role in team-task references conn-other
+      mockWorkspaceSkillsFindMany.mockResolvedValue([
+        { slug: 'builder', isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs: ['conn-other'] },
+      ]);
+      // Connector is owned by team-other (not team-task) and not shared-in
+      mockConnectorsFindMany.mockResolvedValue([
+        {
+          id: 'conn-other', teamId: 'team-other', name: 'other-mcp', url: 'https://other.example.com/api/mcp',
+          authMode: 'none', headerName: null, transport: 'http', command: null, args: [], envMapping: {},
+        },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValue([]); // no share grant
+      mockConnectorWorkspacesFindMany.mockResolvedValue([
+        { connectorId: 'conn-other', workspaceId: 'ws-task', enabled: true },
+      ]);
+      mockSecretsFindMany.mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      // Cross-team connector without a share grant must be excluded
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
   });

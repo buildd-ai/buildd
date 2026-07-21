@@ -50,6 +50,7 @@ import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
+import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -1529,12 +1530,43 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
 
-      // Filter out potentially problematic env vars (expired OAuth tokens)
-      const cleanEnv = Object.fromEntries(
-        Object.entries(process.env).filter(([k]) =>
-          !k.includes('CLAUDE_CODE_OAUTH_TOKEN')  // Can contain expired tokens
-        )
-      );
+      // Build the agent subprocess environment from an allowlist rather than
+      // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
+      // DISPATCH_API_KEY, TENANT_MASTER_KEY, etc.) must never appear in the env
+      // visible to the agent — capability scoping, not permission prompts.
+      // Credentials the agent actually needs are injected explicitly below.
+      const RUNNER_ENV_PASSTHROUGH = new Set([
+        // Shell essentials
+        'HOME', 'USER', 'LOGNAME', 'USERNAME', 'SHELL', 'PATH',
+        'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_NUMERIC', 'LC_TIME',
+        'TZ', 'TERM', 'COLORTERM', 'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR',
+        // Git identity (may also be in git config, but SDK may read env)
+        'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+        // Node / Bun runtime (needed for tools the agent runs)
+        'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
+        // Proxy / network (needed for egress from agent tools)
+        'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+        'http_proxy', 'https_proxy', 'no_proxy',
+        // Display (Linux headless — needed for Playwright/browser tools)
+        'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY',
+        // GitHub CLI (non-secret — identifies endpoint only)
+        'GH_HOST', 'GITHUB_SERVER_URL',
+        // Anthropic SDK: endpoint override (not secret) + operator-configured LLM creds.
+        // Operator API keys are intentionally passed through — they are the agent's own
+        // LLM credentials, not runner coordination secrets. Server-managed keys (below)
+        // override them when present.
+        'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+        // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs
+        'OPENAI_API_KEY',
+        // GitHub token — needed for gh CLI (PRs, issues). Not a runner secret.
+        'GITHUB_TOKEN', 'GH_TOKEN',
+      ]);
+      const cleanEnv: Record<string, string> = {};
+      for (const key of RUNNER_ENV_PASSTHROUGH) {
+        const val = process.env[key];
+        if (val !== undefined) cleanEnv[key] = val;
+      }
 
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
@@ -1595,22 +1627,18 @@ export class WorkerManager {
         }
       }
 
-      // NOTE: BUILDD_API_KEY is intentionally NOT injected into cleanEnv (Tier 1A).
-      // The runner's coordination key must not be reachable by agent Bash tool calls —
-      // it grants authority over every workspace on this runner. The buildd MCP server
-      // receives the bearer token through queryOptions.mcpServers.buildd.headers, not
-      // through the subprocess environment. Any operator .mcp.json that previously
-      // referenced ${BUILDD_API_KEY} must switch to per-workspace mcpSecrets instead.
-
-      // Inject mcp_credential secrets (DISPATCH_API_KEY, TENANT_ID, etc.) so
-      // ${VAR} references in .mcp.json HTTP headers are expanded by the injection
-      // code below (lines 2031–2068). The connector system only supports a single
-      // headerName per connector and cannot model servers that require two headers.
-      if (worker.mcpSecrets) {
-        for (const [envVar, value] of Object.entries(worker.mcpSecrets)) {
-          cleanEnv[envVar] = value;
-        }
-        console.log(`[Worker ${worker.id}] Injected ${Object.keys(worker.mcpSecrets).length} MCP credential env var(s): ${Object.keys(worker.mcpSecrets).join(', ')}`);
+      // Build a separate expansion env for resolving ${VAR} references in .mcp.json
+      // HTTP server headers. This env is NEVER passed to the agent subprocess — it
+      // exists only so the header-resolution code below can bake credentials into
+      // the MCP server entries before mounting them. The agent only sees the already-
+      // resolved Authorization headers inside queryOptions.mcpServers, not the raw keys.
+      const headerExpansionEnv: Record<string, string> = {
+        ...cleanEnv,
+        ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
+        ...(worker.mcpSecrets ?? {}),
+      };
+      if (worker.mcpSecrets && Object.keys(worker.mcpSecrets).length > 0) {
+        console.log(`[Worker ${worker.id}] MCP credential secrets available for header resolution (NOT in agent env): ${Object.keys(worker.mcpSecrets).join(', ')}`);
       }
 
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
@@ -1705,7 +1733,13 @@ export class WorkerManager {
                 const match = authHeader.match(/\$\{([^}]+)\}/);
                 if (match) {
                   const sourceVar = match[1];
-                  const tokenValue = cleanEnv[sourceVar];
+                  // Resolve from headerExpansionEnv (includes mcpSecrets) — do NOT
+                  // copy the raw secret under its original name into cleanEnv.
+                  const tokenValue = headerExpansionEnv[sourceVar];
+                  // Put the resolved token under a per-server bearer name. This is
+                  // still in Codex cleanEnv (needed by the Codex CLI subprocess to
+                  // authenticate with the MCP server) but renamed away from the
+                  // original secret label so it's not trivially guessable.
                   if (tokenValue) cleanEnv[envVarName] = tokenValue;
                 }
               }
@@ -1718,6 +1752,44 @@ export class WorkerManager {
             console.warn(`[Worker ${worker.id}] Failed to parse .mcp.json for Codex MCP injection:`, err);
           }
         }
+
+        // Inject claim-time connectors (worker.mcpConnectors) into Codex config.toml.
+        // For Claude workers, connectors reach queryOptions.mcpServers (below). Codex
+        // ignores queryOptions and reads only config.toml, so connectors were silently
+        // dropped for Codex tasks. Only http+Bearer connectors are supported by the
+        // `bearer_token_env_var` config.toml field; non-Bearer and stdio connectors
+        // cannot be modelled in config.toml and are skipped with a warning.
+        const claimConnsForCodex = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
+        if (claimConnsForCodex && claimConnsForCodex.length > 0) {
+          for (const conn of claimConnsForCodex) {
+            if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
+            if (conn.assertionMode) continue; // async mint+exchange not supported here
+            if ((conn.transport ?? 'http') !== 'http') {
+              console.warn(`[Worker ${worker.id}] Codex: skipping stdio connector "${conn.name}" (not supported in config.toml)`);
+              continue;
+            }
+            // Skip if .mcp.json already registered this server name (prefer .mcp.json entry)
+            if (codexAdditionalServers.find(s => s.name === conn.name)) continue;
+            const authHeader = conn.headers?.Authorization || conn.headers?.authorization;
+            if (!authHeader) {
+              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" has no Authorization header — cannot inject into config.toml`);
+              continue;
+            }
+            const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+            if (!bearerMatch) {
+              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" uses non-Bearer auth — cannot inject into config.toml`);
+              continue;
+            }
+            const envVarName = `MCP_BEARER_CONN_${conn.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+            cleanEnv[envVarName] = bearerMatch[1];
+            codexAdditionalServers.push({ name: conn.name, url: conn.url, bearerTokenEnvVar: envVarName });
+          }
+          const injected = codexAdditionalServers.filter(s => s.bearerTokenEnvVar.startsWith('MCP_BEARER_CONN_'));
+          if (injected.length > 0) {
+            console.log(`[Worker ${worker.id}] Injected ${injected.length} claim-time connector(s) into Codex config: ${injected.map(s => s.name).join(', ')}`);
+          }
+        }
+
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
@@ -1895,6 +1967,12 @@ export class WorkerManager {
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
       }
+
+      // Tool channel policy: agents must not improvise when an MCP tool channel
+      // is unavailable. This instruction prevents the credential-scavenging pattern
+      // (reading secrets from disk, env vars, or response headers and calling APIs
+      // directly) that two incidents demonstrated agents will attempt on their own.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
@@ -2074,12 +2152,13 @@ export class WorkerManager {
       }
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
-      // resolving ${VAR} references using cleanEnv. Claude Code SDK does not expand
-      // ${VAR} in HTTP server headers when reading .mcp.json — servers with unresolved
-      // refs connect without auth and receive 401 (which the agent sees as "OAuth
-      // required"). Connectors already in queryOptions.mcpServers take precedence.
+      // resolving ${VAR} references using headerExpansionEnv (which includes
+      // BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not expand ${VAR} in
+      // HTTP server headers when reading .mcp.json — servers with unresolved refs
+      // connect without auth and receive 401 (which the agent sees as "OAuth required").
+      // Connectors already in queryOptions.mcpServers take precedence.
       // Skip buildd (reserved) and already-mounted names. Codex path handles its own
-      // .mcp.json injection above (lines 1605-1640).
+      // .mcp.json injection above.
       if (!isCodexTask) {
         const cwdMcpJsonPath = join(cwd, '.mcp.json');
         if (existsSync(cwdMcpJsonPath)) {
@@ -2091,11 +2170,11 @@ export class WorkerManager {
               if (name === 'buildd') continue; // reserved — never override coordination server
               if (queryOptions.mcpServers[name]) continue; // connector already mounted — skip
               if (serverCfg?.type === 'http' && serverCfg?.url) {
-                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
                 const resolvedHeaders: Record<string, string> = {};
                 let hasUnresolved = false;
                 for (const [hk, hv] of Object.entries(serverCfg.headers ?? {})) {
-                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => cleanEnv[v] ?? '');
+                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
                   if (/\$\{/.test(resolved)) { hasUnresolved = true; break; }
                   resolvedHeaders[hk] = resolved;
                 }
@@ -2103,7 +2182,7 @@ export class WorkerManager {
                   queryOptions.mcpServers[name] = { type: 'http', url: resolvedUrl, headers: resolvedHeaders };
                   console.log(`[Worker ${worker.id}] Injected .mcp.json server "${name}" into queryOptions (${Object.keys(resolvedHeaders).length} header(s))`);
                 } else {
-                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not injected? Check claim route.`);
+                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not delivered by claim route?`);
                 }
               }
             }
@@ -2111,6 +2190,43 @@ export class WorkerManager {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
           }
         }
+      }
+
+      // MCP pre-flight: verify all connector-required servers are mounted and
+      // reachable BEFORE the agent loop starts. Connectors are servers the role
+      // explicitly opted into via connectorRefs — their absence means the agent
+      // cannot perform its primary function and will improvise (historical
+      // incidents: Cue secret scavenged from disk, DISPATCH_API_KEY resolved from
+      // headers and called directly). Hard-fail here so the failure surfaces in
+      // Health and get_error_traces rather than propagating as a silent workaround.
+      const requiredConnectorNames = (claimConnectors ?? []).map(c => c.name);
+      if (requiredConnectorNames.length > 0) {
+        const preflightResult = await runMcpPreflight({
+          mcpServers: queryOptions.mcpServers as Record<string, { type: string; url?: string; headers?: Record<string, string>; command?: string }>,
+          requiredConnectorNames,
+        });
+        if (!preflightResult.ok) {
+          for (const failure of preflightResult.failures) {
+            console.error(`[Worker ${worker.id}] MCP pre-flight FAILED: ${failure.server} — ${failure.reason}`);
+          }
+          const firstFailure = preflightResult.failures[0];
+          const errorMsg = `MCP_PREFLIGHT_FAILED: ${firstFailure.server} unreachable — ${firstFailure.reason}. Check workspace resolution and connector credential injection.`;
+          // Buffer error traces so they surface in get_error_traces
+          worker.pendingErrorTraces ??= [];
+          for (const failure of preflightResult.failures) {
+            worker.pendingErrorTraces.push({
+              pattern: 'mcp_preflight_failed',
+              excerpt: `MCP_PREFLIGHT_FAILED: ${failure.server} — ${failure.reason}`,
+              source: 'preflight',
+            });
+          }
+          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${preflightResult.failures.map(f => f.server).join(', ')}`, ts: Date.now() });
+          const preflightErr = new Error(errorMsg) as Error & { mcpPreflightFailures?: McpPreflightFailure[] };
+          preflightErr.mcpPreflightFailures = preflightResult.failures;
+          throw preflightErr;
+        }
+        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
+        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
@@ -2674,11 +2790,15 @@ If something is missing or incomplete, describe what and fix it now.`;
         // (escalate a missing secret vs. retry a flaky readiness) rather than
         // regex-matching the free-text error.
         const provisionFailure = (error as { provisionFailure?: unknown })?.provisionFailure;
+        // MCP pre-flight failures carry structured failure info for each failed
+        // server — surface so the organizer can escalate a missing connector credential.
+        const mcpPreflightFailures = (error as { mcpPreflightFailures?: McpPreflightFailure[] })?.mcpPreflightFailures;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
+          ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
