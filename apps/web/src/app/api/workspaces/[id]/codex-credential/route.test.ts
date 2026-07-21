@@ -218,9 +218,9 @@ describe('POST /api/workspaces/[id]/codex-credential', () => {
     });
     const res = await POST(makeReq('POST', { authJson: rawFile }), { params: mockParams });
     expect(res.status).toBe(200);
-    // Stored blob contains the unwrapped fields (encrypt mock = `enc:${json}`)
+    // Stored blob contains the unwrapped fields incl. id_token (encrypt mock = `enc:${json}`)
     const row = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(row.encryptedValue).toBe(`enc:${JSON.stringify({ access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1' })}`);
+    expect(row.encryptedValue).toBe(`enc:${JSON.stringify({ access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1', id_token: 'id' })}`);
   });
 });
 
