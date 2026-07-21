@@ -4,10 +4,11 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (12)
+## Active (13)
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-07-18
+- [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-07-21
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-07-18
