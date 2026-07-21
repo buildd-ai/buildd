@@ -49,7 +49,7 @@ import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
-import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
+import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 // Re-export for backwards compatibility (tests import from './workers')
@@ -384,6 +384,10 @@ export class WorkerManager {
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
   }>();
+  // Per-worker secret redactors — built from BUILDD_API_KEY + MCP credential values
+  // at session start and used to scrub secrets from milestones, currentAction, error
+  // traces, and the history archive before any of those reach the server or disk.
+  private secretRedactors = new Map<string, (text: string) => string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -1389,6 +1393,17 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
+
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and any
+    // MCP credential values delivered during claim. Applies to milestones,
+    // currentAction, error traces, and the history archive before persistence.
+    const secretValues: string[] = [
+      this.config.apiKey,
+      ...Object.values(worker.mcpSecrets ?? {}),
+    ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+    const redactWorkerSecrets = createSecretRedactor(secretValues);
+    this.secretRedactors.set(worker.id, redactWorkerSecrets);
+
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -2869,10 +2884,34 @@ If something is missing or incomplete, describe what and fix it now.`;
         this.sessions.delete(worker.id);
       }
 
-      // Archive to SQLite history (non-fatal)
+      // Archive to SQLite history (non-fatal).
+      // Apply secret redaction to the worker's text fields before writing to
+      // disk — the redactor is available until we remove it below.
       if (worker.status === 'done' || worker.status === 'error') {
+        const redactArchive = this.secretRedactors.get(worker.id);
+        if (redactArchive) {
+          if (worker.lastAssistantMessage) {
+            worker.lastAssistantMessage = redactArchive(worker.lastAssistantMessage);
+          }
+          worker.output = worker.output.map(line => redactArchive(line));
+          worker.messages = worker.messages.map((m: any) => {
+            if (m.type === 'text' && typeof m.content === 'string') {
+              return { ...m, content: redactArchive(m.content) };
+            }
+            if (m.type === 'tool_use' && m.input && typeof m.input === 'object') {
+              const cleanInput: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(m.input as Record<string, unknown>)) {
+                cleanInput[k] = typeof v === 'string' ? redactArchive(v) : v;
+              }
+              return { ...m, input: cleanInput };
+            }
+            return m;
+          });
+        }
         try { archiveSession(worker); } catch {}
       }
+      // Clean up the per-worker secret redactor now that the session is fully done.
+      this.secretRedactors.delete(worker.id);
 
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
@@ -3157,14 +3196,16 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.phaseTools = [];
           }
           const lines = block.text.split('\n');
+          const redactLine = this.secretRedactors.get(worker.id);
           for (const line of lines) {
             if (line.trim()) {
-              worker.output.push(line);
+              const cleanLine = redactLine ? redactLine(line) : line;
+              worker.output.push(cleanLine);
               // Keep last 100 lines
               if (worker.output.length > 100) {
                 worker.output.shift();
               }
-              this.emit({ type: 'output', workerId: worker.id, line });
+              this.emit({ type: 'output', workerId: worker.id, line: cleanLine });
             }
           }
         }
@@ -3266,15 +3307,16 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
 
           // Update currentAction (still useful for live display)
+          const redactAction = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
           if (toolName === 'Read') {
-            worker.currentAction = `Reading ${input.file_path}`;
+            worker.currentAction = redactAction(`Reading ${input.file_path}`);
           } else if (toolName === 'Edit') {
-            worker.currentAction = `Editing ${input.file_path}`;
+            worker.currentAction = redactAction(`Editing ${input.file_path}`);
           } else if (toolName === 'Write') {
-            worker.currentAction = `Writing ${input.file_path}`;
+            worker.currentAction = redactAction(`Writing ${input.file_path}`);
           } else if (toolName === 'Bash') {
             const cmd = input.command || '';
-            worker.currentAction = `Running: ${(cmd as string).slice(0, 40)}...`;
+            worker.currentAction = redactAction(`Running: ${(cmd as string).slice(0, 40)}...`);
 
             // Detect git commits — standalone status milestone
             if ((cmd as string).includes('git commit')) {
@@ -3416,8 +3458,12 @@ If something is missing or incomplete, describe what and fix it now.`;
           const traces = scanToolResult(worker.id, text, source);
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
-            worker.pendingErrorTraces.push(...traces);
-            for (const t of traces) {
+            const redact = this.secretRedactors.get(worker.id);
+            const cleanedTraces = redact
+              ? traces.map(t => ({ ...t, excerpt: redact(t.excerpt) }))
+              : traces;
+            worker.pendingErrorTraces.push(...cleanedTraces);
+            for (const t of cleanedTraces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
             }
           }
@@ -3617,6 +3663,10 @@ If something is missing or incomplete, describe what and fix it now.`;
   }
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {
+    const redact = this.secretRedactors.get(worker.id);
+    if (redact && 'label' in milestone && typeof milestone.label === 'string') {
+      milestone = { ...milestone, label: redact(milestone.label) };
+    }
     worker.milestones.push(milestone);
     // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
     if (worker.milestones.length > 50) {
