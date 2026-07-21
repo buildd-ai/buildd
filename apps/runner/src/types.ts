@@ -443,4 +443,9 @@ export interface LocalUIConfig {
   // responds asynchronously via the dashboard, creating a follow-up task.
   // Set to false to preserve the legacy blocking waiting_input behavior.
   inputAsRetry?: boolean;
+  // Tier 3 structural isolation root. When set, each workspace gets its own
+  // git clone at <root>/<workspaceId>/ and credential dirs are scoped there
+  // too — eliminating cross-workspace filesystem access.
+  // Set via BUILDD_WORKSPACE_ISOLATION_ROOT env var.
+  workspaceIsolationRoot?: string;
 }

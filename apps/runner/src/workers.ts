@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } f
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
@@ -666,7 +666,7 @@ export class WorkerManager {
         storeDeleteWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
         // resumable sessions) — the worker is fully purged, no follow-up possible.
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -674,7 +674,7 @@ export class WorkerManager {
     for (const worker of loadAllWorkers()) {
       if (worker.status === 'done' || worker.status === 'error') {
         storeDeleteWorker(worker.id);
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -1595,10 +1595,12 @@ export class WorkerManager {
         }
       }
 
-      // Inject MCP credential env vars so ${BUILDD_API_KEY} references in .mcp.json resolve
-      if (this.config.apiKey) {
-        cleanEnv.BUILDD_API_KEY = this.config.apiKey;
-      }
+      // NOTE: BUILDD_API_KEY is intentionally NOT injected into cleanEnv (Tier 1A).
+      // The runner's coordination key must not be reachable by agent Bash tool calls —
+      // it grants authority over every workspace on this runner. The buildd MCP server
+      // receives the bearer token through queryOptions.mcpServers.buildd.headers, not
+      // through the subprocess environment. Any operator .mcp.json that previously
+      // referenced ${BUILDD_API_KEY} must switch to per-workspace mcpSecrets instead.
 
       // Inject mcp_credential secrets (DISPATCH_API_KEY, TENANT_ID, etc.) so
       // ${VAR} references in .mcp.json HTTP headers are expanded by the injection
@@ -1627,11 +1629,16 @@ export class WorkerManager {
       // For non-Codex tasks that still carry a codexCredential (legacy/transient),
       // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
       if (isCodexTask) {
+        // Tier 3B: when isolation is active, scope the Codex home under the workspace dir.
+        const codexIsolatedPath = this.config.workspaceIsolationRoot
+          ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
+          : undefined;
+
         let _ch: string;
         if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
-          const { codexHome: home } = ensureStableCodexHome(worker.id);
+          const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
           _ch = home;
           // Write api_key into auth.json so resolveAuth picks it up (codex-backend.ts
           // reads CODEX_HOME/auth.json; api_key there maps to OPENAI_API_KEY internally).
@@ -1641,10 +1648,10 @@ export class WorkerManager {
           // B (seed-if-missing): only write auth.json the first time. If auth.json
           // already exists (from a prior run), the CLI may have refreshed the tokens
           // — don't overwrite with the potentially staler stored snapshot.
-          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential);
+          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential, codexIsolatedPath);
           _ch = home;
         } else {
-          _ch = ensureStableCodexHome(worker.id).codexHome;
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
         // No server-injected credential: fall back to the operator's local Codex
         // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
@@ -1741,6 +1748,9 @@ export class WorkerManager {
           worker.id,
           worker.claudeAccessToken,
           worker.claudeTokenExpiresAt ?? null,
+          this.config.workspaceIsolationRoot
+            ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+            : undefined,
         );
         claudeConfigDir = _cd;
         cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;

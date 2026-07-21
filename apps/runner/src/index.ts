@@ -441,9 +441,11 @@ const config: LocalUIConfig = {
   bypassPermissions: savedConfig.bypassPermissions || false,
   // Max turns per worker session
   maxTurns: savedConfig.maxTurns,
+  // Tier 3 structural isolation root (opt-in via env var)
+  workspaceIsolationRoot: process.env.BUILDD_WORKSPACE_ISOLATION_ROOT || undefined,
 };
 
-const resolver = createWorkspaceResolver(projectRoots);
+const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolationRoot);
 
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;

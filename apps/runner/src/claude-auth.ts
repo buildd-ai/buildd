@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { isolatedClaudeConfigDirPath as _isolatedClaudeConfigDirPath } from './isolation-paths.js';
+
+export { isolatedClaudeConfigDirPath } from './isolation-paths.js';
 
 /**
  * Materialize a per-worker CLAUDE_CONFIG_DIR containing a `.credentials.json`
@@ -21,9 +24,18 @@ export function materializeClaudeConfigDir(
   workerId: string,
   accessToken: string,
   expiresAt: Date | null,
+  options?: { isolationRoot?: string; workspaceId?: string },
 ): { claudeConfigDir: string } {
-  const claudeConfigDir = fs.mkdtempSync(join(tmpdir(), 'claude-cfg-'));
-  fs.chmodSync(claudeConfigDir, 0o700);
+  let claudeConfigDir: string;
+  if (options?.isolationRoot && options?.workspaceId) {
+    // Tier 3B: place credential dir under workspace-scoped path rather than /tmp.
+    claudeConfigDir = _isolatedClaudeConfigDirPath(options.workspaceId, workerId, options.isolationRoot);
+    fs.mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(claudeConfigDir, 0o700); } catch {}
+  } else {
+    claudeConfigDir = fs.mkdtempSync(join(tmpdir(), 'claude-cfg-'));
+    fs.chmodSync(claudeConfigDir, 0o700);
+  }
 
   const credentials = {
     type: 'oauth_token',
