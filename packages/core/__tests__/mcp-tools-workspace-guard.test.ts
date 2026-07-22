@@ -99,6 +99,24 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     expect(result.isError).toBe(true);
   });
 
+  it('scopes list_tasks fetch to the pinned workspace and active status', async () => {
+    mockApi.mockResolvedValue({ tasks: [] });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'list_tasks',
+      {},
+      ctxApi({ workspaceId: WS_A }),
+    );
+
+    expect(result.isError).toBeFalsy();
+    const tasksCall = mockApi.mock.calls.find((c) => String(c[0]).startsWith('/api/tasks'));
+    expect(tasksCall).toBeDefined();
+    const url = String(tasksCall![0]);
+    expect(url).toContain('status=active');
+    expect(url).toContain(`workspaceId=${WS_A}`);
+  });
+
   it('allows claim_task when workspaceId is passed explicitly in params', async () => {
     // /api/workspaces should NOT be called — guard short-circuits on params.workspaceId
     mockApi.mockResolvedValue({ workers: [] });
