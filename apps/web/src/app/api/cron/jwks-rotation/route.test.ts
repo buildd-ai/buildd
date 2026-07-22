@@ -60,7 +60,10 @@ function makeRequest(queryParams: Record<string, string> = {}): NextRequest {
   });
 }
 
-const now = new Date('2026-07-17T00:00:00Z');
+// Anchored to the real clock (not a fixed date) — the route under test computes
+// `now` via `new Date()`, so a hardcoded anchor eventually drifts into the past
+// and turns "future" fixtures into "already expired" ones.
+const now = new Date();
 const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
 const twentyDaysAgo = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000);
 const fiveDaysFromNow = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
