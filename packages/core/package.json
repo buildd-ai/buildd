@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.147.0",
+  "version": "0.148.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -17,6 +17,8 @@
     "./model-aliases": "./model-aliases.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
+    "./model-tier-registry": "./model-tier-registry.ts",
+    "./model-tier-defaults": "./model-tier-defaults.ts",
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./task-classifier": "./task-classifier.ts",

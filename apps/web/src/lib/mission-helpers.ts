@@ -1,4 +1,4 @@
-export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle';
+export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted';
 
 // ─── Drive state ──────────────────────────────────────────────────────────────
 
@@ -126,6 +126,7 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     case 'stalled': return 'attention';
     case 'on-schedule': return 'scheduled';
     case 'paused': return 'paused';
+    case 'budget-exhausted': return 'paused';
     case 'shipped': return 'completed';
     // Done-but-unarchived (100%) missions await user review; a cron archives
     // them after 24h of quiet (lib/mission-archive.ts). Anything short of
@@ -169,6 +170,7 @@ export function deriveMissionHealth(opts: {
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
+  if (opts.status === 'budget_exhausted') return 'budget-exhausted';
   if (opts.activeAgents > 0) return 'active';
 
   if (opts.cronExpression) {
@@ -223,6 +225,7 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   shipped: { label: 'Shipped', colorClass: 'health-pill-shipped' },
   paused: { label: 'Paused', colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
+  'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
 };
 
 export function timeAgo(date: Date | string): string {

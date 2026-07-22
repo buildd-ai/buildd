@@ -30,6 +30,42 @@ import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
+import { redactSecretsInBody } from '@buildd/core/redaction';
+import { decrypt } from '@buildd/core/secrets';
+
+// bld_ API key pattern: prefix + at least 8 hex/alphanumeric chars.
+// Matches BUILDD_API_KEY values in free-text fields as a pattern-based fallback.
+const BUILDD_KEY_RE = /\bbld_[a-fA-F0-9]{8,}\b/g;
+
+function redactBuilddKeyPattern(body: Record<string, unknown>): Record<string, unknown> {
+  const redactStr = (s: string) => s.replace(BUILDD_KEY_RE, '[REDACTED]');
+  const out: Record<string, unknown> = { ...body };
+
+  if (typeof out.currentAction === 'string') out.currentAction = redactStr(out.currentAction);
+  if (typeof out.error === 'string') out.error = redactStr(out.error);
+  if (typeof out.summary === 'string') out.summary = redactStr(out.summary);
+
+  if (Array.isArray(out.milestones)) {
+    out.milestones = (out.milestones as any[]).map((m) =>
+      m && typeof m.label === 'string' ? { ...m, label: redactStr(m.label) } : m,
+    );
+  }
+  if (Array.isArray(out.appendMilestones)) {
+    out.appendMilestones = (out.appendMilestones as any[]).map((m) =>
+      m && typeof m.label === 'string' ? { ...m, label: redactStr(m.label) } : m,
+    );
+  }
+  if (Array.isArray(out.appendErrorTraces)) {
+    out.appendErrorTraces = (out.appendErrorTraces as any[]).map((t) =>
+      t && typeof t.excerpt === 'string' ? { ...t, excerpt: redactStr(t.excerpt) } : t,
+    );
+  }
+  if (out.waitingFor && typeof (out.waitingFor as any).prompt === 'string') {
+    out.waitingFor = { ...(out.waitingFor as object), prompt: redactStr((out.waitingFor as any).prompt) };
+  }
+
+  return out;
+}
 
 // GET /api/workers/[id] - Get worker details
 export async function GET(
@@ -98,7 +134,39 @@ export async function PATCH(
     : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
 
-  const body = await req.json();
+  let body = await req.json();
+
+  // Server-side secret redaction (defense in depth).
+  // The runner's outbound payload is already redacted, but this server-side pass
+  // catches any remaining secrets before they reach the DB or Pusher.
+  // We redact: (a) bld_* API key pattern from text fields, (b) decrypted MCP
+  // credential values for this workspace.
+  try {
+    const secretValues: string[] = [];
+
+    if (worker.workspaceId) {
+      const credRows = await db.query.secrets.findMany({
+        where: and(
+          eq(secretsTable.purpose, 'mcp_credential'),
+          eq(secretsTable.workspaceId, worker.workspaceId),
+        ),
+        columns: { encryptedValue: true },
+      });
+      for (const row of credRows) {
+        try {
+          const val = decrypt(row.encryptedValue);
+          if (val) secretValues.push(val);
+        } catch {
+          // Non-fatal: skip credentials that fail decryption
+        }
+      }
+    }
+
+    body = redactSecretsInBody(body, secretValues);
+    body = redactBuilddKeyPattern(body);
+  } catch {
+    // Non-fatal: redaction must never block a worker update
+  }
 
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,
@@ -405,6 +473,14 @@ export async function PATCH(
     body.budgetExhausted === true ||
     isBudgetExhaustionError(error)
   );
+
+  // Classify exit cause for taxonomy — written to the worker record on terminal update.
+  // budget_limited: task auto-resumes; not a real failure; excluded from retry caps.
+  // code_failure: default for any other terminal failure.
+  // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
+  if (status === 'failed' || status === 'error') {
+    updates.exitCause = isBudgetError ? 'budget_limited' : 'code_failure';
+  }
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
   // error. These aren't real failures — re-queue the task so it's retried once
@@ -1120,8 +1196,18 @@ export async function PATCH(
   const pendingInstructions = worker.pendingInstructions;
 
   // Clear pending instructions on update (they'll be delivered in response)
+  // Also mark the most recent 'pending' history entry as 'delivered'
   if (pendingInstructions) {
     updates.pendingInstructions = null;
+    const currentHistory = (worker.instructionHistory as any[]) || [];
+    // Find the last 'pending' instruction entry and mark it delivered
+    const lastPendingIdx = currentHistory.map((e: any) => e.deliveryState).lastIndexOf('pending');
+    if (lastPendingIdx !== -1) {
+      const updatedHistory = currentHistory.map((e: any, i: number) =>
+        i === lastPendingIdx ? { ...e, deliveryState: 'delivered' } : e
+      );
+      updates.instructionHistory = updatedHistory;
+    }
   }
 
   const [updated] = await db

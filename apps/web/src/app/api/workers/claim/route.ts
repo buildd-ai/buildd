@@ -15,6 +15,7 @@ import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
 import { resolveClaudeCredential, refreshClaudeCredential, getClaudeSecretId } from '@/lib/claude-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
+import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { findBlockingPr } from '@buildd/core/path-overlap';
@@ -430,6 +431,164 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // ── Connector availability pre-filter ──────────────────────────────────────
+  // Tasks whose role declares connectorRefs are only claimable by a worker in
+  // a workspace where EVERY referenced connector is visible (owned or shared to
+  // this team) AND not explicitly disabled via connectorWorkspaces. Tasks with
+  // missing connectors are silently deferred so a correctly-routed worker can
+  // claim them (no hard error in batch mode). For explicit single-task claims
+  // (body.taskId set) a 422 routing_mismatch is returned immediately.
+  //
+  // This mirrors the visibility logic in the connector injection block below so
+  // a task is never claimed and then dropped at MCP pre-flight for a routing
+  // reason that could have been detected here.
+  const connectorMismatchTaskIds = new Set<string>();
+  {
+    const rolePairs = filteredTasks
+      .map(t => ({
+        taskId: t.id,
+        taskWorkspaceId: t.workspaceId,
+        roleSlug: (t as any).roleSlug as string | null,
+        teamId: (t as any).workspace?.teamId as string | undefined,
+      }))
+      .filter((p): p is { taskId: string; taskWorkspaceId: string; roleSlug: string; teamId: string } =>
+        !!p.roleSlug && !!p.teamId,
+      );
+
+    if (rolePairs.length > 0) {
+      const slugsToFetch = [...new Set(rolePairs.map(p => p.roleSlug))];
+      const teamIdsToFetch = [...new Set(rolePairs.map(p => p.teamId))];
+      const wsIdsToFetch = [...new Set(rolePairs.map(p => p.taskWorkspaceId))];
+
+      // Batch-fetch role rows for all relevant (teamId, roleSlug) combos.
+      const preFilterRoleRows = await db.query.workspaceSkills.findMany({
+        where: and(
+          inArray(workspaceSkills.slug, slugsToFetch),
+          eq(workspaceSkills.isRole, true),
+          eq(workspaceSkills.enabled, true),
+          inArray(workspaceSkills.teamId, teamIdsToFetch),
+          or(
+            isNull(workspaceSkills.workspaceId),
+            inArray(workspaceSkills.workspaceId, wsIdsToFetch),
+          ),
+        ),
+        columns: { slug: true, teamId: true, workspaceId: true, connectorRefs: true },
+      });
+
+      // Effective connectorRefs per (teamId|slug|wsId) — workspace-scoped row wins.
+      const effectiveRoleMap = new Map<string, string[]>();
+      for (const row of preFilterRoleRows) {
+        const refs = ((row as any).connectorRefs as string[] | null) ?? [];
+        if (refs.length === 0) continue;
+        const wsId = (row as any).workspaceId as string | null;
+        const teamId = (row as any).teamId as string;
+        effectiveRoleMap.set(`${teamId}|${row.slug}|${wsId ?? '*'}`, refs);
+      }
+      const getConnectorRefs = (teamId: string, slug: string, wsId: string): string[] =>
+        effectiveRoleMap.get(`${teamId}|${slug}|${wsId}`) ??
+        effectiveRoleMap.get(`${teamId}|${slug}|*`) ??
+        [];
+
+      // Collect all connector IDs referenced by any of the tasks' roles.
+      const allRefIds = new Set<string>();
+      for (const pair of rolePairs) {
+        for (const ref of getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId)) {
+          allRefIds.add(ref);
+        }
+      }
+
+      if (allRefIds.size > 0) {
+        const refIdList = [...allRefIds];
+
+        // Batch-fetch connector metadata (id, teamId, name).
+        const preFilterConnectors = await db.query.connectors.findMany({
+          where: inArray(connectors.id, refIdList),
+          columns: { id: true, teamId: true, name: true },
+        });
+        const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
+
+        // Batch-fetch cross-team share grants so shared connectors are treated
+        // as visible even when teamId differs.
+        const preFilterShares = await db.query.connectorShares.findMany({
+          where: and(
+            inArray(connectorShares.sharedWithTeamId, teamIdsToFetch),
+            inArray(connectorShares.connectorId, refIdList),
+          ),
+          columns: { connectorId: true, sharedWithTeamId: true },
+        });
+        const sharedByTeam = new Map<string, Set<string>>();
+        for (const s of preFilterShares) {
+          if (!sharedByTeam.has(s.sharedWithTeamId)) sharedByTeam.set(s.sharedWithTeamId, new Set());
+          sharedByTeam.get(s.sharedWithTeamId)!.add(s.connectorId);
+        }
+
+        // Batch-fetch connector-workspace enabled rows. An absent row means the
+        // connector is enabled by default (same semantics as the injection block).
+        const preFilterCwRows = await db.query.connectorWorkspaces.findMany({
+          where: and(
+            inArray(connectorWorkspaces.workspaceId, wsIdsToFetch),
+            inArray(connectorWorkspaces.connectorId, refIdList),
+          ),
+          columns: { connectorId: true, workspaceId: true, enabled: true },
+        });
+        const cwEnabled = new Map<string, boolean>();
+        for (const row of preFilterCwRows) {
+          cwEnabled.set(`${row.workspaceId}|${row.connectorId}`, row.enabled !== false);
+        }
+
+        // Evaluate each task: if any required connector is missing, add to the
+        // mismatch set and log so it's visible in Vercel logs.
+        for (const pair of rolePairs) {
+          const refs = getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId);
+          if (refs.length === 0) continue;
+
+          const missing: string[] = [];
+          for (const refId of refs) {
+            const connector = connectorById.get(refId);
+            if (!connector) {
+              missing.push(refId); // dangling ref → connector deleted or not visible
+              continue;
+            }
+            // Visibility check: connector must be owned by the task's team or shared to it.
+            const sharedSet = sharedByTeam.get(pair.teamId) ?? new Set<string>();
+            if (connector.teamId !== pair.teamId && !sharedSet.has(refId)) {
+              missing.push(connector.name);
+              continue;
+            }
+            // Enabled check: an explicit false row disables the connector for this workspace.
+            const cwKey = `${pair.taskWorkspaceId}|${refId}`;
+            if (cwEnabled.has(cwKey) && !cwEnabled.get(cwKey)) {
+              missing.push(connector.name);
+            }
+          }
+
+          if (missing.length > 0) {
+            connectorMismatchTaskIds.add(pair.taskId);
+            console.log(
+              `[claim] Skipped task ${pair.taskId}: role ${pair.roleSlug} requires connectors [${missing.join(', ')}] not available in workspace ${pair.taskWorkspaceId}`,
+            );
+          }
+        }
+      }
+    }
+
+    // For explicit single-task claims: 422 routing_mismatch instead of silently
+    // not claiming. The caller knows which task it wanted — a clear error is
+    // more useful than an empty workers array.
+    if (taskId && connectorMismatchTaskIds.has(taskId)) {
+      const blockedTask = filteredTasks.find(t => t.id === taskId);
+      const blockedSlug = (blockedTask as any)?.roleSlug as string | null;
+      const wsId = blockedTask?.workspaceId ?? 'unknown';
+      return NextResponse.json(
+        {
+          error: 'routing_mismatch',
+          detail: `Task requires connectors for role '${blockedSlug}' that are not available in workspace ${wsId}`,
+        },
+        { status: 422 },
+      );
+    }
+  }
+
   // Compute router inputs once per claim request. The router is pure; the
   // signals below feed its budget-pressure and spike-detection gates.
   const dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
@@ -582,6 +741,10 @@ export async function POST(req: NextRequest) {
   }
 
   for (const task of filteredTasks) {
+    // Skip tasks whose required connectors are not available in the claiming workspace.
+    // connectorMismatchTaskIds is populated by the pre-filter block above.
+    if (connectorMismatchTaskIds.has(task.id)) continue;
+
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
 
@@ -717,14 +880,24 @@ export async function POST(req: NextRequest) {
     // injected into task.context.model so worker-runner picks it up.
     const roleSlug = (task as any).roleSlug as string | null;
     const explicit = (taskContext?.model as string | undefined) || null;
-    const TIER_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
+    const TIER_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'inherit', 'premium', 'standard', 'budget']);
     const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
     const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
+
+    // Map role model alias to the old-vocabulary tier floor used by the router.
+    // 'premium'/'standard'/'budget' are translated to 'opus'/'sonnet'/'haiku' for
+    // backward compat with the router's internal Tier type.
+    const roleFloorRaw = roleIsFullId ? null : (roleModel as string | null);
+    const routerRoleFloor = roleFloorRaw === 'premium' ? 'opus'
+      : roleFloorRaw === 'standard' ? 'sonnet'
+      : roleFloorRaw === 'budget' ? 'haiku'
+      : (roleFloorRaw as Tier | 'inherit' | null);
+
     const routingDecision = resolveEffectiveModel({
       explicitModel: explicit ?? (roleIsFullId ? roleModel : null),
       kind: (task as any).kind || null,
       complexity: (task as any).complexity || null,
-      roleFloor: roleIsFullId ? null : (roleModel as Tier | 'inherit' | null),
+      roleFloor: routerRoleFloor,
       dailyBudgetPct,
       recentClaimCount,
       priority: task.priority ?? 0,
@@ -735,11 +908,36 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Resolve the concrete model ID via the tier registry.
+    // - explicit override: bypass registry, pass full ID to runner as-is.
+    // - tier path: task.tier → router alias → registry → full model ID.
+    // taskTeamId already defined above (line ~619)
+    let resolvedModel: string;
+    let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+
+    if (routingDecision.reason === 'explicit_override') {
+      resolvedModel = routingDecision.model;
+    } else {
+      // Determine the tier to look up: task.tier takes precedence, then derive from router alias.
+      const taskTier = (task as any).tier as 'premium' | 'standard' | 'budget' | null | undefined;
+      const derivedTier = taskTier ?? mapRouterAlias(routingDecision.model);
+
+      if (taskTeamId) {
+        const entry = await resolveTierEntry(derivedTier, taskTeamId, task.workspaceId);
+        resolvedModel = entry.model;
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+      } else {
+        // No team — fall back to router alias (resolver would fail without teamId)
+        resolvedModel = routingDecision.model;
+      }
+    }
+
     // Persist the routing decision in task context so the runner consumes it
     // without extra lookups. We also write predictedModel for analytics.
     const patchedContext = {
       ...(taskContext || {}),
-      model: routingDecision.model,
+      model: resolvedModel,
+      ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -750,7 +948,7 @@ export async function POST(req: NextRequest) {
         claimedAt: now,
         expiresAt,
         status: 'assigned',
-        predictedModel: routingDecision.model,
+        predictedModel: resolvedModel,
         context: patchedContext,
       })
       .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
@@ -764,7 +962,7 @@ export async function POST(req: NextRequest) {
     // Keep the in-memory task copy in sync so downstream enrichment and the
     // returned worker payload see the patched context.
     (task as any).context = patchedContext;
-    (task as any).predictedModel = routingDecision.model;
+    (task as any).predictedModel = resolvedModel;
 
     // Generate branch name based on workspace gitConfig
     const gitConfig = task.workspace?.gitConfig as {

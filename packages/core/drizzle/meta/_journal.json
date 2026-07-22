@@ -596,6 +596,27 @@
       "when": 1784548492567,
       "tag": "0084_next_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1784595292857,
+      "tag": "0085_striped_iron_fist",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1784641097368,
+      "tag": "0086_sturdy_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1784651279439,
+      "tag": "0087_thick_radioactive_man",
+      "breakpoints": true
     }
   ]
 }

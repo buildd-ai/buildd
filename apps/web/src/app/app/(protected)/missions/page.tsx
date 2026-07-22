@@ -109,7 +109,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
@@ -192,6 +192,8 @@ export default async function MissionsPage({
       primaryPrUrl: (obj as any).primaryPrUrl || null,
       primaryPrNumber: (obj as any).primaryPrNumber || null,
       latestTaskId,
+      costBudgetUsd: (obj as any).costBudgetUsd ?? null,
+      spendUsd: null,
     };
   });
 

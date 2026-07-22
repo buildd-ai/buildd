@@ -225,6 +225,9 @@ export default function NewMissionForm({
   const [validatingCron, setValidatingCron] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // Budget state
+  const [costBudgetUsd, setCostBudgetUsd] = useState('');
+
   // Credential status — fetched on mount using first available workspace as fallback
   const fallbackWorkspaceId = workspaces[0]?.id ?? '';
   const backendStatus = useBackendStatus(teamId, fallbackWorkspaceId);
@@ -297,6 +300,11 @@ export default function NewMissionForm({
 
       if (artifactId) {
         payload.contextArtifactIds = [artifactId];
+      }
+
+      const parsedBudget = costBudgetUsd.trim() ? parseFloat(costBudgetUsd.trim()) : null;
+      if (parsedBudget != null && !isNaN(parsedBudget) && parsedBudget > 0) {
+        payload.costBudgetUsd = parsedBudget;
       }
 
       const res = await fetch('/api/missions', {
@@ -412,6 +420,28 @@ export default function NewMissionForm({
                 onChange={setWorkspaceId}
               />
             )}
+
+            {/* Cost budget */}
+            <div className="mb-4">
+              <label className="block text-xs text-text-muted mb-1.5">
+                Cost budget (USD) <span className="text-text-muted/60">(optional)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-muted">$</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={costBudgetUsd}
+                  onChange={e => setCostBudgetUsd(e.target.value)}
+                  placeholder="e.g. 10.00"
+                  className="w-32 px-3 py-2 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <p className="text-xs text-text-muted mt-1">
+                Mission pauses when spend reaches this limit. Empty = uncapped.
+              </p>
+            </div>
 
             {/* Schedule section */}
             <div className="mb-4 p-4 bg-surface-2 border border-border-default rounded-lg" data-testid="schedule-section">

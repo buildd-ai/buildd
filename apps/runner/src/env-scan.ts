@@ -52,13 +52,31 @@ const DEFAULT_ENV_KEYS = [
  * unavailable — preventing every Bash tool call from failing with a bwrap error.
  */
 export function checkBwrapSupport(): boolean {
+  // Operator escape hatch — set when the kernel/container config is known-bad
+  // and the proc-file approach below is insufficient (e.g. inside a user namespace
+  // where the sysctl is not propagated correctly).
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+
+  // Fast-path: read the kernel sysctl directly. If it's "0", user namespace
+  // creation is disabled and every --unshare-user bwrap invocation will fail.
+  if (process.platform === 'linux') {
+    try {
+      const val = readFileSync('/proc/sys/kernel/unprivileged_userns_clone', 'utf8').trim();
+      if (val === '0') return false;
+    } catch { /* sysctl not present on all kernel configs — fall through */ }
+  }
+
   try {
     execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
   } catch {
     return false; // not installed — sandbox won't be attempted
   }
   try {
-    execSync('bwrap --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
+    // Must use --unshare-user: Claude Code's sandbox always creates a user namespace
+    // internally. A plain bind-mount test (--ro-bind /usr ...) can succeed via
+    // setuid bwrap even when kernel.unprivileged_userns_clone=0, giving a false
+    // positive that lets the sandbox appear enabled while every Bash call fails.
+    execSync('bwrap --unshare-user --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
       timeout: 5000,
       stdio: 'pipe',
     });

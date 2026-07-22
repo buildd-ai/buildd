@@ -21,6 +21,7 @@ const DEFERRAL_LABELS: Record<string, string> = {
   active_hours: 'Deferred: quiet hours',
   trigger_unchanged: 'Deferred: no change',
   orchestration_manual: 'Disarmed',
+  budget_exhausted: 'Budget exhausted',
 };
 
 // Completed missions older than this are collapsed by default
@@ -50,6 +51,8 @@ export interface MissionItem {
   primaryPrNumber: number | null;
   latestTaskId: string | null;
   orchestrationMode: string | null;
+  costBudgetUsd: string | null;
+  spendUsd: string | null;
 }
 
 interface WorkspaceBucket {
@@ -420,14 +423,28 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             <>
               <span className="mx-0.5">&middot;</span>
               <span
-                className="text-status-warning"
+                className={mission.lastDeferralReason === 'budget_exhausted' ? 'text-status-error' : 'text-status-warning'}
                 title={mission.lastDeferredAt ? `Last deferred ${timeAgo(mission.lastDeferredAt)}` : undefined}
               >
                 {DEFERRAL_LABELS[mission.lastDeferralReason] ?? 'Deferred'}
               </span>
             </>
           )}
-          {mission.latestFinding && !mission.lastDeferralReason && (
+          {mission.status === 'budget_exhausted' && mission.costBudgetUsd && !mission.lastDeferralReason && (
+            <>
+              <span className="mx-0.5">&middot;</span>
+              <span className="text-status-error">Budget exhausted</span>
+            </>
+          )}
+          {mission.costBudgetUsd && mission.status !== 'budget_exhausted' && (
+            <>
+              <span className="mx-0.5">&middot;</span>
+              <span className="tabular-nums">
+                {mission.spendUsd ? `$${Number(mission.spendUsd).toFixed(2)} / $${Number(mission.costBudgetUsd).toFixed(2)}` : `Budget: $${Number(mission.costBudgetUsd).toFixed(2)}`}
+              </span>
+            </>
+          )}
+          {mission.latestFinding && !mission.lastDeferralReason && !mission.costBudgetUsd && (
             <>
               <span className="mx-0.5">&middot;</span>
               <span className="text-accent-text truncate max-w-[180px]">

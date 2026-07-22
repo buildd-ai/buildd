@@ -540,7 +540,8 @@ export const missions = pgTable('missions', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted'>(),
+  costBudgetUsd: decimal('cost_budget_usd', { precision: 10, scale: 2 }),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
   // Default agent backend for tasks generated under this mission. An explicit
@@ -644,6 +645,10 @@ export const tasks = pgTable('tasks', {
   // See plans/buildd/smart-model-routing.md for the taxonomy + routing logic.
   kind: text('kind').$type<'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation'>(),
   complexity: text('complexity').$type<'simple' | 'normal' | 'complex'>(),
+  // Requested intelligence tier — set at creation time, immutable after.
+  // Resolved to a concrete model ID via the team's model_tier_registry at claim time.
+  // NULL means "use the resolution chain starting from the role."
+  tier: text('tier').$type<'premium' | 'standard' | 'budget'>(),
   predictedModel: text('predicted_model'),   // model chosen by router at claim
   classifiedBy: text('classified_by').$type<'organizer' | 'classifier' | 'user' | 'default'>(),
   // Agent backend that executes this task
@@ -729,6 +734,8 @@ export const workers = pgTable('workers', {
     type: 'instruction' | 'response';
     message: string;
     timestamp: number;
+    // 'pending' = queued, not yet picked up; 'delivered' = worker received it
+    deliveryState?: 'pending' | 'delivered';
   }>>(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
@@ -740,6 +747,13 @@ export const workers = pgTable('workers', {
     ok: boolean;
     durationMs?: number;
   }>>(),
+  // Exit cause taxonomy — set when a worker reaches a terminal state.
+  // code_failure:   the agent or task logic failed (default for unknown failures).
+  // budget_limited: session/usage cap hit — not a real failure; task auto-resumes.
+  // infra_failure:  runner went offline or worker timed out (heartbeat/stale kill).
+  // reassigned:     worker was superseded by a newer session.
+  // null: worker is still active, completed successfully, or predates this column.
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -862,7 +876,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual' | 'budget_exhausted'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -1643,6 +1657,30 @@ export const connectorWorkspacesRelations = relations(connectorWorkspaces, ({ on
 export const connectorSharesRelations = relations(connectorShares, ({ one }) => ({
   connector: one(connectors, { fields: [connectorShares.connectorId], references: [connectors.id] }),
   sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
+}));
+
+// Model tier registry — maps premium/standard/budget → concrete provider + model per team.
+// workspace_id = NULL means team-wide default; non-NULL is a workspace override.
+// See docs/design/model-tiers.md for the resolution chain.
+export const modelTierRegistry = pgTable('model_tier_registry', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  tier: text('tier').notNull().$type<'premium' | 'standard' | 'budget'>(),
+  provider: text('provider').notNull().$type<'anthropic' | 'openai-codex' | 'openrouter'>(),
+  model: text('model').notNull(),
+  defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
+  defaultMaxTurns: integer('default_max_turns'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier),
+  teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
+}));
+
+export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one }) => ({
+  team: one(teams, { fields: [modelTierRegistry.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
 }));
 
 // TypeScript types for new tables

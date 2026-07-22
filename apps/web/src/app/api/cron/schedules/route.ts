@@ -479,6 +479,19 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
+        // Skip if linked mission has exhausted its cost budget — defer until budget is raised
+        if (linkedMission && linkedMission.status === 'budget_exhausted') {
+          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+          const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
+          const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+          await db
+            .update(taskSchedules)
+            .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
+            .where(eq(taskSchedules.id, schedule.id));
+          skipped++;
+          continue;
+        }
+
         // Resolve workspace: schedule.workspaceId takes priority, fall back to mission.workspaceId
         let taskWorkspaceId = schedule.workspaceId;
         if (!taskWorkspaceId && linkedMission?.workspaceId) {

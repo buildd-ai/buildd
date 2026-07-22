@@ -8,6 +8,8 @@ const STATUS_LABELS: Record<string, string> = {
   failed: 'Failed',
   cancelled: 'Cancelled',
   idle: 'Idle',
+  budget_limited: 'Waiting',
+  infra_failure: 'Infra Error',
 };
 
 // Moodboard: status colors at 10% opacity bg, status color text, pill shape
@@ -21,6 +23,8 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
   cancelled:              { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-muted line-through' },
   idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
+  budget_limited:         { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  infra_failure:          { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
 };
 
 const DEFAULT_STYLE = STATUS_STYLES.pending;

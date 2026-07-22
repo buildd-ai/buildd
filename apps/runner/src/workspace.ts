@@ -2,6 +2,43 @@ import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { join, resolve, basename } from 'path';
 import { execSync } from 'child_process';
 import { homedir, tmpdir } from 'os';
+import { isolatedWorkspacePath } from './isolation-paths.js';
+
+export { isolatedWorkspacePath };
+
+/**
+ * Clone a repo into the per-workspace isolation directory if the path does not
+ * already contain a git repository. Returns the clone path on success, or throws
+ * on failure. Idempotent when the clone already exists.
+ */
+export function ensureIsolatedClone(
+  workspace: { id: string; repo: string },
+  isolationRoot: string,
+): string {
+  const clonePath = isolatedWorkspacePath(workspace.id, isolationRoot);
+
+  if (existsSync(join(clonePath, '.git'))) {
+    return clonePath;
+  }
+
+  mkdirSync(isolationRoot, { recursive: true });
+
+  let cloneUrl = workspace.repo;
+  // Expand bare "owner/repo" slugs to GitHub HTTPS URLs.
+  if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cloneUrl)) {
+    cloneUrl = `https://github.com/${cloneUrl}.git`;
+  }
+
+  // Reject invalid URL formats to prevent command injection.
+  if (!/^(https?:\/\/|git@|\/[\w./-]+)[\w.@:/-]*$/.test(cloneUrl)) {
+    throw new Error(`[isolation] invalid repo URL format: "${cloneUrl}"`);
+  }
+
+  console.log(`[isolation] cloning "${cloneUrl}" → "${clonePath}" for workspace ${workspace.id}…`);
+  execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120_000 });
+  console.log(`[isolation] clone ready: ${clonePath}`);
+  return clonePath;
+}
 
 export interface WorkspaceResolver {
   resolve(workspace: { id: string; name: string; repo?: string | null }): string | null;
@@ -123,7 +160,7 @@ export function getGitRemote(dirPath: string): string | null {
   }
 }
 
-export function createWorkspaceResolver(projectRoots: string | string[]): WorkspaceResolver {
+export function createWorkspaceResolver(projectRoots: string | string[], isolationRoot?: string): WorkspaceResolver {
   // Normalize to array
   const roots = Array.isArray(projectRoots) ? projectRoots : [projectRoots];
 
@@ -160,6 +197,22 @@ export function createWorkspaceResolver(projectRoots: string | string[]): Worksp
 
   const attemptResolve = (workspace: { id: string; name: string; repo?: string | null }): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
+
+    // Tier 3B: per-workspace isolated clone takes priority when isolation is enabled.
+    if (isolationRoot && workspace.id && workspace.repo) {
+      const isolatedPath = isolatedWorkspacePath(workspace.id, isolationRoot);
+      const alreadyCloned = existsSync(join(isolatedPath, '.git'));
+      attempts.push({ path: isolatedPath, exists: alreadyCloned, method: 'isolated' });
+      if (alreadyCloned) return { path: isolatedPath, attempts };
+      try {
+        ensureIsolatedClone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+        attempts[attempts.length - 1].exists = true;
+        return { path: isolatedPath, attempts };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[isolation] failed to create isolated clone for ${workspace.id}: ${msg} — falling back to shared resolution`);
+      }
+    }
 
     // Check path override first
     if (pathOverrides[workspace.name]) {

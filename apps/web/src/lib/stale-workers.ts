@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, and, or, not, inArray, lt, gt } from 'drizzle-orm';
+import { eq, and, or, not, inArray, lt, gt, notInArray } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -46,22 +46,27 @@ async function resolveStaleTask(
       .set({ status: 'completed', updatedAt: new Date() })
       .where(eq(tasks.id, taskId));
   } else {
-    // Count how many workers have already failed on this task
+    // Count code_failure workers only — budget_limited and infra_failure exits do
+    // NOT consume a retry slot (they reflect external constraints, not task bugs).
+    // Workers predating exitCause (null) are treated as code_failure for safety.
     const failedWorkers = await db.query.workers.findMany({
       where: and(
         eq(workers.taskId, taskId),
         eq(workers.status, 'failed'),
       ),
-      columns: { id: true },
+      columns: { id: true, exitCause: true },
     });
+    const chargeableFailures = failedWorkers.filter(
+      w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure'
+    );
 
-    if (failedWorkers.length >= MAX_WORKER_RETRIES) {
+    if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
       // Retry cap reached — permanently fail the task
       await db
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `Task failed after ${failedWorkers.length} worker attempts` } as any,
+          result: { error: `Task failed after ${chargeableFailures.length} worker attempts` } as any,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, taskId));
@@ -130,6 +135,7 @@ export async function cleanupStaleWorkers(accountId: string) {
       .update(workers)
       .set({
         status: 'failed',
+        exitCause: 'infra_failure',
         error: 'Stale worker expired (no update for 15+ minutes)',
         completedAt: new Date(),
         updatedAt: new Date(),
@@ -198,6 +204,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         .update(workers)
         .set({
           status: 'failed',
+          exitCause: 'infra_failure',
           error: 'Worker runner went offline (heartbeat expired)',
           completedAt: new Date(),
           updatedAt: new Date(),

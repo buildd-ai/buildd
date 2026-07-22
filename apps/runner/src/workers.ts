@@ -8,7 +8,7 @@ import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } f
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
 import { syncRoleToLocal, resolveRoleEnv, getRoleDir, overlayRoleFiles, type RoleConfig } from './roles.js';
@@ -27,6 +27,7 @@ import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowl
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
+import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
@@ -48,7 +49,7 @@ import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
-import { activateRedaction, deactivateRedaction, getRedactionCounts } from '@buildd/core/redaction';
+import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 // Re-export for backwards compatibility (tests import from './workers')
@@ -66,6 +67,10 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
 function isBwrapSupported(): boolean {
+  // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
+  // also reads it, but checking here ensures the cached value reflects the flag
+  // even if the env var is set after the first call.
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     if (!_bwrapSupported) {
@@ -379,6 +384,10 @@ export class WorkerManager {
     toolInput: Record<string, unknown>;
     suggestions: unknown[];
   }>();
+  // Per-worker secret redactors — built from BUILDD_API_KEY + MCP credential values
+  // at session start and used to scrub secrets from milestones, currentAction, error
+  // traces, and the history archive before any of those reach the server or disk.
+  private secretRedactors = new Map<string, (text: string) => string>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -667,7 +676,7 @@ export class WorkerManager {
         storeDeleteWorker(id);
         // Terminal teardown: now safe to delete the stable Codex home (and its
         // resumable sessions) — the worker is fully purged, no follow-up possible.
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -675,7 +684,7 @@ export class WorkerManager {
     for (const worker of loadAllWorkers()) {
       if (worker.status === 'done' || worker.status === 'error') {
         storeDeleteWorker(worker.id);
-        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id);
+        if (worker.taskBackend === 'codex') teardownStableCodexHome(worker.id, this.config.workspaceIsolationRoot, worker.workspaceId);
         count++;
       }
     }
@@ -1384,6 +1393,17 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
+
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and any
+    // MCP credential values delivered during claim. Applies to milestones,
+    // currentAction, error traces, and the history archive before persistence.
+    const secretValues: string[] = [
+      this.config.apiKey,
+      ...Object.values(worker.mcpSecrets ?? {}),
+    ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+    const redactWorkerSecrets = createSecretRedactor(secretValues);
+    this.secretRedactors.set(worker.id, redactWorkerSecrets);
+
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -1657,11 +1677,16 @@ export class WorkerManager {
       // For non-Codex tasks that still carry a codexCredential (legacy/transient),
       // keep the temp-dir behavior (cleaned up in finally via `codexHome`).
       if (isCodexTask) {
+        // Tier 3B: when isolation is active, scope the Codex home under the workspace dir.
+        const codexIsolatedPath = this.config.workspaceIsolationRoot
+          ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
+          : undefined;
+
         let _ch: string;
         if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
-          const { codexHome: home } = ensureStableCodexHome(worker.id);
+          const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
           _ch = home;
           // Write api_key into auth.json so resolveAuth picks it up (codex-backend.ts
           // reads CODEX_HOME/auth.json; api_key there maps to OPENAI_API_KEY internally).
@@ -1671,10 +1696,10 @@ export class WorkerManager {
           // B (seed-if-missing): only write auth.json the first time. If auth.json
           // already exists (from a prior run), the CLI may have refreshed the tokens
           // — don't overwrite with the potentially staler stored snapshot.
-          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential);
+          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential, codexIsolatedPath);
           _ch = home;
         } else {
-          _ch = ensureStableCodexHome(worker.id).codexHome;
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
         // No server-injected credential: fall back to the operator's local Codex
         // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
@@ -1815,6 +1840,9 @@ export class WorkerManager {
           worker.id,
           worker.claudeAccessToken,
           worker.claudeTokenExpiresAt ?? null,
+          this.config.workspaceIsolationRoot
+            ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+            : undefined,
         );
         claudeConfigDir = _cd;
         cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
@@ -2221,11 +2249,24 @@ export class WorkerManager {
         this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
+      // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
+      // Denies Read/Glob/Grep calls to sibling worktrees, ~/.buildd/, and per-worker
+      // credential dirs — enforced as the first PreToolUse hook so it fires before
+      // the permission hook and cannot be overridden by permission suggestions.
+      const readJailPrefixes = !isCodexTask
+        ? buildReadJailDeniedPrefixes(repoPath)
+        : null;
+
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // team tracking hook (captures TeamCreate, SendMessage, Task events),
       // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
-        PreToolUse: [{ hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] }],
+        PreToolUse: [
+          ...(readJailPrefixes
+            ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
+            : []),
+          { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+        ],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -2376,6 +2417,7 @@ export class WorkerManager {
         ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
+        bwrapSupported: isBwrapSupported(),
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling
@@ -2842,10 +2884,34 @@ If something is missing or incomplete, describe what and fix it now.`;
         this.sessions.delete(worker.id);
       }
 
-      // Archive to SQLite history (non-fatal)
+      // Archive to SQLite history (non-fatal).
+      // Apply secret redaction to the worker's text fields before writing to
+      // disk — the redactor is available until we remove it below.
       if (worker.status === 'done' || worker.status === 'error') {
+        const redactArchive = this.secretRedactors.get(worker.id);
+        if (redactArchive) {
+          if (worker.lastAssistantMessage) {
+            worker.lastAssistantMessage = redactArchive(worker.lastAssistantMessage);
+          }
+          worker.output = worker.output.map(line => redactArchive(line));
+          worker.messages = worker.messages.map((m: any) => {
+            if (m.type === 'text' && typeof m.content === 'string') {
+              return { ...m, content: redactArchive(m.content) };
+            }
+            if (m.type === 'tool_use' && m.input && typeof m.input === 'object') {
+              const cleanInput: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(m.input as Record<string, unknown>)) {
+                cleanInput[k] = typeof v === 'string' ? redactArchive(v) : v;
+              }
+              return { ...m, input: cleanInput };
+            }
+            return m;
+          });
+        }
         try { archiveSession(worker); } catch {}
       }
+      // Clean up the per-worker secret redactor now that the session is fully done.
+      this.secretRedactors.delete(worker.id);
 
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
@@ -3130,14 +3196,16 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.phaseTools = [];
           }
           const lines = block.text.split('\n');
+          const redactLine = this.secretRedactors.get(worker.id);
           for (const line of lines) {
             if (line.trim()) {
-              worker.output.push(line);
+              const cleanLine = redactLine ? redactLine(line) : line;
+              worker.output.push(cleanLine);
               // Keep last 100 lines
               if (worker.output.length > 100) {
                 worker.output.shift();
               }
-              this.emit({ type: 'output', workerId: worker.id, line });
+              this.emit({ type: 'output', workerId: worker.id, line: cleanLine });
             }
           }
         }
@@ -3239,15 +3307,16 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
 
           // Update currentAction (still useful for live display)
+          const redactAction = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
           if (toolName === 'Read') {
-            worker.currentAction = `Reading ${input.file_path}`;
+            worker.currentAction = redactAction(`Reading ${input.file_path}`);
           } else if (toolName === 'Edit') {
-            worker.currentAction = `Editing ${input.file_path}`;
+            worker.currentAction = redactAction(`Editing ${input.file_path}`);
           } else if (toolName === 'Write') {
-            worker.currentAction = `Writing ${input.file_path}`;
+            worker.currentAction = redactAction(`Writing ${input.file_path}`);
           } else if (toolName === 'Bash') {
             const cmd = input.command || '';
-            worker.currentAction = `Running: ${(cmd as string).slice(0, 40)}...`;
+            worker.currentAction = redactAction(`Running: ${(cmd as string).slice(0, 40)}...`);
 
             // Detect git commits — standalone status milestone
             if ((cmd as string).includes('git commit')) {
@@ -3389,8 +3458,12 @@ If something is missing or incomplete, describe what and fix it now.`;
           const traces = scanToolResult(worker.id, text, source);
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
-            worker.pendingErrorTraces.push(...traces);
-            for (const t of traces) {
+            const redact = this.secretRedactors.get(worker.id);
+            const cleanedTraces = redact
+              ? traces.map(t => ({ ...t, excerpt: redact(t.excerpt) }))
+              : traces;
+            worker.pendingErrorTraces.push(...cleanedTraces);
+            for (const t of cleanedTraces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
             }
           }
@@ -3590,6 +3663,10 @@ If something is missing or incomplete, describe what and fix it now.`;
   }
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {
+    const redact = this.secretRedactors.get(worker.id);
+    if (redact && 'label' in milestone && typeof milestone.label === 'string') {
+      milestone = { ...milestone, label: redact(milestone.label) };
+    }
     worker.milestones.push(milestone);
     // Keep last 50 milestones; prioritize phases/checkpoints over actions when trimming
     if (worker.milestones.length > 50) {

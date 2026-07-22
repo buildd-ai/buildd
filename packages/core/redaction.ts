@@ -250,3 +250,100 @@ export function createRedactionInterceptor(): BodyInterceptor {
     return redactBody(body, route);
   };
 }
+
+// ── Secret-value redaction ────────────────────────────────────────────────────
+//
+// Unlike PII redaction above (which uses patterns), secret redaction operates on
+// known plaintext values (BUILDD_API_KEY, MCP credential values). Redacts all
+// occurrences of each secret with [REDACTED] before the text is persisted or
+// emitted via Pusher.
+//
+// Values shorter than MIN_SECRET_LEN are excluded — short strings cause too many
+// false positives (e.g., common substrings like "true", "dev", version numbers).
+
+const MIN_SECRET_LEN = 8;
+
+/**
+ * Build a redactor function for a set of known secret values.
+ * Values shorter than 8 chars or empty are skipped.
+ * Longer secrets are replaced before shorter ones to prevent partial matches
+ * (if secretA is a prefix of secretB, secretB is replaced first).
+ */
+export function createSecretRedactor(secrets: string[]): (text: string) => string {
+  const valid = [...new Set(
+    secrets.filter(s => typeof s === 'string' && s.trim().length >= MIN_SECRET_LEN)
+  )].sort((a, b) => b.length - a.length);  // longest first
+
+  if (valid.length === 0) return (t) => t;
+
+  return (text: string): string => {
+    if (!text) return text;
+    let result = text;
+    for (const secret of valid) {
+      if (result.includes(secret)) {
+        // Simple global string replace — no regex so secret chars need no escaping
+        result = result.split(secret).join('[REDACTED]');
+      }
+    }
+    return result;
+  };
+}
+
+/**
+ * Redact known secret values from the mutable fields of a PATCH /api/workers/[id]
+ * request body before DB writes and Pusher emission.
+ *
+ * Returns a shallow copy of the body with the relevant string fields cleaned.
+ * The original body object is NOT mutated.
+ */
+export function redactSecretsInBody<T extends Record<string, unknown>>(
+  body: T,
+  secrets: string[],
+): T {
+  const redact = createSecretRedactor(secrets);
+  // identity — no valid secrets provided
+  if (redact('x') === 'x' && secrets.filter(s => s && s.length >= MIN_SECRET_LEN).length === 0) {
+    return body;
+  }
+
+  const out: Record<string, unknown> = { ...body };
+
+  if (typeof out.currentAction === 'string') {
+    out.currentAction = redact(out.currentAction);
+  }
+
+  if (Array.isArray(out.milestones)) {
+    out.milestones = (out.milestones as any[]).map((m) =>
+      m && typeof m.label === 'string' ? { ...m, label: redact(m.label) } : m,
+    );
+  }
+
+  if (Array.isArray(out.appendMilestones)) {
+    out.appendMilestones = (out.appendMilestones as any[]).map((m) =>
+      m && typeof m.label === 'string' ? { ...m, label: redact(m.label) } : m,
+    );
+  }
+
+  if (Array.isArray(out.appendErrorTraces)) {
+    out.appendErrorTraces = (out.appendErrorTraces as any[]).map((t) =>
+      t && typeof t.excerpt === 'string' ? { ...t, excerpt: redact(t.excerpt) } : t,
+    );
+  }
+
+  if (typeof out.error === 'string') {
+    out.error = redact(out.error);
+  }
+
+  if (typeof out.summary === 'string') {
+    out.summary = redact(out.summary);
+  }
+
+  if (out.waitingFor && typeof (out.waitingFor as any).prompt === 'string') {
+    out.waitingFor = {
+      ...(out.waitingFor as object),
+      prompt: redact((out.waitingFor as any).prompt),
+    };
+  }
+
+  return out as T;
+}

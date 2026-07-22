@@ -924,7 +924,7 @@ export default async function TaskDetailPage({
                         </div>
                       )}
                     </div>
-                    <StatusBadge status={worker.status} />
+                    <StatusBadge status={worker.exitCause === 'budget_limited' && worker.status === 'failed' ? 'budget_limited' : worker.exitCause === 'infra_failure' && worker.status === 'failed' ? 'infra_failure' : worker.status} />
                     <div className="flex items-center gap-2">
                       {worker.prUrl && (
                         <a
