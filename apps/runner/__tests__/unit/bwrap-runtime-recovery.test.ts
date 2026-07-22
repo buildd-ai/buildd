@@ -10,7 +10,11 @@
  * Run: bun test apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
+
+// CI runners are slower — give tests more room than the 5s default.
+// WorkerManager constructor calls scanEnvironment() which probes tools on first run.
+setDefaultTimeout(15_000);
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
