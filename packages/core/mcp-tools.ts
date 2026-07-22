@@ -1187,6 +1187,11 @@ export async function handleBuilddAction(
 
       const createAppBase = ctx.appBaseUrl || 'https://buildd.dev';
       const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
+
+      if (task.deduplicated) {
+        return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
+      }
+
       return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: Queued — no runner has claimed it yet. A runner will pick it up on its next poll; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 

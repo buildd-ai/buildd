@@ -99,6 +99,12 @@ When you encounter pain points, blockers, or broken tooling while working a task
 
 **How to report:** Create a task in the same workspace with title `[friction] <short description>` and description explaining what broke, what you expected, and what you actually had to do instead. Use `create_task` (MCP or API). Low priority is fine; this is background signal, not a blocker.
 
+If the friction arose from a traced error (one that appears in `get_error_traces`), call `get_error_traces` first to get the pattern slug, then include it in the `create_task` call:
+```
+context: { frictionSignature: '<slug>', frictionExcerpt: '<first line of excerpt>' }
+```
+The server deduplicates friction tasks by `(frictionSignature, workspace)` — if an open task already carries the same signature, your report is appended to it and no new task is created. You receive the existing task ID back so your completion flow stays coherent.
+
 **Why:** These reports feed directly into platform improvements (like the `get_task` / `send_agent_message` actions added after observing the create→observe→confirm loop was broken). Friction that goes unreported stays broken.
 
 ## Credentials (agent backends)
