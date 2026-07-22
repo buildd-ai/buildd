@@ -72,11 +72,15 @@ export function checkBwrapSupport(): boolean {
     return false; // not installed — sandbox won't be attempted
   }
   try {
-    // Must use --unshare-user: Claude Code's sandbox always creates a user namespace
-    // internally. A plain bind-mount test (--ro-bind /usr ...) can succeed via
-    // setuid bwrap even when kernel.unprivileged_userns_clone=0, giving a false
-    // positive that lets the sandbox appear enabled while every Bash call fails.
-    execSync('bwrap --unshare-user --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
+    // Must mirror all three namespace types Claude Code's sandbox uses internally:
+    // --unshare-user (user namespace), --unshare-pid (PID namespace),
+    // --unshare-net (network namespace). Testing only --unshare-user is insufficient:
+    // some container configs (seccomp, AppArmor) allow user namespace creation but
+    // block network or PID namespace creation, causing every Bash tool call to fail
+    // with "No permissions to create a new namespace" even when the user-ns check
+    // passes. Confirmed by inspecting the Claude Code binary: it always passes all
+    // three --unshare flags to bwrap.
+    execSync('bwrap --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
       timeout: 5000,
       stdio: 'pipe',
     });
