@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { startCodexDeviceAuth, pollCodexDeviceAuth } from './codex-device-auth';
+
+const _realFetch = globalThis.fetch;
+afterAll(() => { globalThis.fetch = _realFetch; });
 
 // Build a JWT whose payload carries the ChatGPT account id claim.
 function jwtWithAccount(accountId: string): string {
