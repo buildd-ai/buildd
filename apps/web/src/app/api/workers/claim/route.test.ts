@@ -3121,6 +3121,48 @@ describe('path-overlap claim guard', () => {
     // No manifest → guard is a no-op → task is claimed
     expect(data.workers).toHaveLength(1);
   });
+
+  it('claims a task when the only overlapping PR has prLifecycleStatus=closed', async () => {
+    // Regression guard: a closed/abandoned PR must NOT permanently block sibling
+    // tasks from claiming. The route filters out workers with prLifecycleStatus=closed
+    // before passing them to findBlockingPr() — so a task with an overlapping
+    // pathManifest is still claimed when the blocking PR was abandoned.
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    // Active workers: none
+    // Open PR pre-fetch: a worker whose PR is closed (not merged)
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch: closed PR
+        {
+          workspaceId: 'ws-1',
+          taskId: 'pr-task-closed',
+          prNumber: 1350,
+          prUrl: 'https://github.com/org/repo/pull/1350',
+          status: 'completed',
+          prLifecycleStatus: 'closed',  // PR was closed without merging
+        },
+      ]);
+
+    // Claimable task overlaps the closed PR's files
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/runner/src/env-scan.ts'])])
+      // PR task manifest lookup (would block if the PR were still open)
+      .mockResolvedValueOnce([{ id: 'pr-task-closed', pathManifest: ['apps/runner/src/env-scan.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Closed PR is excluded from the overlap guard → task is claimed, not deferred
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
 });
 
 describe('entity catalog injection at claim time', () => {

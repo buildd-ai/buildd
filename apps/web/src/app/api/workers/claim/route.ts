@@ -718,10 +718,14 @@ export async function POST(req: NextRequest) {
         isNull(workers.mergedAt),
         inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
       ),
-      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true },
+      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, prLifecycleStatus: true },
     });
-    if (openPrWorkers.length > 0) {
-      const prTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
+    // Exclude closed/abandoned PRs — a closed PR should not block sibling tasks
+    // from claiming (it was abandoned, not merged; treating it as open would
+    // block dependent tasks forever if the PR branch is never re-opened).
+    const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed');
+    if (activeOpenPrWorkers.length > 0) {
+      const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
       const prTasks = prTaskIds.length > 0
         ? (await db.query.tasks.findMany({
             where: inArray(tasks.id, prTaskIds),
@@ -730,7 +734,7 @@ export async function POST(req: NextRequest) {
         : [];
       const prTaskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
 
-      for (const w of openPrWorkers) {
+      for (const w of activeOpenPrWorkers) {
         const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
         const entry = { pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
         const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];

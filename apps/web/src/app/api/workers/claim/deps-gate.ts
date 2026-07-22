@@ -47,12 +47,16 @@ export function dependenciesSatisfied(): SQL {
       AND t2.status IN (${satisfyingStatuses})
       AND NOT (
         -- A completed dep with a still-open PR keeps blocking its dependents.
+        -- Exception: a closed/abandoned PR (pr_lifecycle_status = 'closed') should
+        -- unblock dependents — the work was abandoned, not merged. Without this
+        -- guard a dependent task blocks forever when the upstream PR is closed.
         t2.status = 'completed'
         AND EXISTS (
           SELECT 1 FROM ${workers} w
           WHERE w.task_id = t2.id
           AND w.pr_url IS NOT NULL
           AND w.merged_at IS NULL
+          AND COALESCE(w.pr_lifecycle_status, '') != 'closed'
         )
       )
     )
