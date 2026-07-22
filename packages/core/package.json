@@ -42,6 +42,7 @@
     "./knowledge-store/scip-parser": "./knowledge-store/scip-parser.ts",
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./path-overlap": "./path-overlap.ts",
+    "./friction-manifest": "./friction-manifest.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts"

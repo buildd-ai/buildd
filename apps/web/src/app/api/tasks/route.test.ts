@@ -1662,4 +1662,186 @@ describe('POST /api/tasks', () => {
     expect(mockTasksFindFirst).not.toHaveBeenCalled();
     expect(mockTasksInsert).toHaveBeenCalledTimes(1);
   });
+
+  // ── manifest inference on the dedup-miss (new friction task) path ─────────
+
+  it('manifest inference: explicit path in frictionExcerpt → pathManifest on created task', async () => {
+    frictionSetup();
+    mockTasksFindFirst.mockResolvedValue(null); // dedup miss
+
+    let capturedValues: any = null;
+    const createdTask = { id: 'task-M1', workspaceId: 'ws-1', title: '[friction] enoent in runner' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] enoent in runner',
+        description: "ENOENT: no such file or directory, 'apps/runner/src/env-scan.ts'",
+        context: {
+          frictionSignature: 'enoent',
+          frictionExcerpt: "ENOENT: no such file or directory, 'apps/runner/src/env-scan.ts'",
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // The inferred manifest must be stamped on the task row
+    expect(capturedValues.pathManifest).toEqual(['apps/runner/src/env-scan.ts']);
+  });
+
+  it('manifest inference: pathless trace → fallback component table (bwrap_namespace_denied)', async () => {
+    frictionSetup();
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    const createdTask = { id: 'task-M2', workspaceId: 'ws-1', title: '[friction] bwrap namespace denied' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'bwrap: No permissions to create a new namespace',
+        context: {
+          frictionSignature: 'bwrap_namespace_denied',
+          frictionExcerpt: 'bwrap: No permissions to create a new namespace',
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // Fallback table for bwrap_namespace_denied includes both runner files
+    expect(capturedValues.pathManifest).toEqual([
+      'apps/runner/src/env-scan.ts',
+      'apps/runner/src/workers.ts',
+    ]);
+  });
+
+  it('bwrap fixture: env-scan.ts origin → manifest contains apps/runner/src/env-scan.ts', async () => {
+    frictionSetup();
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    const createdTask = { id: 'task-M3', workspaceId: 'ws-1', title: '[friction] bwrap namespace denied' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'bwrap: No permissions to create a new namespace',
+        // frictionExcerpt names env-scan.ts explicitly — path extraction wins
+        context: {
+          frictionSignature: 'bwrap_namespace_denied',
+          frictionExcerpt:
+            'bwrap: No permissions to create a new namespace — from apps/runner/src/env-scan.ts',
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(capturedValues.pathManifest).toContain('apps/runner/src/env-scan.ts');
+  });
+
+  it('inferred manifest overlapping a sibling pending task → auto-dependsOn edge created', async () => {
+    frictionSetup();
+    mockTasksFindFirst.mockResolvedValue(null); // dedup miss
+
+    // Sibling task in-flight that touches apps/runner/src/workers.ts
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-task-99', pathManifest: ['apps/runner/src/workers.ts'] },
+    ]);
+
+    let capturedValues: any = null;
+    const createdTask = { id: 'task-M4', workspaceId: 'ws-1', title: '[friction] bwrap namespace denied' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'bwrap: No permissions to create a new namespace',
+        context: {
+          frictionSignature: 'bwrap_namespace_denied',
+          frictionExcerpt: 'bwrap: No permissions to create a new namespace',
+        },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // pathManifest was inferred (fallback table)
+    expect(capturedValues.pathManifest).toEqual([
+      'apps/runner/src/env-scan.ts',
+      'apps/runner/src/workers.ts',
+    ]);
+    // The overlap with the sibling task triggered the auto-dependsOn edge
+    expect(capturedValues.dependsOn).toContain('sibling-task-99');
+  });
+
+  it('manifest inference skipped when caller already provides pathManifest', async () => {
+    frictionSetup();
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    const createdTask = { id: 'task-M5', workspaceId: 'ws-1', title: '[friction] bwrap namespace denied' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mockReturning };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        context: {
+          frictionSignature: 'bwrap_namespace_denied',
+          frictionExcerpt: 'bwrap: No permissions to create a new namespace',
+        },
+        // Caller explicitly provides a manifest
+        pathManifest: ['apps/runner/src/sandbox.ts'],
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // The caller-supplied manifest is used as-is; inference is skipped
+    expect(capturedValues.pathManifest).toEqual(['apps/runner/src/sandbox.ts']);
+  });
 });
