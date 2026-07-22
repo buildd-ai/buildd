@@ -27,6 +27,7 @@
     "seed:knowledge-consolidation": "bun run scripts/seed/knowledge-consolidation-schedule.ts",
     "seed:knowledge-digest": "bun run scripts/seed/knowledge-digest-schedule.ts",
     "seed:reset": "bun run scripts/seed/reset.ts",
+    "seed:cue-connector": "cd packages/core && bun scripts/seed-cue-connector.ts",
     "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts",
     "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
     "specs:check": "bun run scripts/check-specs.ts",
