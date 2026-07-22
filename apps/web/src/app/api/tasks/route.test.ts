@@ -8,11 +8,16 @@ const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockTasksFindMany = mock(() => [] as any[]);
+const mockTasksFindFirst = mock(() => null as any);
 const mockTasksInsert = mock(() => ({
   values: mock(() => ({
     returning: mock(() => []),
   })),
 }));
+// db.update(tasks).set({...}).where(...) chain
+const mockTasksUpdateWhere = mock(() => Promise.resolve());
+const mockTasksUpdateSet = mock(() => ({ where: mockTasksUpdateWhere }));
+const mockTasksUpdate = mock(() => ({ set: mockTasksUpdateSet }));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
@@ -100,11 +105,12 @@ mock.module('@buildd/core/db', () => ({
       accounts: { findFirst: mockAccountsFindFirst },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
-      tasks: { findMany: mockTasksFindMany },
+      tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
     },
     insert: mockTasksInsert,
+    update: mockTasksUpdate,
   },
 }));
 
@@ -118,6 +124,8 @@ mock.module('drizzle-orm', () => ({
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  like: (field: any, pattern: any) => ({ field, pattern, type: 'like' }),
+  sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 // Mock schema
@@ -125,7 +133,17 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt' },
+  tasks: {
+    id: 'id',
+    workspaceId: 'workspaceId',
+    createdAt: 'createdAt',
+    title: 'title',
+    status: 'status',
+    description: 'description',
+    context: 'context',
+    updatedAt: 'updatedAt',
+    pathManifest: 'pathManifest',
+  },
   missions: { id: 'id' },
 }));
 
@@ -276,7 +294,12 @@ describe('POST /api/tasks', () => {
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
     mockTasksInsert.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksUpdateSet.mockReset();
+    mockTasksUpdateWhere.mockReset();
     mockTriggerEvent.mockReset();
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
@@ -284,6 +307,15 @@ describe('POST /api/tasks', () => {
     mockMissionsFindFirst.mockReset();
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
+
+    // Default: no open friction task (miss path)
+    mockTasksFindFirst.mockResolvedValue(null);
+    // Default: no in-flight tasks for path-overlap check
+    mockTasksFindMany.mockResolvedValue([]);
+    // Default: update chain returns cleanly
+    mockTasksUpdateWhere.mockResolvedValue(undefined);
+    mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
+    mockTasksUpdate.mockReturnValue({ set: mockTasksUpdateSet });
 
     // Default: API key auth has workspace access
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
@@ -1387,5 +1419,247 @@ describe('POST /api/tasks', () => {
     const response = await POST(request);
 
     expect(response.status).toBe(200);
+  });
+
+  // ── friction task dedup gate ─────────────────────────────────────────────
+
+  function frictionSetup() {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'mcp',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+  }
+
+  it('bwrap replay: first filing creates a task and stamps frictionSignature', async () => {
+    frictionSetup();
+    // No existing open task with the same signature
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    const createdTask = {
+      id: 'task-T1',
+      workspaceId: 'ws-1',
+      title: '[friction] bwrap namespace denied',
+      context: { frictionSignature: 'bwrap_namespace_denied' },
+    };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'bwrap: No permissions to create a new namespace',
+        context: { frictionSignature: 'bwrap_namespace_denied', frictionExcerpt: 'bwrap: No permissions...' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe('task-T1');
+    // No deduplicated flag on fresh create
+    expect(data.deduplicated).toBeUndefined();
+    // db.insert was called (task was created)
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+    // db.update was NOT called
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('bwrap replay: second filing deduplicates and appends to existing task', async () => {
+    frictionSetup();
+    const existingTask = {
+      id: 'task-T1',
+      title: '[friction] bwrap namespace denied',
+      description: 'bwrap: No permissions to create a new namespace',
+    };
+    // Open task with same signature exists
+    mockTasksFindFirst.mockResolvedValue(existingTask);
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'Worker B also hit bwrap namespace denied',
+        context: { frictionSignature: 'bwrap_namespace_denied', frictionExcerpt: 'bwrap: No permissions...' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // Returns existing task id
+    expect(data.id).toBe('task-T1');
+    expect(data.deduplicated).toBe(true);
+    // db.insert was NOT called (no new task)
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // db.update was called to append the report
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
+    expect(mockTasksUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockTasksUpdateWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('bwrap replay: third filing also deduplicates — still exactly one task', async () => {
+    frictionSetup();
+    const existingTask = {
+      id: 'task-T1',
+      title: '[friction] bwrap namespace denied',
+      description: 'bwrap: No permissions (+ Worker B report)',
+    };
+    mockTasksFindFirst.mockResolvedValue(existingTask);
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        description: 'Worker C also hit bwrap namespace denied',
+        context: { frictionSignature: 'bwrap_namespace_denied' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe('task-T1');
+    expect(data.deduplicated).toBe(true);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('same signature in different workspace creates a fresh task (no dedup cross-workspace)', async () => {
+    frictionSetup();
+    // Simulate: no match in ws-2 (different workspace from ws-1 where T1 lives)
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    const createdTask = {
+      id: 'task-T2',
+      workspaceId: 'ws-2',
+      title: '[friction] bwrap namespace denied',
+    };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+    // ws-2 resolveWorkspace
+    mockResolveWorkspace.mockResolvedValue({ id: 'ws-2' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2' });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-2',
+        title: '[friction] bwrap namespace denied',
+        description: 'bwrap: No permissions to create a new namespace',
+        context: { frictionSignature: 'bwrap_namespace_denied' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe('task-T2');
+    expect(data.deduplicated).toBeUndefined();
+    // Fresh task created in ws-2
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('matched task already completed → files fresh task (open-only dedup window)', async () => {
+    frictionSetup();
+    // findFirst returns null because the completed task is excluded by the NOT IN filter
+    // (the route's query already filters out completed/failed/cancelled)
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    const createdTask = {
+      id: 'task-T3',
+      workspaceId: 'ws-1',
+      title: '[friction] bwrap namespace denied',
+    };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] bwrap namespace denied',
+        context: { frictionSignature: 'bwrap_namespace_denied' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe('task-T3');
+    expect(data.deduplicated).toBeUndefined();
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('friction task without frictionSignature in context bypasses dedup and creates normally', async () => {
+    frictionSetup();
+
+    const createdTask = {
+      id: 'task-T4',
+      workspaceId: 'ws-1',
+      title: '[friction] some untraced error',
+    };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] some untraced error',
+        description: 'Something weird happened',
+        // No frictionSignature in context
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // db.query.tasks.findFirst should NOT have been called (no signature → no dedup check)
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-friction task with frictionSignature bypasses dedup gate', async () => {
+    frictionSetup();
+
+    const createdTask = { id: 'task-T5', workspaceId: 'ws-1', title: 'Normal task' };
+    const mockReturning = mock(() => [createdTask]);
+    const mockValues = mock(() => ({ returning: mockReturning }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Normal task',
+        context: { frictionSignature: 'bwrap_namespace_denied' },
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    // Gate only triggers when title starts with '[friction] '
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
   });
 });

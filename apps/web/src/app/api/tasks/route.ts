@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { desc, eq, and, or, inArray, notInArray, gte, isNotNull } from 'drizzle-orm';
+import { desc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -262,6 +262,39 @@ export async function POST(req: NextRequest) {
       Array.isArray(rawPathManifest) && rawPathManifest.every((p: unknown) => typeof p === 'string')
         ? rawPathManifest
         : null;
+
+    // Dedup gate for friction tasks.
+    // When an agent provides context.frictionSignature (the error-pattern slug from
+    // get_error_traces), we check for an open friction task with the same signature
+    // in this workspace. On match: append the caller's report to the existing task
+    // description and return it (deduplicated:true) without creating a new row.
+    // On miss: fall through to normal creation — frictionSignature persists in context
+    // via the incomingContext spread below.
+    const frictionSignature = typeof incomingContext?.frictionSignature === 'string'
+      ? incomingContext.frictionSignature
+      : null;
+
+    if (title.startsWith('[friction] ') && frictionSignature) {
+      const existing = await db.query.tasks.findFirst({
+        where: and(
+          eq(tasks.workspaceId, workspaceId),
+          like(tasks.title, '[friction] %'),
+          sql`${tasks.context}->>'frictionSignature' = ${frictionSignature}`,
+          notInArray(tasks.status, ['completed', 'failed', 'cancelled']),
+        ),
+        columns: { id: true, title: true, description: true },
+      });
+
+      if (existing) {
+        const workerRef = createdByWorkerId ? `Worker ${createdByWorkerId}` : 'Another worker';
+        const appendText = `\n\n---\n_${workerRef} also reported this error._\n${description || ''}`.trim();
+        await db.update(tasks)
+          .set({ description: sql`${tasks.description} || ${appendText}`, updatedAt: new Date() })
+          .where(eq(tasks.id, existing.id));
+
+        return NextResponse.json({ ...existing, deduplicated: true }, { status: 200 });
+      }
+    }
 
     // Validate dependsOn references exist in the same workspace
     if (Array.isArray(dependsOn) && dependsOn.length > 0) {
