@@ -13,6 +13,7 @@ import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { pathsOverlap } from '@buildd/core/path-overlap';
+import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -258,7 +259,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate and normalize pathManifest
-    const pathManifest: string[] | null =
+    let pathManifest: string[] | null =
       Array.isArray(rawPathManifest) && rawPathManifest.every((p: unknown) => typeof p === 'string')
         ? rawPathManifest
         : null;
@@ -293,6 +294,21 @@ export async function POST(req: NextRequest) {
           .where(eq(tasks.id, existing.id));
 
         return NextResponse.json({ ...existing, deduplicated: true }, { status: 200 });
+      }
+    }
+
+    // Infer pathManifest for friction tasks that don't supply one.
+    // On the dedup-miss path (new friction task), extract repo-relative paths
+    // from the error excerpt or fall back to the static component table.
+    // The inferred manifest then flows into the auto-dependsOn block below
+    // unchanged — no friction-specific handling downstream.
+    if (title.startsWith('[friction] ') && frictionSignature && !pathManifest) {
+      const excerpt = typeof incomingContext?.frictionExcerpt === 'string'
+        ? incomingContext.frictionExcerpt
+        : description || '';
+      const inferred = inferFrictionManifest(frictionSignature, excerpt);
+      if (inferred.length > 0) {
+        pathManifest = inferred;
       }
     }
 
