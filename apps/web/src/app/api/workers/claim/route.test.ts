@@ -3259,4 +3259,144 @@ describe('entity catalog injection at claim time', () => {
     const providers: string[] = data.workers[0].resolvedContextProviders ?? [];
     expect(providers.join('\n')).not.toContain('## Known entities');
   });
+
+  // --- Connector availability pre-filter tests ---
+
+  // When a task's role declares connectorRefs, the claim route must verify
+  // those connectors are available in the claiming workspace BEFORE claiming.
+  // Tasks with missing connectors are silently deferred so a correct-workspace
+  // worker can pick them up. This prevents the claim→MCP-pre-flight failure loop.
+  it('skips task requiring connector unavailable in claiming workspace, claims others normally', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]); // active workers
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-A' }]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+    // Two tasks: task-1 has role 'email-agent' (needs connector), task-2 has no role
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-A',
+          title: 'Email task',
+          roleSlug: 'email-agent',
+          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: null },
+        },
+        {
+          id: 'task-2',
+          workspaceId: 'ws-A',
+          title: 'Regular task',
+          workspace: { id: 'ws-A', gitConfig: null },
+        },
+      ])
+      .mockResolvedValue([]); // sibling/parent queries
+
+    // Pre-filter role lookup: email-agent has connectorRefs: ['connector-cue']
+    // Role floor lookup: no override
+    mockWorkspaceSkillsFindMany
+      .mockResolvedValueOnce([
+        {
+          slug: 'email-agent',
+          teamId: 'team-1',
+          workspaceId: null,
+          connectorRefs: ['connector-cue'],
+        },
+      ])  // pre-filter role lookup
+      .mockResolvedValue([]); // role floor + subsequent calls
+
+    // connector-cue is owned by team-1 (visible), but disabled for ws-A
+    mockConnectorsFindMany.mockResolvedValueOnce([
+      { id: 'connector-cue', teamId: 'team-1', name: 'cue' },
+    ]);
+    mockConnectorSharesFindMany.mockResolvedValueOnce([]); // no cross-team shares
+    mockConnectorWorkspacesFindMany.mockResolvedValueOnce([
+      { connectorId: 'connector-cue', workspaceId: 'ws-A', enabled: false },
+    ]); // disabled → unavailable
+
+    // task-2 gets claimed
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-2' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-2', task_id: 'task-2', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // task-1 must be skipped; task-2 must be claimed
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-2');
+  });
+
+  it('returns 422 routing_mismatch when explicit taskId claim has missing connector', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 5,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]); // active workers
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-A' }]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+    // Single task with required connector
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-A',
+          title: 'Email task',
+          roleSlug: 'email-agent',
+          workspace: { id: 'ws-A', teamId: 'team-1', gitConfig: null },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    // email-agent role references a connector that's not shared to team-1
+    mockWorkspaceSkillsFindMany
+      .mockResolvedValueOnce([
+        {
+          slug: 'email-agent',
+          teamId: 'team-1',
+          workspaceId: null,
+          connectorRefs: ['connector-cue'],
+        },
+      ])
+      .mockResolvedValue([]);
+
+    // connector-cue owned by a different team and not shared
+    mockConnectorsFindMany.mockResolvedValueOnce([
+      { id: 'connector-cue', teamId: 'team-other', name: 'cue' },
+    ]);
+    mockConnectorSharesFindMany.mockResolvedValueOnce([]); // not shared to team-1
+    mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.error).toBe('routing_mismatch');
+    expect(data.detail).toBeTruthy();
+  });
 });
