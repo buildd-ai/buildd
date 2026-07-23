@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add status badge to Activity feed rows (#1377)
+- Infer pathManifest on friction tasks at creation time (#1380)
 - Mount TaskCard across Home, Activity, and Mission timeline with consistent chain, health, and worker data (#1309)
 - Work-tracker outbound dispatch for GitHub issues via GitHub App — closes linked issues and posts completion comments without a separate connector (#1201)
 - Serialize concurrent agents to prevent PR collisions in orchestrator
@@ -51,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scope MCP list_tasks and openclaw fetches to active/workspace (#1386)
+- Scope GET /api/tasks by workspace and status (#1386)
+- Closed PRs no longer block dependent tasks or overlap-guard siblings (#1384)
 - Suppress schedule countdown and ON SCHEDULE badge for manual-mode missions (#1312)
 - Decouple Codex-backend workers from Claude OAuth token to prevent cross-backend auth failures (#1308)
 - Use refresh grant to verify Codex OAuth credentials instead of GET /v1/models (#1305)
