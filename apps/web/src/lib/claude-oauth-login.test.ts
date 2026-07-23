@@ -1,5 +1,8 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, afterAll, mock } from 'bun:test';
 import { startClaudeOAuthLogin, exchangeClaudeOAuthCode } from './claude-oauth-login';
+
+const _realFetch = globalThis.fetch;
+afterAll(() => { globalThis.fetch = _realFetch; });
 
 function jsonResponse(status: number, body: any): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) } as any;
