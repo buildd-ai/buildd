@@ -267,6 +267,56 @@ describe('GET /api/tasks', () => {
     expect(data.tasks).toHaveLength(0);
   });
 
+  it('scopes to a single workspace when ?workspaceId is an accessible workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1', 'ws-2']);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', title: 'Task 1', workspaceId: 'ws-1' },
+    ]);
+
+    const request = createMockRequest({ searchParams: { workspaceId: 'ws-1' } });
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    // The query ran (workspace was accessible), scoped down to ws-1.
+    expect(mockTasksFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty without querying when ?workspaceId is not accessible', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+
+    const request = createMockRequest({ searchParams: { workspaceId: 'ws-other' } });
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.tasks).toHaveLength(0);
+    // No accessible workspace remained → DB is never hit.
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+  });
+
+  it('passes ?status=active through without error', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', title: 'Task 1', workspaceId: 'ws-1', status: 'in_progress' },
+    ]);
+
+    const request = createMockRequest({
+      searchParams: { workspaceId: 'ws-1', status: 'active' },
+    });
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.tasks).toHaveLength(1);
+    expect(mockTasksFindMany).toHaveBeenCalledTimes(1);
+  });
+
   it('deduplicates workspace IDs for API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
