@@ -2,11 +2,12 @@
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
+import type { MissionSegment } from '@buildd/core/mission-helpers';
+import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import {
   type MissionHealth,
   type MissionGroup,
   type FilterTab,
-  HEALTH_DISPLAY,
   SECTION_DISPLAY,
   GROUP_ACCENT_CLASS,
   GROUP_ORDER,
@@ -53,6 +54,9 @@ export interface MissionItem {
   orchestrationMode: string | null;
   costBudgetUsd: string | null;
   spendUsd: string | null;
+  segments: MissionSegment[];
+  healthState: import('@/lib/mission-helpers').Health;
+  inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
 }
 
 interface WorkspaceBucket {
@@ -333,8 +337,6 @@ function FilterTabBar({
 
 /* ── Full Mission Card (running, scheduled, attention) ── */
 function FullMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
-  const healthDisplay = HEALTH_DISPLAY[mission.health];
-  const isManual = mission.orchestrationMode === 'manual';
   const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
   const isHibernating = nextRun.urgency === 'far';
   const hasFooterLinks = mission.primaryPrUrl || mission.latestTaskId;
@@ -344,10 +346,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
       className={`card mission-card hover:bg-[var(--card-hover)] hover:-translate-y-px transition-all duration-150 ${GROUP_ACCENT_CLASS[group]} ${isHibernating ? 'mission-card-hibernating' : ''}`}
     >
       {/* Main body — links to mission detail */}
-      <Link
-        href={`/app/missions/${mission.id}`}
-        className="block p-4"
-      >
+      <div className="block p-4">
         <div className="flex items-start justify-between gap-3 mb-1.5">
           <div className="flex items-center gap-2 min-w-0">
             {mission.role && (
@@ -356,12 +355,9 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
                 style={{ backgroundColor: mission.role.color }}
               />
             )}
-            <span className="text-[15px] font-medium text-text-primary leading-tight line-clamp-2">
+            <Link href={`/app/missions/${mission.id}`} className="text-[15px] font-medium text-text-primary leading-tight line-clamp-2 hover:text-accent-text">
               {mission.title}
-            </span>
-            <span className={`health-pill ${healthDisplay.colorClass}`}>
-              {healthDisplay.label}
-            </span>
+            </Link>
           </div>
           {mission.progress > 0 && (
             <span className="text-[20px] font-semibold text-accent-text shrink-0 tabular-nums">
@@ -376,17 +372,8 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           </p>
         )}
 
-        {mission.totalTasks > 0 && (
-          <div className="h-[3px] bg-[rgba(255,245,230,0.06)] mb-2.5 overflow-hidden">
-            <div
-              className="h-full transition-all duration-500"
-              style={{
-                width: `${mission.progress}%`,
-                background: 'var(--accent)',
-              }}
-            />
-          </div>
-        )}
+        <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+        {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
           {mission.role && (
@@ -406,19 +393,6 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               </span>
             </>
           )}
-          {isManual && mission.nextScanMins !== null ? (
-            <>
-              <span className="mx-0.5">&middot;</span>
-              <span className="text-text-muted">Disarmed · Run now to advance</span>
-            </>
-          ) : nextRun.text ? (
-            <>
-              <span className="mx-0.5">&middot;</span>
-              <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
-                {nextRun.text}
-              </span>
-            </>
-          ) : null}
           {mission.lastDeferralReason && (
             <>
               <span className="mx-0.5">&middot;</span>
@@ -453,7 +427,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             </>
           )}
         </div>
-      </Link>
+      </div>
 
       {/* Footer row: PR link + latest run link */}
       {hasFooterLinks && (
@@ -484,24 +458,20 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
 
 /* ── Compact Mission Card (completed/paused) ── */
 function CompactMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
-  const healthDisplay = HEALTH_DISPLAY[mission.health];
+  const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
 
   return (
     <div className={`card mission-card mission-card-compact hover:bg-[var(--card-hover)] hover:-translate-y-px transition-all duration-150 ${GROUP_ACCENT_CLASS[group]}`}>
-      <Link
-        href={`/app/missions/${mission.id}`}
-        className="block px-4 py-3"
-      >
+      <div className="block px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[14px] font-medium text-text-secondary leading-tight truncate">
+            <Link href={`/app/missions/${mission.id}`} className="text-[14px] font-medium text-text-secondary leading-tight truncate hover:text-accent-text">
               {mission.title}
-            </span>
-            <span className={`health-pill ${healthDisplay.colorClass}`}>
-              {healthDisplay.label}
-            </span>
+            </Link>
           </div>
         </div>
+        <div className="mt-2"><MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} /></div>
+        {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
           {mission.totalTasks > 0 && (
             <span>{mission.completedTasks} of {mission.totalTasks} done</span>
@@ -519,7 +489,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             </>
           )}
         </div>
-      </Link>
+      </div>
       {(mission.primaryPrUrl || mission.latestTaskId) && (
         <div className="px-4 pb-2 flex items-center gap-3 text-[11px] font-mono -mt-1">
           {mission.latestTaskId && (

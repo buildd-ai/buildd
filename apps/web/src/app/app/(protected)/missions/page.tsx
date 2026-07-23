@@ -6,7 +6,8 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { deriveMissionHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { MissionGrid } from './MissionGrid';
@@ -109,16 +110,16 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
-        columns: { id: true, status: true, result: true, updatedAt: true },
+        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
         limit: 20,
         with: {
           workers: {
-            columns: { id: true, status: true },
+            columns: { id: true, status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true },
             limit: 5,
           },
         },
@@ -129,9 +130,7 @@ export default async function MissionsPage({
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
-    const totalTasks = obj.tasks?.length || 0;
-    const completedTasks = obj.tasks?.filter((t: any) => t.status === 'completed').length || 0;
-    const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(obj.tasks || []);
     const activeAgents = obj.tasks
       ?.flatMap((t: any) => t.workers || [])
       .filter((w: any) => w.status === 'running').length || 0;
@@ -194,6 +193,9 @@ export default async function MissionsPage({
       latestTaskId,
       costBudgetUsd: (obj as any).costBudgetUsd ?? null,
       spendUsd: null,
+      segments,
+      healthState: deriveHealth(obj, obj.tasks || []),
+      inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
     };
   });
 

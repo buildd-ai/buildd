@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, formatNextRun, timeAgo } from '@/lib/mission-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import TaskCard from '@/components/TaskCard';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -181,7 +182,7 @@ export default async function MissionDetailPage({
   const allTasksCount = mission.tasks?.length || 0;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, completedTasks, progress: progressPct } = computeMissionProgress(mission.tasks || []);
+  const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
   // Completed missions always show 100% regardless of individual task outcomes.
   const progress = mission.status === 'completed' ? 100 : progressPct;
 
@@ -197,11 +198,15 @@ export default async function MissionDetailPage({
     lastRunAt: (mission.schedule as any)?.lastRunAt || null,
     nextRunAt: (mission.schedule as any)?.nextRunAt || null,
   });
-  const healthDisplay = HEALTH_DISPLAY[health];
+  const healthState = deriveHealth(mission, mission.tasks || []);
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
   const isManualMode = orchestrationMode === 'manual';
+  const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
+  const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
+  const driveNextRun = formatNextRun(detailNextScanMins, detailNextRunAt ? String(detailNextRunAt) : null);
+  const inFlightTasks = (mission.tasks || []).flatMap(t => (t.workers || []).filter(w => ['idle', 'running', 'starting', 'waiting_input'].includes(w.status)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns })));
 
   // Heartbeat data — derived from schedule's taskTemplate.context
   const templateContext = (mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -372,9 +377,7 @@ export default async function MissionDetailPage({
           initialDescription={mission.description}
           healthPill={
             <span className="flex items-center gap-2 flex-wrap">
-              <span className={`health-pill ${healthDisplay.colorClass}`}>
-                {healthDisplay.label}
-              </span>
+              <MissionBadges mission={{ ...mission, lastDeferralReason: (mission.schedule as any)?.lastDeferralReason, lastDeferredAt: (mission.schedule as any)?.lastDeferredAt }} health={healthState} nextRun={driveNextRun} />
               {isHeartbeat && (
                 <HeartbeatStatusBadge
                   lastStatus={lastHeartbeatStatus}
@@ -414,15 +417,7 @@ export default async function MissionDetailPage({
                 {progress}%
               </span>
             </div>
-            <div className="h-[3px] rounded-full bg-[rgba(255,245,230,0.06)] overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{
-                  width: `${progress}%`,
-                  background: 'linear-gradient(90deg, var(--status-success), #7ad4aa)',
-                }}
-              />
-            </div>
+            <MissionProgress missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
             {/* BT-13: 'awaiting merge' count in progress display */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
               {mission.status === 'completed'
