@@ -542,8 +542,12 @@ times. The post-migration checklist is the handoff document.
 
 ## Build Tasks
 
-The following discrete implementation tasks should be filed for approval after Max reviews this
-spec. Each is independently shippable in the order listed.
+> **Shipped** — BT-1…BT-16 all implemented (schema + migration `0088`, the `workspace-migration`
+> lib, `migrate-access`, the precheck/execute/repair routes, the settings Danger-Zone section, and
+> `WorkspaceMigrationModal`), with 42 passing tests. The table below is retained for reference.
+
+The following discrete implementation tasks were filed and shipped in the order listed. Each was
+independently shippable.
 
 | # | Title | Files / areas | Notes |
 |---|---|---|---|
