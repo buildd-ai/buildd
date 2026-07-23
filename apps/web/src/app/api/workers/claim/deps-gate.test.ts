@@ -32,3 +32,9 @@ describe('claim dependency gate — satisfying statuses', () => {
     expect(statuses.sort()).toEqual(['cancelled', 'completed']);
   });
 });
+
+// The open-PR guard in `dependenciesSatisfied()` also checks pr_lifecycle_status:
+// a worker whose PR was closed without merging (prLifecycleStatus = 'closed')
+// must NOT permanently block the dependent. The behavioural coverage lives in
+// the path-overlap claim guard tests in route.test.ts, which mock out SQL and
+// exercise the in-memory filtering of closed PRs before findBlockingPr() is called.
