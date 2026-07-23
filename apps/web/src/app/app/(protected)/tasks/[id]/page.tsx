@@ -87,6 +87,13 @@ export default async function TaskDetailPage({
     ? await db.query.tasks.findMany({
         where: inArray(tasks.id, depTaskIds),
         columns: { id: true, title: true, status: true },
+        with: {
+          workers: {
+            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            orderBy: desc(workers.createdAt),
+            limit: 1,
+          },
+        },
       })
     : [];
 
@@ -227,7 +234,12 @@ export default async function TaskDetailPage({
   }
 
   // Dependency resolution checks
-  const unresolvedDeps = depTasks.filter(d => d.status !== 'completed');
+  // A dep is unresolved if: not completed/cancelled, OR completed but has an open (non-closed) PR
+  const unresolvedDeps = depTasks.filter(d => {
+    if (d.status !== 'completed') return true;
+    const latestWorker = (d as any).workers?.[0];
+    return latestWorker?.prNumber && !latestWorker.mergedAt && latestWorker.prLifecycleStatus !== 'closed';
+  });
   const isBlocked = task.status === 'pending' && unresolvedDeps.length > 0;
   const isBudgetPaused = task.status === 'pending' && !!(task.context as any)?.budgetExhausted;
   const budgetBackendLabel = task.backend === 'codex' ? 'Codex' : 'Claude';
@@ -414,31 +426,56 @@ export default async function TaskDetailPage({
         </div>
 
         {/* Blocked Banner — shown when task has unresolved dependencies */}
-        {isBlocked && (
-          <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
-            <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              This task is blocked — waiting for {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'} to complete
+        {isBlocked && (() => {
+          const prBlockers = unresolvedDeps.filter(d => {
+            const w = (d as any).workers?.[0];
+            return d.status === 'completed' && w?.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed';
+          });
+          const inProgressBlockers = unresolvedDeps.filter(d => d.status !== 'completed');
+          return (
+            <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+              <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Blocked — waiting on {unresolvedDeps.length} {unresolvedDeps.length === 1 ? 'dependency' : 'dependencies'}
+              </div>
+              <div className="space-y-1.5 ml-6">
+                {prBlockers.map((dep) => {
+                  const w = (dep as any).workers?.[0];
+                  return (
+                    <div key={dep.id} className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={w.prUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium text-accent-text hover:underline"
+                      >
+                        Merge PR #{w.prNumber} ↗
+                      </a>
+                      <span className="text-[12px] text-text-muted">
+                        {dep.title}
+                      </span>
+                    </div>
+                  );
+                })}
+                {inProgressBlockers.map((dep) => (
+                  <div key={dep.id} className="flex items-center gap-2">
+                    <Link
+                      href={`/app/tasks/${dep.id}`}
+                      className="text-sm text-text-secondary hover:underline"
+                    >
+                      {dep.title}
+                    </Link>
+                    <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
+                      {dep.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="space-y-1.5 ml-6">
-              {unresolvedDeps.map((dep) => (
-                <div key={dep.id} className="flex items-center gap-2">
-                  <Link
-                    href={`/app/tasks/${dep.id}`}
-                    className="text-sm text-primary-400 hover:underline"
-                  >
-                    {dep.title}
-                  </Link>
-                  <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                    {dep.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
         {isBudgetPaused && !isBlocked && (
