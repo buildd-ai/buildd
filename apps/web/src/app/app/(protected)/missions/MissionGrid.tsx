@@ -57,6 +57,7 @@ export interface MissionItem {
   segments: MissionSegment[];
   healthState: import('@/lib/mission-helpers').Health;
   inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
+  blockedPRCount: number;
 }
 
 interface WorkspaceBucket {
@@ -424,6 +425,17 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               <span className="text-accent-text truncate max-w-[180px]">
                 {mission.latestFinding.title}
               </span>
+            </>
+          )}
+          {mission.blockedPRCount > 0 && (
+            <>
+              <span className="mx-0.5">&middot;</span>
+              <Link
+                href="/app/home"
+                className="text-primary font-medium hover:underline"
+              >
+                blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
+              </Link>
             </>
           )}
         </div>

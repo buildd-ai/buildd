@@ -114,12 +114,12 @@ export default async function MissionsPage({
     with: {
       workspace: { columns: { id: true, name: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true },
+        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, dependsOn: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
         limit: 20,
         with: {
           workers: {
-            columns: { id: true, status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true },
+            columns: { id: true, status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },
             limit: 5,
           },
         },
@@ -127,6 +127,32 @@ export default async function MissionsPage({
       schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
     },
   });
+
+  // Compute blocked-PR count per mission (for LAYER 3 chip)
+  // Build a cross-mission task map to resolve dependsOn across tasks
+  const allMissionTaskMap = new Map<string, { id: string; status: string; workers: any[] }>();
+  for (const m of allMissions) {
+    for (const t of m.tasks || []) {
+      allMissionTaskMap.set(t.id, t as any);
+    }
+  }
+  function countBlockedByPR(missionTasks: any[]): number {
+    let count = 0;
+    for (const t of missionTasks) {
+      if (t.status !== 'pending') continue;
+      const deps = (t.dependsOn as string[] | null) ?? [];
+      for (const depId of deps) {
+        const dep = allMissionTaskMap.get(depId);
+        if (!dep || dep.status !== 'completed') continue;
+        const depW = dep.workers?.[0];
+        if (depW?.prNumber && !depW.mergedAt && depW.prLifecycleStatus !== 'closed') {
+          count++;
+          break; // count this pending task once even if multiple deps block it
+        }
+      }
+    }
+    return count;
+  }
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
@@ -196,6 +222,7 @@ export default async function MissionsPage({
       segments,
       healthState: deriveHealth(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
+      blockedPRCount: countBlockedByPR(obj.tasks || []),
     };
   });
 
