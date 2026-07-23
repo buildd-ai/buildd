@@ -1,6 +1,8 @@
 # Friction Task Dedup + Manifest Inference
 
-**Status:** Proposed
+**Status:** Implemented
+**Shipped:** PR #1376 (dedup gate), PR #1380 (manifest inference), PR #1384 (closed-PR unblock)
+**Verified:** `bwrap-incident-replay.test.ts` — full scenario test (phase 1–5)
 **Related:**
 - `apps/runner/src/error-trace-scanner.ts` — pattern definitions and `ErrorTrace` type
 - `packages/core/path-overlap.ts` — `pathsOverlap`, `findBlockingPr`
@@ -261,15 +263,17 @@ Replaying the bwrap incident (three workers, same pattern, same workspace):
 
 ---
 
-## Open Questions
+## Open Questions — Resolved
 
-1. **Should dedup append to description or fire a missionNotes event?** Appending to description is immediate but makes the field noisier. A `missionNotes` row would be structurally cleaner but requires joining an extra table. Lean toward description append (simpler, visible in the task detail view today).
+_All questions below were resolved during implementation. Answers reflect shipped code._
 
-2. **Should `frictionExcerpt` be a required field or inferred from description?** Requiring it gives better path extraction but adds friction to the filing flow (pun intended). Lean toward inferring from description if `frictionExcerpt` is absent — the fallback component table is good enough for the known patterns.
+1. **Should dedup append to description or fire a missionNotes event?** → **Description append** (shipped). `POST /api/tasks` uses `sql\`${tasks.description} || ${appendText}\`` to append. The response carries `deduplicated: true` so the MCP caller can format it distinctly.
 
-3. **Should `inferFrictionManifest` live in `path-overlap.ts` or a new `friction-manifest.ts`?** The function depends on `error-trace-scanner.ts`'s slug names, which `path-overlap.ts` doesn't currently import. A new module avoids circular imports. Lean toward `packages/core/friction-manifest.ts`.
+2. **Should `frictionExcerpt` be a required field or inferred from description?** → **Optional, inferred from description if absent** (shipped). `route.ts` reads `incomingContext?.frictionExcerpt ?? description ?? ''`. Agents that include `frictionExcerpt` get better path extraction; those that omit it fall back to the component table.
 
-4. **PR-close unblock fix scope**: The `deps-gate.ts` fix for closed PRs applies globally (not just friction tasks). It's strictly correct behavior — a closed PR should never permanently block a downstream task. No objection to landing it broadly.
+3. **Should `inferFrictionManifest` live in `path-overlap.ts` or a new `friction-manifest.ts`?** → **`packages/core/friction-manifest.ts`** (shipped). Avoids importing error-trace slug names into `path-overlap.ts` and keeps the component table co-located with the inference logic.
+
+4. **PR-close unblock fix scope** → **Applied globally** (shipped in PR #1384). `deps-gate.ts` adds `COALESCE(w.pr_lifecycle_status, '') != 'closed'` to the open-PR EXISTS guard. The claim route pre-fetch filters `prLifecycleStatus !== 'closed'` before building the `openPrTasksByWorkspace` map. Both guards apply to all tasks, not only friction tasks — the correct behavior is global.
 
 ---
 
