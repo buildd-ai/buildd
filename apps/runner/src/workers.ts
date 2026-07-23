@@ -66,6 +66,8 @@ type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 // Claude Code's sandbox makes every Bash call fail with a bwrap error. We detect
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
+/** Test-only: reset the bwrap probe cache so each test starts from a known state. */
+export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; }
 function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
@@ -2043,6 +2045,14 @@ export class WorkerManager {
         ? { enabled: false }
         : (gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined);
 
+      // Claude Code also uses bwrap for subprocess env scrubbing independently of the
+      // sandbox feature. When bwrap namespaces are unavailable, disable scrubbing too
+      // so shell commands don't fail with "No permissions to create a new namespace"
+      // even on tasks that have sandbox disabled.
+      if (!isBwrapSupported()) {
+        cleanEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '0';
+      }
+
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
 
@@ -3465,6 +3475,23 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.pendingErrorTraces.push(...cleanedTraces);
             for (const t of cleanedTraces) {
               console.log(`[Worker ${worker.id}] error-trace match: pattern=${t.pattern} excerpt="${t.excerpt.slice(0, 80)}"`);
+            }
+
+            // bwrap namespace recovery: the preflight check may have given a false
+            // positive (e.g. runner started with old code, or setuid bwrap let the
+            // probe pass while Claude Code's non-root invocation fails). When the
+            // first actual failure surfaces, flip the cache and abort the current
+            // task so a clean retry runs with sandbox disabled from the start.
+            if (traces.some(t => t.pattern === 'bwrap_namespace_denied') && _bwrapSupported !== false) {
+              _bwrapSupported = false;
+              console.warn(
+                `[runner] bwrap namespace creation failed at runtime for worker ${worker.id} — ` +
+                'sandbox disabled globally. Task aborted for clean retry without sandbox.',
+              );
+              worker.error = 'bwrap sandbox unavailable on this host (user namespace creation blocked). ' +
+                'Runner has disabled sandbox. Retry the task — it will run without sandboxing.';
+              const session = this.sessions.get(worker.id);
+              if (session) session.abortController.abort();
             }
           }
 

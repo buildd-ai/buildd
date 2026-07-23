@@ -1,6 +1,12 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
 // ── mocks (before any imports that trigger module loading) ────────────────────
+
+// Some tests assign global.fetch = mock(...) directly without restoring it.
+// Save the real fetch here and restore it after all tests so other test files
+// in the same Bun worker don't inherit a dirty spy with accumulated call counts.
+const _realFetch = globalThis.fetch;
+afterAll(() => { globalThis.fetch = _realFetch; });
 
 const mockUpdate = mock(() => ({
   set: mock(() => ({

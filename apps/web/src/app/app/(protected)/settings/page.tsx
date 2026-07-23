@@ -12,6 +12,7 @@ import RunnerTokensSection from './RunnerTokensSection';
 import AgentBackendsSection from './AgentBackendsSection';
 import NotificationsSection from './NotificationsSection';
 import ConnectorsSection from './ConnectorsSection';
+import WorkspaceMigrationSection from './WorkspaceMigrationSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -93,6 +94,12 @@ export default async function SettingsPage() {
         <RunnerTokensSection
           accounts={allAccounts.map((a: any) => ({ ...a, hasOauthToken: !!a.oauthToken }))}
           workspaces={filteredWorkspaces}
+        />
+
+        {/* Workspace Migration (Danger Zone) */}
+        <WorkspaceMigrationSection
+          workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name, teamId: ws.teamId }))}
+          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
         />
 
       </div>

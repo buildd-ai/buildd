@@ -73,7 +73,7 @@ describe('checkBwrapSupport', () => {
     }
   });
 
-  it('uses --unshare-user in the bwrap test command', () => {
+  it('uses --unshare-user --unshare-pid --unshare-net in the bwrap test command', () => {
     const calledCmds: string[] = [];
     mockExecSync.mockImplementation((cmd: string) => {
       calledCmds.push(cmd);
@@ -82,8 +82,23 @@ describe('checkBwrapSupport', () => {
       throw new Error('not found');
     });
     checkBwrapSupport();
-    const bwrapCmd = calledCmds.find(c => c.includes('--unshare-user'));
+    const bwrapCmd = calledCmds.find(c => c.includes('bwrap') && c.includes('echo'));
     expect(bwrapCmd).toBeDefined();
+    expect(bwrapCmd).toContain('--unshare-user');
+    expect(bwrapCmd).toContain('--unshare-pid');
+    expect(bwrapCmd).toContain('--unshare-net');
+  });
+
+  it('returns false when pid namespace creation fails (but user namespace would succeed)', () => {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'which bwrap') return Buffer.from('/usr/bin/bwrap\n');
+      // Simulate: --unshare-pid and --unshare-net blocked even though --unshare-user would work
+      if (typeof cmd === 'string' && cmd.includes('--unshare-pid')) {
+        throw new Error('bwrap: No permissions to create a new namespace');
+      }
+      return Buffer.from('ok\n');
+    });
+    expect(checkBwrapSupport()).toBe(false);
   });
 });
 

@@ -314,7 +314,7 @@ function checkBwrap(): CheckResult {
   return {
     name: 'bwrap',
     status: 'warn',
-    message: 'bwrap installed but user namespaces unavailable (kernel.unprivileged_userns_clone=0?) — runner will force sandbox disabled',
+    message: 'bwrap installed but namespace creation failed (user/pid/net — check kernel.unprivileged_userns_clone, seccomp, or AppArmor) — runner will force sandbox + subprocess scrubbing disabled',
   };
 }
 

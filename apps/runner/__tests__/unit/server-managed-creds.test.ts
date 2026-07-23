@@ -108,6 +108,7 @@ mock.module('../../src/env-scan', () => ({
   // `const { warnings } = checkMcpPreFlight(...)` yield undefined there,
   // crashing the WorkerManager state-transition tests.
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  checkBwrapSupport: () => true,
 }));
 
 const { WorkerManager, teamKeyOf } = await import('../../src/workers');

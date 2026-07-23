@@ -111,6 +111,7 @@ mock.module('../../src/session-logger', () => ({
 mock.module('../../src/env-scan', () => ({
   scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
   checkMcpPreFlight: () => ({ warnings: [] }),
+  checkBwrapSupport: () => true,
 }));
 
 const { WorkerManager } = await import('../../src/workers');

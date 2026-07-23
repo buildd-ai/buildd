@@ -78,6 +78,7 @@ mock.module('../../src/env-scan', () => ({
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
   parseMcpJson: () => [],
   scanMcpServersRich: () => [],
+  checkBwrapSupport: () => true,
 }));
 
 mock.module('../../src/session-logger', () => ({

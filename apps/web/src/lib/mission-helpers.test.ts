@@ -4,6 +4,8 @@ import {
   deriveMissionHealth,
   deriveDriveState,
   deriveHealth,
+  getDrivePresentation,
+  selectInFlightTasks,
   FILTER_TO_GROUPS,
   GROUP_ORDER,
   HEALTH_DISPLAY,
@@ -356,5 +358,30 @@ describe('deriveHealth', () => {
     const health = deriveHealth(noDepMission, [makeTask('completed'), makeTask('failed')]);
     expect(drive).toBe<DriveState>('AUTO');
     expect(health).toBe<Health>('FAILING');
+  });
+});
+
+describe('mission card presentation', () => {
+  it('manual drive copy never contains a next-run countdown', () => {
+    const presentation = getDrivePresentation('MANUAL', { text: 'Next run in 9m', urgency: 'imminent' });
+    expect(presentation.label).toBe('MANUAL');
+    expect(presentation.detail).toBe('Disarmed · Run now to advance');
+    expect(presentation.detail).not.toContain('Next run');
+  });
+
+  it('auto drive includes the available countdown', () => {
+    expect(getDrivePresentation('AUTO', { text: 'Next run in 9m', urgency: 'imminent' })).toEqual({
+      label: 'AUTO', detail: 'Next run in 9m', tone: 'info',
+    });
+  });
+
+  it('selects the longest-running task and reports overflow', () => {
+    const result = selectInFlightTasks([
+      { id: 'new', title: 'New task', startedAt: '2026-07-23T11:50:00Z', turns: 2 },
+      { id: 'old', title: 'Old task', startedAt: '2026-07-23T11:00:00Z', turns: 8 },
+    ], new Date('2026-07-23T12:00:00Z').getTime());
+    expect(result.primary?.id).toBe('old');
+    expect(result.primary?.meta).toBe('60m, 8 turns');
+    expect(result.overflow).toBe(1);
   });
 });
