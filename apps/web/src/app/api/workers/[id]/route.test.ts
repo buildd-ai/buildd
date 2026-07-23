@@ -26,6 +26,8 @@ const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
 const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
+const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockDecrypt = mock((value: string) => value);
 
 // Explicit `db.select(...)` (added to dodge the RQB "missing FROM-clause" bug)
 // is used for the task-row fetches in the handler. The chain is fully thenable
@@ -74,6 +76,7 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
       connectors: { findFirst: mockConnectorsFindFirst },
+      secrets: { findMany: mockSecretsFindMany },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -90,10 +93,15 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
+  or: (...args: any[]) => ({ args, type: 'or' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+}));
+
+mock.module('@buildd/core/secrets', () => ({
+  decrypt: mockDecrypt,
 }));
 
 const mockAccountsUpdate = mock(() => ({
@@ -3252,6 +3260,42 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.currentAction).toBe('Reading main.ts');
+    });
+
+    it('redacts a registered secret before DB persistence and Pusher emission', async () => {
+      const exposed = 'cue-dispatch-secret-value-123456';
+      let capturedSet: any = null;
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: 'team-1' });
+      mockSecretsFindMany.mockResolvedValue([
+        { encryptedValue: exposed, label: 'DISPATCH_API_KEY', purpose: 'mcp_credential' },
+      ]);
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: null, milestones: [], pendingInstructions: null,
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          currentAction: `tool output: ${exposed}`,
+          taskProgress: [{ message: `tool result ${exposed}` }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(capturedSet)).not.toContain(exposed);
+      expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain(exposed);
+      expect(capturedSet.currentAction).toContain('[REDACTED:DISPATCH_API_KEY]');
     });
   });
 

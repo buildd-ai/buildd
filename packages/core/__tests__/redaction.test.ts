@@ -309,6 +309,19 @@ describe('PII_PATTERNS', () => {
 import { createSecretRedactor, redactSecretsInBody } from '../redaction';
 
 describe('createSecretRedactor', () => {
+  it('preserves the registered secret label', () => {
+    const redact = createSecretRedactor([{ label: 'DISPATCH_API_KEY', value: 'dispatch-secret-value' }]);
+    expect(redact('key=dispatch-secret-value')).toBe('key=[REDACTED:DISPATCH_API_KEY]');
+  });
+
+  it('redacts common credential shapes without a registered value', () => {
+    const redact = createSecretRedactor([]);
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue123';
+    expect(redact(`Authorization: Bearer ${jwt}`)).toBe('Authorization: [REDACTED:authorization]');
+    expect(redact('token=sk-proj-abcdefghijklmnopqrstuvwxyz123456')).toBe('token=[REDACTED:token]');
+    expect(redact(`jwt=${jwt}`)).toBe('jwt=[REDACTED:jwt]');
+    expect(redact(`hex=${'a1'.repeat(24)}`)).toBe('hex=[REDACTED:credential]');
+  });
   it('redacts a single secret value from text', () => {
     const redact = createSecretRedactor(['bld_abc123secretvalue']);
     expect(redact('my key is bld_abc123secretvalue!')).toBe('my key is [REDACTED]!');
@@ -428,5 +441,17 @@ describe('redactSecretsInBody', () => {
     const original = JSON.parse(JSON.stringify(body));
     redactSecretsInBody(body, secrets);
     expect(body).toEqual(original);
+  });
+
+  it('recursively redacts tool-call inputs, outputs, transcripts, and progress payloads', () => {
+    const body = {
+      toolCalls: [{ input: { command: 'echo mysupersecretkey' }, output: 'mysupersecretkey' }],
+      transcript: [{ content: [{ type: 'text', text: 'mysupersecretkey' }] }],
+      taskProgress: { message: 'using mysupersecretkey' },
+    };
+    const result = redactSecretsInBody(body, [{ label: 'CUE_SECRET', value: 'mysupersecretkey' }]);
+    expect(JSON.stringify(result)).not.toContain('mysupersecretkey');
+    expect(result.toolCalls[0].output).toBe('[REDACTED:CUE_SECRET]');
+    expect(result.taskProgress.message).toBe('using [REDACTED:CUE_SECRET]');
   });
 });
