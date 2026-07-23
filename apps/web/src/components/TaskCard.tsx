@@ -7,10 +7,10 @@ import {
   deriveTimestampLabel,
   isStaleWorker,
   type ChainPositionResult,
-  type SegmentState,
   type IntensityResult,
   type IntensityTier,
 } from '@/lib/task-presentation';
+import { SegmentStrip } from '@/components/SegmentStrip';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -56,61 +56,13 @@ export interface TaskCardProps {
 
 // ─── Chain strip ─────────────────────────────────────────────────────────────
 
-// Shape/fill distinguishes states without relying on color alone, so it
-// survives colorblindness and the monochrome brutalist palette.
-function SegmentGlyph({ state }: { state: SegmentState }) {
-  if (state === 'filled') {
-    return (
-      <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-        <rect x="1" y="1" width="8" height="8" fill="currentColor" />
-      </svg>
-    );
-  }
-  if (state === 'half') {
-    // Left half solid, right half outlined — the "silent blocker" state.
-    // Unambiguous at small size: two distinct fills on the same square.
-    return (
-      <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-        <rect x="1" y="1" width="4" height="8" fill="currentColor" />
-        <rect x="5" y="1" width="4" height="8" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    );
-  }
-  if (state === 'current') {
-    return (
-      <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-        <rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="2" />
-      </svg>
-    );
-  }
-  // empty
-  return (
-    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" className="opacity-35">
-      <rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1" />
-    </svg>
-  );
-}
-
-const SEGMENT_COLOR: Record<SegmentState, string> = {
-  filled: 'text-status-success',
-  half: 'text-status-warning',
-  current: 'text-text-primary',
-  empty: 'text-text-muted',
-};
-
 function ChainStrip({ chain }: { chain: ChainPositionResult }) {
   // Standalone task with no deps and no dependents: omit — never render 1/1.
   if (chain.total === 1) return null;
 
   return (
     <div className="flex items-center gap-1">
-      <div className="flex items-center gap-0.5">
-        {chain.segments.map((seg) => (
-          <span key={seg.taskId} className={SEGMENT_COLOR[seg.state]}>
-            <SegmentGlyph state={seg.state} />
-          </span>
-        ))}
-      </div>
+      <SegmentStrip segments={chain.segments} continuous={false} />
       <span className="font-mono text-[10px] text-text-muted tabular-nums">
         {chain.index}/{chain.total}
       </span>

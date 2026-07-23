@@ -15,13 +15,15 @@ import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 
 export const dynamic = 'force-dynamic';
 import {
   deriveMissionHealth,
+  deriveHealth,
   healthToGroup,
   formatNextRun,
-  HEALTH_DISPLAY,
   SECTION_DISPLAY,
   GROUP_ACCENT_CLASS,
   GROUP_ORDER,
@@ -117,6 +119,12 @@ export default async function HomePage({
     nextRunAt: string | null;
     workspaceName: string | null;
     orchestrationMode: string | null;
+    status: string;
+    segments: import('@buildd/core/mission-helpers').MissionSegment[];
+    healthState: import('@/lib/mission-helpers').Health;
+    inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
+    lastDeferralReason: string | null;
+    lastDeferredAt: string | null;
   }[] = [];
 
   let completedLast12h = 0;
@@ -405,12 +413,13 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true },
+            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
-                columns: { id: true, status: true },
+                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true },
+                with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true }, limit: 5 } },
               },
-              schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true } },
+              schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
               workspace: { columns: { id: true, name: true } },
             },
             limit: 50,
@@ -443,9 +452,7 @@ export default async function HomePage({
           }
 
           missions = allMissions.map(mission => {
-            const totalTasks = mission.tasks.length;
-            const completedTasks = mission.tasks.filter(t => t.status === 'completed').length;
-            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(mission.tasks);
             const activeWorkers = activeWorkerCounts[mission.id] || 0;
             const nextRunAt = (mission.schedule as any)?.nextRunAt ?? null;
             const lastRunAt = (mission.schedule as any)?.lastRunAt ?? null;
@@ -478,6 +485,12 @@ export default async function HomePage({
               nextRunAt: nextRunAt ? String(nextRunAt) : null,
               workspaceName: (mission.workspace as any)?.name || null,
               orchestrationMode,
+              status: mission.status,
+              segments,
+              healthState: deriveHealth(mission, mission.tasks),
+              inFlightTasks: mission.tasks.flatMap(t => t.workers.filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
+              lastDeferralReason: (mission.schedule as any)?.lastDeferralReason ?? null,
+              lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
             };
           });
         }
@@ -927,24 +940,19 @@ export default async function HomePage({
                             </div>
                             <div className="space-y-2">
                               {items.map((mission) => {
-                                const healthDisplay = HEALTH_DISPLAY[mission.health];
                                 const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
                                 const isHibernating = nextRun.urgency === 'far';
 
                                 return (
-                                  <Link
+                                  <div
                                     key={mission.id}
-                                    href={`/app/missions/${mission.id}`}
                                     className={`block card card-interactive mission-card ${GROUP_ACCENT_CLASS[groupKey]} p-4 hover:bg-[var(--card-hover)] transition-all duration-150 ${isHibernating ? 'mission-card-hibernating' : ''}`}
                                   >
                                     <div className="flex items-start justify-between gap-3 mb-1.5">
                                       <div className="flex items-center gap-2 min-w-0">
-                                        <span className="text-[15px] font-medium text-text-primary truncate">
+                                        <Link href={`/app/missions/${mission.id}`} className="text-[15px] font-medium text-text-primary truncate hover:text-accent-text">
                                           {mission.title}
-                                        </span>
-                                        <span className={`health-pill ${healthDisplay.colorClass}`}>
-                                          {healthDisplay.label}
-                                        </span>
+                                        </Link>
                                       </div>
                                       {mission.progress > 0 && (
                                         <span className="text-[20px] font-semibold text-accent-text tabular-nums flex-shrink-0">
@@ -957,19 +965,8 @@ export default async function HomePage({
                                         {mission.description}
                                       </p>
                                     )}
-                                    {mission.totalTasks > 0 && (
-                                      <div className="mb-2">
-                                        <div className="h-[3px] bg-[rgba(255,245,230,0.06)] overflow-hidden">
-                                          <div
-                                            className="h-full transition-all duration-500"
-                                            style={{
-                                              width: `${mission.progress}%`,
-                                              background: 'var(--accent)',
-                                            }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
+                                    <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+                                    {mission.totalTasks > 0 && <div className="my-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
                                     <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
                                       {mission.workspaceName && (
                                         <>
@@ -992,21 +989,8 @@ export default async function HomePage({
                                           </span>
                                         </>
                                       )}
-                                      {mission.orchestrationMode === 'manual' && mission.nextScanMins !== null ? (
-                                        <>
-                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
-                                          <span className="text-text-muted">Disarmed · Run now to advance</span>
-                                        </>
-                                      ) : nextRun.text ? (
-                                        <>
-                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0) && <span className="mx-0.5">&middot;</span>}
-                                          <span className={nextRun.urgency === 'imminent' ? 'next-run-imminent' : isHibernating ? 'italic text-text-muted' : ''}>
-                                            {nextRun.text}
-                                          </span>
-                                        </>
-                                      ) : null}
                                     </div>
-                                  </Link>
+                                  </div>
                                 );
                               })}
                             </div>

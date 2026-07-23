@@ -5,6 +5,39 @@ export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | '
 /** Will anything happen to this mission without the user? */
 export type DriveState = 'AUTO' | 'MANUAL' | 'QUIET_HOURS' | 'SEATS_FULL' | 'COMPLETE';
 
+export function getDrivePresentation(
+  drive: DriveState,
+  nextRun: { text: string; urgency: NextRunUrgency | null },
+): { label: string; detail: string; tone: 'info' | 'warning' | 'muted' } {
+  switch (drive) {
+    case 'MANUAL': return { label: 'MANUAL', detail: 'Disarmed · Run now to advance', tone: 'muted' };
+    case 'QUIET_HOURS': return { label: 'QUIET HOURS', detail: 'Deferred for quiet hours', tone: 'warning' };
+    case 'SEATS_FULL': return { label: 'SEATS FULL', detail: 'Deferred until a seat is free', tone: 'warning' };
+    case 'COMPLETE': return { label: 'COMPLETE', detail: '', tone: 'muted' };
+    case 'AUTO': return { label: 'AUTO', detail: nextRun.text, tone: 'info' };
+  }
+}
+
+export type InFlightTask = { id: string; title: string; startedAt: string | Date | null; turns: number };
+
+export function selectInFlightTasks(tasks: InFlightTask[], now = Date.now()): {
+  primary: (InFlightTask & { meta: string }) | null;
+  overflow: number;
+} {
+  const sorted = [...tasks].sort((a, b) => {
+    const aTime = a.startedAt ? new Date(a.startedAt).getTime() : now;
+    const bTime = b.startedAt ? new Date(b.startedAt).getTime() : now;
+    return aTime - bTime;
+  });
+  const task = sorted[0];
+  if (!task) return { primary: null, overflow: 0 };
+  const minutes = task.startedAt ? Math.max(0, Math.round((now - new Date(task.startedAt).getTime()) / 60_000)) : 0;
+  return {
+    primary: { ...task, meta: `${minutes}m, ${task.turns} turn${task.turns === 1 ? '' : 's'}` },
+    overflow: sorted.length - 1,
+  };
+}
+
 /**
  * Derives the drive state for a mission.
  * Priority: COMPLETE > MANUAL > QUIET_HOURS / SEATS_FULL > AUTO.
