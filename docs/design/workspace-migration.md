@@ -1,9 +1,27 @@
 # Workspace Migration — Design Spec
 
-> **Status:** Proposed — awaiting Max's approval before any implementation begins.
+> **Status:** Approved — implementation in progress (BT-1…BT-16).
 > **Context:** Workspaces are currently pinned to the team that created them. This spec defines
 > first-class workspace migration so owners can move a workspace (repo binding, tasks, missions,
 > schedules, roles/skills, secrets, connectors, knowledge) to a different team.
+
+### Service / machine-account handoff
+
+A common case is moving a machine-driven workspace (one dispatched to by an external caller via an
+admin API key) out of a human team into a dedicated **service team**. No new abstraction is
+required: a "service account" is simply a team whose admin credential is a team-scoped `bld_` API
+key, plus the runner account in that team's `account_workspaces`. Both are already covered by the
+entity inventory below (`account_workspaces` → WILL BREAK, team-scoped secrets → LEFT BEHIND). The
+only migration-specific addition for this case is a first-class line in the post-migration
+checklist:
+
+- **Issue a team-scoped admin API key** in the destination service team and set it as the external
+  caller's `BUILDD_API_ADMIN_KEY`. The source team's key stops matching the workspace's new
+  `teamId`, so dispatch fails until this is rotated.
+- **Re-add the runner account** to `account_workspaces` in the destination team, or dispatched
+  tasks stop being claimable.
+
+The workspace's `dataClass` (e.g. `sensitive`) is a workspace column and is unaffected by migration.
 
 ---
 
