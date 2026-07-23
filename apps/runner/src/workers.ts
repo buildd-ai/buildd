@@ -1399,10 +1399,10 @@ export class WorkerManager {
     // Build a secret redactor for this worker from the BUILDD_API_KEY and any
     // MCP credential values delivered during claim. Applies to milestones,
     // currentAction, error traces, and the history archive before persistence.
-    const secretValues: string[] = [
-      this.config.apiKey,
-      ...Object.values(worker.mcpSecrets ?? {}),
-    ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+    const secretValues = [
+      { label: 'BUILDD_API_KEY', value: this.config.apiKey },
+      ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
+    ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
 
@@ -3179,7 +3179,9 @@ If something is missing or incomplete, describe what and fix it now.`;
       const content = (msg as any).message?.content || [];
       for (const block of content) {
         if (block.type === 'text') {
-          const text = block.text.trim();
+          const redactText = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
+          const cleanBlockText = redactText(block.text);
+          const text = cleanBlockText.trim();
           if (text) {
             // R1: track the latest assistant text as worker.lastAssistantMessage.
             // For Claude this is also set authoritatively by the Stop hook
@@ -3205,11 +3207,10 @@ If something is missing or incomplete, describe what and fix it now.`;
             worker.phaseToolCount = 0;
             worker.phaseTools = [];
           }
-          const lines = block.text.split('\n');
-          const redactLine = this.secretRedactors.get(worker.id);
+          const lines = cleanBlockText.split('\n');
           for (const line of lines) {
             if (line.trim()) {
-              const cleanLine = redactLine ? redactLine(line) : line;
+              const cleanLine = line;
               worker.output.push(cleanLine);
               // Keep last 100 lines
               if (worker.output.length > 100) {
@@ -3223,7 +3224,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Detect tool use for phase tracking
         if (block.type === 'tool_use') {
           const toolName = block.name;
-          const input = block.input || {};
+          const rawInput = block.input || {};
+          const redactInput = this.secretRedactors.get(worker.id) ?? ((s: string) => s);
+          const input = JSON.parse(redactInput(JSON.stringify(rawInput)));
 
           // Add to unified timeline
           this.addChatMessage(worker, { type: 'tool_use', name: toolName, input, timestamp: Date.now() });

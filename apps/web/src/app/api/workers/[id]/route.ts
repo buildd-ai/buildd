@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq, and, desc, inArray, isNull, sql } from 'drizzle-orm';
+import { eq, and, or, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -33,40 +33,23 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 
-// bld_ API key pattern: prefix + at least 8 hex/alphanumeric chars.
-// Matches BUILDD_API_KEY values in free-text fields as a pattern-based fallback.
-const BUILDD_KEY_RE = /\bbld_[a-fA-F0-9]{8,}\b/g;
-
-function redactBuilddKeyPattern(body: Record<string, unknown>): Record<string, unknown> {
-  const redactStr = (s: string) => s.replace(BUILDD_KEY_RE, '[REDACTED]');
-  const out: Record<string, unknown> = { ...body };
-
-  if (typeof out.currentAction === 'string') out.currentAction = redactStr(out.currentAction);
-  if (typeof out.error === 'string') out.error = redactStr(out.error);
-  if (typeof out.summary === 'string') out.summary = redactStr(out.summary);
-
-  if (Array.isArray(out.milestones)) {
-    out.milestones = (out.milestones as any[]).map((m) =>
-      m && typeof m.label === 'string' ? { ...m, label: redactStr(m.label) } : m,
-    );
+function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
+  const values = [{ label, value: plaintext }];
+  try {
+    const parsed = JSON.parse(plaintext);
+    const visit = (value: unknown, path: string) => {
+      if (typeof value === 'string') values.push({ label: path, value });
+      else if (Array.isArray(value)) value.forEach((item, index) => visit(item, `${path}.${index}`));
+      else if (value && typeof value === 'object') {
+        for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`);
+      }
+    };
+    visit(parsed, label);
+  } catch {
+    // Plain scalar secret, already included above.
   }
-  if (Array.isArray(out.appendMilestones)) {
-    out.appendMilestones = (out.appendMilestones as any[]).map((m) =>
-      m && typeof m.label === 'string' ? { ...m, label: redactStr(m.label) } : m,
-    );
-  }
-  if (Array.isArray(out.appendErrorTraces)) {
-    out.appendErrorTraces = (out.appendErrorTraces as any[]).map((t) =>
-      t && typeof t.excerpt === 'string' ? { ...t, excerpt: redactStr(t.excerpt) } : t,
-    );
-  }
-  if (out.waitingFor && typeof (out.waitingFor as any).prompt === 'string') {
-    out.waitingFor = { ...(out.waitingFor as object), prompt: redactStr((out.waitingFor as any).prompt) };
-  }
-
-  return out;
+  return values;
 }
-
 // GET /api/workers/[id] - Get worker details
 export async function GET(
   req: NextRequest,
@@ -129,44 +112,43 @@ export async function PATCH(
   const wsForSensitivity = worker.workspaceId
     ? await db.query.workspaces.findFirst({
         where: eq(workspaces.id, worker.workspaceId),
-        columns: { dataClass: true },
+        columns: { dataClass: true, teamId: true },
       })
     : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
 
   let body = await req.json();
 
-  // Server-side secret redaction (defense in depth).
-  // The runner's outbound payload is already redacted, but this server-side pass
-  // catches any remaining secrets before they reach the DB or Pusher.
-  // We redact: (a) bld_* API key pattern from text fields, (b) decrypted MCP
-  // credential values for this workspace.
+  // Server-side secret redaction (defense in depth). Resolve every secret
+  // applicable to the worker's team/account/workspace, then recursively scrub
+  // the complete request before any DB write or Pusher emission.
+  const secretValues: Array<{ label: string; value: string }> = [];
   try {
-    const secretValues: string[] = [];
-
-    if (worker.workspaceId) {
+    if (worker.workspaceId && wsForSensitivity?.teamId) {
       const credRows = await db.query.secrets.findMany({
         where: and(
-          eq(secretsTable.purpose, 'mcp_credential'),
-          eq(secretsTable.workspaceId, worker.workspaceId),
+          eq(secretsTable.teamId, wsForSensitivity.teamId),
+          or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, worker.workspaceId)),
+          worker.accountId
+            ? or(isNull(secretsTable.accountId), eq(secretsTable.accountId, worker.accountId))
+            : isNull(secretsTable.accountId),
         ),
-        columns: { encryptedValue: true },
+        columns: { encryptedValue: true, label: true, purpose: true },
       });
       for (const row of credRows) {
         try {
           const val = decrypt(row.encryptedValue);
-          if (val) secretValues.push(val);
+          if (val) secretValues.push(...collectSecretValues(row.label || row.purpose, val));
         } catch {
           // Non-fatal: skip credentials that fail decryption
         }
       }
     }
 
-    body = redactSecretsInBody(body, secretValues);
-    body = redactBuilddKeyPattern(body);
   } catch {
-    // Non-fatal: redaction must never block a worker update
+    // Pattern redaction below still runs if secret lookup is unavailable.
   }
+  body = redactSecretsInBody(body, secretValues);
 
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,
