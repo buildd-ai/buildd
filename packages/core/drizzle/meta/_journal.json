@@ -617,6 +617,13 @@
       "when": 1784651279439,
       "tag": "0087_thick_radioactive_man",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1784809278365,
+      "tag": "0088_past_whistler",
+      "breakpoints": true
     }
   ]
 }
