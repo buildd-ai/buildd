@@ -623,9 +623,14 @@ export async function handleBuilddAction(
 
   switch (action) {
     case 'list_tasks': {
-      const data = await api('/api/tasks');
-      const allTasks = data.tasks || [];
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
+      // Scope the fetch server-side to shrink the payload: only active
+      // (non-terminal) tasks, and this workspace when we know it. The
+      // client-side filter below still narrows to the exact statuses.
+      const query = new URLSearchParams({ status: 'active' });
+      if (wsId) query.set('workspaceId', wsId);
+      const data = await api(`/api/tasks?${query.toString()}`);
+      const allTasks = data.tasks || [];
       // Include pending + assigned + in_progress so planners see all ongoing work,
       // not just tasks waiting to be claimed. This prevents duplicate task creation
       // when a planner checks existing work before creating new tasks.

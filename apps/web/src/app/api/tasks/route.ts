@@ -13,6 +13,7 @@ import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { pathsOverlap } from '@buildd/core/path-overlap';
+import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -77,24 +78,43 @@ export async function GET(req: NextRequest) {
       workspaceIds = await getUserWorkspaceIds(user!.id);
     }
 
+    // Optional query filters to scope the list and shrink the payload.
+    //   ?workspaceId=<id>  — restrict to a single accessible workspace
+    //   ?status=active     — only non-terminal tasks (drops the 24h terminal window)
+    // Both are used by the dependency picker so it stops fetching every
+    // workspace's task and filtering client-side (see DependencySelector).
+    const requestedWorkspaceId = req.nextUrl.searchParams.get('workspaceId');
+    const statusFilter = req.nextUrl.searchParams.get('status');
+
+    // Intersect the requested workspace with the caller's accessible set.
+    // If it isn't accessible, workspaceIds becomes empty → returns [] below
+    // without leaking whether the workspace exists.
+    if (requestedWorkspaceId) {
+      workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
+    }
+
     // Get tasks from the resolved workspace IDs (lightweight list view)
-    // Returns: all active tasks + completed/failed from the last 24h
+    // Default returns: all active tasks + completed/failed from the last 24h.
     const terminalStatuses = ['completed', 'failed'];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const activeOnly = statusFilter === 'active';
 
     const allTasks = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
           where: and(
             inArray(tasks.workspaceId, workspaceIds),
-            or(
-              // Active tasks (pending, assigned, in_progress, etc.)
-              notInArray(tasks.status, terminalStatuses),
-              // Terminal tasks from the last 24h
-              and(
-                inArray(tasks.status, terminalStatuses),
-                gte(tasks.updatedAt, oneDayAgo),
-              ),
-            ),
+            activeOnly
+              ? // Only active (non-terminal) tasks
+                notInArray(tasks.status, terminalStatuses)
+              : or(
+                  // Active tasks (pending, assigned, in_progress, etc.)
+                  notInArray(tasks.status, terminalStatuses),
+                  // Terminal tasks from the last 24h
+                  and(
+                    inArray(tasks.status, terminalStatuses),
+                    gte(tasks.updatedAt, oneDayAgo),
+                  ),
+                ),
           ),
           orderBy: desc(tasks.createdAt),
           limit: 200,
@@ -258,7 +278,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate and normalize pathManifest
-    const pathManifest: string[] | null =
+    let pathManifest: string[] | null =
       Array.isArray(rawPathManifest) && rawPathManifest.every((p: unknown) => typeof p === 'string')
         ? rawPathManifest
         : null;
@@ -293,6 +313,21 @@ export async function POST(req: NextRequest) {
           .where(eq(tasks.id, existing.id));
 
         return NextResponse.json({ ...existing, deduplicated: true }, { status: 200 });
+      }
+    }
+
+    // Infer pathManifest for friction tasks that don't supply one.
+    // On the dedup-miss path (new friction task), extract repo-relative paths
+    // from the error excerpt or fall back to the static component table.
+    // The inferred manifest then flows into the auto-dependsOn block below
+    // unchanged — no friction-specific handling downstream.
+    if (title.startsWith('[friction] ') && frictionSignature && !pathManifest) {
+      const excerpt = typeof incomingContext?.frictionExcerpt === 'string'
+        ? incomingContext.frictionExcerpt
+        : description || '';
+      const inferred = inferFrictionManifest(frictionSignature, excerpt);
+      if (inferred.length > 0) {
+        pathManifest = inferred;
       }
     }
 

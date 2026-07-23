@@ -61,7 +61,12 @@ export async function listTasks(options?: {
   status?: 'pending' | 'assigned' | 'completed' | 'failed';
   limit?: number;
 }): Promise<Task[]> {
-  const data = await apiCall<{ tasks: Task[] }>('/api/tasks');
+  // For non-terminal statuses, scope the fetch server-side to shrink the
+  // payload; the client-side filter below still narrows to the exact status.
+  // Terminal statuses fall through to the default (active + recent terminal).
+  const nonTerminal = options?.status === 'pending' || options?.status === 'assigned';
+  const path = nonTerminal ? '/api/tasks?status=active' : '/api/tasks';
+  const data = await apiCall<{ tasks: Task[] }>(path);
   let tasks = data.tasks || [];
 
   // Filter by status if provided

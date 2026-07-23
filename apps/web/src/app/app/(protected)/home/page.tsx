@@ -12,6 +12,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
 import TaskCard from '@/components/TaskCard';
+import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 
@@ -1077,28 +1078,27 @@ export default async function HomePage({
             ) : (
               <div className="card">
                 {recentActivity.map((event, i) => {
-                  const dotColor = event.type === 'completed'
-                    ? 'bg-text-muted'
-                    : 'bg-accent';
+                  const statusKey = event.type === 'completed' ? 'completed' : 'failed';
 
                   const row = (
                     <>
-                      <div className={`w-[7px] h-[7px] ${dotColor} flex-shrink-0 mt-1.5`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] text-text-primary truncate">
                           {event.title}
                         </div>
-                        <div className="text-[10px] text-text-muted mt-0.5">
+                        <div className="text-[10px] text-text-muted mt-0.5 truncate">
                           via {event.workerName}
                           {event.missionTitle && ` \u00B7 ${event.missionTitle}`}
+                          {' \u00B7 '}
+                          {timeAgo(event.timestamp)}
                         </div>
                       </div>
-                      <span className="font-mono text-[11px] text-text-muted whitespace-nowrap flex-shrink-0 pt-0.5">
-                        {timeAgo(event.timestamp)}
-                      </span>
+                      <div className="flex-shrink-0">
+                        <StatusBadge status={statusKey} />
+                      </div>
                     </>
                   );
-                  const rowClass = `flex items-start gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`;
+                  const rowClass = `flex items-center gap-3 px-3 py-2.5 ${i < recentActivity.length - 1 ? 'border-b border-border-default' : ''}`;
 
                   return event.taskId ? (
                     <Link key={event.id} href={`/app/tasks/${event.taskId}`} className={`${rowClass} hover:bg-surface-3 transition-colors`}>

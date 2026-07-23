@@ -35,16 +35,13 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
   useEffect(() => {
     if (!workspaceId) return;
     setLoadingTasks(true);
-    fetch('/api/tasks')
+    // Scope server-side to this workspace's active tasks so we don't pull
+    // every workspace's task list and filter it in the browser.
+    fetch(`/api/tasks?workspaceId=${encodeURIComponent(workspaceId)}&status=active`)
       .then(res => res.json())
       .then(data => {
         const all: TaskOption[] = (data.tasks || [])
-          .filter((t: any) =>
-            t.workspaceId === workspaceId &&
-            t.id !== excludeTaskId &&
-            t.status !== 'completed' &&
-            t.status !== 'failed'
-          )
+          .filter((t: any) => t.id !== excludeTaskId)
           .map((t: any) => ({ id: t.id, title: t.title, status: t.status }));
         setTasks(all);
       })
