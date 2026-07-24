@@ -117,7 +117,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset? }',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
-    update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
+    update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — records message and plan as progress milestones; workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) }',
@@ -807,30 +807,29 @@ export async function handleBuilddAction(
     case 'update_progress': {
       const workerId = resolveWorkerId(params.workerId, ctx);
 
-      // Plan submission
-      if (params.plan) {
-        await api(`/api/workers/${workerId}/plan`, {
-          method: 'POST',
-          body: JSON.stringify({ plan: params.plan }),
-        });
-        return text('Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.');
-      }
-
       let response;
       try {
-        const statusMilestone = params.message ? {
-          appendMilestones: [{
+        const progressMilestones = [
+          ...(params.message ? [{
             type: 'status',
             label: params.message,
             progress: params.progress || 0,
             ts: Date.now(),
-          }],
-        } : {};
+          }] : []),
+          ...(params.plan ? [{
+            type: 'plan',
+            label: params.plan,
+            progress: params.progress || 0,
+            ts: Date.now(),
+          }] : []),
+        ];
 
         const progressBody: Record<string, unknown> = {
           status: 'running',
           progress: params.progress || 0,
-          ...statusMilestone,
+          ...(progressMilestones.length > 0
+            ? { appendMilestones: progressMilestones }
+            : {}),
         };
         if (params.message) progressBody.currentAction = params.message;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
@@ -853,7 +852,7 @@ export async function handleBuilddAction(
         throw err;
       }
 
-      let resultText = `Progress updated: ${params.progress}%${params.message ? ` - ${params.message}` : ''}`;
+      let resultText = `Progress updated: ${params.progress}%${params.message ? ` - ${params.message}` : ''}${params.plan ? '\nPlan recorded as a progress milestone.' : ''}`;
 
       const instructions = response.instructions;
       if (instructions) {
