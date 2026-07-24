@@ -47,9 +47,12 @@ describe('pause_schedules', () => {
   });
 
   it('rejects non-admin tokens', async () => {
-    const result = await handleBuilddAction(api, 'pause_schedules', {}, workerContext()).catch((e) => e);
-    expect(result).toBeInstanceOf(Error);
-    expect((result as Error).message).toContain('admin-level token');
+    const result = await handleBuilddAction(api, 'pause_schedules', {}, workerContext());
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe('forbidden');
+    expect(body.tokenLevel).toBe('worker');
+    expect(body.requiredLevel).toBe('admin');
   });
 
   it('pauses all schedules in workspace by default', async () => {

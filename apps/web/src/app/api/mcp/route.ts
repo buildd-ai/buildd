@@ -245,6 +245,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       },
       instructions: `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated — use \`recall\`/\`learn\` instead; it remains callable for compatibility.
 
+**Token level:** ${accountLevel} — this determines which \`buildd\` actions are available. Actions not listed in the \`buildd\` tool schema require a higher-privilege token; calling them returns \`{"error":"forbidden",...}\` (a privilege failure, NOT an expired/invalid token).
+
 **Worker workflow:**
 1. \`recall\` (query: task title) BEFORE starting — check for prior gotchas and patterns.
 2. \`buildd\` action=claim_task → checkout the returned branch → do the work.
@@ -428,6 +430,21 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
         // Admin-only knowledge management ops — moved out of buildd_memory to reduce builder schema cost
         if (action === 'consolidate_knowledge' || action === 'memory_delete') {
+          // Guard: these are admin-only; non-admin tokens get a structured 403 (not a bare 401)
+          if (accountLevel !== 'admin') {
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: 'forbidden',
+                  reason: `action '${action}' requires admin token level`,
+                  tokenLevel: accountLevel,
+                  requiredLevel: 'admin',
+                }),
+              }],
+              isError: true,
+            };
+          }
           const wsId = await getWorkspaceId();
           if (!wsId && authType === 'oauth') {
             return {

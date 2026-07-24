@@ -403,6 +403,35 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
   return null;
 }
 
+// Actions that require admin level (non-admin tokens must get a structured 403)
+const adminActionsSet = new Set<string>([...adminActions]);
+
+/**
+ * Pre-flight admin level check. Returns a structured 403-style error result for
+ * non-admin tokens so that callers can distinguish privilege failures from
+ * authentication failures (expired/invalid tokens → 401; wrong level → 403).
+ *
+ * Using `return` instead of `throw` keeps the error in-band as a ToolResult
+ * and prevents the route-level catch from re-wrapping it as a generic "Error: …".
+ */
+async function requireAdminLevel(ctx: ActionContext, action: string): Promise<ToolResult | null> {
+  if (!adminActionsSet.has(action)) return null;
+  const level = await ctx.getLevel();
+  if (level === 'admin') return null;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        error: 'forbidden',
+        reason: `action '${action}' requires admin token level`,
+        tokenLevel: level,
+        requiredLevel: 'admin',
+      }),
+    }],
+    isError: true,
+  };
+}
+
 /**
  * Mutating actions that must be blocked when the calling worker's task has
  * been externally terminated (cancelled/failed by admin). This prevents a
@@ -609,6 +638,11 @@ export async function handleBuilddAction(
   // Check trigger-level restrictions before processing
   const levelErr = await requireWorkerLevel(ctx, action);
   if (levelErr) return levelErr;
+
+  // Admin-only pre-flight: returns structured 403 for non-admin tokens so agents
+  // can distinguish privilege gaps from expired/invalid auth (401 vs 403).
+  const adminErr = await requireAdminLevel(ctx, action);
+  if (adminErr) return adminErr;
 
   // Multi-workspace guard: OAuth tokens must pass workspaceId for ambiguous
   // actions when they can see >1 workspace.
@@ -1201,8 +1235,6 @@ export async function handleBuilddAction(
     }
 
     case 'create_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.cronExpression || !params.title) {
         throw new Error('name, cronExpression, and title are required');
       }
@@ -1251,8 +1283,6 @@ export async function handleBuilddAction(
     }
 
     case 'update_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.scheduleId) throw new Error('scheduleId is required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1291,8 +1321,6 @@ export async function handleBuilddAction(
     }
 
     case 'delete_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.scheduleId) throw new Error('scheduleId is required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1467,8 +1495,6 @@ export async function handleBuilddAction(
     }
 
     case 'pause_schedules': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
@@ -1549,8 +1575,6 @@ export async function handleBuilddAction(
     }
 
     case 'register_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.content) throw new Error('name and content are required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1584,8 +1608,6 @@ export async function handleBuilddAction(
     }
 
     case 'list_skills': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
@@ -1652,8 +1674,6 @@ export async function handleBuilddAction(
     }
 
     case 'get_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to fetch');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1688,8 +1708,6 @@ export async function handleBuilddAction(
     }
 
     case 'update_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to update');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1715,8 +1733,6 @@ export async function handleBuilddAction(
     }
 
     case 'delete_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to delete');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1732,8 +1748,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_secrets': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const subAction = params.action as string;
       if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
@@ -2163,8 +2177,6 @@ export async function handleBuilddAction(
     }
 
     case 'approve_plan': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.taskId) throw new Error('taskId is required');
 
       const data = await api(`/api/tasks/${params.taskId}/approve-plan`, {
@@ -2194,8 +2206,6 @@ export async function handleBuilddAction(
     }
 
     case 'reject_plan': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.taskId) throw new Error('taskId is required');
       if (!params.feedback) throw new Error('feedback is required');
 
@@ -2208,8 +2218,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_missions': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const missionAction = params.action as string;
       if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
@@ -2345,8 +2353,6 @@ export async function handleBuilddAction(
     // ── Workspaces ─────────────────────────────────────────────────────────
 
     case 'manage_workspaces': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsAction = params.action as string;
       if (!wsAction) throw new Error('action is required (list, create, update, create_repo, init)');
@@ -2469,8 +2475,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_watched_projects': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wpAction = params.action as string;
       if (!wpAction) throw new Error('action is required (list, create, update, delete, run)');
@@ -2532,8 +2536,6 @@ export async function handleBuilddAction(
     }
 
     case 'trigger_release': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const body: Record<string, unknown> = {};
@@ -2561,8 +2563,6 @@ export async function handleBuilddAction(
     }
 
     case 'release_status': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const qs = new URLSearchParams();
@@ -2677,8 +2677,6 @@ export async function handleBuilddAction(
     }
 
     case 'send_agent_message': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('send_agent_message requires an admin-level token');
       if (!params.taskId || !params.message) throw new Error('taskId and message are required');
 
       // Fetch task with workers so we can find the live worker by worker.status,
@@ -2723,8 +2721,6 @@ export async function handleBuilddAction(
     // NOT decide drift (a reranker always returns a best match, so a removed feature
     // still scores moderately against its semantic neighbour).
     case 'spec_compare': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('spec_compare requires an admin-level token (dev tooling)');
 
       const feature = (params.feature || params.query) as string | undefined;
       if (!feature) throw new Error('feature (or query) is required');
@@ -2756,8 +2752,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_model_tiers': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('manage_model_tiers requires an admin-level token');
 
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
