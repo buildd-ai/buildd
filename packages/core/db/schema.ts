@@ -824,7 +824,7 @@ export const artifacts = pgTable('artifacts', {
 // Mission notes — lightweight append-only feed for agent↔user communication
 export const missionNotes = pgTable('mission_notes', {
   id: uuid('id').primaryKey().defaultRandom(),
-  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
   authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
@@ -837,6 +837,7 @@ export const missionNotes = pgTable('mission_notes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   missionIdx: index('mission_notes_mission_idx').on(t.missionId),
+  taskIdx: index('mission_notes_task_idx').on(t.taskId),
   replyToIdx: index('mission_notes_reply_to_idx').on(t.replyTo),
   typeIdx: index('mission_notes_type_idx').on(t.type),
   statusIdx: index('mission_notes_status_idx').on(t.status),
