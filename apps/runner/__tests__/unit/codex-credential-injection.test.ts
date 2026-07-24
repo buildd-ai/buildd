@@ -66,9 +66,11 @@ describe('materializeCodexAuth', () => {
   });
 
   const cred = {
+    credentialType: 'oauth' as const,
     accessToken: 'tok_access_123',
     refreshToken: 'tok_refresh_456',
     accountId: 'acct_789',
+    idToken: 'id_tok_test',
     expiresAt: null,
   };
 
@@ -81,23 +83,28 @@ describe('materializeCodexAuth', () => {
     expect(existsSync(authPath)).toBe(true);
   });
 
-  fsTest('auth.json contains access_token, refresh_token, account_id', () => {
+  fsTest('auth.json uses the nested tokens shape required by codex-cli 0.144', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(authJson.access_token).toBe('tok_access_123');
-    expect(authJson.refresh_token).toBe('tok_refresh_456');
-    expect(authJson.account_id).toBe('acct_789');
+    // codex-cli 0.144 requires the nested { tokens: { access_token, refresh_token, account_id, id_token } } shape
+    expect(authJson.tokens.access_token).toBe('tok_access_123');
+    expect(authJson.tokens.refresh_token).toBe('tok_refresh_456');
+    expect(authJson.tokens.account_id).toBe('acct_789');
+    expect(authJson.tokens.id_token).toBe('id_tok_test');
   });
 
-  fsTest('auth.json does not contain extra sensitive fields', () => {
+  fsTest('auth.json does not expose expiresAt or other runner metadata', () => {
     const { codexHome } = materializeCodexAuth('w1', cred);
     dirs.push(codexHome);
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // expiresAt should NOT be in auth.json (it's metadata, not needed by Codex CLI)
-    expect(Object.keys(authJson).sort()).toEqual(['access_token', 'account_id', 'refresh_token']);
+    // expiresAt is runner metadata — must not appear in auth.json
+    expect(authJson.expiresAt).toBeUndefined();
+    expect(authJson.credentialType).toBeUndefined();
+    // Top-level shape: OPENAI_API_KEY (null), tokens (nested), last_refresh
+    expect(Object.keys(authJson).sort()).toEqual(['OPENAI_API_KEY', 'last_refresh', 'tokens']);
   });
 
   fsTest('temp dir is prefixed with "codex-"', () => {

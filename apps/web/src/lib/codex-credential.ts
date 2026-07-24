@@ -83,9 +83,17 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
   }
 
   const value: CodexAuthJson = { access_token, refresh_token, account_id };
-  // id_token is required by codex-cli's auth.json parser — capture it if present.
+  // id_token is REQUIRED by codex-cli 0.144's auth.json parser — reject blobs that omit it.
   const id_token = src.id_token ?? root.id_token;
-  if (typeof id_token === 'string') value.id_token = id_token;
+  if (typeof id_token !== 'string' || id_token.length === 0) {
+    return {
+      ok: false,
+      error:
+        "OAuth credential is missing required field 'id_token'. " +
+        "Copy the complete ~/.codex/auth.json — the ChatGPT login writes all required fields.",
+    };
+  }
+  value.id_token = id_token;
 
   // Explicit lifetime fields can live at the root or alongside the tokens.
   const expiresIn = root.expires_in ?? src.expires_in;
@@ -587,6 +595,22 @@ export async function verifyCodexCredential(secretId: string): Promise<VerifyRes
   // regardless of whether the credential is valid — it cannot confirm a good
   // OAuth cred or detect a revoked one. Use the refresh grant instead: this is
   // what the Codex CLI exercises and what actually fails on revocation.
+
+  // Fast-fail: codex-cli 0.144 requires id_token in auth.json. A stored blob
+  // without it will always crash the worker at spawn time. Detect now so health
+  // is stamped and claim-time resolution can skip this credential.
+  if (!blob.id_token) {
+    const missingIdErr =
+      'Stored credential is incomplete (missing id_token). ' +
+      'Reconnect ChatGPT in Settings → Credentials to fix this.';
+    await db
+      .update(secrets)
+      .set({ lastVerifiedAt: sql`NOW()`, lastVerificationError: missingIdErr, updatedAt: sql`NOW()` })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+    await recordCredentialAuthFailure(secretId, missingIdErr);
+    return { verified: false, error: missingIdErr };
+  }
+
   if (!blob.refresh_token) {
     return { verified: false, error: 'No refresh token available' };
   }
@@ -614,6 +638,9 @@ export async function verifyCodexCredential(secretId: string): Promise<VerifyRes
         : blob.refresh_token;
       const expiresIn = typeof tokens.expires_in === 'number' ? tokens.expires_in : null;
       const tokenExpiresAt = expiresIn != null ? new Date(Date.now() + expiresIn * 1000) : null;
+      // Preserve id_token: the refresh response may return a new one; keep the prior
+      // one if omitted. codex-cli requires id_token in auth.json — never drop it.
+      const newIdToken = typeof tokens.id_token === 'string' ? tokens.id_token : blob.id_token;
 
       // Merge token write-back + verification stamp into one DB update
       await db
@@ -623,6 +650,7 @@ export async function verifyCodexCredential(secretId: string): Promise<VerifyRes
             access_token: newAccessToken,
             refresh_token: newRefreshToken,
             account_id: blob.account_id,
+            id_token: newIdToken,
           }),
           ...(tokenExpiresAt ? { tokenExpiresAt } : {}),
           lastRefreshedAt: sql`NOW()`,
