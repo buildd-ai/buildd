@@ -22,14 +22,18 @@ describe('send_agent_message', () => {
   });
 
   it('requires admin level', async () => {
-    await expect(
-      handleBuilddAction(
-        mockApi as unknown as ApiFn,
-        'send_agent_message',
-        { taskId: TASK_ID, message: 'hello' },
-        ctx({ getLevel: async () => 'worker' }),
-      ),
-    ).rejects.toThrow('admin-level token');
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'send_agent_message',
+      { taskId: TASK_ID, message: 'hello' },
+      ctx({ getLevel: async () => 'worker' }),
+    );
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe('forbidden');
+    expect(body.tokenLevel).toBe('worker');
+    expect(body.requiredLevel).toBe('admin');
+    expect(mockApi).not.toHaveBeenCalled();
   });
 
   it('requires taskId and message', async () => {

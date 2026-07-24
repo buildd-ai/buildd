@@ -34,11 +34,13 @@ function adminCtx(overrides: Partial<ActionContext> = {}): ActionContext {
 
 describe('spec_compare', () => {
   it('rejects non-admin tokens', async () => {
-    const err = await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, {
+    const result = await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, {
       workspaceId: WS_ID, getWorkspaceId: async () => WS_ID, getLevel: async () => 'worker',
-    }).catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toContain('admin');
+    });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe('forbidden');
+    expect(body.requiredLevel).toBe('admin');
   });
 
   it('requires a feature/query', async () => {
