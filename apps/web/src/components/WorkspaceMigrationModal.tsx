@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { formatOutcomeDetail, isPhaseSuccess, formatPhaseLabel } from '@/lib/migration-outcomes';
 
 // Redeclared locally — do NOT import from @/lib/workspace-migration (server-only db code).
 type EntityDisposition =
@@ -42,7 +43,8 @@ interface DryRunReport {
 interface ExecuteOutcome {
   phase: string;
   status: string;
-  detail?: string;
+  // The API returns detail as an object (e.g. { moved: true }); coerced for display.
+  detail?: unknown;
 }
 
 interface Workspace {
@@ -81,6 +83,29 @@ function dispositionBadgeClass(d: EntityDisposition): string {
     default:
       return 'bg-surface-3 text-text-muted border border-border-default';
   }
+}
+
+/** Render a list of phase outcomes. `detail` is coerced to a string so an object never
+ *  reaches JSX as a child (which throws and blanks the modal). */
+function OutcomeList({ outcomes, failed = false }: { outcomes: ExecuteOutcome[]; failed?: boolean }) {
+  if (!outcomes.length) return null;
+  return (
+    <ul className="space-y-1">
+      {outcomes.map((o, i) => {
+        const ok = isPhaseSuccess(o.status);
+        const detail = formatOutcomeDetail(o.detail);
+        return (
+          <li key={`${o.phase}-${i}`} className="flex items-center gap-2 text-sm">
+            <span className={ok ? 'text-status-success' : failed ? 'text-status-error' : 'text-text-muted'}>
+              {ok ? '✓' : failed ? '✕' : '•'}
+            </span>
+            <span className="text-text-secondary">{formatPhaseLabel(o.phase)}</span>
+            {detail && <span className="text-text-muted text-xs">— {detail}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 export default function WorkspaceMigrationModal({
@@ -471,19 +496,7 @@ export default function WorkspaceMigrationModal({
                 <span className="inline-block w-4 h-4 border-2 border-text-muted border-t-transparent rounded-full animate-spin" />
                 Migrating workspace…
               </div>
-              {outcomes.length > 0 && (
-                <ul className="space-y-1">
-                  {outcomes.map((o, i) => (
-                    <li key={`${o.phase}-${i}`} className="flex items-center gap-2 text-sm">
-                      <span className={o.status === 'ok' ? 'text-status-success' : 'text-text-muted'}>
-                        {o.status === 'ok' ? '✓' : '•'}
-                      </span>
-                      <span className="text-text-secondary">{o.phase}</span>
-                      {o.detail && <span className="text-text-muted text-xs">— {o.detail}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <OutcomeList outcomes={outcomes} />
             </div>
           )}
 
@@ -495,19 +508,7 @@ export default function WorkspaceMigrationModal({
                   <div className="p-3 rounded-lg text-sm bg-status-success/10 text-status-success border border-status-success/30">
                     Migration complete. {workspace.name} now belongs to {destinationTeamName}.
                   </div>
-                  {outcomes.length > 0 && (
-                    <ul className="space-y-1">
-                      {outcomes.map((o, i) => (
-                        <li key={`${o.phase}-${i}`} className="flex items-center gap-2 text-sm">
-                          <span className={o.status === 'ok' ? 'text-status-success' : 'text-text-muted'}>
-                            {o.status === 'ok' ? '✓' : '•'}
-                          </span>
-                          <span className="text-text-secondary">{o.phase}</span>
-                          {o.detail && <span className="text-text-muted text-xs">— {o.detail}</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  <OutcomeList outcomes={outcomes} />
                   <div className="flex justify-end gap-2">
                     <Link
                       href={`/app/workspaces/${workspace.id}`}
@@ -525,19 +526,7 @@ export default function WorkspaceMigrationModal({
                 </>
               ) : (
                 <>
-                  {outcomes.length > 0 && (
-                    <ul className="space-y-1">
-                      {outcomes.map((o, i) => (
-                        <li key={`${o.phase}-${i}`} className="flex items-center gap-2 text-sm">
-                          <span className={o.status === 'ok' ? 'text-status-success' : 'text-status-error'}>
-                            {o.status === 'ok' ? '✓' : '✕'}
-                          </span>
-                          <span className="text-text-secondary">{o.phase}</span>
-                          {o.detail && <span className="text-text-muted text-xs">— {o.detail}</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  <OutcomeList outcomes={outcomes} failed />
                   <div className="flex justify-end gap-2">
                     {repairRunId ? (
                       <button
