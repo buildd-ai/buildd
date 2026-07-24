@@ -263,27 +263,50 @@ export function createRedactionInterceptor(): BodyInterceptor {
 
 const MIN_SECRET_LEN = 8;
 
+export interface SecretRedactionValue {
+  label: string;
+  value: string;
+}
+
+type SecretInput = string | SecretRedactionValue;
+
+const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /\bAuthorization\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9][^\s,;"']*/gi, replacement: 'Authorization: [REDACTED:authorization]' },
+  { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: '[REDACTED:jwt]' },
+  { pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
+  { pattern: /\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
+  { pattern: /\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
+  { pattern: /\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
+];
+
 /**
  * Build a redactor function for a set of known secret values.
  * Values shorter than 8 chars or empty are skipped.
  * Longer secrets are replaced before shorter ones to prevent partial matches
  * (if secretA is a prefix of secretB, secretB is replaced first).
  */
-export function createSecretRedactor(secrets: string[]): (text: string) => string {
-  const valid = [...new Set(
-    secrets.filter(s => typeof s === 'string' && s.trim().length >= MIN_SECRET_LEN)
-  )].sort((a, b) => b.length - a.length);  // longest first
-
-  if (valid.length === 0) return (t) => t;
+export function createSecretRedactor(secrets: SecretInput[]): (text: string) => string {
+  const byValue = new Map<string, string | null>();
+  for (const secret of secrets) {
+    const value = typeof secret === 'string' ? secret : secret?.value;
+    if (typeof value !== 'string' || value.trim().length < MIN_SECRET_LEN) continue;
+    const rawLabel = typeof secret === 'string' ? null : secret.label;
+    const label = rawLabel?.replace(/[^A-Za-z0-9_.-]/g, '_') || null;
+    byValue.set(value, label);
+  }
+  const valid = [...byValue.entries()].sort(([a], [b]) => b.length - a.length);
 
   return (text: string): string => {
     if (!text) return text;
     let result = text;
-    for (const secret of valid) {
+    for (const [secret, label] of valid) {
       if (result.includes(secret)) {
         // Simple global string replace — no regex so secret chars need no escaping
-        result = result.split(secret).join('[REDACTED]');
+        result = result.split(secret).join(label ? `[REDACTED:${label}]` : '[REDACTED]');
       }
+    }
+    for (const { pattern, replacement } of SECRET_PATTERNS) {
+      result = result.replace(pattern, replacement);
     }
     return result;
   };
@@ -298,52 +321,16 @@ export function createSecretRedactor(secrets: string[]): (text: string) => strin
  */
 export function redactSecretsInBody<T extends Record<string, unknown>>(
   body: T,
-  secrets: string[],
+  secrets: SecretInput[],
 ): T {
   const redact = createSecretRedactor(secrets);
-  // identity — no valid secrets provided
-  if (redact('x') === 'x' && secrets.filter(s => s && s.length >= MIN_SECRET_LEN).length === 0) {
-    return body;
-  }
-
-  const out: Record<string, unknown> = { ...body };
-
-  if (typeof out.currentAction === 'string') {
-    out.currentAction = redact(out.currentAction);
-  }
-
-  if (Array.isArray(out.milestones)) {
-    out.milestones = (out.milestones as any[]).map((m) =>
-      m && typeof m.label === 'string' ? { ...m, label: redact(m.label) } : m,
-    );
-  }
-
-  if (Array.isArray(out.appendMilestones)) {
-    out.appendMilestones = (out.appendMilestones as any[]).map((m) =>
-      m && typeof m.label === 'string' ? { ...m, label: redact(m.label) } : m,
-    );
-  }
-
-  if (Array.isArray(out.appendErrorTraces)) {
-    out.appendErrorTraces = (out.appendErrorTraces as any[]).map((t) =>
-      t && typeof t.excerpt === 'string' ? { ...t, excerpt: redact(t.excerpt) } : t,
-    );
-  }
-
-  if (typeof out.error === 'string') {
-    out.error = redact(out.error);
-  }
-
-  if (typeof out.summary === 'string') {
-    out.summary = redact(out.summary);
-  }
-
-  if (out.waitingFor && typeof (out.waitingFor as any).prompt === 'string') {
-    out.waitingFor = {
-      ...(out.waitingFor as object),
-      prompt: redact((out.waitingFor as any).prompt),
-    };
-  }
-
-  return out as T;
+  const visit = (value: unknown): unknown => {
+    if (typeof value === 'string') return redact(value);
+    if (Array.isArray(value)) return value.map(visit);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
+    }
+    return value;
+  };
+  return visit(body) as T;
 }

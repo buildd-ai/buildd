@@ -171,6 +171,20 @@ mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
+// Mock workflow dispatch so tests don't hit real GitHub or block on setTimeout polling
+const mockDispatchWorkflowRelease = mock(() =>
+  Promise.resolve({
+    dispatched: true,
+    workflowFile: 'release.yml',
+    ref: 'dev',
+    inputs: {},
+    runsUrl: 'https://github.com/test-org/test-repo/actions/workflows/release.yml',
+  }),
+);
+mock.module('@/lib/release/dispatch', () => ({
+  dispatchWorkflowRelease: mockDispatchWorkflowRelease,
+}));
+
 // Pusher — no-op in tests; triggerEvent calls should be silently skipped
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
@@ -323,6 +337,7 @@ function resetAll() {
   mockCreateReviewerTask.mockReset();
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
+  mockDispatchWorkflowRelease.mockReset();
 
   insertCalls = [];
   deleteCalls = [];
@@ -351,6 +366,15 @@ function resetAll() {
   mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
   mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-task-1' }));
   mockTryAutoMergeWorkerPr.mockReturnValue(Promise.resolve());
+  mockDispatchWorkflowRelease.mockReturnValue(
+    Promise.resolve({
+      dispatched: true,
+      workflowFile: 'release.yml',
+      ref: 'dev',
+      inputs: {},
+      runsUrl: 'https://github.com/test-org/test-repo/actions/workflows/release.yml',
+    }),
+  );
 
   // Default: resolve based on workspace config
   mockResolveReleaseStrategy.mockImplementation((config: any) => {
@@ -935,10 +959,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(updateCalls.some((c) => (c.setValues as any).status === 'completed')).toBe(true);
       // Path B must NOT dispatch for branch_merge — Path A is authoritative
-      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
-        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
-      );
-      expect(dispatchCall).toBeUndefined();
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
     it('workflow_dispatch + trigger=every_merge: dispatches configured workflow file', async () => {
@@ -975,10 +996,8 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
-        (c) => typeof c[1] === 'string' && (c[1] as string).includes('/ship.yml/dispatches'),
-      );
-      expect(dispatchCall).toBeDefined();
+      expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
+      expect((mockDispatchWorkflowRelease.mock.calls[0] as any[])[3]).toMatchObject({ workflowFile: 'ship.yml' });
     });
 
     it('workflow_dispatch + trigger=manual: does not dispatch', async () => {
@@ -1014,10 +1033,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
-        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
-      );
-      expect(dispatchCall).toBeUndefined();
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
     it('workflow_dispatch + on_mission_complete: dispatches once when mission is all-terminal', async () => {
@@ -1055,10 +1071,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
-        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
-      );
-      expect(dispatchCall).toBeDefined();
+      expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
     });
 
     it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
@@ -1096,10 +1109,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      const dispatchCall = (mockGithubApi.mock.calls as any[][]).find(
-        (c) => typeof c[1] === 'string' && (c[1] as string).includes('dispatches'),
-      );
-      expect(dispatchCall).toBeUndefined();
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
     it('calls tryAutoMergeWorkerPr (which handles line-budget blocking internally)', async () => {

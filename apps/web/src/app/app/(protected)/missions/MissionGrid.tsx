@@ -55,6 +55,7 @@ export interface MissionItem {
   costBudgetUsd: string | null;
   spendUsd: string | null;
   segments: MissionSegment[];
+  effectivePolicyLabel: string | null;
   healthState: import('@/lib/mission-helpers').Health;
   inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
 }
@@ -372,7 +373,22 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           </p>
         )}
 
-        <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+          {mission.workspaceId && mission.effectivePolicyLabel && (
+            <Link
+              href={`/app/settings/workspace/${mission.workspaceId}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-[10px] font-mono text-text-muted hover:text-text-secondary hover:border-border-strong transition-colors"
+              title={`Merge policy: ${mission.effectivePolicyLabel}`}
+              onClick={e => e.stopPropagation()}
+            >
+              <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 5v14m-7-7l7 7 7-7" />
+              </svg>
+              {mission.effectivePolicyLabel}
+            </Link>
+          )}
+        </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
@@ -470,7 +486,22 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             </Link>
           </div>
         </div>
-        <div className="mt-2"><MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} /></div>
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+          {mission.workspaceId && mission.effectivePolicyLabel && (
+            <Link
+              href={`/app/settings/workspace/${mission.workspaceId}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-[10px] font-mono text-text-muted hover:text-text-secondary hover:border-border-strong transition-colors"
+              title={`Merge policy: ${mission.effectivePolicyLabel}`}
+              onClick={e => e.stopPropagation()}
+            >
+              <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 5v14m-7-7l7 7 7-7" />
+              </svg>
+              {mission.effectivePolicyLabel}
+            </Link>
+          )}
+        </div>
         {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
           {mission.totalTasks > 0 && (
