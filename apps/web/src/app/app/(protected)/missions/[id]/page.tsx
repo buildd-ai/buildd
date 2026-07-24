@@ -69,6 +69,8 @@ export default async function MissionDetailPage({
           roleSlug: true,
           creationSource: true,
           dependsOn: true,
+          parentTaskId: true,
+          category: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -274,6 +276,18 @@ export default async function MissionDetailPage({
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 
+  // BT-16: Map reviewer tasks by their parentTaskId for chip tappability.
+  // Reviewer tasks (category='review') are NOT shown as separate timeline rows;
+  // they surface as inline verdict chips on the task they reviewed.
+  const reviewerTaskMap = new Map<string, { id: string; status: string }>();
+  for (const t of allTasks) {
+    if (t.category === 'review' && t.parentTaskId) {
+      reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
+    }
+  }
+  // Exclude reviewer tasks from the timeline — they render as inline chips instead
+  const timelineTasks = allTasks.filter(t => t.category !== 'review');
+
   // Compute chain positions for mission tasks
   const chainByTaskId = new Map<string, ChainPositionResult | null>();
   for (const task of allTasks) {
@@ -305,7 +319,7 @@ export default async function MissionDetailPage({
   const cycles: TimelineCycle[] = [];
   let currentCycle: TimelineCycle = { evaluation: null, tasks: [] };
 
-  for (const task of allTasks) {
+  for (const task of timelineTasks) {
     if (task.mode === 'planning') {
       // Start a new cycle
       if (currentCycle.evaluation || currentCycle.tasks.length > 0) {
@@ -771,31 +785,56 @@ export default async function MissionDetailPage({
                                 </div>
                               )}
 
-                              {/* BT-16: Agent-review verdict chips */}
+                              {/* BT-16: Agent-review verdict chips — tappable, inline on reviewed task */}
                               {(() => {
                                 const reviewNote = reviewerNoteMap.get(task.id);
                                 if (!reviewNote) return null;
+                                const reviewerTask = reviewerTaskMap.get(task.id);
+                                const reviewerHref = reviewerTask ? `/app/tasks/${reviewerTask.id}` : null;
                                 const noteType = reviewNote.type;
 
                                 if (noteType === 'reviewer_approved') {
+                                  const confidence = reviewNote.title.match(/\(confidence ([\d.]+)\)/)?.[1];
+                                  const isMerged = !!latestWorker?.mergedAt;
                                   return (
                                     <div className="pl-7 pb-1 mt-1">
-                                      <div className="flex items-start gap-2 bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
-                                        <span className="text-status-success text-[11px] font-semibold shrink-0">🤖 Approved</span>
-                                        <span className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</span>
+                                      <div className="bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
+                                        <div className="flex items-center gap-1.5 mb-0.5">
+                                          {reviewerHref ? (
+                                            <Link href={reviewerHref} className="text-status-success text-[11px] font-semibold hover:underline">🤖 Approved</Link>
+                                          ) : (
+                                            <span className="text-status-success text-[11px] font-semibold">🤖 Approved</span>
+                                          )}
+                                          {confidence && (
+                                            <span className="text-[10px] text-status-success/70">(confidence {confidence})</span>
+                                          )}
+                                        </div>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</p>
+                                        <p className="text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
                                       </div>
                                     </div>
                                   );
                                 }
 
                                 if (noteType === 'reviewer_request_changes') {
+                                  const iteration = reviewNote.title.match(/\(iteration (\d+\/\d+)\)/)?.[1];
                                   return (
                                     <div className="pl-7 pb-1 mt-1">
                                       <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
                                         <div className="flex items-center gap-1.5 mb-0.5">
-                                          <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
+                                          {reviewerHref ? (
+                                            <Link href={reviewerHref} className="text-[#D97706] text-[11px] font-semibold hover:underline">🤖 Changes Requested</Link>
+                                          ) : (
+                                            <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
+                                          )}
+                                          {iteration && (
+                                            <span className="text-[10px] text-[#D97706]/70">(iteration {iteration})</span>
+                                          )}
                                         </div>
                                         <p className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</p>
+                                        {latestWorker?.branch && (
+                                          <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({latestWorker.branch})</p>
+                                        )}
                                       </div>
                                     </div>
                                   );
@@ -807,23 +846,21 @@ export default async function MissionDetailPage({
                                     <div className="pl-7 pb-1 mt-1">
                                       <div className="bg-status-error/5 border border-status-error/20 rounded px-2.5 py-2">
                                         <div className="flex items-center gap-1.5 mb-1">
-                                          <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
+                                          {reviewerHref ? (
+                                            <Link href={reviewerHref} className="text-status-error text-[11px] font-semibold hover:underline">🤖 Escalated to you</Link>
+                                          ) : (
+                                            <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
+                                          )}
                                         </div>
                                         <p className="text-[11px] text-text-secondary leading-relaxed mb-2">{reviewNote.body ?? reviewNote.title}</p>
                                         <div className="flex items-center gap-2 flex-wrap">
                                           {prWorker?.prUrl && (
-                                            <ExternalLink
-                                              href={prWorker.prUrl}
-                                              className="text-[11px] text-accent-text hover:underline"
-                                            >
+                                            <ExternalLink href={prWorker.prUrl} className="text-[11px] text-accent-text hover:underline">
                                               PR #{prWorker.prNumber} ↗
                                             </ExternalLink>
                                           )}
                                           {prWorker?.prNumber && !prWorker?.mergedAt && (
-                                            <MergeConfirmButton
-                                              prNumber={prWorker.prNumber}
-                                              prUrl={prWorker.prUrl ?? ''}
-                                            />
+                                            <MergeConfirmButton prNumber={prWorker.prNumber} prUrl={prWorker.prUrl ?? ''} />
                                           )}
                                         </div>
                                       </div>

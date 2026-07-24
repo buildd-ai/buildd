@@ -23,7 +23,9 @@ export function isDeliverableTask(task: {
   title?: string | null;
   mode?: string | null;
   creationSource?: string | null;
+  category?: string | null;
 }): boolean {
+  if (task.category === 'review') return false;
   if (task.kind === 'coordination') return false;
   if (task.mode === 'planning') return false;
   if (task.title?.startsWith('Aggregate results:')) return false;

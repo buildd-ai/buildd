@@ -45,6 +45,14 @@ describe('isDeliverableTask', () => {
   it('ignores creationSource when deciding deliverability', () => {
     expect(isDeliverableTask({ creationSource: 'schedule', title: 'Weekly sync report' })).toBe(true);
   });
+
+  it('returns false for reviewer tasks (category="review")', () => {
+    expect(isDeliverableTask({ category: 'review', title: '[reviewer] PR #42: feat: add auth' })).toBe(false);
+  });
+
+  it('returns true when category is undefined (backwards-compatible)', () => {
+    expect(isDeliverableTask({ title: 'Build the feature' })).toBe(true);
+  });
 });
 
 describe('isDeliverableTask — progress calculation', () => {
