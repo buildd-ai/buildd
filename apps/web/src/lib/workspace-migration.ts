@@ -12,7 +12,7 @@ import { db } from '@buildd/core/db';
 import {
   workspaces, teams, missions, workspaceSkills, secrets, connectors,
   connectorWorkspaces, accountWorkspaces, accounts, taskSchedules, tasks, workers,
-  artifacts, watchedProjects, oauthRefreshTokens, migrationLog,
+  artifacts, watchedProjects, oauthRefreshTokens, migrationLog, githubInstallations,
 } from '@buildd/core/db/schema';
 import { eq, and, isNull, sql, inArray } from 'drizzle-orm';
 
@@ -120,8 +120,6 @@ export function verifyDryRunToken(
 
 // ─── Snapshot (DB reads) ──────────────────────────────────────────────────────
 
-const TERMINAL_WORKER_STATUSES = ['completed', 'failed', 'error', 'idle'];
-
 export interface MigrationSnapshot {
   workspace: { id: string; name: string; teamId: string; githubInstallationId: string | null };
   sourceTeam: { id: string; name: string };
@@ -143,7 +141,12 @@ export interface MigrationSnapshot {
   workspaceSecrets: Array<{ purpose: string; label: string | null }>;
   connectors: Array<{ id: string; name: string; authMode: string }>;
   accountAccess: Array<{ accountId: string; name: string }>;
-  githubInstalledInDestination: boolean;
+  /**
+   * Whether the workspace's GitHub installation is valid (exists, not suspended). GitHub
+   * installations are global in this schema (no team scoping), so migration keeps the same
+   * installation reference — the only real gate is that the installation itself is healthy.
+   */
+  githubInstallationValid: boolean;
 }
 
 async function count(table: any, where: any): Promise<number> {
@@ -172,7 +175,7 @@ export async function collectMigrationSnapshot(
   const [
     tasksN, workersN, workersInFlightN, artifactsN, watchedN, oauthN, teamMissionsN, teamRolesN,
     scheduleRows, missionRows, roleRows, destRoleRows, secretRows, connectorRows, accountRows,
-    ghDestWorkspace,
+    ghInstallation,
   ] = await Promise.all([
     count(tasks, eq(tasks.workspaceId, workspaceId)),
     count(workers, eq(workers.workspaceId, workspaceId)),
@@ -195,10 +198,13 @@ export async function collectMigrationSnapshot(
       .from(accountWorkspaces)
       .innerJoin(accounts, eq(accounts.id, accountWorkspaces.accountId))
       .where(eq(accountWorkspaces.workspaceId, workspaceId)),
+    // GitHub installations are global (no team scoping) — the gate is simply whether the
+    // workspace's installation still exists and is not suspended. Migration keeps the same
+    // installation reference, so a valid installation stays valid for the destination team.
     workspace.githubInstallationId
-      ? db.query.workspaces.findFirst({
-          where: and(eq(workspaces.teamId, destinationTeamId), eq(workspaces.githubInstallationId, workspace.githubInstallationId)),
-          columns: { id: true },
+      ? db.query.githubInstallations.findFirst({
+          where: eq(githubInstallations.id, workspace.githubInstallationId),
+          columns: { id: true, suspendedAt: true },
         })
       : Promise.resolve(null),
   ]);
@@ -218,7 +224,7 @@ export async function collectMigrationSnapshot(
     workspaceSecrets: secretRows as any,
     connectors: connectorRows.map((c: any) => ({ id: c.id, name: c.name, authMode: c.authMode })),
     accountAccess: accountRows as any,
-    githubInstalledInDestination: !!ghDestWorkspace,
+    githubInstallationValid: !workspace.githubInstallationId || (!!ghInstallation && !ghInstallation.suspendedAt),
   };
 }
 
@@ -331,13 +337,16 @@ export function classifyMigration(snap: MigrationSnapshot, generatedAt: string):
   }
   groups.push({ entity: 'Knowledge (memory corpus)', disposition: 'LEFT_BEHIND', count: 0, detail: `${snap.sourceTeam.id}:memory stays in source team namespace` });
 
-  // GitHub App precheck.
+  // GitHub App precheck. Installations are global (no team scoping) and the workspace keeps its
+  // installation reference across migration, so the only gate is that the installation is healthy.
   const org = snap.workspace.githubInstallationId ? 'linked installation' : null;
-  const ghOk = !snap.workspace.githubInstallationId || snap.githubInstalledInDestination;
+  const ghOk = snap.githubInstallationValid;
   groups.push({
     entity: 'GitHub App', disposition: 'MOVES_CLEANLY',
     count: snap.workspace.githubInstallationId ? 1 : 0,
-    detail: ghOk ? 'destination team has installation' : 'destination team missing installation',
+    detail: snap.workspace.githubInstallationId
+      ? (ghOk ? 'installation valid — reference unchanged by migration' : 'installation missing or suspended')
+      : 'no GitHub installation linked',
   });
 
   // Summary: item counts for actionable classes, group counts otherwise.
@@ -368,7 +377,7 @@ export function classifyMigration(snap: MigrationSnapshot, generatedAt: string):
       githubApp: {
         org,
         ok: ghOk,
-        message: ghOk ? undefined : `Migration blocked: destination team missing the GitHub App on ${org}. Install at github.com/apps/buildd and authorize the org, then retry.`,
+        message: ghOk ? undefined : `Migration blocked: the workspace's GitHub App installation is missing or suspended. Reinstall/unsuspend the app at github.com/apps/buildd, then retry.`,
       },
     },
     summary,
