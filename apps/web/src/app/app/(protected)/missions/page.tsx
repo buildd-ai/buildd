@@ -10,6 +10,7 @@ import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } fr
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { resolvePolicy } from '@/lib/merge-policy';
 import { MissionGrid } from './MissionGrid';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
@@ -110,9 +111,9 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true },
     with: {
-      workspace: { columns: { id: true, name: true } },
+      workspace: { columns: { id: true, name: true, gitConfig: true } },
       tasks: {
         columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
@@ -127,6 +128,12 @@ export default async function MissionsPage({
       schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
     },
   });
+
+  const POLICY_TIER_LABEL: Record<string, string> = {
+    'auto-threshold': 'Auto',
+    'agent-review': 'Agent Review',
+    'human': 'Human Gate',
+  };
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
@@ -162,6 +169,15 @@ export default async function MissionsPage({
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
     const latestTaskId = isValidTaskId(rawLatestId) ? rawLatestId : null;
 
+    const workspaceForPolicy = obj.workspace as { id: string; name: string; gitConfig?: unknown } | null | undefined;
+    const effectivePolicy = obj.workspaceId
+      ? resolvePolicy(
+          { gitConfig: (workspaceForPolicy as any)?.gitConfig ?? null },
+          { mergePolicy: (obj as any).mergePolicy ?? null },
+        )
+      : null;
+    const effectivePolicyLabel = effectivePolicy ? (POLICY_TIER_LABEL[effectivePolicy.tier] ?? effectivePolicy.tier) : null;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -194,6 +210,7 @@ export default async function MissionsPage({
       costBudgetUsd: (obj as any).costBudgetUsd ?? null,
       spendUsd: null,
       segments,
+      effectivePolicyLabel,
       healthState: deriveHealth(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
     };
