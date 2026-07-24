@@ -47,6 +47,7 @@ export interface ClaudeStatus {
   lastRefreshedAt: string | null;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
+  healthStatus: 'healthy' | 'degraded' | 'revoked' | 'unknown' | null;
   scope: 'team' | 'workspace' | null;
 }
 
@@ -160,7 +161,16 @@ export async function storeClaudeCredential(
 
 /**
  * Resolve the most-specific Claude credential: workspace-scoped beats team-wide.
- * Returns null when no credential exists. Used at claim time.
+ * Returns null when no credential exists OR when the best candidate is unhealthy.
+ *
+ * Unhealthy conditions (skipped so the claim route falls through to the setup token):
+ *   - tokenExpiresAt IS NULL: zombie state — 400/401 on last refresh killed the token
+ *     family. The credential will never be refreshable without a user reconnect.
+ *   - healthStatus = 'revoked': permanently dead, resolver must not attach this token
+ *     since the runner would delete CLAUDE_CODE_OAUTH_TOKEN in its favour.
+ *
+ * 'degraded' (transient auth failures, below revoke threshold) is NOT skipped — the
+ * claim-gate refresh may still succeed and recover it.
  */
 export async function resolveClaudeCredential(opts: {
   teamId: string;
@@ -172,14 +182,24 @@ export async function resolveClaudeCredential(opts: {
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     ),
-    columns: { encryptedValue: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
+    columns: { encryptedValue: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
   });
   if (rows.length === 0) return null;
+
+  // Skip rows that are definitively dead. tokenExpiresAt = null means the refresh
+  // family was revoked (400/401 sets it to null). healthStatus = 'revoked' is set
+  // explicitly on 400/401 failures so future cron runs don't retry them.
+  // Keeping both checks handles existing zombie rows (null tokenExpiresAt set before
+  // healthStatus tracking existed) and future failures marked via healthStatus.
+  const healthyRows = rows.filter(
+    (r) => r.tokenExpiresAt !== null && (r.healthStatus as string) !== 'revoked',
+  );
+  if (healthyRows.length === 0) return null;
 
   // Workspace-specific row wins over team-wide.
   const score = (r: { workspaceId: string | null }) =>
     r.workspaceId && r.workspaceId === opts.workspaceId ? 1 : 0;
-  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
+  const best = healthyRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   const blob = decodeBlob(best.encryptedValue);
   return {
@@ -215,6 +235,7 @@ export async function getClaudeStatus(scope: ClaudeScope): Promise<ClaudeStatus>
       lastRefreshedAt: true,
       lastVerifiedAt: true,
       lastVerificationError: true,
+      healthStatus: true,
     },
   });
 
@@ -225,17 +246,25 @@ export async function getClaudeStatus(scope: ClaudeScope): Promise<ClaudeStatus>
       lastRefreshedAt: null,
       lastVerifiedAt: null,
       lastVerificationError: null,
+      healthStatus: null,
       scope: null,
     };
   }
 
-  const expired = row.tokenExpiresAt != null && row.tokenExpiresAt < new Date();
+  // Zombie credentials (healthStatus = 'revoked') are expired even when tokenExpiresAt
+  // is null — the 400/401 refresh path sets tokenExpiresAt to null, which previously
+  // caused getClaudeStatus to return expired: false (green badge) for dead credentials.
+  const expired =
+    (row.tokenExpiresAt != null && row.tokenExpiresAt < new Date()) ||
+    (row.healthStatus as string) === 'revoked';
+
   return {
     connected: true,
     expired,
     lastRefreshedAt: row.lastRefreshedAt ? row.lastRefreshedAt.toISOString() : null,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
     lastVerificationError: row.lastVerificationError ?? null,
+    healthStatus: row.healthStatus as 'healthy' | 'degraded' | 'revoked' | 'unknown',
     scope: row.workspaceId ? 'workspace' : 'team',
   };
 }
@@ -310,9 +339,13 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
       const detail = `HTTP ${res.status}`;
       console.warn(`[Claude] Token refresh failed for secret ${secretId}: ${detail}`);
       if (res.status === 400 || res.status === 401) {
+        // 400/401 means the refresh_token family is permanently revoked by Anthropic.
+        // Mark healthStatus = 'revoked' so resolveClaudeCredential skips this credential
+        // and the claim route falls through to the setup token (serverOauthToken) instead.
+        // tokenExpiresAt stays null to signal the zombie state for backward-compat checks.
         await db
           .update(secrets)
-          .set({ tokenExpiresAt: null, lastVerificationError: detail, updatedAt: sql`NOW()` })
+          .set({ tokenExpiresAt: null, healthStatus: 'revoked', lastVerificationError: detail, updatedAt: sql`NOW()` })
           .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
         await recordCredentialAuthFailure(secretId, detail);
       }

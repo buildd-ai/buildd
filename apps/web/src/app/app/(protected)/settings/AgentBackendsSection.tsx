@@ -571,6 +571,7 @@ interface ClaudeCredentialStatus {
   lastRefreshedAt: string | null;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
+  healthStatus: 'healthy' | 'degraded' | 'revoked' | 'unknown' | null;
   scope: 'team' | 'workspace' | null;
 }
 
@@ -736,7 +737,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     try {
       const res = await fetch(`${base}${q}`, { method: 'DELETE' });
       if (!res.ok && res.status !== 204) throw new Error('Delete failed');
-      setStatus({ connected: false, expired: false, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
+      setStatus({ connected: false, expired: false, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, healthStatus: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
@@ -759,10 +760,10 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : status?.connected ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {status.expired ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs refresh
+                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs reconnection
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
@@ -770,6 +771,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               </span>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
+            {status.expired && status.healthStatus === 'revoked' && fallbackConnected && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Workers using setup token as fallback
+              </span>
+            )}
           </div>
 
           <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">

@@ -35,7 +35,7 @@ mock.module('@buildd/core/db/schema', () => ({
     purpose: 'purpose', encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at', lastRefreshedAt: 'last_refreshed_at',
     lastVerifiedAt: 'last_verified_at', lastVerificationError: 'last_verification_error',
-    updatedAt: 'updated_at',
+    healthStatus: 'health_status', updatedAt: 'updated_at',
   },
 }));
 
@@ -78,10 +78,11 @@ function makeRow(overrides: Record<string, unknown> = {}) {
   return {
     encryptedValue: makeBlob(),
     workspaceId: null,
-    tokenExpiresAt: null,
+    tokenExpiresAt: new Date(Date.now() + 3600 * 1000), // 1h from now (healthy expiry)
     lastRefreshedAt: new Date(),
     lastVerifiedAt: null,
     lastVerificationError: null,
+    healthStatus: 'healthy' as const,
     ...overrides,
   };
 }
@@ -230,6 +231,47 @@ describe('resolveClaudeCredential', () => {
     const result = await resolveClaudeCredential({ teamId: 'team-1', workspaceId: 'ws-1' });
     expect(result?.accessToken).toBe('at-team');
   });
+
+  // ── health-aware behaviour ───────────────────────────────────────────────────
+
+  it('returns null for zombie row (tokenExpiresAt null)', async () => {
+    // tokenExpiresAt = null is the zombie state: refresh family was revoked (400/401).
+    // resolveClaudeCredential must skip these so the claim route falls through to
+    // the setup token (serverOauthToken) instead of attaching a dead access_token.
+    mockFindMany.mockResolvedValue([makeRow({ tokenExpiresAt: null })]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1' });
+    expect(result).toBeNull();
+  });
+
+  it('returns null for revoked credential (healthStatus = revoked)', async () => {
+    mockFindMany.mockResolvedValue([makeRow({ healthStatus: 'revoked' })]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1' });
+    expect(result).toBeNull();
+  });
+
+  it('returns credential for degraded (not yet permanently dead)', async () => {
+    // degraded = transient / recoverable failures; claim-gate may still refresh.
+    mockFindMany.mockResolvedValue([makeRow({ healthStatus: 'degraded' })]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1' });
+    expect(result).not.toBeNull();
+    expect(result?.accessToken).toBe('at');
+  });
+
+  it('returns credential for unknown healthStatus with valid expiry', async () => {
+    mockFindMany.mockResolvedValue([makeRow({ healthStatus: 'unknown' })]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1' });
+    expect(result).not.toBeNull();
+  });
+
+  it('falls through to team-wide row when workspace row is revoked', async () => {
+    mockFindMany.mockResolvedValue([
+      makeRow({ encryptedValue: makeBlob('at-team'), workspaceId: null, healthStatus: 'healthy' }),
+      makeRow({ encryptedValue: makeBlob('at-ws'), workspaceId: 'ws-1', healthStatus: 'revoked' }),
+    ]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1', workspaceId: 'ws-1' });
+    // Revoked workspace row is skipped; healthy team-wide row should be returned.
+    expect(result?.accessToken).toBe('at-team');
+  });
 });
 
 // ── getClaudeStatus ───────────────────────────────────────────────────────────
@@ -267,6 +309,21 @@ describe('getClaudeStatus', () => {
     mockFindFirst.mockResolvedValue(makeRow({ workspaceId: null }));
     const status = await getClaudeStatus({ teamId: 'team-1' });
     expect(status.scope).toBe('team');
+  });
+
+  it('returns healthStatus from credential row', async () => {
+    mockFindFirst.mockResolvedValue(makeRow({ healthStatus: 'degraded' }));
+    const status = await getClaudeStatus({ teamId: 'team-1' });
+    expect((status as any).healthStatus).toBe('degraded');
+  });
+
+  it('returns expired: true for revoked credential (zombie with null tokenExpiresAt)', async () => {
+    // Zombie creds have tokenExpiresAt = null and healthStatus = 'revoked'.
+    // The UI must NOT show them as "Connected" — expired: true drives the
+    // "Expired — needs reconnection" badge and the setup-token fallback note.
+    mockFindFirst.mockResolvedValue(makeRow({ tokenExpiresAt: null, healthStatus: 'revoked' }));
+    const status = await getClaudeStatus({ teamId: 'team-1' });
+    expect(status.expired).toBe(true);
   });
 });
 
@@ -354,6 +411,32 @@ describe('refreshClaudeCredential', () => {
 
     const result = await refreshClaudeCredential('secret-1');
     expect(result).toBe('error');
+  });
+
+  it('sets healthStatus = revoked on 400/401 failure', async () => {
+    // A 400/401 from the token endpoint means the refresh_token family is permanently
+    // revoked. We must mark healthStatus = 'revoked' so resolveClaudeCredential skips
+    // the credential and falls through to the setup token.
+    const encryptedValue = makeBlob();
+    const sets: Array<Record<string, unknown>> = [];
+    const returningMock = mock(() =>
+      Promise.resolve([{ id: 'secret-1', encryptedValue, purpose: 'claude_credential' }]),
+    );
+    mockUpdate.mockImplementation(() => ({
+      set: mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        return { where: mock(() => ({ returning: returningMock })) };
+      }),
+    }));
+    mockFindFirst.mockResolvedValue({ id: 'secret-1' }); // exists check on error path
+
+    global.fetch = mock(async () => ({ ok: false, status: 400 })) as any;
+
+    const result = await refreshClaudeCredential('secret-1');
+    expect(result).toBe('error');
+    // The second update (error path) must set healthStatus = 'revoked'
+    const errorUpdate = sets.find((s) => 'healthStatus' in s);
+    expect(errorUpdate?.healthStatus).toBe('revoked');
   });
 });
 
