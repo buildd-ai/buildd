@@ -111,7 +111,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       tasks: {
@@ -190,6 +190,7 @@ export default async function MissionsPage({
       activeAgents,
       nextScanMins,
       nextRunAt: nextRunAt ? String(nextRunAt) : null,
+      startAt: obj.startAt ? String(obj.startAt) : null,
       lastRunAt: lastRunAt ? String(lastRunAt) : null,
       teamName: teamNameMap.get(obj.teamId) || null,
       role: null as { name: string; color: string } | null,

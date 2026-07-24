@@ -32,6 +32,7 @@ export interface TaskCardProps {
   // Tier 3 — Health (raw timestamps; elapsed ticks from workerStartedAt)
   taskCreatedAt: string;
   taskUpdatedAt: string;
+  startAt?: string | null;
   workerStartedAt?: string | null;
   workerUpdatedAt?: string | null;
 
@@ -82,7 +83,14 @@ const STATUS_PILL: Record<string, { label: string; cls: string; pulse?: boolean 
   assigned:      { label: 'Assigned',      cls: 'text-status-info border-status-info' },
 };
 
-function StatusPill({ displayStatus }: { displayStatus: string }) {
+function StatusPill({ displayStatus, startAt }: { displayStatus: string; startAt?: string | null }) {
+  if (displayStatus === 'pending' && startAt && new Date(startAt).getTime() > Date.now()) {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border text-status-info border-status-info shrink-0">
+        Starts {new Date(startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+      </span>
+    );
+  }
   const config = STATUS_PILL[displayStatus] ?? { label: displayStatus, cls: 'text-text-muted border-border-default' };
   return (
     <span
@@ -170,6 +178,7 @@ export function TaskCard({
   chain,
   taskCreatedAt,
   taskUpdatedAt,
+  startAt,
   workerStartedAt,
   workerUpdatedAt,
   intensity,
@@ -228,7 +237,7 @@ export function TaskCard({
 
         {/* T3 — status */}
         <div className="pointer-events-none shrink-0">
-          <StatusPill displayStatus={displayStatus} />
+          <StatusPill displayStatus={displayStatus} startAt={startAt} />
         </div>
 
         {/* T4 — PR link + lifecycle (restores pointer events) */}
@@ -317,7 +326,7 @@ export function TaskCard({
 
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
-          <StatusPill displayStatus={displayStatus} />
+          <StatusPill displayStatus={displayStatus} startAt={startAt} />
 
           {/* T3 — elapsed */}
           <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
@@ -366,7 +375,7 @@ export function TaskCard({
         <div className="text-[15px] font-medium text-text-primary truncate group-hover:text-accent-text transition-colors flex-1 min-w-0">
           {title}
         </div>
-        <StatusPill displayStatus={displayStatus} />
+        <StatusPill displayStatus={displayStatus} startAt={startAt} />
       </div>
 
       {/* T1 — mission + workspace (second row) */}

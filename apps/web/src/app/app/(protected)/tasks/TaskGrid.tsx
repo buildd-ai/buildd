@@ -27,6 +27,7 @@ interface GridTask {
   budgetPaused?: boolean;
   budgetBackend?: string;
   budgetResetsAt?: string | null;
+  startAt?: string | null;
   workerStatus?: string | null;
   workerStartedAt?: string | null;
   workerUpdatedAt?: string | null;
@@ -63,6 +64,7 @@ function renderTaskCard(task: GridTask) {
       chain={task.chain}
       taskCreatedAt={task.createdAt}
       taskUpdatedAt={task.updatedAt}
+      startAt={task.startAt}
       workerStartedAt={task.workerStartedAt}
       workerUpdatedAt={task.workerUpdatedAt}
       attemptCurrent={task.attemptCurrent}
@@ -600,6 +602,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     chain={task.chain}
                     taskCreatedAt={task.createdAt}
                     taskUpdatedAt={task.updatedAt}
+                    startAt={task.startAt}
                     workerStartedAt={task.workerStartedAt}
                     workerUpdatedAt={task.workerUpdatedAt}
                     attemptCurrent={task.attemptCurrent}

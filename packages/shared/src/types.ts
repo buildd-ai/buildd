@@ -266,6 +266,8 @@ export interface Mission {
   createdByUserId: string | null;
   requiresReview: boolean;
   mergePolicy?: MergePolicy | null;
+  startAt?: Date | null;
+  startResolution?: 'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null;
   createdAt: Date;
   updatedAt: Date;
   // Relations
@@ -436,6 +438,7 @@ export interface Task {
   result: TaskResult | null;
   backend?: AgentBackend;
   requiresReview?: boolean;
+  startAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
@@ -1033,4 +1036,3 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
-

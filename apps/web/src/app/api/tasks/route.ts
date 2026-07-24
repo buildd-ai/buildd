@@ -14,6 +14,7 @@ import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
+import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -132,6 +133,7 @@ export async function GET(req: NextRequest) {
             claimedBy: true,
             claimedAt: true,
             expiresAt: true,
+            startAt: true,
             createdByAccountId: true,
             createdByWorkerId: true,
             creationSource: true,
@@ -156,7 +158,19 @@ export async function GET(req: NextRequest) {
         })
       : [];
 
-    return jsonResponse({ tasks: allTasks });
+    return jsonResponse({
+      tasks: allTasks,
+      budgetWindows: apiAccount ? {
+        claude: {
+          resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,
+          resolution: apiAccount.budgetResetsAt ? 'known_budget_reset' : 'default_budget_window',
+        },
+        codex: {
+          resetAt: null,
+          resolution: 'default_budget_window',
+        },
+      } : undefined,
+    });
   } catch (error) {
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });
@@ -226,6 +240,9 @@ export async function POST(req: NextRequest) {
       pathManifest: rawPathManifest,
       // Intelligence tier — resolved to a concrete model at claim time via the team's registry.
       tier: rawTier,
+      startAt: rawStartAt,
+      startIn: rawStartIn,
+      startAfter: rawStartAfter,
     } = body;
 
     if (!title) {
@@ -473,14 +490,16 @@ export async function POST(req: NextRequest) {
     // Fields a mission task can inherit from its mission. Fetch once and reuse
     // for both outputRequirement and backend resolution.
     let outputRequirement = explicitOutputRequirement;
-    if (missionId && (!outputRequirement || !resolvedBackend)) {
+    let missionStartAt: Date | null = null;
+    if (missionId) {
       const mission = await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        columns: { defaultOutputRequirement: true, defaultBackend: true },
+        columns: { defaultOutputRequirement: true, defaultBackend: true, startAt: true },
       });
       if (!outputRequirement) outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
       // Mission backend (an intentional per-mission choice) outranks role/workspace defaults.
       if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
+      missionStartAt = mission?.startAt ?? null;
     }
 
     // Fall back to the role's defaultBackend hint, then the workspace default.
@@ -503,6 +522,19 @@ export async function POST(req: NextRequest) {
       const wsDefault = ws?.gitConfig?.defaultBackend;
       if (wsDefault === 'claude' || wsDefault === 'codex') resolvedBackend = wsDefault;
     }
+
+    let deferredStart;
+    try {
+      deferredStart = resolveDeferredStart({
+        startAt: rawStartAt,
+        startIn: rawStartIn,
+        startAfter: rawStartAfter,
+        knownBudgetResetAt: resolvedBackend === 'codex' ? null : apiAccount?.budgetResetsAt ?? null,
+      });
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid deferred start' }, { status: 400 });
+    }
+    const resolvedStartAt = laterStartAt(deferredStart.startAt, missionStartAt);
 
     const [task] = await db
       .insert(tasks)
@@ -535,8 +567,18 @@ export async function POST(req: NextRequest) {
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
+        ...(resolvedStartAt ? { startAt: resolvedStartAt } : {}),
         // Creator tracking (from service)
         ...creatorContext,
+        ...(deferredStart.resolution ? {
+          context: {
+            ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
+            ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
+            ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
+            ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
+            startResolution: deferredStart.resolution,
+          },
+        } : {}),
       })
       .returning();
 
