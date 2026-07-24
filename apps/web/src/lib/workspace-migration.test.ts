@@ -30,7 +30,7 @@ function snap(overrides: Partial<MigrationSnapshot> = {}): MigrationSnapshot {
     workspaceSecrets: [],
     connectors: [],
     accountAccess: [],
-    githubInstalledInDestination: false,
+    githubInstallationValid: true,
     ...overrides,
   };
 }
@@ -132,20 +132,25 @@ describe('classifyMigration', () => {
     expect(r.requiredAcks).not.toContain('mission-dep:m2');
   });
 
-  it('PRECHECK FAIL when workspace has a GitHub install absent from the destination team', () => {
+  it('PRECHECK FAIL when the workspace GitHub installation is missing/suspended', () => {
     const r = classifyMigration(snap({
       workspace: { id: 'ws-1', name: 'Cue', teamId: 'team-src', githubInstallationId: 'inst-1' },
-      githubInstalledInDestination: false,
+      githubInstallationValid: false,
     }), at);
     expect(r.precheck.status).toBe('FAIL');
     expect(r.precheck.githubApp.ok).toBe(false);
   });
 
-  it('PRECHECK PASS when the GitHub install is shared with the destination team', () => {
+  it('PRECHECK PASS for a repo-backed workspace when its installation is valid (team-agnostic)', () => {
     const r = classifyMigration(snap({
       workspace: { id: 'ws-1', name: 'Cue', teamId: 'team-src', githubInstallationId: 'inst-1' },
-      githubInstalledInDestination: true,
+      githubInstallationValid: true,
     }), at);
+    expect(r.precheck.status).toBe('PASS');
+  });
+
+  it('PRECHECK PASS for a repo-less workspace regardless of GitHub state', () => {
+    const r = classifyMigration(snap({ githubInstallationValid: true }), at);
     expect(r.precheck.status).toBe('PASS');
   });
 });
