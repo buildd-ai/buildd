@@ -1,0 +1,168 @@
+# Reusable release workflow — merge source → target, wait for deploy, smoke check.
+#
+# Callers (per-repo release wrappers) invoke this via `workflow_call`:
+#
+#   jobs:
+#     release:
+#       uses: buildd-ai/buildd/.github/workflows/release-handoff.yml@main
+#       with:
+#         source_branch: dev
+#         target_branch: main
+#         force: ${{ inputs.force }}
+#       secrets:
+#         DEPLOY_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+#         SMOKE_URL: ${{ secrets.SMOKE_CHECK_URL }}
+#
+# For cross-org callers (e.g. moa-ops): reference the public repo path above,
+# or copy this file into each org's .github repo.
+#
+# Deploy verification only runs when DEPLOY_TOKEN is provided (Vercel token,
+# Fly API key, etc.). Without it the merge still happens but deploy state is
+# unverified. SMOKE_URL is optional — omit to skip the post-deploy GET check.
+
+name: Release Handoff
+
+on:
+  workflow_call:
+    inputs:
+      source_branch:
+        description: 'Branch to release from (the "ready" branch)'
+        type: string
+        default: dev
+      target_branch:
+        description: 'Branch to release to (production)'
+        type: string
+        default: main
+      force:
+        description: 'Proceed even if source is not ahead of target (empty-diff bypass)'
+        type: boolean
+        default: false
+    secrets:
+      DEPLOY_TOKEN:
+        description: 'Platform deploy credential (Vercel token, Fly API key, etc.)'
+        required: false
+      SMOKE_URL:
+        description: 'URL to GET after deploy completes — must return 2xx'
+        required: false
+
+jobs:
+  merge-gate:
+    name: Merge gate
+    runs-on: ubuntu-latest
+    outputs:
+      ahead_by: ${{ steps.compare.outputs.ahead_by }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare branches
+        id: compare
+        run: |
+          git fetch origin "${{ inputs.source_branch }}" "${{ inputs.target_branch }}"
+          AHEAD=$(git rev-list --count "origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }}")
+          echo "ahead_by=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "${{ inputs.source_branch }} is ${AHEAD} commit(s) ahead of ${{ inputs.target_branch }}"
+
+      - name: Fail on empty diff (bypass with force=true)
+        if: ${{ !inputs.force && steps.compare.outputs.ahead_by == '0' }}
+        run: |
+          echo "Nothing to release: ${{ inputs.source_branch }} is not ahead of ${{ inputs.target_branch }}."
+          echo "Pass force=true to bypass this guard."
+          exit 1
+
+  deploy:
+    name: Merge and deploy
+    needs: merge-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Merge source into target
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin "${{ inputs.source_branch }}" "${{ inputs.target_branch }}"
+          git checkout "${{ inputs.target_branch }}"
+          # Prefer fast-forward; fall back to a merge commit if histories diverged.
+          git merge --ff-only "origin/${{ inputs.source_branch }}" \
+            || git merge "origin/${{ inputs.source_branch }}" --no-edit \
+                 -m "chore: release ${{ inputs.source_branch }} → ${{ inputs.target_branch }}"
+          git push origin "${{ inputs.target_branch }}"
+
+  wait-for-ready:
+    name: Wait for deploy
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Vercel deployment
+        # Only run when a deploy credential was provided.
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        # Use an env-var check rather than secrets in the if condition (secrets
+        # are masked and can't be compared directly in conditionals).
+        run: |
+          if [ -z "$DEPLOY_TOKEN" ]; then
+            echo "DEPLOY_TOKEN not provided — skipping deploy verification"
+            exit 0
+          fi
+
+          TARGET="${{ inputs.target_branch }}"
+          DEADLINE=$(( $(date +%s) + 600 ))   # 10-minute timeout
+
+          echo "Waiting for Vercel production deployment on branch '${TARGET}'..."
+          sleep 10  # give Vercel a moment to pick up the push
+
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            RESP=$(curl -sf -H "Authorization: Bearer ${DEPLOY_TOKEN}" \
+              "https://api.vercel.com/v6/deployments?target=production&limit=5" || echo '{}')
+
+            STATE=$(echo "$RESP" | jq -r '
+              .deployments
+              | map(select(.meta.githubCommitRef == null or .meta.githubCommitRef == $ENV.TARGET))
+              | if length > 0 then .[0].state else "NONE" end
+            ' TARGET="$TARGET" 2>/dev/null || echo "NONE")
+
+            echo "Deployment state: ${STATE}"
+
+            case "$STATE" in
+              READY)
+                echo "Deployment is READY."
+                exit 0
+                ;;
+              ERROR|CANCELED)
+                echo "Deployment entered terminal failure state: ${STATE}"
+                exit 1
+                ;;
+            esac
+
+            sleep 15
+          done
+
+          echo "Timed out waiting for Vercel deployment after 10 minutes."
+          exit 1
+
+  smoke-check:
+    name: Smoke check
+    needs: wait-for-ready
+    runs-on: ubuntu-latest
+    steps:
+      - name: GET smoke URL
+        env:
+          SMOKE_URL: ${{ secrets.SMOKE_URL }}
+        run: |
+          if [ -z "$SMOKE_URL" ]; then
+            echo "SMOKE_URL not provided — skipping smoke check"
+            exit 0
+          fi
+
+          echo "Smoke checking ${SMOKE_URL}..."
+          curl -fsSL "$SMOKE_URL" > /dev/null
+          echo "Smoke check passed (HTTP 2xx)"

@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
-import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
+import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
@@ -17,6 +17,8 @@ import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ing
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
+import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
+import { buildWorkflowRunOutcome } from '@/lib/release/workflow-run';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -56,6 +58,10 @@ export async function POST(req: NextRequest) {
 
       case 'pull_request':
         await handlePullRequestEvent(data);
+        break;
+
+      case 'workflow_run':
+        await handleWorkflowRunEvent(data);
         break;
 
       case 'ping':
@@ -597,17 +603,27 @@ async function handlePullRequestEvent(event: {
 
                   if (claimed.length > 0) {
                     const { workflowFile, ref, inputs } = resolution.strategy;
+                    const [owner, name] = repository.full_name.split('/');
                     try {
-                      await githubApi(
+                      const dispatchResult = await dispatchWorkflowRelease(
                         event.installation.id,
-                        `/repos/${repository.full_name}/actions/workflows/${workflowFile}/dispatches`,
-                        {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
-                        },
+                        owner,
+                        name,
+                        { workflowFile, ref, inputs: { force: 'false', ...inputs } },
                       );
-                      console.log(`[webhook] Mission ${mergedTask.missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name}`);
+                      const releaseResult: ReleaseResult = {
+                        status: 'pending_ci',
+                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${mergedTask.missionId} — awaiting workflow completion`,
+                        runId: dispatchResult.runId,
+                        runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
+                        runStatus: dispatchResult.runStatus,
+                        runConclusion: dispatchResult.runConclusion ?? null,
+                      };
+                      await db
+                        .update(tasks)
+                        .set({ releaseResult, updatedAt: new Date() })
+                        .where(eq(tasks.id, mergedTask.id));
+                      console.log(`[webhook] Mission ${mergedTask.missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
                     } catch (err) {
                       console.error(`[webhook] Mission release dispatch failed for ${repository.full_name}:`, err);
                     }
@@ -617,17 +633,27 @@ async function handlePullRequestEvent(event: {
             } else {
               // every_merge (or future values): dispatch on each merged PR
               const { workflowFile, ref, inputs } = resolution.strategy;
+              const [owner, name] = repository.full_name.split('/');
               try {
-                await githubApi(
+                const dispatchResult = await dispatchWorkflowRelease(
                   event.installation.id,
-                  `/repos/${repository.full_name}/actions/workflows/${workflowFile}/dispatches`,
-                  {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
-                  },
+                  owner,
+                  name,
+                  { workflowFile, ref, inputs: { force: 'false', ...inputs } },
                 );
-                console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id})`);
+                const releaseResult: ReleaseResult = {
+                  status: 'pending_ci',
+                  message: `Release: dispatched ${workflowFile}@${ref} for ${repository.full_name} — awaiting workflow completion`,
+                  runId: dispatchResult.runId,
+                  runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
+                  runStatus: dispatchResult.runStatus,
+                  runConclusion: dispatchResult.runConclusion ?? null,
+                };
+                await db
+                  .update(tasks)
+                  .set({ releaseResult, updatedAt: new Date() })
+                  .where(eq(tasks.id, mergedTask.id));
+                console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, runId=${dispatchResult.runId ?? 'pending'})`);
               } catch (err) {
                 console.error(`[webhook] Release dispatch failed for ${repository.full_name}:`, err);
               }
@@ -1191,6 +1217,76 @@ async function handleReleasePrCiFailure(
       });
       console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
     }
+  }
+}
+
+/**
+ * GitHub `workflow_run` webhook — fires when any Actions workflow completes.
+ *
+ * This is the primary read-back mechanism for `workflow_dispatch` releases:
+ * at dispatch time the handler stores `runId` in `tasks.releaseResult`; when
+ * the corresponding workflow_run arrives here we look up the task by that runId
+ * and stamp the final outcome (completed / failed) without any in-process polling.
+ *
+ * Fires for ALL workflows, not just release ones — the runId lookup makes this
+ * naturally idempotent and O(1): if no task carries that runId we no-op.
+ */
+async function handleWorkflowRunEvent(event: {
+  action: string;
+  workflow_run: {
+    id: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+    html_url: string;
+    head_branch: string | null;
+    repository: { full_name: string };
+  };
+  installation?: { id: number };
+}): Promise<void> {
+  if (event.action !== 'completed') return;
+
+  const run = event.workflow_run;
+
+  // Find the task whose releaseResult.runId matches this workflow run.
+  // The cast to int is safe because runId is always stored as a JS number (which
+  // Postgres stores in JSONB as a numeric literal without quotes).
+  const matchingTask = await db
+    .select({
+      id: tasks.id,
+      releaseResult: tasks.releaseResult,
+      missionId: tasks.missionId,
+      workspaceId: tasks.workspaceId,
+    })
+    .from(tasks)
+    .where(sql`(${tasks.releaseResult}->>'runId')::bigint = ${run.id}`)
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  if (!matchingTask) return;
+
+  const previous = (matchingTask.releaseResult ?? { status: 'pending_ci', message: '' }) as ReleaseResult;
+  const updatedResult = buildWorkflowRunOutcome(previous, run);
+  const succeeded = updatedResult.status === 'completed';
+
+  await db
+    .update(tasks)
+    .set({ releaseResult: updatedResult, updatedAt: new Date() })
+    .where(eq(tasks.id, matchingTask.id));
+
+  console.log(
+    `[webhook:workflow_run] Task ${matchingTask.id} release ${updatedResult.status} — run ${run.id} (${run.name}) on ${run.repository.full_name}`,
+  );
+
+  if (!succeeded) {
+    notify({
+      app: 'alerts',
+      title: `Release workflow failed — ${run.name}`,
+      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,
+      url: run.html_url,
+      urlTitle: 'View workflow run',
+      priority: 1,
+    });
   }
 }
 
