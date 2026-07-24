@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { collapseWorkspacePath } from './WorkerActivityTimeline';
+import { collapseWorkspacePath, filterActivityMilestones, getCommandHeadline } from './WorkerActivityTimeline';
 
 describe('collapseWorkspacePath', () => {
   test('collapses Ran: cd /path && command into ~/basename command', () => {
@@ -44,5 +44,33 @@ describe('collapseWorkspacePath', () => {
   test('handles deeply nested path', () => {
     expect(collapseWorkspacePath('Ran: cd /home/user/workspace/projects/myapp && npm install'))
       .toBe('Ran: ~/myapp npm install');
+  });
+});
+
+describe('structured command activity', () => {
+  const failed = {
+    type: 'action' as const,
+    label: 'Ran: bun test',
+    ts: 2,
+    metadata: {
+      commandState: 'fail' as const,
+      testSummary: { passed: 12, failed: 1 },
+      failures: ['(fail) handles expired tokens'],
+    },
+  };
+
+  test('puts the failing test name in the collapsed headline', () => {
+    expect(getCommandHeadline(failed)).toBe('1 failed · (fail) handles expired tokens');
+  });
+
+  test('filters the feed to errors only', () => {
+    const passing = {
+      type: 'action' as const,
+      label: 'Ran: bun test',
+      ts: 1,
+      metadata: { commandState: 'pass' as const, testSummary: { passed: 2, failed: 0 }, failures: [] },
+    };
+
+    expect(filterActivityMilestones([passing, failed], true)).toEqual([failed]);
   });
 });

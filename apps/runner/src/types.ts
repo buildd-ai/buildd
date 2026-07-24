@@ -52,7 +52,18 @@ export type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number }
-  | { type: 'action'; label: string; ts: number };
+  | {
+      type: 'action';
+      label: string;
+      ts: number;
+      metadata?: {
+        toolUseId?: string;
+        commandState?: 'pending' | 'pass' | 'fail';
+        output?: string;
+        testSummary?: { passed: number; failed: number };
+        failures?: string[];
+      };
+    };
 
 // Tool call tracking
 export interface ToolCall {

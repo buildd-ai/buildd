@@ -6,7 +6,17 @@ type Milestone =
   | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: string; label: string; ts: number }
-  | { type: 'action'; label: string; ts: number };
+  | {
+      type: 'action';
+      label: string;
+      ts: number;
+      metadata?: {
+        commandState?: 'pending' | 'pass' | 'fail';
+        output?: string;
+        testSummary?: { passed: number; failed: number };
+        failures?: string[];
+      };
+    };
 
 const CHECKPOINT_ORDER = [
   'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed',
@@ -59,19 +69,44 @@ function middleTruncate(str: string, maxLen: number, tailLen = 20): string {
   return str.slice(0, headLen) + '…' + str.slice(-tailLen);
 }
 
+export function getCommandHeadline(milestone: Extract<Milestone, { type: 'action' }>): string {
+  const { metadata } = milestone;
+  if (metadata?.commandState === 'fail' && metadata.failures?.length) {
+    const count = metadata.testSummary?.failed ?? metadata.failures.length;
+    return `${count} failed · ${metadata.failures[0]}`;
+  }
+  if (metadata?.commandState === 'pass' && metadata.testSummary) {
+    return `${metadata.testSummary.passed} tests passed`;
+  }
+  return middleTruncate(collapseWorkspacePath(milestone.label), 60);
+}
+
+export function filterActivityMilestones(items: Milestone[], errorsOnly: boolean): Milestone[] {
+  if (!errorsOnly) return items;
+  return items.filter(item =>
+    (item.type === 'action' && item.metadata?.commandState === 'fail') ||
+    (item.type === 'checkpoint' && item.event === 'task_error') ||
+    (item.type === 'status' && /\b(error|fail)\b|^🛑/i.test(item.label)),
+  );
+}
+
 export default function WorkerActivityTimeline({
   milestones,
   currentAction,
   maxVisible = 8,
 }: WorkerActivityTimelineProps) {
   const [expanded, setExpanded] = useState(false);
+  const [errorsOnly, setErrorsOnly] = useState(false);
 
   if (!milestones.length && !currentAction) {
     return null;
   }
 
   // Sort milestones by ts (newest first for display)
-  const sortedMilestones = [...milestones].sort((a, b) => b.ts - a.ts);
+  const sortedMilestones = filterActivityMilestones(
+    [...milestones].sort((a, b) => b.ts - a.ts),
+    errorsOnly,
+  );
   const visibleMilestones = expanded ? sortedMilestones : sortedMilestones.slice(0, maxVisible);
   const hasMore = sortedMilestones.length > maxVisible;
 
@@ -96,7 +131,19 @@ export default function WorkerActivityTimeline({
 
   return (
     <div className="mt-4">
-      <h4 className="text-sm font-medium text-text-secondary mb-2">Activity</h4>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-sm font-medium text-text-secondary">Activity</h4>
+        <button
+          type="button"
+          aria-pressed={errorsOnly}
+          onClick={() => setErrorsOnly(value => !value)}
+          className={`rounded px-2 py-1 text-xs ${
+            errorsOnly ? 'bg-status-error/15 text-status-error' : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          Errors only
+        </button>
+      </div>
 
       {/* Checkpoint progress boxes */}
       {checkpointCount > 0 && (
@@ -135,6 +182,9 @@ export default function WorkerActivityTimeline({
             </div>
           ))}
         </div>
+      )}
+      {errorsOnly && visibleMilestones.length === 0 && (
+        <p className="py-2 text-xs text-text-muted">No errors in this activity.</p>
       )}
 
       {/* Expand/collapse button */}
@@ -316,26 +366,35 @@ function ActionRow({
   milestone,
   formatTime,
 }: {
-  milestone: { type: 'action'; label: string; ts: number };
+  milestone: Extract<Milestone, { type: 'action' }>;
   formatTime: (ts: number) => string;
 }) {
   const [rowExpanded, setRowExpanded] = useState(false);
   const collapsed = collapseWorkspacePath(milestone.label);
-  const truncated = middleTruncate(collapsed, 60);
+  const truncated = getCommandHeadline(milestone);
   const isLong = collapsed !== truncated || milestone.label !== collapsed;
+  const isFailure = milestone.metadata?.commandState === 'fail';
+  const isPassing = milestone.metadata?.commandState === 'pass';
+  const expandedText = milestone.metadata?.output
+    ? `${milestone.label}\n\n${milestone.metadata.output}`
+    : milestone.label;
 
   return (
     <div
-      className="flex items-start gap-2 py-0.5 ml-5 text-xs cursor-pointer"
+      className={`flex items-start gap-2 py-0.5 ml-5 text-xs cursor-pointer ${
+        isFailure ? 'rounded bg-status-error/10' : ''
+      }`}
       onClick={() => setRowExpanded(!rowExpanded)}
     >
-      <span className="w-4 text-center flex-shrink-0 font-mono text-text-muted mt-0.5">
-        $
+      <span className={`w-4 text-center flex-shrink-0 font-mono mt-0.5 ${
+        isFailure ? 'text-status-error' : isPassing ? 'text-status-success' : 'text-text-muted'
+      }`}>
+        {isFailure ? '!' : isPassing ? '+' : '$'}
       </span>
       <span className={`flex-1 min-w-0 font-mono text-[11px] bg-surface-3/50 rounded px-1 ${
-        rowExpanded ? 'text-text-secondary whitespace-pre-wrap break-all' : 'text-text-muted'
+        rowExpanded ? 'text-text-secondary whitespace-pre-wrap break-all' : isFailure ? 'text-status-error font-medium' : 'text-text-muted'
       }`}>
-        {rowExpanded ? milestone.label : truncated}
+        {rowExpanded ? expandedText : truncated}
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         {isLong && (

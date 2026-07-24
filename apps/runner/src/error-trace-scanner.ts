@@ -46,6 +46,7 @@ const PATTERNS: PatternDef[] = [
   { slug: 'timeout', re: /\bETIMEDOUT\b/ },
   // bwrap sandbox fails in kernels with unprivileged_userns_clone=0 — all Bash commands fail
   { slug: 'bwrap_namespace_denied', re: /bwrap: No permissions to create a new namespace/ },
+  { slug: 'bun_test_failure', re: /^\(fail\)\s+/ },
 ];
 
 const WINDOW_MS = 60_000;
@@ -69,21 +70,24 @@ export function scanToolResult(
   let workerThrottle = throttleMap.get(workerId);
 
   for (const line of lines) {
-    if (!line || seenThisCall.size === PATTERNS.length) break;
+    if (!line) continue;
     for (const p of PATTERNS) {
-      if (seenThisCall.has(p.slug)) continue;
+      const throttleKey = p.slug === 'bun_test_failure'
+        ? `${p.slug}:${line.slice(0, 200)}`
+        : p.slug;
+      if (seenThisCall.has(throttleKey)) continue;
       if (!p.re.test(line)) continue;
-      seenThisCall.add(p.slug);
+      seenThisCall.add(throttleKey);
 
       // Throttle: skip if same pattern emitted recently for this worker
       if (workerThrottle) {
-        const last = workerThrottle.get(p.slug);
+        const last = workerThrottle.get(throttleKey);
         if (last && now - last < WINDOW_MS) continue;
       } else {
         workerThrottle = new Map();
         throttleMap.set(workerId, workerThrottle);
       }
-      workerThrottle.set(p.slug, now);
+      workerThrottle.set(throttleKey, now);
 
       matches.push({
         pattern: p.slug,

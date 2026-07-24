@@ -46,6 +46,7 @@ import {
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
+import { normalizeCommandOutput } from './command-output';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
@@ -3315,7 +3316,12 @@ If something is missing or incomplete, describe what and fix it now.`;
             const cmd = (input.command as string) || '';
             // Only emit for notable bash commands, skip trivial ones
             if (cmd.includes('git commit') || cmd.includes('npm') || cmd.includes('bun') || cmd.includes('test') || cmd.includes('build')) {
-              this.addMilestone(worker, { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts: Date.now() });
+              this.addMilestone(worker, {
+                type: 'action',
+                label: `Ran: ${cmd}`,
+                ts: Date.now(),
+                metadata: { toolUseId: block.id as string | undefined, commandState: 'pending' },
+              });
             }
           }
 
@@ -3444,6 +3450,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           const toolUseId = block.tool_use_id as string | undefined;
           let source: string | undefined;
           let sourceInput: unknown;
+          let traceText = text;
           if (toolUseId) {
             for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
               const tc: any = worker.toolCalls[i];
@@ -3468,7 +3475,34 @@ If something is missing or incomplete, describe what and fix it now.`;
             if (prResult.url) worker.prUrl = prResult.url;
           }
 
-          const traces = scanToolResult(worker.id, text, source);
+          if (source === 'Bash') {
+            const command = typeof (sourceInput as any)?.command === 'string'
+              ? (sourceInput as any).command
+              : '';
+            const normalized = normalizeCommandOutput(text, command);
+            const commandState = block.is_error === true || normalized.state === 'fail' ? 'fail' : 'pass';
+            const redactCommandOutput = this.secretRedactors.get(worker.id) ?? ((value: string) => value);
+            const milestone = [...worker.milestones].reverse().find(
+              (candidate): candidate is Extract<Milestone, { type: 'action' }> =>
+                candidate.type === 'action' &&
+                candidate.metadata?.commandState === 'pending' &&
+                (!toolUseId || candidate.metadata.toolUseId === toolUseId),
+            );
+            if (milestone) {
+              milestone.metadata = {
+                ...milestone.metadata,
+                commandState,
+                output: redactCommandOutput(normalized.output),
+                ...(normalized.testSummary && { testSummary: normalized.testSummary }),
+                ...(normalized.failures.length && {
+                  failures: normalized.failures.map(failure => redactCommandOutput(failure)),
+                }),
+              };
+            }
+            traceText = normalized.output;
+          }
+
+          const traces = scanToolResult(worker.id, traceText, source);
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);

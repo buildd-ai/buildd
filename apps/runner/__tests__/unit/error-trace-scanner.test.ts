@@ -88,4 +88,24 @@ describe('error-trace-scanner', () => {
     expect(out[0].pattern).toBe('bwrap_namespace_denied');
     expect(out[0].source).toBe('bash');
   });
+
+  it('detects bun test failure lines for get_error_traces', () => {
+    const out = scanToolResult(
+      'w1',
+      '(fail) auth route > rejects expired tokens [3.00ms]\n(fail) auth route > rejects missing tokens',
+      'Bash',
+    );
+    expect(out).toEqual([
+      {
+        pattern: 'bun_test_failure',
+        excerpt: '(fail) auth route > rejects expired tokens [3.00ms]',
+        source: 'Bash',
+      },
+      {
+        pattern: 'bun_test_failure',
+        excerpt: '(fail) auth route > rejects missing tokens',
+        source: 'Bash',
+      },
+    ]);
+  });
 });
