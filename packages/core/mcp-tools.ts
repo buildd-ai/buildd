@@ -116,7 +116,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
+    claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
@@ -609,6 +609,36 @@ export async function handleBuilddAction(
   // Check trigger-level restrictions before processing
   const levelErr = await requireWorkerLevel(ctx, action);
   if (levelErr) return levelErr;
+
+  // claim_task is the first lifecycle call agents are instructed to make, but
+  // hosted agents can arrive with a worker already assigned in their MCP URL.
+  // Make that call idempotent: without this check, the generic claim endpoint
+  // either returned "No tasks available" or assigned an unrelated pending task
+  // while the caller continued working on its pre-provisioned assignment.
+  //
+  // This intentionally runs before the multi-workspace guard. The worker lookup
+  // is account-scoped and identifies one exact assignment, so no ambiguous
+  // workspace selection or new mutation occurs.
+  if (action === 'claim_task' && ctx.workerId) {
+    try {
+      const worker = await api(`/api/workers/${ctx.workerId}`);
+      const workerIsActive = ['idle', 'running', 'starting', 'waiting_input'].includes(worker?.status);
+      const taskIsActive = ['assigned', 'in_progress'].includes(worker?.task?.status);
+      if (workerIsActive && taskIsActive) {
+        return text(
+          `Current assignment already active (no new task claimed):\n\n` +
+          `**Worker ID:** ${worker.id}\n` +
+          `**Task:** ${worker.task.title}\n` +
+          `**Branch:** ${worker.branch || 'Not set'}\n` +
+          `**Description:** ${worker.task.description || 'No description'}\n\n` +
+          'Continue using this worker ID for progress reporting and completion.',
+        );
+      }
+    } catch {
+      // Preserve the existing claim flow when contextual worker recovery fails.
+      // The claim endpoint remains the source of truth for unassigned callers.
+    }
+  }
 
   // Multi-workspace guard: OAuth tokens must pass workspaceId for ambiguous
   // actions when they can see >1 workspace.
