@@ -152,7 +152,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
-    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted.',
+    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
@@ -1788,40 +1788,34 @@ export async function handleBuilddAction(
         throw new Error(`Invalid type. Must be one of: ${validNoteTypes.join(', ')}`);
       }
 
-      // Resolve missionId from task context if not provided
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const workerData = await api(`/api/workers/${workerId}`);
+      const taskId = workerData.taskId || workerData.task?.id;
+
+      // Resolve missionId from task context if not provided.
       let missionId = params.missionId as string | undefined;
       if (!missionId) {
-        // Get missionId from the current worker's task
-        const workerId = resolveWorkerId(params.workerId, ctx);
-        const workerData = await api(`/api/workers/${workerId}`);
-        if (workerData.task?.missionId) {
-          missionId = workerData.task.missionId;
-        }
+        missionId = workerData.task?.missionId;
       }
-      if (!missionId) throw new Error('Could not resolve missionId — pass it explicitly or ensure this task is linked to a mission');
-
-      const workerId = ctx.workerId || (params.workerId as string) || undefined;
+      if (!missionId && !taskId) {
+        throw new Error('Could not resolve a task or mission from the current worker');
+      }
 
       const noteBody: Record<string, unknown> = {
         type: params.type,
         title: params.title,
         authorType: 'agent',
-        taskId: undefined as string | undefined,
+        taskId,
         workerId,
         status: params.type === 'question' ? 'open' : 'answered',
       };
       if (params.body) noteBody.bodyText = params.body;
       if (params.defaultChoice) noteBody.defaultChoice = params.defaultChoice;
 
-      // Resolve taskId from worker context
-      if (workerId) {
-        try {
-          const workerData = await api(`/api/workers/${workerId}`);
-          if (workerData.taskId) noteBody.taskId = workerData.taskId;
-        } catch { /* ignore — taskId is optional */ }
-      }
-
-      const note = await api(`/api/missions/${missionId}/notes`, {
+      const endpoint = missionId
+        ? `/api/missions/${missionId}/notes`
+        : `/api/tasks/${taskId}/notes`;
+      await api(endpoint, {
         method: 'POST',
         body: JSON.stringify(noteBody),
       });
