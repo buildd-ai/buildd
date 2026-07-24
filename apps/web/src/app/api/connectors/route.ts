@@ -68,8 +68,14 @@ export async function GET(req: NextRequest) {
   } else {
     const teamIds = await getUserTeamIds(auth.user.id);
     if (teamIds.length === 0) return NextResponse.json({ connectors: [] });
+    // Precedence: explicit ?teamId → active-team cookie → first team. Without the cookie
+    // fallback the list always showed teamIds[0], so connectors owned by any other team
+    // (the one you've switched to) were invisible — which drives duplicate re-creation.
     const qTeamId = req.nextUrl.searchParams.get('teamId');
-    teamId = (qTeamId && teamIds.includes(qTeamId)) ? qTeamId : teamIds[0];
+    const cookieTeamId = req.cookies.get('buildd-team')?.value;
+    teamId = (qTeamId && teamIds.includes(qTeamId)) ? qTeamId
+      : (cookieTeamId && teamIds.includes(cookieTeamId)) ? cookieTeamId
+      : teamIds[0];
   }
 
   try {
@@ -154,7 +160,11 @@ export async function POST(req: NextRequest) {
   } else {
     const teamIds = await getUserTeamIds(auth.user.id);
     if (teamIds.length === 0) return NextResponse.json({ error: 'No team found' }, { status: 400 });
-    teamId = teamIds[0];
+    // Create the connector under the ACTIVE team (cookie), not always the first team —
+    // otherwise "Add connection" while viewing another team silently created it in
+    // teamIds[0], stranding it where the user wasn't looking.
+    const cookieTeamId = req.cookies.get('buildd-team')?.value;
+    teamId = (cookieTeamId && teamIds.includes(cookieTeamId)) ? cookieTeamId : teamIds[0];
     // Spec §6: only a team owner/admin may create a connector.
     if (!(await isTeamAdmin(auth.user.id, teamId))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
