@@ -90,7 +90,7 @@ Audited from `packages/core/db/schema.ts`. Every table in the schema is accounte
 | **Secrets (workspace-scoped)** | `secrets` (where `workspaceId IS NOT NULL`) | `teamId` + `workspaceId` | **NEEDS RE-ENTRY** — encrypted under source-team key; not portable; rows deleted; user must re-enter |
 | **Secrets (team-scoped)** | `secrets` (where `workspaceId IS NULL`) | `teamId` | **LEFT BEHIND** — belong to source team; not affected |
 | **Account-workspace access** | `account_workspaces` | `accountId` + `workspaceId` | **WILL BREAK** — source-team runner accounts cleared; destination team must add their accounts |
-| **GitHub App installation** | `workspaces.githubInstallationId`, `github_installations`, `github_repos` | GitHub org | **PRECHECK REQUIRED** — destination team must have the App on same org; blocks migration if not |
+| **GitHub App installation** | `workspaces.githubInstallationId`, `github_installations`, `github_repos` | global (no team scope) | **MOVES CLEANLY** — installation reference unchanged; precheck only blocks if the installation is missing/suspended |
 | **Knowledge — memory corpus** | external memory service (`memory.buildd.dev`) | `{teamId}:memory` | **LEFT BEHIND** — team-keyed namespace stays with source team; see §Knowledge |
 | **Notification preferences** | `notification_preferences` | `teamId` | **LEFT BEHIND** — source team's preferences unchanged; destination team has its own row |
 | **Worker heartbeats** | `worker_heartbeats` | `accountId`, `workspaceIds[]` | **NOT AFFECTED** — transient runner registration; entries re-register naturally |
@@ -232,16 +232,18 @@ teams can share the same installation.
 `workspaces.githubInstallationId` references `github_installations.id`, which holds the GitHub
 installation for the repo's org (e.g., `buildd-ai`).
 
-**Precheck**: before migration executes, verify that the destination team has at least one
-workspace already referencing the same `githubInstallationId`, OR that at least one
-`github_repos` row under this installation is accessible to the destination team. If neither is
-true, **migration blocks** with a precheck failure:
+**Precheck** (corrected): `github_installations` has **no team scoping** in this schema —
+installations are global, and a team "has" a repo only by owning a workspace bound to it. There is
+therefore no per-team GitHub authorization to satisfy, and requiring the *destination* team to
+already reference the installation would falsely block any migration into a fresh team. The gate is
+simply: **the workspace's `githubInstallationId` resolves to an installation row that exists and is
+not suspended.** If it doesn't, **migration blocks**:
 
-> "Migration blocked: The destination team does not have the GitHub App installed on the
-> `{repoOrg}` organization. Install the app at github.com/apps/buildd and authorize the org,
-> then retry."
+> "Migration blocked: the workspace's GitHub App installation is missing or suspended.
+> Reinstall/unsuspend the app at github.com/apps/buildd, then retry."
 
 **After precheck passes**: `workspaces.githubRepoId` and `githubInstallationId` are unchanged.
+Because installations are global, the same installation stays valid for the destination team and
 GitHub API calls continue using the same installation token. No action needed.
 
 ### Knowledge Namespaces
