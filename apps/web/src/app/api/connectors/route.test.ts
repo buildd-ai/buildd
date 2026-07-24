@@ -113,6 +113,33 @@ describe('GET /api/connectors', () => {
     expect(data.connectors[0].authMode).toBe('oauth');
   });
 
+  it('defaults the list to the active-team cookie, not the first team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
+    await GET(makeGetReq({ cookie: 'buildd-team=team-2' }));
+    const where = (mockConnectorsFindMany.mock.calls.at(-1)?.[0] as any)?.where;
+    expect(where?.b).toBe('team-2');
+  });
+
+  it('honors an explicit ?teamId over the cookie', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2', 'team-3']);
+    const req = new NextRequest('http://localhost:3000/api/connectors?teamId=team-3', {
+      headers: new Headers({ cookie: 'buildd-team=team-2' }),
+    });
+    await GET(req);
+    const where = (mockConnectorsFindMany.mock.calls.at(-1)?.[0] as any)?.where;
+    expect(where?.b).toBe('team-3');
+  });
+
+  it('ignores a cookie team the user does not belong to, falling back to first team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    await GET(makeGetReq({ cookie: 'buildd-team=team-999' }));
+    const where = (mockConnectorsFindMany.mock.calls.at(-1)?.[0] as any)?.where;
+    expect(where?.b).toBe('team-1');
+  });
+
   it('returns connector list for API key auth', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
     mockConnectorsFindMany.mockResolvedValue([
