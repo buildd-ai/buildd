@@ -88,7 +88,11 @@ export default async function SettingsPage() {
         <VercelSection teams={userTeams.map(t => ({ id: t.id, name: t.name }))} />
 
         {/* Connectors */}
-        <ConnectorsSection workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))} />
+        <ConnectorsSection
+          workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))}
+          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
+          currentTeamId={currentTeamId}
+        />
 
         {/* Runner Tokens */}
         <RunnerTokensSection

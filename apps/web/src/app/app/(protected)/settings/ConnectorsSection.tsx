@@ -8,6 +8,11 @@ interface Workspace {
   name: string;
 }
 
+interface Team {
+  id: string;
+  name: string;
+}
+
 interface Connector {
   id: string;
   name: string;
@@ -25,17 +30,30 @@ interface ConnectorWithWorkspaces extends Connector {
   enabledWorkspaceIds: Set<string>;
 }
 
-export default function ConnectorsSection({ workspaces }: { workspaces: Workspace[] }) {
+export default function ConnectorsSection({
+  workspaces,
+  teams = [],
+  currentTeamId = null,
+}: {
+  workspaces: Workspace[];
+  teams?: Team[];
+  currentTeamId?: string | null;
+}) {
   const [connectors, setConnectors] = useState<ConnectorWithWorkspaces[]>([]);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Which team's connectors to show. Without this the API falls back to the user's
+  // *first* team, so connectors owned by any other team are invisible here — which
+  // makes a transferred connector look lost and leads to duplicate re-creation.
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(currentTeamId ?? teams[0]?.id ?? '');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const connUrl = selectedTeamId ? `/api/connectors?teamId=${selectedTeamId}` : '/api/connectors';
       const [connRes, ...wsResults] = await Promise.all([
-        fetch('/api/connectors'),
+        fetch(connUrl),
         ...workspaces.map(ws => fetch(`/api/workspaces/${ws.id}/connectors`)),
       ]);
 
@@ -63,7 +81,7 @@ export default function ConnectorsSection({ workspaces }: { workspaces: Workspac
     } finally {
       setLoading(false);
     }
-  }, [workspaces]);
+  }, [workspaces, selectedTeamId]);
 
   useEffect(() => {
     void load();
@@ -101,12 +119,26 @@ export default function ConnectorsSection({ workspaces }: { workspaces: Workspac
     <section>
       <div className="flex justify-between items-center mb-4">
         <h2 className="section-label">Connectors</h2>
-        <Link
-          href="/app/connections"
-          className="text-sm text-text-secondary hover:text-text-primary transition-colors"
-        >
-          Manage
-        </Link>
+        <div className="flex items-center gap-3">
+          {teams.length > 1 && (
+            <select
+              value={selectedTeamId}
+              onChange={(e) => setSelectedTeamId(e.target.value)}
+              aria-label="Team"
+              className="h-8 px-2 text-xs rounded-md border border-border-default bg-surface text-text-secondary"
+            >
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          )}
+          <Link
+            href="/app/connections"
+            className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+          >
+            Manage
+          </Link>
+        </div>
       </div>
 
       {message && (
