@@ -66,9 +66,11 @@ describe('materializeCodexAuth', () => {
   });
 
   const cred = {
+    credentialType: 'oauth' as const,
     accessToken: 'tok_access_123',
     refreshToken: 'tok_refresh_456',
     accountId: 'acct_789',
+    idToken: 'tok_id_abc',
     expiresAt: null,
   };
 
@@ -86,9 +88,10 @@ describe('materializeCodexAuth', () => {
     dirs.push(codexHome);
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(authJson.access_token).toBe('tok_access_123');
-    expect(authJson.refresh_token).toBe('tok_refresh_456');
-    expect(authJson.account_id).toBe('acct_789');
+    expect(authJson.tokens.access_token).toBe('tok_access_123');
+    expect(authJson.tokens.refresh_token).toBe('tok_refresh_456');
+    expect(authJson.tokens.account_id).toBe('acct_789');
+    expect(authJson.tokens.id_token).toBe('tok_id_abc');
   });
 
   fsTest('auth.json does not contain extra sensitive fields', () => {
@@ -97,7 +100,8 @@ describe('materializeCodexAuth', () => {
 
     const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
     // expiresAt should NOT be in auth.json (it's metadata, not needed by Codex CLI)
-    expect(Object.keys(authJson).sort()).toEqual(['access_token', 'account_id', 'refresh_token']);
+    expect(Object.keys(authJson).sort()).toEqual(['OPENAI_API_KEY', 'last_refresh', 'tokens']);
+    expect(Object.keys(authJson.tokens).sort()).toEqual(['access_token', 'account_id', 'id_token', 'refresh_token']);
   });
 
   fsTest('temp dir is prefixed with "codex-"', () => {

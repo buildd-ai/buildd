@@ -83,7 +83,15 @@ describe('stable per-worker CODEX_HOME (Phase 1C / R5)', () => {
     const { codexHome } = materializeStableCodexHome(workerId, cred);
     expect(existsSync(codexHome)).toBe(true);
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth).toEqual({ access_token: 'tok_access_123', refresh_token: 'tok_refresh_456', account_id: 'acct_789' });
+    expect(auth).toMatchObject({
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: 'tok_access_123',
+        refresh_token: 'tok_refresh_456',
+        account_id: 'acct_789',
+      },
+    });
+    expect(auth.last_refresh).toBeString();
   });
 
   fsTest('re-seeding auth + rewriting config does NOT delete the sessions subtree', () => {
