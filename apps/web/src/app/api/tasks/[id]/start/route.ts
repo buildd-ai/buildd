@@ -83,6 +83,15 @@ export async function POST(
       }, { status: 400 });
     }
 
+    if (task.startAt && task.startAt > new Date() && !forceOverride) {
+      return NextResponse.json({
+        error: `Task is deferred until ${task.startAt.toISOString()}`,
+        gateReason: 'deferred_start',
+        startAt: task.startAt.toISOString(),
+        canForce: true,
+      }, { status: 422 });
+    }
+
     // Check the claim-route dep gate: if any dependency is completed but has an unmerged PR,
     // the claim route will silently skip this task. Surface that here before broadcasting.
     const dependsOn = (task.dependsOn as string[] | null) || [];
@@ -121,11 +130,16 @@ export async function POST(
 
     // Human override: mark the task so the claim route bypasses the dep-PR gate.
     // This allows a human to deliberately start a task before its dependency PR merges.
-    if (forceOverride && dependsOn.length > 0) {
+    if (forceOverride && (dependsOn.length > 0 || (task.startAt && task.startAt > new Date()))) {
       await db
         .update(tasks)
         .set({
-          context: { ...(task.context as Record<string, unknown> || {}), bypassDepsGate: true },
+          context: {
+            ...(task.context as Record<string, unknown> || {}),
+            ...(dependsOn.length > 0 ? { bypassDepsGate: true } : {}),
+            ...(task.startAt ? { bypassStartGate: true } : {}),
+          },
+          ...(task.startAt ? { startAt: null } : {}),
           updatedAt: new Date(),
         })
         .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));

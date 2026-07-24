@@ -14,6 +14,7 @@ import {
 } from '@/lib/heartbeat-helpers';
 import { wouldCreateCycle } from '@/lib/mission-dependency';
 import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
+import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -119,7 +120,20 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
-      status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd } = body;
+      status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
+
+    let deferredStart;
+    try {
+      deferredStart = resolveDeferredStart({
+        startAt: rawStartAt,
+        startIn: rawStartIn,
+        startAfter: rawStartAfter,
+        knownBudgetResetAt: backend === 'codex' ? null : apiAccount?.budgetResetsAt ?? null,
+      });
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid deferred start' }, { status: 400 });
+    }
 
     const validStatuses = ['active', 'paused', 'completed', 'archived'];
     if (requestedStatus !== undefined && !validStatuses.includes(requestedStatus)) {
@@ -225,6 +239,10 @@ export async function POST(req: NextRequest) {
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
         ...(mergePolicy != null ? { mergePolicy } : {}),
         ...(costBudgetUsd != null ? { costBudgetUsd: String(costBudgetUsd) } : {}),
+        ...(deferredStart.startAt ? {
+          startAt: deferredStart.startAt,
+          startResolution: deferredStart.resolution,
+        } : {}),
       })
       .returning();
 
@@ -235,7 +253,7 @@ export async function POST(req: NextRequest) {
     const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
 
     if (effectiveCron) {
-      const nextRunAt = computeNextRunAt(effectiveCron, 'UTC');
+      const nextRunAt = laterStartAt(computeNextRunAt(effectiveCron, 'UTC'), deferredStart.startAt);
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
       if (outputSchema) templateContext.outputSchema = outputSchema;
@@ -277,7 +295,7 @@ export async function POST(req: NextRequest) {
     // Auto-start the organizer only when the mission is born active, heartbeat is not disabled,
     // and orchestrationMode is 'auto'. Manual-mode missions require explicit human trigger.
     let organizerTask: { id: string } | null = null;
-    if (effectiveStatus === 'active' && isHeartbeat !== false && effectiveOrchestrationMode === 'auto') {
+    if (effectiveStatus === 'active' && isHeartbeat !== false && effectiveOrchestrationMode === 'auto' && !deferredStart.startAt) {
       try {
         const result = await runMission(mission.id, { manualRun: true });
         if (result.task) organizerTask = { id: result.task.id };
@@ -302,7 +320,15 @@ export async function POST(req: NextRequest) {
       : null;
 
     return NextResponse.json(
-      { ...mission, organizerTask, ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}) },
+      {
+        ...mission,
+        organizerTask,
+        ...(deferredStart.startAt ? {
+          startAt: deferredStart.startAt.toISOString(),
+          startResolution: deferredStart.resolution,
+        } : {}),
+        ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
+      },
       { status: 201 }
     );
   } catch (error) {

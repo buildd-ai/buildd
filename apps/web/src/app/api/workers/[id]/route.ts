@@ -496,7 +496,7 @@ export async function PATCH(
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
       where: eq(tasks.id, worker.taskId),
-      columns: { context: true, workspaceId: true, title: true, backend: true },
+      columns: { context: true, workspaceId: true, title: true, backend: true, startAt: true },
       with: { workspace: { columns: { teamId: true, name: true } } },
     });
     const budgetTaskCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
@@ -567,6 +567,11 @@ export async function PATCH(
         expiresAt: null,
         updatedAt: new Date(),
         ...(failoverBackend && { backend: failoverBackend }),
+        ...(!failoverBackend && {
+          startAt: taskForBudget?.startAt && taskForBudget.startAt > budgetResetsAt
+            ? taskForBudget.startAt
+            : budgetResetsAt,
+        }),
         context: {
           ...existingCtx,
           budgetExhausted: true,

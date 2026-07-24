@@ -588,6 +588,10 @@ export const missions = pgTable('missions', {
   // decompose/create new build tasks on its own initiative. This prevents duplicate work when
   // a creator files a task chain at the same time as an auto-decomposing mission.
   decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
+  // Earliest time autonomous orchestration may begin. Deferred missions remain
+  // active, but their schedule and organizer are inert until this floor.
+  startAt: timestamp('start_at', { withTimezone: true }),
+  startResolution: text('start_resolution').$type<'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null>(),
   // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
   // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
   // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
@@ -675,6 +679,9 @@ export const tasks = pgTable('tasks', {
   // Used by the orchestrator to add dependsOn edges between tasks that touch the same paths,
   // and by the claim-time guard to defer a task whose paths overlap an open PR.
   pathManifest: jsonb('path_manifest').$type<string[] | null>(),
+  // Earliest claim time. Shared by explicit scheduling and budget-limited resume;
+  // writers always retain the later floor.
+  startAt: timestamp('start_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -689,6 +696,7 @@ export const tasks = pgTable('tasks', {
   missionIdx: index('tasks_mission_idx').on(t.missionId),
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
+  startAtIdx: index('tasks_start_at_idx').on(t.startAt),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
