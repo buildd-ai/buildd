@@ -524,14 +524,18 @@ export class CodexBackend implements AgentBackend {
     }
 
     const iterator = events[Symbol.asyncIterator]();
-    const first = await this.withEnv(env, () => iterator.next());
-    if (first.done) return;
-    yield first.value;
+    try {
+      const first = await this.withEnv(env, () => iterator.next());
+      if (first.done) return;
+      yield first.value;
 
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) return;
-      yield next.value;
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      await iterator.return?.();
     }
   }
 
