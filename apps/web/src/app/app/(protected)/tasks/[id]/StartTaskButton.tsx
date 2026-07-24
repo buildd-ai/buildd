@@ -27,6 +27,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [error, setError] = useState('');
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
+  const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -123,6 +124,11 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         // Dep-PR gate: show the blocking reason + "Start anyway" option
         if (res.status === 422 && data.gateReason === 'unmerged_dep_pr') {
           setBlockingDeps(data.blockingDeps || []);
+          setStatus('gated');
+          return;
+        }
+        if (res.status === 422 && data.gateReason === 'deferred_start') {
+          setDeferredStartAt(data.startAt);
           setStatus('gated');
           return;
         }
@@ -284,11 +290,17 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                     </svg>
                   </div>
-                  <p className="text-text-primary font-medium mb-1">Blocked: dependency PR not merged</p>
-                  <p className="text-sm text-text-secondary mb-3">
-                    The following {blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until {blockingDeps.length === 1 ? 'it merges' : 'they merge'}.
+                  <p className="text-text-primary font-medium mb-1">
+                    {deferredStartAt
+                      ? `Starts at ${new Date(deferredStartAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                      : 'Blocked: dependency PR not merged'}
                   </p>
-                  <div className="space-y-2 text-left">
+                  <p className="text-sm text-text-secondary mb-3">
+                    {deferredStartAt
+                      ? 'This task is intentionally deferred. Start now anyway to override its scheduled time.'
+                      : `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`}
+                  </p>
+                  {!deferredStartAt && <div className="space-y-2 text-left">
                     {blockingDeps.map((dep, i) => (
                       <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
                         {dep.taskTitle && (
@@ -308,7 +320,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                         )}
                       </div>
                     ))}
-                  </div>
+                  </div>}
                 </div>
                 <div className="flex flex-col gap-2">
                   <button
@@ -316,7 +328,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     disabled={loading}
                     className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
                   >
-                    Start anyway (bypass gate)
+                    {deferredStartAt ? 'Start now anyway' : 'Start anyway (bypass gate)'}
                   </button>
                   <button
                     onClick={handleClose}

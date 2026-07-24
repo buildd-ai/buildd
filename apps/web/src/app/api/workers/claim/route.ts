@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, gte } from 'drizzle-orm';
+import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -250,6 +250,9 @@ export async function POST(req: NextRequest) {
     inArray(tasks.workspaceId, workspaceIds),
     eq(tasks.status, 'pending'),
     or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now)),
+    // A deferred task is inert until its concrete floor. This is deliberately
+    // enforced in the atomic claim query, not only in dispatch/UI.
+    or(isNull(tasks.startAt), lte(tasks.startAt, now)),
   ];
 
   // If a specific taskId was requested, only claim that task

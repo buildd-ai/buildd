@@ -204,6 +204,26 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursTimezone).toBeUndefined();
   });
 
+  it('creates a deferred mission active but inert until startAt', async () => {
+    mockGetCurrentUser.mockReturnValue(null as any);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'api-1', level: 'admin', teamId: 'team-1' } as any);
+    const before = Date.now();
+
+    const res = await POST(new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_test' },
+      body: JSON.stringify({ title: 'Deferred mission', startIn: '3h' }),
+    }));
+
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.status).toBe('active');
+    expect(insertedMissionValues.startAt.getTime()).toBeGreaterThanOrEqual(before + 3 * 60 * 60 * 1000);
+    expect(insertedScheduleValues.nextRunAt).toEqual(insertedMissionValues.startAt);
+    expect(mockRunMission).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.startAt).toBe(insertedMissionValues.startAt.toISOString());
+  });
+
   it('UI-created mission with explicit cronExpression creates schedule', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',

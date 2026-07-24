@@ -476,6 +476,32 @@ describe('POST /api/tasks', () => {
     expect(data.title).toBe('Test Task');
   });
 
+  it('resolves startIn server-side and echoes persisted startAt', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    let inserted: any;
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => {
+        inserted = values;
+        return { returning: mock(() => [{ id: 'task-deferred', ...values }]) };
+      }),
+    });
+    const before = Date.now();
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Later task', startIn: '3h' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(inserted.startAt.getTime()).toBeGreaterThanOrEqual(before + 3 * 60 * 60 * 1000);
+    expect(inserted.context.startResolution).toBe('relative');
+    const data = await response.json();
+    expect(new Date(data.startAt).toISOString()).toBe(inserted.startAt.toISOString());
+  });
+
   it('creates task with session auth', async () => {
     const createdTask = {
       id: 'task-123',

@@ -171,4 +171,34 @@ describe('create_task — parentTaskId support', () => {
     expect(result.content[0].text).toContain('get_task');
     expect(result.content[0].text).toContain('task-new');
   });
+
+  it('passes deferred start inputs through and echoes the resolved startAt', async () => {
+    mockApi.mockResolvedValue({
+      id: 'task-new',
+      title: 'Later task',
+      priority: 0,
+      startAt: '2026-07-24T15:00:00.000Z',
+      context: { startResolution: 'relative' },
+    });
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Later task', description: 'Wait', startIn: '3h' },
+      createMockContext(),
+    );
+
+    expect(JSON.parse(mockApi.mock.calls[0][1].body).startIn).toBe('3h');
+    expect(result.content[0].text).toContain('2026-07-24T15:00:00.000Z');
+    expect(result.content[0].text).toContain('Resolution: relative');
+  });
+
+  it('rejects unknown parameters instead of silently dropping them', async () => {
+    expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'Test', startTomorrow: true },
+      createMockContext(),
+    )).rejects.toThrow('Unknown create_task parameter(s): startTomorrow');
+    expect(mockApi).not.toHaveBeenCalled();
+  });
 });
