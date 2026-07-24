@@ -370,6 +370,14 @@ export interface ReleaseResult {
   releasePrNumber?: number;
   // Release PR URL for quick links in alerts
   releasePrUrl?: string;
+  // GitHub Actions run ID — set at workflow_dispatch time; updated by workflow_run webhook.
+  runId?: number;
+  // Link to the GitHub Actions workflow run
+  runUrl?: string;
+  // Workflow run status: 'queued' | 'in_progress' | 'completed'
+  runStatus?: string;
+  // Workflow run conclusion: 'success' | 'failure' | 'timed_out' | null (while running)
+  runConclusion?: string | null;
 }
 
 // Work tracker configuration — links a workspace to an external issue tracker.
