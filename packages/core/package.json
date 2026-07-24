@@ -49,7 +49,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.206",
-    "@ast-grep/napi": "^0.44.1",
+    "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.145.0",
