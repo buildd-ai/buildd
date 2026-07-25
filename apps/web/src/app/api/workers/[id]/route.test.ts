@@ -239,6 +239,27 @@ mock.module('@/lib/release-executor', () => ({
   executeRelease: mockExecuteRelease,
 }));
 
+// Override any cross-test contamination from webhook/route.test.ts which mocks this module.
+// Provide the real resolvePolicy logic so gateCondition checks work correctly.
+mock.module('@/lib/merge-policy', () => ({
+  resolvePolicy: (
+    workspace: { gitConfig?: { mergePolicy?: any; autoMergeOnGreenCI?: boolean; autoMergePR?: boolean; autoMergeMaxLines?: number; autoMergeDenyPaths?: string[] } | null },
+    mission?: { mergePolicy?: any } | null,
+  ) => {
+    if (mission?.mergePolicy) return mission.mergePolicy;
+    if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
+    const legacyAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR ?? true;
+    if (!legacyAutoMerge) return { tier: 'human' };
+    return {
+      tier: 'auto-threshold',
+      threshold: {
+        maxLines: workspace.gitConfig?.autoMergeMaxLines ?? 800,
+        denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
+      },
+    };
+  },
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {
