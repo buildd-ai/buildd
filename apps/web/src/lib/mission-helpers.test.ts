@@ -6,6 +6,8 @@ import {
   deriveHealth,
   getDrivePresentation,
   selectInFlightTasks,
+  computeGateChipMaxWaitMins,
+  formatWaitDuration,
   FILTER_TO_GROUPS,
   GROUP_ORDER,
   HEALTH_DISPLAY,
@@ -383,5 +385,61 @@ describe('mission card presentation', () => {
     expect(result.primary?.id).toBe('old');
     expect(result.primary?.meta).toBe('60m, 8 turns');
     expect(result.overflow).toBe(1);
+  });
+});
+
+describe('computeGateChipMaxWaitMins — gate chip waiting time', () => {
+  const NOW = new Date('2026-07-24T12:00:00Z').getTime();
+
+  it('returns 0 for empty worker list', () => {
+    expect(computeGateChipMaxWaitMins([], NOW)).toBe(0);
+  });
+
+  it('returns 0 when all workers have null completedAt', () => {
+    expect(computeGateChipMaxWaitMins([{ completedAt: null }], NOW)).toBe(0);
+  });
+
+  it('returns minutes since completedAt for a single worker', () => {
+    const completedAt = new Date(NOW - 22 * 60 * 1000).toISOString();
+    expect(computeGateChipMaxWaitMins([{ completedAt }], NOW)).toBe(22);
+  });
+
+  it('returns the maximum wait across multiple workers', () => {
+    const workers = [
+      { completedAt: new Date(NOW - 5 * 60 * 1000).toISOString() },
+      { completedAt: new Date(NOW - 22 * 60 * 1000).toISOString() },
+      { completedAt: new Date(NOW - 10 * 60 * 1000).toISOString() },
+    ];
+    expect(computeGateChipMaxWaitMins(workers, NOW)).toBe(22);
+  });
+
+  it('skips workers with undefined completedAt', () => {
+    const workers = [
+      { completedAt: undefined },
+      { completedAt: new Date(NOW - 15 * 60 * 1000).toISOString() },
+    ];
+    expect(computeGateChipMaxWaitMins(workers, NOW)).toBe(15);
+  });
+
+  it('accepts Date objects as completedAt', () => {
+    const completedAt = new Date(NOW - 90 * 60 * 1000);
+    expect(computeGateChipMaxWaitMins([{ completedAt }], NOW)).toBe(90);
+  });
+});
+
+describe('formatWaitDuration', () => {
+  it('formats sub-hour durations as Nm', () => {
+    expect(formatWaitDuration(5)).toBe('5m');
+    expect(formatWaitDuration(59)).toBe('59m');
+  });
+
+  it('formats exact hours as Nh', () => {
+    expect(formatWaitDuration(60)).toBe('1h');
+    expect(formatWaitDuration(120)).toBe('2h');
+  });
+
+  it('formats hours+minutes as NhMm', () => {
+    expect(formatWaitDuration(90)).toBe('1h30m');
+    expect(formatWaitDuration(125)).toBe('2h5m');
   });
 });

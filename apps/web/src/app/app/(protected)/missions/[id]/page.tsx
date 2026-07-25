@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, formatNextRun, timeAgo } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, formatNextRun, timeAgo, computeGateChipMaxWaitMins, formatWaitDuration } from '@/lib/mission-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import TaskCard from '@/components/TaskCard';
@@ -876,35 +876,47 @@ export default async function MissionDetailPage({
                       </div>
                     )}
 
-                    {/* BT-18: Gate chip — PRs awaiting merge in this cycle */}
+                    {/* BT-18: Gate chip — PRs awaiting merge in this cycle, with policy-tier context */}
                     {(() => {
                       const awaitingPrs = cycle.tasks
                         .filter(t => t.status === 'completed')
                         .map(t => ({ task: t, worker: (t.workers as any[])?.[0] }))
                         .filter(({ worker }) => worker?.prUrl && !worker?.mergedAt);
                       if (awaitingPrs.length === 0) return null;
+                      const maxWaitMins = computeGateChipMaxWaitMins(
+                        awaitingPrs.map(({ worker: w }) => ({ completedAt: w?.completedAt ?? null }))
+                      );
                       return (
                         <div className="mt-2 mb-1 ml-7 border border-border-strong rounded-[8px] px-3 py-2.5 bg-surface-2">
-                          <div className="flex items-center gap-2 mb-2">
+                          <div className="mb-2">
                             <span className="text-[11px] font-semibold text-text-secondary">
                               ⏸ {awaitingPrs.length} PR{awaitingPrs.length > 1 ? 's' : ''} awaiting merge
                             </span>
-                            <span className="text-[10px] font-mono text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
-                              {policyLabel}
-                            </span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[10px] font-mono text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
+                                {policyLabel}
+                              </span>
+                              {maxWaitMins > 0 && (
+                                <span className="text-[10px] text-text-muted">
+                                  · Waiting {formatWaitDuration(maxWaitMins)}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="space-y-1.5">
                             {awaitingPrs.map(({ task: t, worker: w }) => {
                               const reviewNote = reviewerNoteMap.get(t.id);
                               const reviewStatus = reviewNote?.type === 'reviewer_approved'
-                                ? '✓ Approved'
+                                ? '✓ Approved — merging'
                                 : reviewNote?.type === 'reviewer_request_changes'
                                   ? '↩ Changes requested'
                                   : reviewNote?.type === 'reviewer_escalated'
-                                    ? '⚠ Escalated'
+                                    ? '⚠ Escalated to you'
                                     : effectivePolicy.tier === 'agent-review'
                                       ? '🤖 Auto-reviewing…'
-                                      : null;
+                                      : effectivePolicy.tier === 'human'
+                                        ? 'Waiting for merge'
+                                        : null;
                               return (
                                 <div key={t.id} className="flex items-center justify-between gap-2 text-[11px]">
                                   <div className="flex items-center gap-2 min-w-0">
