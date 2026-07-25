@@ -648,7 +648,6 @@ describe('POST /api/github/webhook', () => {
       mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: opts.gitConfig ?? {} });
       // PR-files / runs lookups return a non-array → draft=false, no logs (fallback context)
       mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
-      mockTasksFindFirst.mockReturnValue(null); // no existing in-flight retry
     }
 
     it('skips CI retry when no buildd worker owns the PR', async () => {
@@ -672,19 +671,23 @@ describe('POST /api/github/webhook', () => {
       expect(inserted.title).toBe('[CI Retry #1] Fix the thing');
       expect(inserted.parentTaskId).toBe('t1');
       expect(inserted.missionId).toBe('m1');
+      expect(inserted.ciRetryPrNumber).toBe(42);
+      expect(inserted.ciRetryHeadSha).toBe('abc123');
       expect((inserted.context as any).iteration).toBe(1);
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
+      expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
 
-    it('dedupes — skips when a retry task is already in flight', async () => {
+    it('dedupes structurally — skips dispatch when this workspace/PR/SHA already has a retry', async () => {
       withFailedWorkerPr();
-      mockTasksFindFirst.mockReturnValue({ id: 'existing-retry' });
+      jobInsertConflicts = true;
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
 

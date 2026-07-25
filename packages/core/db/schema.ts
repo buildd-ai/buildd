@@ -692,6 +692,10 @@ export const tasks = pgTable('tasks', {
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // Stable identity for webhook-created CI retries. One failed commit may emit
+  // several check-suite deliveries, but it must create only one retry task.
+  ciRetryPrNumber: integer('ci_retry_pr_number'),
+  ciRetryHeadSha: text('ci_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
@@ -755,6 +759,9 @@ export const tasks = pgTable('tasks', {
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
   startAtIdx: index('tasks_start_at_idx').on(t.startAt),
+  ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
+    .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
+    .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
@@ -905,7 +912,10 @@ export const missionNotes = pgTable('mission_notes', {
   body: text('body'),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
-  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed'>(),
+  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Set when a retry opens the replacement PR. Kept on the superseded note so
+  // the timeline remains an audit trail and can link to the successor.
+  supersededByPrNumber: integer('superseded_by_pr_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   missionIdx: index('mission_notes_mission_idx').on(t.missionId),

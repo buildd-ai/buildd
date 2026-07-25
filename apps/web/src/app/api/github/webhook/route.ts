@@ -720,7 +720,7 @@ async function handlePullRequestEvent(event: {
  * Guard rails:
  * - Only acts on PRs created by a buildd worker.
  * - Skips draft PRs (not ready for CI feedback).
- * - Dedupes — skips if a pending/in-progress child task already exists.
+ * - Dedupes structurally by workspace + PR + failed head SHA.
  * - Honors gitConfig.maxCiRetries (default 3; 0 disables). On exhaustion, marks
  *   the original task failed and notifies the mission instead of looping.
  */
@@ -752,19 +752,6 @@ async function handleCheckSuiteFailure(
       const isDraft = await checkPrIsDraft(installationId, repository.full_name, pr.number);
       if (isDraft) {
         console.log(`Skipping CI retry for draft PR #${pr.number} on ${repository.full_name}`);
-        continue;
-      }
-
-      // Guard: dedupe — don't pile on if a fix task is already queued/running.
-      const existingRetry = await db.query.tasks.findFirst({
-        where: and(
-          eq(tasks.parentTaskId, task.id),
-          inArray(tasks.status, ['pending', 'in_progress']),
-        ),
-        columns: { id: true },
-      });
-      if (existingRetry) {
-        console.log(`Skipping CI retry for task ${task.id} — child task ${existingRetry.id} already in flight`);
         continue;
       }
 
@@ -820,17 +807,22 @@ async function handleCheckSuiteFailure(
           title: retryTask.title,
           description: retryTask.description,
           parentTaskId: retryTask.parentTaskId,
+          ciRetryPrNumber: pr.number,
+          ciRetryHeadSha: checkSuite.head_sha,
           missionId: retryTask.missionId,
           context: retryTask.context,
           creationSource: retryTask.creationSource,
           status: 'pending',
           priority: 7, // CI fix is urgent
         })
+        .onConflictDoNothing()
         .returning();
 
       if (newTask) {
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+      } else {
+        console.log(`Skipping duplicate CI retry for ${task.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
       }
     } catch (error) {
       console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);

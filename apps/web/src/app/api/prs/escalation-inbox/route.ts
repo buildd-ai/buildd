@@ -66,13 +66,26 @@ export async function GET(_req: NextRequest) {
           inArray(missionNotes.taskId, openTaskIds),
           eq(missionNotes.type, 'reviewer_escalated'),
         ),
-        columns: { taskId: true, title: true, body: true, createdAt: true },
+        columns: {
+          taskId: true,
+          title: true,
+          body: true,
+          status: true,
+          supersededByPrNumber: true,
+          createdAt: true,
+        },
       })
     : [];
 
   // Build a map: taskId → escalation reason
   const escalationMap = new Map<string, { reason: string; notedAt: Date }>();
+  const supersededTaskIds = new Set<string>();
   for (const note of escalatedNotes) {
+    if (note.taskId && note.status === 'superseded') {
+      supersededTaskIds.add(note.taskId);
+      continue;
+    }
+    if (note.status !== 'open') continue;
     if (note.taskId && !escalationMap.has(note.taskId)) {
       escalationMap.set(note.taskId, {
         reason: note.body ?? note.title,
@@ -95,6 +108,7 @@ export async function GET(_req: NextRequest) {
       if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
       const taskTitle = (w.task as any)?.title ?? '';
       if (taskTitle.startsWith('[smoke-test')) return false;
+      if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
       if (w.taskId && escalationMap.has(w.taskId)) return true;
       const ws = wsMap.get(w.workspaceId);
       if (!ws) return false;
