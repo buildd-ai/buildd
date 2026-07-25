@@ -290,6 +290,27 @@ describe('scanEnvironment', () => {
     }
   });
 
+  it('advertises mount-isolation support only when the runner opts in', () => {
+    const originalOptIn = process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST;
+    const originalDisable = process.env.BUILDD_DISABLE_SANDBOX;
+    try {
+      delete process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST;
+      delete process.env.BUILDD_DISABLE_SANDBOX;
+      expect(scanEnvironment().envKeys).not.toContain('sandbox:mount-allowlist');
+
+      process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST = '1';
+      expect(scanEnvironment().envKeys).toContain('sandbox:mount-allowlist');
+
+      process.env.BUILDD_DISABLE_SANDBOX = '1';
+      expect(scanEnvironment().envKeys).not.toContain('sandbox:mount-allowlist');
+    } finally {
+      if (originalOptIn === undefined) delete process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST;
+      else process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST = originalOptIn;
+      if (originalDisable === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
+      else process.env.BUILDD_DISABLE_SANDBOX = originalDisable;
+    }
+  });
+
   it('ignores empty env keys', () => {
     const original = process.env.SLACK_TOKEN;
     process.env.SLACK_TOKEN = '';

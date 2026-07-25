@@ -1090,3 +1090,4 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
+export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
