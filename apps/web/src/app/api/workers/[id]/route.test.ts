@@ -96,6 +96,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
+  not: (expr: any) => ({ expr, type: 'not' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   desc: (field: any) => ({ field, type: 'desc' }),
@@ -3503,6 +3504,118 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       // Task must never be set to 'failed' — it should be 'pending' (re-queue) or left alone
       expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+    });
+  });
+
+  // ── Cancelled-task protection ────────────────────────────────────────────────
+  // Regression: a cancelled task's in-flight worker can send a final PATCH after
+  // the cancel, which previously reset the task to 'pending' via auto-retry,
+  // Codex deferral, or budget-error paths — causing it to be re-claimed.
+  describe('cancelled task — worker PATCH must not re-queue', () => {
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockReset();
+      mockWorkersFindFirst.mockReset();
+      mockTasksFindFirst.mockReset();
+      mockWorkersUpdate.mockReset();
+      mockTasksUpdate.mockReset();
+      mockTeamsFindFirst.mockReset();
+      mockWorkspacesFindFirst.mockReset();
+      mockTriggerEvent.mockReset();
+
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+      mockTeamsFindFirst.mockResolvedValue(null);
+    });
+
+    it('auto-retry (mission task) does not re-queue a cancelled task', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', branch: 'buildd/test', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', missionId: 'mission-1', context: {}, status: 'cancelled', outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Aborted by user' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // The task must never be set to 'pending' — it was cancelled
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+
+    it('Codex deferral does not re-queue a cancelled task', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', branch: 'buildd/test', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', missionId: null, context: {}, status: 'cancelled', outputRequirement: 'none',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: another Codex worker is active in this workspace' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+
+    it('budget error does not re-queue a cancelled task', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', branch: 'buildd/test', pendingInstructions: null, milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', missionId: null, context: {}, status: 'cancelled', outputRequirement: 'none',
+        workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'buildd' }, backend: 'claude',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
     });
   });
 });

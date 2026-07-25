@@ -246,6 +246,18 @@ export async function POST(req: NextRequest) {
 
   // Find claimable tasks
   const now = new Date();
+  // CLAIMABILITY CONTRACT (all conditions must hold):
+  //   • status = 'pending'   — terminal statuses (cancelled, completed, failed) are never
+  //                            claimable. stale-worker cleanup and worker-PATCH guards
+  //                            (not(eq(tasks.status,'cancelled'))) ensure cancelled tasks
+  //                            are never silently reset to 'pending' by retry machinery.
+  //   • startAt ≤ now        — deferred tasks stay inert until their floor passes.
+  //   • dependsOn satisfied  — all upstream deps completed+merged (or cancelled).
+  //
+  // MISSION PAUSE SEMANTICS: pausing a mission is a scheduler-level signal — it stops
+  // new task generation but does NOT block already-filed tasks from being claimed.
+  // Tasks already in the queue when a mission is paused remain claimable so in-flight
+  // work drains gracefully. Pause = stop producing new work, not abort existing work.
   const claimableConditions = [
     inArray(tasks.workspaceId, workspaceIds),
     eq(tasks.status, 'pending'),

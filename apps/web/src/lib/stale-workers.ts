@@ -19,9 +19,10 @@ const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
 
 /**
  * Decide what to do with a task whose worker just died:
- * 1. If the worker produced deliverables → promote to completed
- * 2. If retry cap reached (3+ failed workers) → fail permanently
- * 3. Otherwise → reset to pending for another attempt
+ * 1. If the task is cancelled → leave it cancelled (do NOT re-queue)
+ * 2. If the worker produced deliverables → promote to completed
+ * 3. If retry cap reached (3+ failed workers) → fail permanently
+ * 4. Otherwise → reset to pending for another attempt
  *
  * Always resolves dependencies afterward.
  */
@@ -30,6 +31,17 @@ async function resolveStaleTask(
   workspaceId: string,
   staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
 ) {
+  // Read current task status and context upfront. A cancelled task must never
+  // be re-queued — the user explicitly cancelled it and its worker was aborted.
+  const currentTask = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { status: true, context: true },
+  });
+  if (currentTask?.status === 'cancelled') {
+    await resolveCompletedTask(taskId, workspaceId);
+    return;
+  }
+
   // Check if the stale worker produced deliverables
   let hasDeliverables = false;
   if (staleWorker) {
@@ -72,10 +84,6 @@ async function resolveStaleTask(
         .where(eq(tasks.id, taskId));
     } else {
       // Retries remaining — reset to pending, preserving branch context for continuity
-      const currentTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, taskId),
-        columns: { context: true },
-      });
       const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
       await db
         .update(tasks)
