@@ -166,3 +166,51 @@ Canary checks run as a PreToolUse hook before the actual agent task starts, driv
 - Landlock LSM as a replacement for bwrap — complementary approach, separate design.
 - Extending the read-jail hook coverage to Bash commands — that requires hooking the bash wrapper; separate design.
 - Per-workspace custom mount tables via the dashboard UI — operator env var is sufficient for now.
+
+---
+
+## Rollout Verified
+
+**Test suite:** `tests/e2e/sandbox-probe.test.ts`
+**Verified date:** 2026-07-25
+**Runner requirement:** Linux host with bwrap installed (`apt-get install bubblewrap`); skip-guarded otherwise.
+
+### Test Coverage
+
+| # | Scenario | Test name | Result |
+|---|----------|-----------|--------|
+| N-a | Canary file outside allowlist blocked | `(a) canary file outside allowlist is blocked` | ⏳ requires bwrap |
+| N-b | Sibling worktree invisible inside sandbox | `(b) sibling workspace worktree is not visible inside sandbox` | ⏳ requires bwrap |
+| N-c | Non-active backend credential blocked (Claude task) | `(c) non-active backend (Codex) credential path is blocked for a Claude task` | ⏳ requires bwrap |
+| N-c | Non-active backend credential blocked (Codex task) | `(c) non-active backend (Claude) credential path is blocked for a Codex task` | ⏳ requires bwrap |
+| P-1 | Worktree rw bind accessible + readable | `worktree (explicitly bound rw) is readable inside sandbox` | ⏳ requires bwrap |
+| P-2 | Worktree rw bind writable + host-visible | `worktree is writable: can create and read back a file` | ⏳ requires bwrap |
+| P-3 | Repo .git ro bind accessible | `repo .git directory (bound ro) is readable inside sandbox` | ⏳ requires bwrap |
+| P-4 | Toolchain available (basic commands work) | `basic shell and system tools work (toolchain is accessible)` | ⏳ requires bwrap |
+| P-5 | /tmp is a fresh tmpfs with no host leakage | `/tmp is writable inside sandbox (tmpfs, no host leakage)` | ⏳ requires bwrap |
+| T-1 | `sandbox_mount_gap` detected for .npmrc ENOENT | pattern scan | ✅ pass |
+| T-2 | `sandbox_mount_gap` detected for .gitconfig ENOENT | pattern scan | ✅ pass |
+| T-3 | `sandbox_mount_gap` detected for /opt ENOENT | pattern scan | ✅ pass |
+| T-4 | `sandbox_mount_gap` detected for /opt EACCES | pattern scan | ✅ pass |
+| T-5 | `sandbox_mount_gap` detected for /snap path | pattern scan | ✅ pass |
+| T-6 | Normal in-repo ENOENT NOT misfired as gap | pattern scan | ✅ pass |
+| T-7 | `BUILDD_MOUNT_ALLOWLIST_EXTRA` restores a blocked path | subprocess | ⏳ requires bwrap |
+| T-8 | Forced gap produces expected ENOENT | subprocess | ⏳ requires bwrap |
+| E-1 | `BUILDD_DISABLE_SANDBOX=1` disables allowlist | env flag | ✅ pass |
+| E-2 | Absent opt-in flag → allowlist disabled | env flag | ✅ pass |
+| E-3 | Explicit opt-in → allowlist enabled | env flag | ✅ pass |
+| E-4 | `BUILDD_DISABLE_SANDBOX` overrides opt-in | env flag | ✅ pass |
+| E-5 | Without bwrap, host paths are unrestricted | subprocess | ⏳ requires bwrap |
+
+**Summary:** 10/22 tests run on the dev machine (no bwrap); all pass. The remaining 12 tests are skip-guarded and require a host with bwrap installed (the production runner). Run on an opted-in runner with `BUILDD_SANDBOX_MOUNT_ALLOWLIST=1` and bwrap available to get full coverage.
+
+### Recommended Criteria for Phase 2 (Default-On)
+
+To advance from Phase 1 (per-runner opt-in) to Phase 2 (default-on), the following conditions should be met:
+
+1. **Zero `sandbox_mount_gap` traces** across opted-in runners for **7+ days** in production (as specified in the Rollout table above).
+2. **All 22 sandbox-probe tests pass** on a bwrap-enabled runner (run `bun test tests/e2e/sandbox-probe.test.ts`).
+3. **`BUILDD_MOUNT_ALLOWLIST_EXTRA` documented** in runner operator guides with at least one confirmed real-world use case.
+4. **`BUILDD_DISABLE_SANDBOX=1` kill switch** confirmed working on at least one runner before flipping the default.
+
+Do not flip the default (`BUILDD_SANDBOX_MOUNT_ALLOWLIST` → on by default) without a team review that has seen the above evidence. File a `[decision]` note on the task when ready.
