@@ -52,6 +52,11 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import {
+  buildWorkerBwrapArgv,
+  createBwrapSpawn,
+  isMountAllowlistEnabled,
+} from './bwrap-mount-allowlist';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2082,6 +2087,26 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
+      // Phase-1 rollout: opted-in runners wrap the agent process in an outer
+      // bwrap namespace containing only this task's required paths. The SDK
+      // currently has no sandbox.extraMounts option, so its supported custom
+      // spawn hook is the injection point prescribed by the design fallback.
+      // BUILDD_DISABLE_SANDBOX remains the global kill switch, and the cached
+      // support probe/runtime false-positive recovery remain the sole bwrap gate.
+      const workerBwrapArgv = isMountAllowlistEnabled() && isBwrapSupported()
+        ? buildWorkerBwrapArgv({
+            worktreePath: cwd,
+            repoPath,
+            homePath: cleanEnv.HOME,
+            bunInstallPath: cleanEnv.BUN_INSTALL,
+            claudeConfigDir,
+            codexHome: cleanEnv.CODEX_HOME,
+            isCodexTask,
+            executablePath: pathToClaudeCodeExecutable,
+            extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
+          })
+        : undefined;
+
       // Build query options
       const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
@@ -2090,6 +2115,22 @@ export class WorkerManager {
         model: this.config.model,
         ...(fallbackModel ? { fallbackModel } : {}),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+        ...(!isCodexTask && workerBwrapArgv
+          ? {
+              spawnClaudeCodeProcess: createBwrapSpawn(workerBwrapArgv, () => {
+                // The outer wrapper can expose the same probe false-positive as
+                // Claude's inner bwrap. Preserve PR #1383 recovery semantics:
+                // flip the process cache once, fail fast, and make future tasks
+                // bypass both sandbox layers without requiring a runner restart.
+                if (_bwrapSupported !== false) {
+                  _bwrapSupported = false;
+                  worker.error = 'bwrap sandbox unavailable on this host (user namespace creation blocked). '
+                    + 'Future tasks will run with sandbox disabled; restart with appropriate namespace permissions to re-enable.';
+                  abortController.abort();
+                }
+              }),
+            }
+          : {}),
         abortController,
         env: cleanEnv,
         settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
