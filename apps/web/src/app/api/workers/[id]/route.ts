@@ -625,18 +625,50 @@ export async function PATCH(
   // or tool binary). Task is infra-class — reset to pending so it can be retried once
   // the operator adds the path via BUILDD_MOUNT_ALLOWLIST_EXTRA. Does NOT count against
   // code-retry attempts (stale-workers mirrors this via the chargeableFailures exclusion).
+  //
+  // PRECEDENCE RULE — mission-level budget exhaustion wins over task-level requeue.
+  // If the task belongs to a budget_exhausted mission, do NOT reset to pending. A pending
+  // task in an exhausted mission is silently skipped by the claim loop (PR #1457 refuses to
+  // dispatch into exhausted missions), making it invisible to the operator. Instead, fall
+  // through to the normal failure path so the mount-gap error surfaces and the failure
+  // notification fires. The task becomes retryable once the user raises the mission budget
+  // (mission transitions active → tasks claimable again).
+  //
+  // This flag is also checked in the mission auto-retry block below so that the general
+  // 1-retry requeue path for mission tasks is similarly suppressed when budget is exhausted.
+  //
+  // Coupling note: budget_exhausted status is introduced by PR #1457 (mission cost-budget
+  // enforcement). This guard is a no-op on branches that lack that status but becomes
+  // load-bearing once #1457 lands; #1457 should rebase onto this branch.
+  let sandboxGapMissionExhausted = false; // lifted so the auto-retry block can read it
   if (isSandboxMountGap && worker.taskId) {
     const gapTask = await db.query.tasks.findFirst({
       where: eq(tasks.id, worker.taskId),
-      columns: { status: true },
+      columns: { status: true, missionId: true },
     });
-    if (gapTask?.status !== 'cancelled') {
-      await db
-        .update(tasks)
-        .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+
+    // Check whether the task's mission has exhausted its cost budget before deciding
+    // to requeue — budget exhaustion takes precedence over the mount-gap infra requeue.
+    const gapMissionId = (gapTask as any)?.missionId as string | null | undefined;
+    if (gapMissionId) {
+      const missionRow = await db.query.missions.findFirst({
+        where: eq(missions.id, gapMissionId),
+        columns: { status: true },
+      });
+      sandboxGapMissionExhausted = missionRow?.status === 'budget_exhausted';
     }
-    isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
+
+    if (!sandboxGapMissionExhausted) {
+      if (gapTask?.status !== 'cancelled') {
+        await db
+          .update(tasks)
+          .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
+          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      }
+      isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
+    }
+    // sandboxGapMissionExhausted=true: fall through so the failure notification fires and
+    // the mount-gap error is visible. Task resumes when the mission budget is raised.
   }
 
   let shouldAutoRetry = false;
@@ -751,6 +783,10 @@ export async function PATCH(
         shouldAutoRetry = retryCount < maxRetries;
         // A cancelled task must not be auto-retried — the user explicitly cancelled it.
         if (taskForRetry?.status === 'cancelled') shouldAutoRetry = false;
+        // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
+        // Same guard as the sandbox_mount_gap block above — a pending task in an
+        // exhausted mission is skipped by the claim loop and would be silently stuck.
+        if (isSandboxMountGap && sandboxGapMissionExhausted) shouldAutoRetry = false;
         if (shouldAutoRetry) {
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
