@@ -64,4 +64,50 @@ describe('inspectPullRequestMigrations', () => {
         'migration number collision: 0094_safe.sql conflicts with open PR migration 0094_collision.sql',
     });
   });
+
+  it('escalates deleting a generated migration', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        filename: 'packages/core/drizzle/0094_safe.sql',
+        status: 'removed',
+      },
+    ]);
+
+    await expect(
+      inspectPullRequestMigrations({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'abc123',
+        files: [],
+      }),
+    ).resolves.toEqual({
+      safe: false,
+      reason: 'deletes generated migration packages/core/drizzle/0094_safe.sql',
+    });
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates modifying an existing generated migration', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        filename: 'packages/core/drizzle/0094_safe.sql',
+        status: 'modified',
+      },
+    ]);
+
+    await expect(
+      inspectPullRequestMigrations({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'abc123',
+        files: [],
+      }),
+    ).resolves.toEqual({
+      safe: false,
+      reason: 'modifies existing migration packages/core/drizzle/0094_safe.sql',
+    });
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
 });
