@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, workspaces, taskSchedules } from '@buildd/core/db/schema';
+import { missions, workspaces, taskSchedules, initiatives } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
+    const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
@@ -220,6 +220,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Optional parent initiative — must exist and belong to the same team.
+    if (initiativeId) {
+      const init = await db.query.initiatives.findFirst({
+        where: eq(initiatives.id, initiativeId),
+        columns: { id: true, teamId: true },
+      });
+      if (!init || init.teamId !== teamId) {
+        return NextResponse.json({ error: 'initiative not found' }, { status: 404 });
+      }
+    }
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -230,6 +241,7 @@ export async function POST(req: NextRequest) {
         status: effectiveStatus,
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
+        initiativeId: initiativeId || null,
         contextArtifactIds: contextArtifactIds || [],
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
