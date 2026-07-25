@@ -1752,3 +1752,5 @@ export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
 export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
 export type ConnectorShare = typeof connectorShares.$inferSelect;
 export type NewConnectorShare = typeof connectorShares.$inferInsert;
+
+// smoke-test-3 20260725T120028Z
