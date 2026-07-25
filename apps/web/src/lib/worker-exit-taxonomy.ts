@@ -18,5 +18,6 @@ export function classifyReportedFailure(input: {
 export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefined): boolean {
   return exitCause !== 'budget_limited'
     && exitCause !== 'infra_failure'
-    && exitCause !== 'sandbox_mount_gap';
+    && exitCause !== 'sandbox_mount_gap'
+    && exitCause !== 'condition_unmet';
 }
