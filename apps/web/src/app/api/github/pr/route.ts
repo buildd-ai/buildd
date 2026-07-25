@@ -176,6 +176,9 @@ export async function POST(req: NextRequest) {
       // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
     }
 
+    const taskContext = worker.task?.context as Record<string, unknown> | null;
+    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
+
     // Create the PR via GitHub API
     const prData = await githubApi(
       repo.installation.installationId,
@@ -189,8 +192,10 @@ export async function POST(req: NextRequest) {
           head,
           base: base
             // Stacked plan phases store predecessor branch in context.baseBranch
-            || (worker.task?.context as Record<string, unknown> | null)?.baseBranch as string
-            || (worker.task?.context as Record<string, unknown> | null)?.targetBranch as string
+            // Recovery tasks may instead store the current head there, which
+            // cannot be used as a PR base.
+            || (contextBaseBranch !== head ? contextBaseBranch : undefined)
+            || taskContext?.targetBranch as string
             || workspace.gitConfig?.targetBranch
             || workspace.gitConfig?.defaultBranch
             || repo.defaultBranch
