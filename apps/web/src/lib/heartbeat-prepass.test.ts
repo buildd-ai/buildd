@@ -43,16 +43,6 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-mock.module('@buildd/core/mission-helpers', () => ({
-  isDeliverableTask(t: { title: string; mode?: string | null }): boolean {
-    if (t.mode === 'planning') return false;
-    if (t.title.startsWith('Aggregate results:')) return false;
-    if (t.title.startsWith('Evaluate mission completion:')) return false;
-    if (t.title.startsWith('Mission:')) return false;
-    return true;
-  },
-}));
-
 import { computeStateKey, evaluateHeartbeatPrepass, type HeartbeatMissionState } from './heartbeat-prepass';
 
 function resetAll() {

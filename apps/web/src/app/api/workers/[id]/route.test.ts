@@ -220,6 +220,33 @@ mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
 }));
 
+// Own the merge-policy resolution for this file. Other test files (e.g.
+// github/webhook) globally mock '@/lib/merge-policy' with a stubbed resolvePolicy
+// that ignores our inputs and never resets (bun mock.module is global +
+// persistent), which would leak an auto-merge tier into these reviewer-gate
+// tests. Registering our own faithful copy makes this file leak-proof.
+mock.module('@/lib/merge-policy', () => ({
+  resolvePolicy(
+    workspace: { gitConfig?: any },
+    mission?: { mergePolicy?: any } | null,
+  ) {
+    if (mission?.mergePolicy) return mission.mergePolicy;
+    if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
+    const legacyAutoMerge =
+      workspace.gitConfig?.autoMergeOnGreenCI ??
+      workspace.gitConfig?.autoMergePR ??
+      true;
+    if (!legacyAutoMerge) return { tier: 'human' };
+    return {
+      tier: 'auto-threshold',
+      threshold: {
+        maxLines: workspace.gitConfig?.autoMergeMaxLines ?? 800,
+        denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
+      },
+    };
+  },
+}));
+
 const mockDispatchNewTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,

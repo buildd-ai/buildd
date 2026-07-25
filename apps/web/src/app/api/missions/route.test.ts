@@ -7,6 +7,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindMany = mock(() => [] as any[]);
+const mockInitiativesFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'organizer-task-1' } }));
 let insertedMissionValues: any = null;
@@ -67,6 +68,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findMany: mockMissionsFindMany },
+      initiatives: { findFirst: mockInitiativesFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: (table: any) => {
@@ -87,6 +89,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: 'missions',
+  initiatives: { id: 'id', teamId: 'teamId' },
   workspaces: { id: 'id', teamId: 'teamId' },
   taskSchedules: 'taskSchedules',
 }));
@@ -103,6 +106,8 @@ describe('POST /api/missions', () => {
     mockMissionsInsert.mockReset();
     mockSchedulesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockInitiativesFindFirst.mockReset();
+    mockInitiativesFindFirst.mockResolvedValue(null);
     mockRunMission.mockReset();
     insertedMissionValues = null;
     insertedScheduleValues = null;
@@ -510,6 +515,38 @@ describe('POST /api/missions', () => {
     expect(res.status).toBe(201);
 
     expect(mockRunMission).toHaveBeenCalledWith('obj-1', { manualRun: true });
+  });
+
+  it('stores initiativeId when a valid initiative is provided', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1' });
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Mission under initiative', initiativeId: 'init-1' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.initiativeId).toBe('init-1');
+  });
+
+  it('rejects an initiativeId belonging to another team', async () => {
+    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-x', teamId: 'team-other' });
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad initiative', initiativeId: 'init-x' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('initiative');
+  });
+
+  it('defaults initiativeId to null when omitted', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Ungrouped mission' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.initiativeId).toBeNull();
   });
 
   it('still succeeds when auto-start organizer fails', async () => {

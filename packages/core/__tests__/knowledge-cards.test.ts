@@ -170,6 +170,13 @@ describe('buildArtifactCard', () => {
     expect(chunk.content.length).toBeLessThan(big.length);
     expect(chunk.sourceUrl).toBe('https://buildd.dev/s/a-7');
   });
+
+  it('threads initiativeId into metadata when present, omits it when absent', () => {
+    const withInit = buildArtifactCard({ artifactId: 'a-8', title: 'Roadmap', initiativeId: 'init-1' });
+    expect(withInit.metadata?.initiativeId).toBe('init-1');
+    const without = buildArtifactCard({ artifactId: 'a-9', title: 'Notes' });
+    expect(without.metadata?.initiativeId).toBeUndefined();
+  });
 });
 
 // ── buildPlanCard (corpus plan, phase plan) ──────────────────────────────────
