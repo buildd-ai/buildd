@@ -1290,7 +1290,6 @@ export default async function HomePage({
                                           <Link
                                             href="/app/home"
                                             className="text-primary font-medium hover:underline"
-                                            onClick={e => e.stopPropagation()}
                                           >
                                             blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
                                           </Link>
