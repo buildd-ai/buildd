@@ -4,6 +4,7 @@
  * Used by:
  *   - apps/web/src/app/api/github/webhook/route.ts (CI-green + no-CI paths)
  *   - apps/web/src/app/api/workers/[id]/route.ts   (reviewer approve path)
+ * Smoke-test marker: auto-threshold baseline redo, 2026-07-25.
  */
 
 import { db } from '@buildd/core/db';
