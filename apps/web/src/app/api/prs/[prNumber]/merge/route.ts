@@ -103,9 +103,11 @@ export async function POST(
   });
 
   // Unblock tasks that depend on this task (mergedAt now set — gate is clear)
-  checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
-    console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
-  );
+  if (worker.taskId) {
+    checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
+      console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
+    );
+  }
 
   // Unblock dependent missions if this task belonged to one
   const missionId = (worker.task as any)?.missionId;
