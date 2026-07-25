@@ -1,3 +1,4 @@
+// smoke-test-2: trivial comment to trigger reviewer task under agent-review policy
 /**
  * Shared auto-merge helpers.
  *
