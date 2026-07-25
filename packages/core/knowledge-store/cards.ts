@@ -44,6 +44,7 @@ export interface TaskCardInput {
   success: boolean;
   prUrl?: string | null;
   missionId?: string | null;
+  initiativeId?: string | null;
   sourceUrl?: string | null;
 }
 
@@ -62,6 +63,7 @@ export function buildTaskCard(input: TaskCardInput): UpsertChunk {
     success: input.success,
   };
   if (input.missionId) metadata.missionId = input.missionId;
+  if (input.initiativeId) metadata.initiativeId = input.initiativeId;
   if (input.prUrl) metadata.prUrl = input.prUrl;
 
   return {
@@ -90,6 +92,7 @@ export interface SessionCardInput {
   /** Effort signal (agentic turns) when available. */
   turns?: number | null;
   missionId?: string | null;
+  initiativeId?: string | null;
   sourceUrl?: string | null;
 }
 
@@ -127,6 +130,7 @@ export function buildSessionCard(input: SessionCardInput): UpsertChunk {
   };
   if (input.workerId) metadata.workerId = input.workerId;
   if (input.missionId) metadata.missionId = input.missionId;
+  if (input.initiativeId) metadata.initiativeId = input.initiativeId;
 
   return {
     id: `session:${input.taskId}`,
@@ -149,6 +153,7 @@ export interface PrCardInput {
   changedFiles?: string[] | null;
   taskId?: string | null;
   missionId?: string | null;
+  initiativeId?: string | null;
 }
 
 export function buildPrCard(input: PrCardInput): UpsertChunk {
@@ -169,6 +174,7 @@ export function buildPrCard(input: PrCardInput): UpsertChunk {
   };
   if (input.taskId) metadata.taskId = input.taskId;
   if (input.missionId) metadata.missionId = input.missionId;
+  if (input.initiativeId) metadata.initiativeId = input.initiativeId;
 
   return {
     id: `pr:${input.prNumber}`,
@@ -191,6 +197,7 @@ export interface ArtifactCardInput {
   shareUrl?: string | null;
   taskId?: string | null;
   missionId?: string | null;
+  initiativeId?: string | null;
 }
 
 export function buildArtifactCard(input: ArtifactCardInput): UpsertChunk {
@@ -207,6 +214,7 @@ export function buildArtifactCard(input: ArtifactCardInput): UpsertChunk {
   if (input.artifactType) metadata.artifactType = input.artifactType;
   if (input.taskId) metadata.taskId = input.taskId;
   if (input.missionId) metadata.missionId = input.missionId;
+  if (input.initiativeId) metadata.initiativeId = input.initiativeId;
 
   return {
     id: `artifact:${input.artifactId}`,
@@ -225,6 +233,7 @@ export interface PlanCardInput {
   title?: string | null;
   plan: string;
   missionId?: string | null;
+  initiativeId?: string | null;
   sourceUrl?: string | null;
 }
 
@@ -266,6 +275,7 @@ export function buildPlanCard(input: PlanCardInput): UpsertChunk {
     taskId: input.taskId,
   };
   if (input.missionId) metadata.missionId = input.missionId;
+  if (input.initiativeId) metadata.initiativeId = input.initiativeId;
 
   return {
     id: `plan:${input.taskId}`,

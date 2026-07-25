@@ -87,6 +87,7 @@ export const adminActions = [
   'manage_secrets',
   'approve_plan', 'reject_plan',
   'manage_missions',
+  'manage_initiatives',
   'manage_workspaces',
   'manage_watched_projects',
   'manage_model_tiers',
@@ -123,9 +124,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) } — updates task metadata. To redirect a running agent mid-flight, use send_agent_message instead; update_task changes do not reach an active worker.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
-    create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
+    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
-    list_artifacts: '{ workspaceId?, missionId?, key?, type?, limit? }',
+    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -142,7 +143,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -1897,9 +1899,14 @@ export async function handleBuilddAction(
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
 
-      // Support mission-level artifacts (no worker required) or worker artifacts
+      // Support initiative-level, mission-level (no worker required), or worker artifacts
       let artifactData;
-      if (params.missionId) {
+      if (params.initiativeId) {
+        artifactData = await api(`/api/initiatives/${params.initiativeId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      } else if (params.missionId) {
         artifactData = await api(`/api/missions/${params.missionId}/artifacts`, {
           method: 'POST',
           body: JSON.stringify(artifactBody),
@@ -1925,6 +1932,7 @@ export async function handleBuilddAction(
         shareUrl: art.shareUrl ?? null,
         taskId: art.taskId ?? null,
         missionId: (params.missionId as string) ?? art.missionId ?? null,
+        initiativeId: (params.initiativeId as string) ?? art.initiativeId ?? null,
       }));
 
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
@@ -1973,6 +1981,20 @@ export async function handleBuilddAction(
     }
 
     case 'list_artifacts': {
+      const formatArtifact = (a: any, workspace?: string) => {
+        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
+        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})${workspace ? ` [${workspace}]` : ''}\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
+      };
+
+      // Initiative-scoped: one call returns initiative-level + rolled-up child-mission artifacts.
+      if (params.initiativeId) {
+        const data = await api(`/api/initiatives/${params.initiativeId}/artifacts`);
+        const artifactsList = data.artifacts || [];
+        if (artifactsList.length === 0) return text('No artifacts found for this initiative.');
+        const summary = artifactsList.map((a: any) => formatArtifact(a)).join('\n\n');
+        return text(`${artifactsList.length} artifact(s) for initiative ${params.initiativeId} (including child missions):\n\n${summary}`);
+      }
+
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
       const searchParams = new URLSearchParams();
@@ -1980,11 +2002,6 @@ export async function handleBuilddAction(
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
       if (params.limit) searchParams.set('limit', String(params.limit));
-
-      const formatArtifact = (a: any, workspace?: string) => {
-        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
-        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})${workspace ? ` [${workspace}]` : ''}\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
-      };
 
       if (wsId) {
         const data = await api(`/api/workspaces/${wsId}/artifacts?${searchParams}`);
@@ -2286,6 +2303,7 @@ export async function handleBuilddAction(
           }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.initiativeId !== undefined) body.initiativeId = params.initiativeId;
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
           if (params.model) body.model = params.model;
           if (params.status !== undefined) body.status = params.status;
@@ -2346,6 +2364,7 @@ export async function handleBuilddAction(
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
           }
+          if (params.initiativeId !== undefined) body.initiativeId = params.initiativeId;
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
           if (params.model !== undefined) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
@@ -2391,6 +2410,111 @@ export async function handleBuilddAction(
         }
         default:
           throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+      }
+    }
+
+    // ── Initiatives ────────────────────────────────────────────────────────
+    // An initiative is an execution-free planning container above missions
+    // (initiative → mission → task). It has NO orchestration engine of its own.
+
+    case 'manage_initiatives': {
+      const initiativeAction = params.action as string;
+      if (!initiativeAction) throw new Error('action is required (list, create, get, update, delete, link_mission, unlink_mission)');
+
+      switch (initiativeAction) {
+        case 'list': {
+          const qs = new URLSearchParams();
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (wsId) qs.set('workspaceId', wsId);
+          }
+          if (params.status) qs.set('status', params.status as string);
+          const data = await api(`/api/initiatives?${qs}`);
+          const initiatives = data.initiatives || [];
+          if (initiatives.length === 0) return text('No initiatives found.');
+          const summary = initiatives.map((i: any) =>
+            `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}`
+          ).join('\n\n');
+          return text(`${initiatives.length} initiative(s):\n\n${summary}`);
+        }
+        case 'create': {
+          if (!params.title) throw new Error('title is required');
+          const body: Record<string, unknown> = { title: params.title };
+          if (params.description) body.description = params.description;
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
+          if (params.status !== undefined) body.status = params.status;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          const data = await api('/api/initiatives', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          return text(`Initiative created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n\nCreate missions under it with manage_missions action=create initiativeId=${data.id}.`);
+        }
+        case 'get': {
+          // KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts.
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}`);
+          const p = data.progress || {};
+          const missionList = (data.missions || []).map((m: any) =>
+            `  - [${m.status}] ${m.title} — ${m.progress ?? 0}% (${m.completedTasks ?? 0}/${m.totalTasks ?? 0}) (${m.id})`
+          ).join('\n');
+          const artifactList = (data.artifacts || []).map((a: any) =>
+            `  - ${a.title} (${a.type}) — ${a.id}`
+          ).join('\n');
+          return text(
+            `**${data.title}** [${data.status}]\nID: ${data.id}\n` +
+            `Rollup: ${p.progress ?? 0}% — ${p.completedMissions ?? 0}/${p.totalMissions ?? 0} missions, ${p.completedTasks ?? 0}/${p.totalTasks ?? 0} tasks [${p.status ?? 'empty'}]\n` +
+            `${data.description ? `Description: ${data.description}\n` : ''}` +
+            `${missionList ? `\nMissions:\n${missionList}` : '\nNo missions yet.'}` +
+            `${artifactList ? `\n\nInitiative artifacts:\n${artifactList}` : ''}`
+          );
+        }
+        case 'update': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const body: Record<string, unknown> = {};
+          if (params.title !== undefined) body.title = params.title;
+          if (params.description !== undefined) body.description = params.description;
+          if (params.status !== undefined) body.status = params.status;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.workspaceId !== undefined) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
+          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          return text(`Initiative updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+        }
+        case 'delete': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          await api(`/api/initiatives/${params.initiativeId}`, { method: 'DELETE' });
+          return text(`Initiative deleted: ${params.initiativeId} (child missions were unlinked, not deleted)`);
+        }
+        case 'link_mission': {
+          if (!params.initiativeId || !params.missionId) throw new Error('initiativeId and missionId are required');
+          await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ initiativeId: params.initiativeId }),
+          });
+          return text(`Mission ${params.missionId} linked to initiative ${params.initiativeId}`);
+        }
+        case 'unlink_mission': {
+          if (!params.missionId) throw new Error('missionId is required');
+          await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ initiativeId: null }),
+          });
+          return text(`Mission ${params.missionId} unlinked from its initiative`);
+        }
+        default:
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
       }
     }
 
