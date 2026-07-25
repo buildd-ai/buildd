@@ -42,6 +42,7 @@ export default async function TasksPage({
     budgetPaused: boolean;
     budgetBackend: string;
     budgetResetsAt: string | null;
+    startAt: string | null;
     workerStatus: string | null;
     workerStartedAt: string | null;
     workerUpdatedAt: string | null;
@@ -94,6 +95,7 @@ export default async function TasksPage({
               context: true,
               backend: true,
               dependsOn: true,
+              startAt: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
@@ -237,6 +239,7 @@ export default async function TasksPage({
               budgetPaused,
               budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
               budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
+              startAt: t.startAt?.toISOString() || null,
               workerStatus: activeW?.status ?? null,
               workerStartedAt: activeW?.startedAt ?? null,
               workerUpdatedAt: activeW?.updatedAt ?? null,

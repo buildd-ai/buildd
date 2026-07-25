@@ -66,6 +66,7 @@ const VALID_AUTH_JSON = JSON.stringify({
   access_token: 'at_abc',
   refresh_token: 'rt_xyz',
   account_id: 'acc-1',
+  id_token: 'id_abc',
   expires_in: 3600,
 });
 
@@ -201,7 +202,7 @@ describe('POST /api/workspaces/[id]/codex-credential', () => {
 
   it('accepts auth.json with expiry field instead of expires_in', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    const authJson = JSON.stringify({ access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1', expiry: '2026-07-01T00:00:00Z' });
+    const authJson = JSON.stringify({ access_token: 'at_abc', refresh_token: 'rt_xyz', account_id: 'acc-1', id_token: 'id_abc', expiry: '2026-07-01T00:00:00Z' });
     const res = await POST(makeReq('POST', { authJson }), { params: mockParams });
     expect(res.status).toBe(200);
   });

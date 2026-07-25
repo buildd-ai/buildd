@@ -8,6 +8,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
+import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -168,7 +169,8 @@ export async function PATCH(
     const body = await req.json();
     const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
-      dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd } = body;
+      dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -203,6 +205,23 @@ export async function PATCH(
     const updateData: Partial<typeof missions.$inferInsert> = {
       updatedAt: new Date(),
     };
+
+    let updatedStartAt: Date | null | undefined;
+    if (rawStartAt !== undefined || rawStartIn !== undefined || rawStartAfter !== undefined) {
+      try {
+        const resolved = resolveDeferredStart({
+          startAt: rawStartAt,
+          startIn: rawStartIn,
+          startAfter: rawStartAfter,
+          knownBudgetResetAt: backend === 'codex' ? null : apiAccount?.budgetResetsAt ?? null,
+        });
+        updatedStartAt = resolved.startAt;
+        updateData.startAt = resolved.startAt;
+        updateData.startResolution = resolved.resolution;
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid deferred start' }, { status: 400 });
+      }
+    }
 
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
@@ -326,13 +345,16 @@ export async function PATCH(
         };
 
         if (existing.scheduleId) {
-          const nextRunAt = cronExpression !== undefined
-            ? computeNextRunAt(cronExpression, 'UTC')
-            : undefined;
+          const nextRunAt = updatedStartAt !== undefined
+            ? (updatedStartAt ?? (effectiveCron ? computeNextRunAt(effectiveCron, 'UTC') : null))
+            : cronExpression !== undefined
+              ? computeNextRunAt(cronExpression, 'UTC')
+              : undefined;
           await db
             .update(taskSchedules)
             .set({
-              ...(cronExpression !== undefined ? { cronExpression, nextRunAt } : {}),
+              ...(cronExpression !== undefined ? { cronExpression } : {}),
+              ...(nextRunAt !== undefined ? { nextRunAt: laterStartAt(nextRunAt, updatedStartAt) } : {}),
               ...(workspaceId !== undefined ? { workspaceId: effectiveWorkspaceId } : {}),
               name: `Mission: ${title || existing.title}`,
               taskTemplate,
@@ -359,6 +381,20 @@ export async function PATCH(
         await db.delete(taskSchedules).where(eq(taskSchedules.id, existing.scheduleId));
         updateData.scheduleId = null;
       }
+    }
+
+    if (updatedStartAt !== undefined && existing.scheduleId && !scheduleNeedsUpdate) {
+      let nextRunAt = updatedStartAt;
+      if (nextRunAt === null) {
+        const schedule = await db.query.taskSchedules.findFirst({
+          where: eq(taskSchedules.id, existing.scheduleId),
+          columns: { cronExpression: true },
+        });
+        nextRunAt = schedule ? computeNextRunAt(schedule.cronExpression, 'UTC') : null;
+      }
+      await db.update(taskSchedules)
+        .set({ nextRunAt, updatedAt: new Date() })
+        .where(eq(taskSchedules.id, existing.scheduleId));
     }
 
     // Sync schedule workspace when only workspaceId changed (no schedule fields updated)

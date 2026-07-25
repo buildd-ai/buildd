@@ -338,6 +338,50 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.targetLocalUiUrl).toBeNull();
   });
 
+  it('requires confirmation before manually starting a deferred task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123',
+      title: 'Later task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      startAt: new Date(Date.now() + 60 * 60 * 1000),
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('deferred_start');
+    expect(data.canForce).toBe(true);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('starts a deferred task when the human confirms the override', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123',
+      title: 'Later task',
+      description: null,
+      status: 'pending',
+      mode: 'execution',
+      priority: 0,
+      workspaceId: 'ws-1',
+      startAt: new Date(Date.now() + 60 * 60 * 1000),
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalled();
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
+      startAt: null,
+      context: expect.objectContaining({ bypassStartGate: true }),
+    }));
+  });
+
   it('returns 422 when a completed dependency has an unmerged PR', async () => {
     const mockTask = {
       id: 'task-123',
