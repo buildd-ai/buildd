@@ -181,6 +181,7 @@ export interface LocalWorker {
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
+  sandboxMountGap?: boolean;  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;

@@ -46,6 +46,14 @@ const PATTERNS: PatternDef[] = [
   { slug: 'timeout', re: /\bETIMEDOUT\b/ },
   // bwrap sandbox fails in kernels with unprivileged_userns_clone=0 — all Bash commands fail
   { slug: 'bwrap_namespace_denied', re: /bwrap: No permissions to create a new namespace/ },
+  // sandbox_mount_gap: ENOENT/EACCES on paths outside the bwrap mount allowlist.
+  // Conservative: only matches well-known non-allowlisted prefixes (home config files,
+  // /snap/, /opt/) to avoid false-positives on in-repo code errors that also produce ENOENT.
+  // False-positive on real code ENOENT is worse than a miss — keep these narrow.
+  { slug: 'sandbox_mount_gap', re: /\bENOENT\b.*\.npmrc\b/ },
+  { slug: 'sandbox_mount_gap', re: /\bENOENT\b.*\.gitconfig\b/ },
+  { slug: 'sandbox_mount_gap', re: /(?:\bENOENT\b|\bEACCES\b).*\/snap\// },
+  { slug: 'sandbox_mount_gap', re: /(?:\bENOENT\b|\bEACCES\b).*\/opt\// },
 ];
 
 const WINDOW_MS = 60_000;

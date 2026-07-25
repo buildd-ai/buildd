@@ -41,6 +41,10 @@ const PATTERN_COMPONENT_MAP: Record<string, string[]> = {
     'apps/runner/src/env-scan.ts',
     'apps/runner/src/workers.ts',
   ],
+  sandbox_mount_gap: [
+    'apps/runner/src/bwrap-mount-allowlist.ts',
+    'apps/runner/src/workers.ts',
+  ],
   oom_killed: ['apps/runner/src/workers.ts'],
   git_fatal: ['apps/runner/src/git-operations.ts'],
   git_error: ['apps/runner/src/git-operations.ts'],
