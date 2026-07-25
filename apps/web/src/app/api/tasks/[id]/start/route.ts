@@ -128,18 +128,24 @@ export async function POST(
       }
     }
 
-    // Human override: mark the task so the claim route bypasses the dep-PR gate.
-    // This allows a human to deliberately start a task before its dependency PR merges.
-    if (forceOverride && (dependsOn.length > 0 || (task.startAt && task.startAt > new Date()))) {
+    // Human override: mark the task so the claim route bypasses relevant gates.
+    // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
+    // bypassStartGate — skip the deferred-start floor (when startAt is in future).
+    // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
+    const hasDeps = dependsOn.length > 0;
+    const hasStartGate = !!(task.startAt && task.startAt > new Date());
+    const hasMission = !!task.missionId;
+    if (forceOverride && (hasDeps || hasStartGate || hasMission)) {
       await db
         .update(tasks)
         .set({
           context: {
             ...(task.context as Record<string, unknown> || {}),
-            ...(dependsOn.length > 0 ? { bypassDepsGate: true } : {}),
-            ...(task.startAt ? { bypassStartGate: true } : {}),
+            ...(hasDeps ? { bypassDepsGate: true } : {}),
+            ...(hasStartGate ? { bypassStartGate: true } : {}),
+            ...(hasMission ? { bypassHeldGate: true } : {}),
           },
-          ...(task.startAt ? { startAt: null } : {}),
+          ...(hasStartGate ? { startAt: null } : {}),
           updatedAt: new Date(),
         })
         .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));

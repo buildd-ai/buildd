@@ -588,6 +588,11 @@ export const missions = pgTable('missions', {
   // decompose/create new build tasks on its own initiative. This prevents duplicate work when
   // a creator files a task chain at the same time as an auto-decomposing mission.
   decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
+  // When true, tasks filed under this mission are not claimable by workers. Arm the
+  // mission (set isHeld=false) to release all tasks at once. Force-starting a single
+  // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
+  // (which controls organizer initiative) — held is purely about worker claim eligibility.
+  isHeld: boolean('is_held').default(false).notNull(),
   // Earliest time autonomous orchestration may begin. Deferred missions remain
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),

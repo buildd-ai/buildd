@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
 
     let deferredStart;
     try {
@@ -146,6 +146,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid orchestrationMode: must be "auto" or "manual"` }, { status: 400 });
     }
     const effectiveOrchestrationMode: 'auto' | 'manual' = orchestrationMode || 'auto';
+
+    const validStartModes = ['armed', 'held'];
+    if (startMode !== undefined && !validStartModes.includes(startMode)) {
+      return NextResponse.json({ error: `Invalid startMode: must be "armed" or "held"` }, { status: 400 });
+    }
+    const effectiveIsHeld = startMode === 'held';
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -234,6 +240,7 @@ export async function POST(req: NextRequest) {
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
+        isHeld: effectiveIsHeld,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
