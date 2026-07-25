@@ -1,11 +1,12 @@
 import { db } from '@buildd/core/db';
-import { initiatives, missions, artifacts, workspaces } from '@buildd/core/db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { initiatives, missions, artifacts, workspaces, externalLinks } from '@buildd/core/db/schema';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +78,25 @@ export default async function InitiativeDetailPage({
     columns: { id: true, title: true, type: true, shareToken: true, updatedAt: true },
   });
 
+  // Linear Phase 2: only mount the tracking panel if ≥1 child mission has a
+  // linear link. Single indexed query over the child mission ids (cheap gate).
+  const childMissionIds = missionRows.map((m) => m.id);
+  const hasLinearLink =
+    childMissionIds.length > 0 &&
+    (
+      await db
+        .select({ id: externalLinks.id })
+        .from(externalLinks)
+        .where(
+          and(
+            eq(externalLinks.provider, 'linear'),
+            eq(externalLinks.builddEntityType, 'mission'),
+            inArray(externalLinks.builddEntityId, childMissionIds),
+          ),
+        )
+        .limit(1)
+    ).length > 0;
+
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
       {/* Breadcrumbs */}
@@ -113,6 +133,13 @@ export default async function InitiativeDetailPage({
           />
         </div>
       </div>
+
+      {/* Linear Phase 2 — read-back tracking (only when a child mission is linked) */}
+      {hasLinearLink && (
+        <div className="mb-8">
+          <TrackerProgressPanel entityType="initiative" entityId={id} />
+        </div>
+      )}
 
       {/* Missions */}
       <div className="mb-8">

@@ -37,6 +37,8 @@ import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
+import { getLinksForEntity } from '@buildd/core/external-links';
+import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -224,6 +226,9 @@ export default async function MissionDetailPage({
   // Cost budget
   const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
   const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
+
+  // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
+  const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -1047,6 +1052,11 @@ export default async function MissionDetailPage({
               activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
               costBudgetUsd={costBudgetUsd}
             />
+          )}
+
+          {/* Linear Phase 2 — read-back tracking (only when linked) */}
+          {trackerLinks.some(l => l.provider === 'linear') && (
+            <TrackerProgressPanel entityType="mission" entityId={id} />
           )}
         </MissionSecondaryPanel>
       )}
