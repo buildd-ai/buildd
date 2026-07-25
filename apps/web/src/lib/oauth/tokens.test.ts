@@ -44,8 +44,13 @@ describe('OAuth tokens', () => {
       clientId: 'c_test',
       scope: 'mcp',
     });
-    // Flip a character in the signature.
-    const tampered = token.slice(0, -2) + (token.slice(-2) === 'AA' ? 'AB' : 'AA');
+    // Flip the first character of the signature segment.
+    // (The last base64url char of a 32-byte HS256 signature encodes only 4 real
+    // bits + 2 zero padding bits; flipping it between 'A'/'B' changes only the
+    // padding bits, leaving decoded bytes identical and the token still valid.)
+    const [hdr, payload, sig] = token.split('.');
+    const tamperedSig = (sig[0] === 'A' ? 'B' : 'A') + sig.slice(1);
+    const tampered = [hdr, payload, tamperedSig].join('.');
     const claims = await verifyAccessToken(tampered, '00000000-0000-0000-0000-000000000aaa');
     expect(claims).toBeNull();
   });
