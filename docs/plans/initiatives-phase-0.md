@@ -1,6 +1,8 @@
 # Plan — Initiatives Phase 0 (native tier + MCP + UI)
 
-**Status:** Draft (ephemeral rollout plan — archive to `docs/plans/archive/` once shipped)
+**Status:** Shipped on `feat/initiatives-phase-0` (schema+rollup, /api/initiatives,
+MCP `manage_initiatives` + initiativeId, web UI). Archive to `docs/plans/archive/`
+after the PR merges. Deferred: the optional initiative KB corpus (§6 / design §4d).
 **Design:** `docs/design/linear-hierarchy-ingest.md` (Native Initiatives Tier + Optional Linear Sync)
 **Scope:** Phase 0 only — the native, execution-free initiatives tier + its MCP surface + UI/IA.
 **Zero Linear.** Must be fully useful with no connector installed. Linear (Phases 1-4) is out of scope here.

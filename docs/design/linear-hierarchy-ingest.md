@@ -1,6 +1,6 @@
 # Native Initiatives Tier + Optional Linear Sync
 
-**Status:** Proposed
+**Status:** Phase 0 Implemented (native tier); Phases 1-4 (Linear) Proposed
 **Related:**
 - `docs/specs/work-tracker-integration.md` — the shipped/partial work-tracker contract; §3 inbound webhook is a Phase-3 prerequisite here
 - `packages/core/db/schema.ts` — `missions` (~545-607, esp. `parentMissionId:559`, `externalIssueId/Url:596-597`, `orchestrationMode`, `costBudgetUsd`, `scheduleId`, `workingBranch`, `releasedAt`), `tasks` (~610-697, `missionId:645`, `externalIssueId/Url:616-617` — note: **no `teamId`**), `connectors` (~1595-1667)
