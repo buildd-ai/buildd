@@ -24,6 +24,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 import { preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
+import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── isSchemaTouchingFile ─────────────────────────────────────────────────────
@@ -117,5 +118,38 @@ describe('preflightEscalationCheck', () => {
     ];
     const result = preflightEscalationCheck(files, agentReviewPolicy);
     expect(result.shouldEscalate).toBe(false);
+  });
+});
+
+// ── resolvePolicy — spec §10 named cases ────────────────────────────────────
+// These four cases are the canonical unit test table from docs/design/merge-policy.md §10.
+
+describe('resolvePolicy', () => {
+  it('returns auto-threshold from legacy autoMergePR: true', () => {
+    const policy = resolvePolicy({ gitConfig: { autoMergePR: true } as any });
+    expect(policy.tier).toBe('auto-threshold');
+  });
+
+  it('returns human from legacy autoMergePR: false', () => {
+    const policy = resolvePolicy({ gitConfig: { autoMergePR: false } as any });
+    expect(policy.tier).toBe('human');
+  });
+
+  it('mission mergePolicy overrides workspace policy', () => {
+    const policy = resolvePolicy(
+      { gitConfig: { mergePolicy: { tier: 'auto-threshold' } } as any },
+      { mergePolicy: { tier: 'human' } },
+    );
+    expect(policy.tier).toBe('human');
+  });
+
+  it('pre-flight escalation guard returns escalate for schema-touching PRs', () => {
+    const schemaPolicy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer' },
+    };
+    const files = [{ filename: 'packages/core/db/schema.ts' }];
+    const result = preflightEscalationCheck(files, schemaPolicy);
+    expect(result.shouldEscalate).toBe(true);
   });
 });
