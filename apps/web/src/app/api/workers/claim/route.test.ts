@@ -14,6 +14,7 @@ const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
       returning: mock(() => [{ id: 'task-1' }]),
+      catch: mock(() => {}),
     })),
   })),
 }));
@@ -37,11 +38,21 @@ const mockConnectorWorkspacesFindMany = mock(() => Promise.resolve([] as any[]))
 const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
-const mockDbSelect = mock(() => ({
-  from: mock(() => ({
-    where: mock(() => Promise.resolve([{ count: 0 }])),
-  })),
-}));
+const mockMissionsFindMany = mock(() => [] as any[]);
+
+function makeSelectChain(result: any[] = []) {
+  const chain: any = {};
+  chain.from = () => chain;
+  chain.innerJoin = () => chain;
+  chain.where = () => chain;
+  chain.groupBy = () => Promise.resolve(result);
+  chain.limit = () => Promise.resolve(result);
+  chain.then = (resolve: any, reject?: any) => Promise.resolve(result).then(resolve, reject);
+  chain.catch = (re: any) => Promise.resolve(result).catch(re);
+  chain.finally = (cb: any) => Promise.resolve(result).finally(cb);
+  return chain;
+}
+const mockDbSelect = mock(() => makeSelectChain([]));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -82,6 +93,7 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
+      missions: { findMany: mockMissionsFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -119,8 +131,9 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId' },
+  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
@@ -224,12 +237,11 @@ describe('POST /api/workers/claim', () => {
     // Default: OAuth refresh fails (expired stays expired) unless a test overrides it
     mockRefreshMcpConnectorCredential.mockReset();
     mockRefreshMcpConnectorCredential.mockResolvedValue('error');
-    // Default: zero recent claims (router spike-detection input)
-    mockDbSelect.mockReturnValue({
-      from: mock(() => ({
-        where: mock(() => Promise.resolve([{ count: 0 }])),
-      })),
-    });
+    // Default: no missions
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    // Default: empty select chain (role lookups, mission concurrency counts)
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
   });
 
   it('returns 401 when no API key', async () => {
@@ -2992,6 +3004,181 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers).toHaveLength(1);
+  });
+
+  describe('mission pacing gates', () => {
+    function apiAccount() {
+      return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
+    }
+    function missionTask(id: string, missionId: string) {
+      return {
+        id,
+        workspaceId: 'ws-1',
+        missionId,
+        title: `Task ${id}`,
+        backend: 'claude' as const,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      };
+    }
+    function setupClaimBase() {
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    it('claims tasks from eager missions without restriction', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: null,
+        pacingMode: 'eager',
+        pacingMaxPerHour: null,
+        lastTaskStartedAt: new Date(),
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('skips task from paced mission when interval has not elapsed', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: null,
+        pacingMode: 'paced',
+        pacingMaxPerHour: 2,
+        lastTaskStartedAt: new Date(Date.now() - 5 * 60 * 1000),
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+    });
+
+    it('claims task from paced mission when interval has elapsed', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: null,
+        pacingMode: 'paced',
+        pacingMaxPerHour: 2,
+        lastTaskStartedAt: new Date(Date.now() - 35 * 60 * 1000),
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+    });
+
+    it('claims only one task from a paced mission in a single poll (in-memory stamp)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([
+        missionTask('task-1', 'mission-A'),
+        missionTask('task-2', 'mission-A'),
+        missionTask('task-3', 'mission-A'),
+      ]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: null,
+        pacingMode: 'paced',
+        pacingMaxPerHour: 1,
+        lastTaskStartedAt: null,
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+    });
+
+    it('skips task from budget_exhausted mission', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'budget_exhausted',
+        maxConcurrentTasks: null,
+        pacingMode: 'eager',
+        pacingMaxPerHour: null,
+        lastTaskStartedAt: null,
+      }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+    });
+
+    it('enforces mission-level maxConcurrentTasks cap', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: 2,
+        pacingMode: 'eager',
+        pacingMaxPerHour: null,
+        lastTaskStartedAt: null,
+      }]);
+      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', count: 2 }]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+    });
+
+    it('claims task when mission active count is below mission maxConcurrentTasks', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-A',
+        status: 'active',
+        maxConcurrentTasks: 3,
+        pacingMode: 'eager',
+        pacingMaxPerHour: null,
+        lastTaskStartedAt: null,
+      }]);
+      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', count: 1 }]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+    });
   });
 });
 
