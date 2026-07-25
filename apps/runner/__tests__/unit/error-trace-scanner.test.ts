@@ -88,4 +88,63 @@ describe('error-trace-scanner', () => {
     expect(out[0].pattern).toBe('bwrap_namespace_denied');
     expect(out[0].source).toBe('bash');
   });
+
+  describe('sandbox_mount_gap patterns', () => {
+    beforeEach(() => clearWorkerThrottle('wg'));
+
+    it('detects ENOENT on .npmrc (npm config outside allowlist)', () => {
+      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+    });
+
+    it('detects ENOENT on .gitconfig (git config outside allowlist)', () => {
+      const out = scanToolResult('wg', "ENOENT: no such file or directory '/home/runner/.gitconfig'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+    });
+
+    it('detects ENOENT on /snap/ path (snap-installed tool binary)', () => {
+      const out = scanToolResult('wg', "ENOENT: /snap/bin/go: No such file or directory", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+    });
+
+    it('detects EACCES on /snap/ path', () => {
+      const out = scanToolResult('wg', 'EACCES: permission denied, access \'/snap/bin/node\'', 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+    });
+
+    it('detects ENOENT on /opt/ path', () => {
+      const out = scanToolResult('wg', "ENOENT: no such file or directory, open '/opt/homebrew/bin/node'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+    });
+
+    it('near-miss: generic ENOENT on in-repo file does NOT match sandbox_mount_gap', () => {
+      const out = scanToolResult('wg', "ENOENT: no such file or directory, open 'src/config.ts'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    it('near-miss: ENOENT inside ~/.bun (allowlisted) does NOT match', () => {
+      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.bun/install/foo.json'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    it('near-miss: ENOENT inside ~/.npm (allowlisted) does NOT match', () => {
+      const out = scanToolResult('wg', "ENOENT: /home/coder/.npm/some-package: No such file or directory", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    it('near-miss: permission denied on /usr/ (allowlisted as ro) does NOT match sandbox_mount_gap', () => {
+      // /usr is mounted ro — a write-EACCES to /usr is NOT a mount gap; it's expected.
+      // The sandbox_mount_gap pattern does not fire for /usr/.
+      const out = scanToolResult('wg', "EACCES: permission denied, open '/usr/local/bin/something'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    it('only reports sandbox_mount_gap once per 60s window per worker (throttle)', () => {
+      const first = scanToolResult('wg', "ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash');
+      expect(first.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
+      // Same worker, same pattern — throttled
+      const second = scanToolResult('wg', "Error: ENOENT: /home/coder/.gitconfig", 'bash');
+      expect(second.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+  });
 });

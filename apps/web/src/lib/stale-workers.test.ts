@@ -718,4 +718,71 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('completed');
   });
+
+  it('does not count sandbox_mount_gap workers toward retry cap', async () => {
+    // 3 failed workers, but all are sandbox_mount_gap — none charge against the cap.
+    // Task should still be reset to pending (cap not reached).
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'sandbox_mount_gap' },
+        { id: 'f2', exitCause: 'sandbox_mount_gap' },
+        { id: 'f3', exitCause: 'sandbox_mount_gap' },
+      ]) // 3 sandbox_mount_gap workers — all exempt from cap
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // sandbox_mount_gap workers don't consume retry slots — task re-queued, not failed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('counts mixed exitCause workers correctly (sandbox_mount_gap exempt, code_failure not)', async () => {
+    // 2 sandbox_mount_gap + 3 code_failure = 3 chargeable → cap reached
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'sandbox_mount_gap' },
+        { id: 'f2', exitCause: 'sandbox_mount_gap' },
+        { id: 'f3', exitCause: 'code_failure' },
+        { id: 'f4', exitCause: 'code_failure' },
+        { id: 'f5', exitCause: 'code_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // 3 code_failure workers hit the cap → permanently failed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+  });
 });

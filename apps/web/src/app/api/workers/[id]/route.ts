@@ -458,11 +458,15 @@ export async function PATCH(
   );
 
   // Classify exit cause for taxonomy — written to the worker record on terminal update.
-  // budget_limited: task auto-resumes; not a real failure; excluded from retry caps.
-  // code_failure: default for any other terminal failure.
+  // budget_limited:    task auto-resumes; not a real failure; excluded from retry caps.
+  // sandbox_mount_gap: bwrap path missing; task requeued; excluded from retry caps.
+  // code_failure:      default for any other terminal failure.
   // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
+  const isSandboxMountGap = body.sandboxMountGap === true;
   if (status === 'failed' || status === 'error') {
-    updates.exitCause = isBudgetError ? 'budget_limited' : 'code_failure';
+    updates.exitCause = isBudgetError ? 'budget_limited'
+      : isSandboxMountGap ? 'sandbox_mount_gap'
+      : 'code_failure';
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
@@ -615,6 +619,24 @@ export async function PATCH(
       urlTitle: 'View task',
       priority: 0,
     });
+  }
+
+  // sandbox_mount_gap: a bwrap allowlist path was missing (npm postinstall, config file,
+  // or tool binary). Task is infra-class — reset to pending so it can be retried once
+  // the operator adds the path via BUILDD_MOUNT_ALLOWLIST_EXTRA. Does NOT count against
+  // code-retry attempts (stale-workers mirrors this via the chargeableFailures exclusion).
+  if (isSandboxMountGap && worker.taskId) {
+    const gapTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+      columns: { status: true },
+    });
+    if (gapTask?.status !== 'cancelled') {
+      await db
+        .update(tasks)
+        .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
+        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+    }
+    isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
   }
 
   let shouldAutoRetry = false;

@@ -69,7 +69,7 @@ async function resolveStaleTask(
       columns: { id: true, exitCause: true },
     });
     const chargeableFailures = failedWorkers.filter(
-      w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure'
+      w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure' && w.exitCause !== 'sandbox_mount_gap'
     );
 
     if (chargeableFailures.length >= MAX_WORKER_RETRIES) {

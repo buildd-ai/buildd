@@ -3458,6 +3458,80 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedSet.exitCause).toBe('code_failure');
     });
 
+    it('sets exitCause=sandbox_mount_gap when sandboxMountGap flag is true', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('sandbox_mount_gap');
+    });
+
+    it('re-queues task (not failed) on sandbox_mount_gap and leaves task pending', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Task must be reset to pending (like budget_limited), not failed permanently
+      const taskUpdate = taskSetCalls.find((c: any) => c.status === 'pending');
+      expect(taskUpdate).toBeDefined();
+      expect(taskUpdate.claimedBy).toBeNull();
+      expect(taskUpdate.claimedAt).toBeNull();
+    });
+
     it('does not set exitCause for non-terminal status updates', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({
