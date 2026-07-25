@@ -295,7 +295,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       tools.push(
         {
           name: "buildd_memory",
-          description: `DEPRECATED — use recall (read) and learn (write) instead. Kept for compatibility. Actions: ${[...memoryActions].join(', ')}`,
+          description: `Legacy knowledge tool; recall (query) and learn (write) are the current interface — use those in new sessions. Kept callable for compatibility. Actions: ${[...memoryActions].join(', ')}`,
           annotations: {
             readOnlyHint: false,
             destructiveHint: false,
