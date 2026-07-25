@@ -7,6 +7,7 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import type { ChainPositionResult } from '@/lib/task-presentation';
+import type { LoopState } from '@buildd/shared';
 
 interface GridTask {
   id: string;
@@ -28,6 +29,9 @@ interface GridTask {
   budgetBackend?: string;
   budgetResetsAt?: string | null;
   startAt?: string | null;
+  loopIteration?: number | null;
+  loopState?: LoopState | null;
+  loopMaxLoops?: number | null;
   workerStatus?: string | null;
   workerStartedAt?: string | null;
   workerUpdatedAt?: string | null;
@@ -65,6 +69,9 @@ function renderTaskCard(task: GridTask) {
       taskCreatedAt={task.createdAt}
       taskUpdatedAt={task.updatedAt}
       startAt={task.startAt}
+      loopIteration={task.loopIteration}
+      loopState={task.loopState}
+      loopMaxLoops={task.loopMaxLoops}
       workerStartedAt={task.workerStartedAt}
       workerUpdatedAt={task.workerUpdatedAt}
       attemptCurrent={task.attemptCurrent}

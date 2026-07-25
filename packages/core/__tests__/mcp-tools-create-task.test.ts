@@ -88,6 +88,79 @@ describe('create_task — parentTaskId support', () => {
     expect(body.context.verificationCommand).toBe('bun test && bun run build');
   });
 
+  it('accepts and normalizes a strict loopConfig', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Loop until green',
+        description: 'Keep fixing the suite',
+        verificationCommand: 'bun test',
+        loopConfig: {
+          exitCondition: { type: 'command' },
+          maxLoops: 4,
+          backoffMinutes: 2,
+        },
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.loopConfig).toEqual({
+      exitCondition: { type: 'command', command: 'bun test' },
+      maxLoops: 4,
+      backoffMinutes: 2,
+    });
+  });
+
+  it('expands loopUntilVerified shorthand into a command loop', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Authoritative verification',
+        description: 'Do not stop until verified',
+        verificationCommand: 'bun test',
+        loopUntilVerified: true,
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.loopConfig).toEqual({
+      exitCondition: { type: 'command', command: 'bun test' },
+      maxLoops: 5,
+      backoffMinutes: 0,
+    });
+  });
+
+  it('rejects invalid loop shorthand and unknown nested loopConfig keys', async () => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Missing command',
+        description: 'Invalid shorthand',
+        loopUntilVerified: true,
+      },
+      createMockContext(),
+    )).rejects.toThrow('verificationCommand');
+
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Unknown loop key',
+        description: 'Invalid config',
+        loopConfig: {
+          exitCondition: { type: 'pr_checks_green' },
+          forever: true,
+        },
+      },
+      createMockContext(),
+    )).rejects.toThrow('Unknown loopConfig key(s): forever');
+  });
+
   it('passes iteration metadata in context when provided', async () => {
     await handleBuilddAction(
       mockApi as unknown as ApiFn,

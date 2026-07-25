@@ -11,6 +11,8 @@ import {
   type IntensityTier,
 } from '@/lib/task-presentation';
 import { SegmentStrip } from '@/components/SegmentStrip';
+import { LoopStatusChip } from '@/components/LoopStatus';
+import type { LoopState } from '@buildd/shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,9 @@ export interface TaskCardProps {
   taskCreatedAt: string;
   taskUpdatedAt: string;
   startAt?: string | null;
+  loopIteration?: number | null;
+  loopState?: LoopState | null;
+  loopMaxLoops?: number | null;
   workerStartedAt?: string | null;
   workerUpdatedAt?: string | null;
 
@@ -83,7 +88,29 @@ const STATUS_PILL: Record<string, { label: string; cls: string; pulse?: boolean 
   assigned:      { label: 'Assigned',      cls: 'text-status-info border-status-info' },
 };
 
-function StatusPill({ displayStatus, startAt }: { displayStatus: string; startAt?: string | null }) {
+function StatusPill({
+  displayStatus,
+  startAt,
+  loopIteration,
+  loopState,
+  loopMaxLoops,
+}: {
+  displayStatus: string;
+  startAt?: string | null;
+  loopIteration?: number | null;
+  loopState?: LoopState | null;
+  loopMaxLoops?: number | null;
+}) {
+  if (loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted') {
+    return (
+      <LoopStatusChip
+        loopIteration={loopIteration ?? 0}
+        maxLoops={loopMaxLoops}
+        loopState={loopState ?? null}
+        startAt={startAt}
+      />
+    );
+  }
   if (displayStatus === 'pending' && startAt && new Date(startAt).getTime() > Date.now()) {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border text-status-info border-status-info shrink-0">
@@ -179,6 +206,9 @@ export function TaskCard({
   taskCreatedAt,
   taskUpdatedAt,
   startAt,
+  loopIteration,
+  loopState,
+  loopMaxLoops,
   workerStartedAt,
   workerUpdatedAt,
   intensity,
@@ -237,7 +267,7 @@ export function TaskCard({
 
         {/* T3 — status */}
         <div className="pointer-events-none shrink-0">
-          <StatusPill displayStatus={displayStatus} startAt={startAt} />
+          <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
         </div>
 
         {/* T4 — PR link + lifecycle (restores pointer events) */}
@@ -326,7 +356,7 @@ export function TaskCard({
 
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
-          <StatusPill displayStatus={displayStatus} startAt={startAt} />
+          <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
 
           {/* T3 — elapsed */}
           <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
@@ -375,7 +405,7 @@ export function TaskCard({
         <div className="text-[15px] font-medium text-text-primary truncate group-hover:text-accent-text transition-colors flex-1 min-w-0">
           {title}
         </div>
-        <StatusPill displayStatus={displayStatus} startAt={startAt} />
+        <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
       </div>
 
       {/* T1 — mission + workspace (second row) */}

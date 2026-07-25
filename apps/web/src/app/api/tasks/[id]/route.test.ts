@@ -861,6 +861,62 @@ describe('PATCH /api/tasks/[id]', () => {
     const data = await response.json();
     expect(data.title).toBe('Updated Title');
   });
+
+  it('adjusts maxLoops while preserving the existing exit condition', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Loop task',
+      status: 'in_progress',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+      loopConfig: {
+        exitCondition: { type: 'command', command: 'bun test' },
+        maxLoops: 5,
+        backoffMinutes: 1,
+      },
+      loopIteration: 2,
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    let updateData: any;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        updateData = values;
+        return { where: mock(() => ({ returning: mock(() => [{ ...mockTask, ...values }]) })) };
+      }),
+    });
+
+    const response = await callHandler(PATCH, createMockRequest({
+      method: 'PATCH',
+      body: { maxLoops: 8 },
+    }), 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(updateData.loopConfig).toEqual({
+      exitCondition: { type: 'command', command: 'bun test' },
+      maxLoops: 8,
+      backoffMinutes: 1,
+    });
+  });
+
+  it('rejects maxLoops updates on non-looping tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1' },
+      loopConfig: null,
+      loopIteration: 0,
+    });
+
+    const response = await callHandler(PATCH, createMockRequest({
+      method: 'PATCH',
+      body: { maxLoops: 8 },
+    }), 'task-123');
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('existing looped task');
+  });
 });
 
 describe('DELETE /api/tasks/[id]', () => {

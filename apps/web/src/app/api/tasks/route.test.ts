@@ -476,6 +476,56 @@ describe('POST /api/tasks', () => {
     expect(data.title).toBe('Test Task');
   });
 
+  it('validates and persists loopConfig using verificationCommand fallback', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    let inserted: any;
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => {
+        inserted = values;
+        return { returning: mock(() => [{ id: 'loop-task', ...values }]) };
+      }),
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Loop task',
+        context: { verificationCommand: 'bun test' },
+        loopConfig: { exitCondition: { type: 'command' }, maxLoops: 3 },
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(inserted.loopConfig).toEqual({
+      exitCondition: { type: 'command', command: 'bun test' },
+      maxLoops: 3,
+      backoffMinutes: 0,
+    });
+  });
+
+  it('rejects unknown loopConfig keys with a 400', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Bad loop',
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, infinite: true },
+      },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('Unknown loopConfig key(s): infinite');
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
   it('resolves startIn server-side and echoes persisted startAt', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
