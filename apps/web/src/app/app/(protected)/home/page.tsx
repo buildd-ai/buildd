@@ -575,8 +575,9 @@ export default async function HomePage({
               inArray(workers.workspaceId, wsIds),
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
+              sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
             ),
-            columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, completedAt: true },
+            columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, completedAt: true },
             with: { task: { columns: { id: true, title: true, missionId: true } } },
           });
 
@@ -606,6 +607,8 @@ export default async function HomePage({
 
             escalationInbox = openPrWorkers
               .filter(w => {
+                const taskTitle = (w.task as any)?.title ?? '';
+                if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && escalatedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
                 if (!ws) return false;

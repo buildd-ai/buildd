@@ -40,7 +40,7 @@ export async function POST(
     return NextResponse.json({ error: 'No workspaces found' }, { status: 403 });
   }
 
-  // Find the open worker for this PR in one of the user's workspaces
+  // Find the worker for this PR in one of the user's workspaces (unmerged)
   const worker = await db.query.workers.findFirst({
     where: and(
       inArray(workers.workspaceId, wsIds),
@@ -54,6 +54,7 @@ export async function POST(
       workspaceId: true,
       prUrl: true,
       prNumber: true,
+      prLifecycleStatus: true,
     },
     with: {
       task: {
@@ -64,6 +65,10 @@ export async function POST(
 
   if (!worker) {
     return NextResponse.json({ error: 'PR not found or already merged' }, { status: 404 });
+  }
+
+  if (worker.prLifecycleStatus === 'closed') {
+    return NextResponse.json({ error: 'PR is closed and cannot be merged' }, { status: 409 });
   }
 
   // Load workspace to get the repo and installation
