@@ -116,6 +116,7 @@ export interface CreateReviewerTaskParams {
   originalTask: {
     title: string;
     description: string | null;
+    backend: 'claude' | 'codex';
     missionId: string | null;
     pathManifest?: string[] | null;
     iteration?: number | null;
@@ -175,6 +176,10 @@ export async function createReviewerTask(
       description: diffContext,
       category: 'review',
       roleSlug: reviewerRole,
+      // Keep reviews on the same provider as the task that produced the PR.
+      // Falling back to the DB's Claude default can strand reviews when Claude's
+      // OAuth budget is exhausted even though the original ran on Codex.
+      backend: originalTask.backend,
       outputSchema: REVIEWER_TASK_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
       missionId: originalTask.missionId,
       parentTaskId: originalTaskId,

@@ -1,10 +1,17 @@
 import { describe, it, expect, mock } from 'bun:test';
 
+let insertedTask: Record<string, unknown> | undefined;
+
 // reviewer.ts imports @buildd/core/db at the top level — stub the whole thing
 // so these pure-function tests don't need a database connection.
 mock.module('@buildd/core/db', () => ({
   db: {
-    insert: mock(() => ({ values: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'task-1' }])) })) })),
+    insert: mock(() => ({
+      values: mock((values: Record<string, unknown>) => {
+        insertedTask = values;
+        return { returning: mock(() => Promise.resolve([{ id: 'task-1' }])) };
+      }),
+    })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
     },
@@ -23,9 +30,35 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
 }));
 
-import { preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
+import { createReviewerTask, preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
+
+describe('createReviewerTask', () => {
+  it('inherits the original task backend', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-1',
+      originalTask: {
+        title: 'Codex change',
+        description: 'Change made with Codex',
+        backend: 'codex',
+        missionId: null,
+      },
+      worker: { branch: 'buildd/original' },
+      prNumber: 42,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/42',
+      headSha: 'abc123',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect(insertedTask?.backend).toBe('codex');
+  });
+});
 
 // ── isSchemaTouchingFile ─────────────────────────────────────────────────────
 

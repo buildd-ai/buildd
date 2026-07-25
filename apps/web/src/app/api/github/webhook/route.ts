@@ -930,7 +930,7 @@ async function maybeDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
     });
     if (!task) return false;
 
@@ -994,6 +994,7 @@ async function maybeDispatchReviewer(
     const originalTask = {
       title: task.title,
       description: task.description,
+      backend: task.backend,
       missionId: task.missionId ?? null,
       pathManifest: task.pathManifest as string[] | null ?? null,
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
