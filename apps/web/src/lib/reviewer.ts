@@ -1,5 +1,6 @@
 /**
  * Reviewer machinery — Phase 2 of the merge policy primitive.
+ * Smoke test marker: request-changes retry preserves the original branch.
  *
  * Covers:
  *   BT-5  createReviewerTask() — spawns reviewer task on PR open with agent-review policy
