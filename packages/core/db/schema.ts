@@ -1226,7 +1226,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   id: uuid('id').primaryKey().defaultRandom(),
   sourceId: text('source_id').notNull(),
   namespace: text('namespace').notNull(),
-  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'spec' | 'task' | 'artifact' | 'pr' | 'plan' | 'session'>(),
+  corpus: text('corpus').notNull().$type<'memory' | 'code' | 'docs' | 'spec' | 'task' | 'artifact' | 'pr' | 'plan' | 'session' | 'initiative'>(),
   sourceType: text('source_type').notNull(),
   sourcePath: text('source_path'),
   sourceUrl: text('source_url'),
@@ -1258,7 +1258,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
 export const knowledgeEntities = pgTable('knowledge_entities', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: text('workspace_id').notNull(),
-  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
+  kind: text('kind').notNull().$type<'file' | 'symbol' | 'heading' | 'pr' | 'task' | 'mission' | 'initiative' | 'wikilink' | 'concept' | 'feature' | 'component'>(),
   key: text('key').notNull(),
   canonicalName: text('canonical_name').notNull(),
   attributes: jsonb('attributes').default({}).$type<Record<string, unknown>>().notNull(),

@@ -146,7 +146,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
-    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. [admin]',
+    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -178,7 +178,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -622,9 +622,17 @@ async function mirrorWorkProduct(
 ): Promise<UpsertResult | null> {
   if (!ctx.knowledgeStore) return null;
   try {
-    const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
-    if (!wsId) return null;
-    const ns = buildNamespace(wsId, corpus);
+    // Team-scoped corpora (memory, initiative) namespace by teamId so they're
+    // recallable across every workspace in the team; work-product corpora
+    // (task, pr, plan, artifact, session) are per-workspace.
+    let ns: string | null;
+    if (corpus === 'memory' || corpus === 'initiative') {
+      ns = ctx.teamId ? buildNamespace(ctx.teamId, corpus) : null;
+    } else {
+      const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
+      ns = wsId ? buildNamespace(wsId, corpus) : null;
+    }
+    if (!ns) return null;
     const result = await ctx.knowledgeStore.upsert(ns, [chunk]);
     return result ?? null;
   } catch {
@@ -2458,6 +2466,13 @@ export async function handleBuilddAction(
             method: 'POST',
             body: JSON.stringify(body),
           });
+          // Best-effort: mirror into the team-scoped `initiative` corpus so it's recallable.
+          await mirrorWorkProduct(ctx, 'initiative', buildInitiativeCard({
+            initiativeId: data.id,
+            title: data.title,
+            description: data.description ?? (params.description as string | undefined) ?? null,
+            status: data.status,
+          }));
           return text(`Initiative created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n\nCreate missions under it with manage_missions action=create initiativeId=${data.id}.`);
         }
         case 'get': {
@@ -2496,6 +2511,13 @@ export async function handleBuilddAction(
             method: 'PATCH',
             body: JSON.stringify(body),
           });
+          // Best-effort: keep the team-scoped `initiative` corpus card in sync.
+          await mirrorWorkProduct(ctx, 'initiative', buildInitiativeCard({
+            initiativeId: data.id,
+            title: data.title,
+            description: data.description ?? null,
+            status: data.status,
+          }));
           return text(`Initiative updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
         }
         case 'delete': {
@@ -3052,6 +3074,7 @@ import {
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,
+  buildInitiativeCard,
   renderPlanText,
 } from './knowledge-store/cards';
 
@@ -3077,7 +3100,11 @@ import {
  * Returns null when the required id is missing.
  */
 function knowledgeNamespace(ctx: { workspaceId?: string; teamId?: string }, corpus: Corpus): string | null {
-  if (corpus === 'memory') return ctx.teamId ? buildNamespace(ctx.teamId, 'memory') : null;
+  // memory and initiative are team-scoped (initiatives span the whole team);
+  // every other corpus is workspace-scoped.
+  if (corpus === 'memory' || corpus === 'initiative') {
+    return ctx.teamId ? buildNamespace(ctx.teamId, corpus) : null;
+  }
   return ctx.workspaceId ? buildNamespace(ctx.workspaceId, corpus) : null;
 }
 
@@ -3191,8 +3218,8 @@ export async function handleRecallAction(
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
   if (!ns) {
-    return errorResult(scope === 'memory'
-      ? 'teamId required for recall with scope=memory'
+    return errorResult(scope === 'memory' || scope === 'initiative'
+      ? `teamId required for recall with scope=${scope}`
       : `workspaceId required for recall with scope=${scope}`);
   }
 
@@ -3546,8 +3573,8 @@ export async function handleMemoryAction(
       const ns = knowledgeNamespace(ctx, corpus);
 
       if (!ns) {
-        throw new Error(corpus === 'memory'
-          ? 'teamId required for memory query_knowledge'
+        throw new Error(corpus === 'memory' || corpus === 'initiative'
+          ? `teamId required for query_knowledge with corpus=${corpus}`
           : 'workspaceId required for query_knowledge');
       }
 

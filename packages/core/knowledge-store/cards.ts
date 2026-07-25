@@ -226,6 +226,61 @@ export function buildArtifactCard(input: ArtifactCardInput): UpsertChunk {
   };
 }
 
+// ── manage_initiatives create/update → corpus `initiative`, phase `initiative` ─
+
+export interface InitiativeCardInput {
+  initiativeId: string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  /** Optional rolled-up progress (from computeInitiativeProgress) for extra recall context. */
+  progress?: {
+    progress?: number;
+    completedMissions?: number;
+    totalMissions?: number;
+    completedTasks?: number;
+    totalTasks?: number;
+  } | null;
+  sourceUrl?: string | null;
+}
+
+/**
+ * An initiative card makes an execution-free planning container semantically
+ * recallable — "is there already an initiative for X?" at plan time. Keyed by
+ * initiativeId so a rename/update upserts in place. Initiatives are team-level,
+ * so the mirror writes to the team-scoped `initiative` namespace (like memory),
+ * not a per-workspace one. Best-effort at the call site — a failure to write it
+ * must never fail initiative create/update.
+ */
+export function buildInitiativeCard(input: InitiativeCardInput): UpsertChunk {
+  const p = input.progress;
+  const rollup =
+    p && (p.totalMissions || p.totalTasks)
+      ? `## Progress\n${p.progress ?? 0}% — ${p.completedMissions ?? 0}/${p.totalMissions ?? 0} missions, ${p.completedTasks ?? 0}/${p.totalTasks ?? 0} tasks`
+      : null;
+
+  const content = joinSections([
+    `# Initiative: ${input.title}${input.status ? ` [${input.status}]` : ''}`,
+    input.description ? `## Description\n${input.description}` : null,
+    rollup,
+  ]);
+
+  const metadata: Record<string, unknown> = {
+    phase: 'initiative',
+    initiativeId: input.initiativeId,
+  };
+  if (input.status) metadata.status = input.status;
+
+  return {
+    id: `initiative:${input.initiativeId}`,
+    content: truncate(content),
+    lexicalText: truncate(joinSections([input.title, input.description])),
+    sourceType: 'initiative',
+    sourceUrl: input.sourceUrl ?? `/app/initiatives/${input.initiativeId}`,
+    metadata,
+  };
+}
+
 // ── approve_plan → corpus `plan`, phase `plan` ──────────────────────────────
 
 export interface PlanCardInput {
