@@ -1,23 +1,29 @@
 /**
  * Ingest a repo's code + docs into knowledge_chunks (Phase 2).
  *
- * Walks a directory (or reads a single file), classifies files into the `code`,
+ * Walks one or more source directories, classifies files into the `code`,
  * `docs`, or `spec` corpora, chunks them, and upserts into the workspace's
  * namespaces. Re-runnable: each file's prior chunks are cleared before re-chunking.
  *
  * Usage:
  *   DATABASE_URL=... VOYAGE_API_KEY=... WORKSPACE_ID=<uuid> \
- *   bun packages/core/scripts/ingest-knowledge.ts [--corpus code|docs|spec] <dir>
+ *   bun packages/core/scripts/ingest-knowledge.ts [--corpus code|docs|spec] <dir> [<dir2> ...]
  *
  * Or with positional workspaceId:
- *   bun packages/core/scripts/ingest-knowledge.ts <workspaceId> <dir> [--code-only|--docs-only]
+ *   bun packages/core/scripts/ingest-knowledge.ts <workspaceId> <dir> [<dir2> ...] [--code-only|--docs-only]
  *
  * Flags:
  *   --corpus <name>      Force all matching files into this corpus (skips auto-classify).
  *                        code → code files only; docs/spec → markdown files only.
- *   --source-dir <dir>   Alternative to positional <dir> argument.
+ *   --source-dir <dir>   Single source directory (legacy; use positional args for multi-dir).
  *   --code-only          Only ingest code files (legacy; use --corpus code instead).
  *   --docs-only          Only ingest doc files (legacy; use --corpus docs instead).
+ *
+ * Multi-directory (recommended for code corpus):
+ *   bun ingest-knowledge.ts --corpus code packages apps
+ *   All dirs are walked in one pass; the orphan sweep covers the whole namespace,
+ *   so a file that moved out of one sub-tree is correctly evicted even if it isn't
+ *   under the other sub-tree's prefix.
  *
  * Embedder selection (per-corpus):
  *   code / docs / spec → voyage-code-3
@@ -74,14 +80,20 @@ async function walk(dirOrFile: string, root: string, out: string[]): Promise<voi
   }
 }
 
+/**
+ * Ingest one corpus from a pre-collected file list. Returns the set of
+ * repo-relative paths that were present on disk (including size-skipped files
+ * so they aren't pruned — they still exist on disk). Callers accumulate these
+ * across multiple walk directories, then pass the union to pruneOrphans once,
+ * covering the whole namespace rather than just one prefix.
+ */
 async function ingestCorpus(
   store: PgVectorStore,
   workspaceId: string,
   corpus: Corpus,
   files: string[],
   root: string,
-  prefix: string,
-): Promise<void> {
+): Promise<Set<string>> {
   let done = 0;
   let chunks = 0;
   let skipped = 0;
@@ -110,18 +122,9 @@ async function ingestCorpus(
     `[ingest:${corpus}] done — ${files.length} files -> ${chunks} chunks (${skipped} unchanged, skipped)`,
   );
 
-  // Remove chunks for files that no longer exist on disk under this prefix.
-  // `files` are the corpus-matched paths the walk found (size-skipped ones stay
-  // in the seen set so they aren't pruned — they still exist on disk).
-  if (!NO_PRUNE) {
-    const seen = new Set(files.map(f => path.relative(root, f)));
-    const orphans = await pruneOrphans(store, workspaceId, corpus, prefix, seen);
-    if (orphans.length > 0) {
-      console.log(
-        `[ingest:${corpus}] pruned ${orphans.length} orphaned file(s) under ${prefix || '<root>'}`,
-      );
-    }
-  }
+  // Return all walked paths (size-skipped included) so callers can build the
+  // complete "seen" set for a namespace-wide orphan sweep.
+  return new Set(files.map(f => path.relative(root, f)));
 }
 
 async function main() {
@@ -146,13 +149,20 @@ async function main() {
   // workspaceId: env var takes precedence over first positional arg.
   const workspaceId = process.env.WORKSPACE_ID ?? positional[0];
 
-  // dir: --source-dir flag → (WORKSPACE_ID set: first positional, else second positional).
-  const dirArg = sourceDirFlag ?? (process.env.WORKSPACE_ID ? positional[0] : positional[1]);
+  // Source directories: --source-dir (legacy, single dir) OR remaining positionals.
+  // When WORKSPACE_ID is set via env, all positionals are dirs.
+  // When not set, the first positional is workspaceId and the rest are dirs.
+  let dirArgs: string[];
+  if (sourceDirFlag) {
+    dirArgs = [sourceDirFlag];
+  } else {
+    dirArgs = process.env.WORKSPACE_ID ? positional : positional.slice(1);
+  }
 
-  if (!workspaceId || !dirArg) {
+  if (!workspaceId || dirArgs.length === 0) {
     console.error(
-      'Usage: WORKSPACE_ID=<uuid> bun ingest-knowledge.ts [--corpus code|docs|spec] <dir>\n' +
-      '  or:  bun ingest-knowledge.ts <workspaceId> <dir> [--code-only|--docs-only]',
+      'Usage: WORKSPACE_ID=<uuid> bun ingest-knowledge.ts [--corpus code|docs|spec] <dir> [<dir2> ...]\n' +
+      '  or:  bun ingest-knowledge.ts <workspaceId> <dir> [<dir2> ...] [--code-only|--docs-only]',
     );
     process.exit(1);
   }
@@ -170,25 +180,24 @@ async function main() {
     process.exit(0);
   }
 
-  // walkStart: the directory to walk (dirArg resolved).
   // root: repo root (process.cwd()) so chunk source_paths are full repo-relative
   // (packages/core/..., apps/web/...) rather than subdir-relative (core/..., web/...).
   // This makes deleteBySource reliable when a CI-ingested file is later touched via a PR diff.
-  const walkStart = path.resolve(dirArg);
   const root = process.cwd();
-  // prefix scopes orphan pruning to the walked directory so separate walks into
-  // the same namespace (e.g. code corpus over packages/ then apps/) don't prune
-  // each other's chunks. "" when walking the repo root.
-  const prefix = path.relative(root, walkStart);
 
-  const all: string[] = [];
-  await walk(walkStart, walkStart, all);
+  // Walk all source directories and collect files.
+  const allFiles: string[] = [];
+  for (const dirArg of dirArgs) {
+    const walkStart = path.resolve(dirArg);
+    await walk(walkStart, walkStart, allFiles);
+  }
 
   const keep = (f: string) => !(SKIP_TESTS && TEST_FILE_RE.test(path.basename(f)));
-  const docFiles = all.filter(f => DOC_EXT.has(path.extname(f).toLowerCase())).filter(keep);
-  const codeFiles = all.filter(f => CODE_EXT.has(path.extname(f).toLowerCase())).filter(keep);
+  const docFiles = allFiles.filter(f => DOC_EXT.has(path.extname(f).toLowerCase())).filter(keep);
+  const codeFiles = allFiles.filter(f => CODE_EXT.has(path.extname(f).toLowerCase())).filter(keep);
 
-  console.log(`[ingest] ${root}: ${codeFiles.length} code, ${docFiles.length} doc files`);
+  const dirsLabel = dirArgs.join(', ');
+  console.log(`[ingest] ${root}: ${codeFiles.length} code, ${docFiles.length} doc files (from ${dirsLabel})`);
 
   if (corpusFlag) {
     // Forced-corpus mode: all matching files go into the specified corpus.
@@ -198,7 +207,20 @@ async function main() {
     }
     const store = new PgVectorStore(embedder);
     const files = corpusFlag === 'code' ? codeFiles : docFiles;
-    await ingestCorpus(store, workspaceId, corpusFlag, files, root, prefix);
+    const seen = await ingestCorpus(store, workspaceId, corpusFlag, files, root);
+
+    // Namespace-wide orphan sweep: covers ALL source paths in the namespace,
+    // not just those under the current dir prefix. A file moved from design/
+    // to docs/design/ in a previous commit will have its old chunk evicted here
+    // even though the old path is outside the current walk directory.
+    if (!NO_PRUNE) {
+      const orphans = await pruneOrphans(store, workspaceId, corpusFlag, '', seen);
+      if (orphans.length > 0) {
+        console.log(
+          `[ingest:${corpusFlag}] pruned ${orphans.length} orphaned path(s) across namespace`,
+        );
+      }
+    }
   } else {
     // Auto-classify mode (legacy): separate embedders per corpus.
     if (!docsOnly) {
@@ -207,12 +229,24 @@ async function main() {
         console.warn('[ingest] VOYAGE_API_KEY not set — storing text-only (lexical search will still work)');
       }
       const store = new PgVectorStore(embedder);
-      await ingestCorpus(store, workspaceId, 'code', codeFiles, root, prefix);
+      const seen = await ingestCorpus(store, workspaceId, 'code', codeFiles, root);
+      if (!NO_PRUNE) {
+        const orphans = await pruneOrphans(store, workspaceId, 'code', '', seen);
+        if (orphans.length > 0) {
+          console.log(`[ingest:code] pruned ${orphans.length} orphaned path(s) across namespace`);
+        }
+      }
     }
     if (!codeOnly) {
       const embedder = getVoyageEmbedderForCorpus('docs');
       const store = new PgVectorStore(embedder);
-      await ingestCorpus(store, workspaceId, 'docs', docFiles, root, prefix);
+      const seen = await ingestCorpus(store, workspaceId, 'docs', docFiles, root);
+      if (!NO_PRUNE) {
+        const orphans = await pruneOrphans(store, workspaceId, 'docs', '', seen);
+        if (orphans.length > 0) {
+          console.log(`[ingest:docs] pruned ${orphans.length} orphaned path(s) across namespace`);
+        }
+      }
     }
   }
 
