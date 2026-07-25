@@ -114,7 +114,7 @@ export async function runVerificationCommand(opts: {
       cwd,
       timeout: timeoutMs,
       encoding: 'utf-8',
-      // Inherit no extra env so the command runs cleanly in the worktree
+      maxBuffer: 16 * 1024 * 1024,
       env: process.env,
     });
     const durationMs = Date.now() - start;
@@ -137,7 +137,7 @@ export async function runVerificationCommand(opts: {
     };
 
     // child_process timeout: err.killed === true and err.signal === 'SIGTERM'
-    const isTimeout = e.killed === true || e.signal === 'SIGTERM' || e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+    const isTimeout = e.killed === true || e.signal === 'SIGTERM';
     if (isTimeout) {
       return { ...base, durationMs, outcome: 'timeout' };
     }

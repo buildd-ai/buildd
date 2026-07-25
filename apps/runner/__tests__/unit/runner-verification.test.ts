@@ -152,4 +152,21 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
     expect(VERIFICATION_COMMAND_TIMEOUT_MS).toBeGreaterThan(0);
     expect(VERIFICATION_COMMAND_TIMEOUT_MS).toBeLessThanOrEqual(300_000);
   });
+
+  it('does not report timeout when command generates >1MB output (regression: maxBuffer)', async () => {
+    // Node's default exec maxBuffer is 1MB. Without maxBuffer override, commands
+    // that emit >1MB trigger ERR_CHILD_PROCESS_STDIO_MAXBUFFER. The evidence must
+    // carry outcome != 'timeout' and the captured excerpt must be bounded.
+    const evidence = await runVerificationCommand({
+      workerId: 'w1',
+      iteration: 0,
+      // Write 2MB of 'x' to stdout — exceeds Node's 1MB default buffer.
+      command: "dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\\0' 'x'",
+      cwd: '/tmp',
+    });
+    expect(evidence.outcome).not.toBe('timeout');
+    if (evidence.stdout) {
+      expect(Buffer.byteLength(evidence.stdout, 'utf-8')).toBeLessThanOrEqual(VERIFICATION_EXCERPT_BYTES);
+    }
+  });
 });
