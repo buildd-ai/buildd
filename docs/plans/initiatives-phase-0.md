@@ -1,8 +1,12 @@
 # Plan — Initiatives Phase 0 (native tier + MCP + UI)
 
-**Status:** Shipped on `feat/initiatives-phase-0` (schema+rollup, /api/initiatives,
-MCP `manage_initiatives` + initiativeId, web UI). Archive to `docs/plans/archive/`
-after the PR merges. Deferred: the optional initiative KB corpus (§6 / design §4d).
+**Status:** Shipped (PR #1446, merged to `dev`) — schema+rollup, /api/initiatives,
+MCP `manage_initiatives` + initiativeId, web UI. Follow-up **also shipped**: the
+initiative KB corpus (§6 / design §4d) — `knowledgeChunks.corpus`/`knowledgeEntities.kind`
+turned out to be plain `text` (not pgEnum), so no migration; added `buildInitiativeCard`
+mirrored via `mirrorWorkProduct` on create/update into the **team-scoped** `{teamId}:initiative`
+namespace (initiatives are team-level, like `memory`), plus `initiative` in the recall /
+query_knowledge scope enums and recency/authority tables. Archive to `docs/plans/archive/`.
 **Design:** `docs/design/linear-hierarchy-ingest.md` (Native Initiatives Tier + Optional Linear Sync)
 **Scope:** Phase 0 only — the native, execution-free initiatives tier + its MCP surface + UI/IA.
 **Zero Linear.** Must be fully useful with no connector installed. Linear (Phases 1-4) is out of scope here.
@@ -109,7 +113,7 @@ Agents must **read** initiatives (KB-optimized), **fetch their artifacts** effic
   ```
   Reuse `initiatives.contextArtifactIds` for curated context (mirrors `missions.contextArtifactIds`). This is what `manage_initiatives get` returns.
 - **Semantic recall (KB):** thread `metadata.initiativeId` into the KB card builders (`packages/core/knowledge-store/cards.ts` — they already thread `missionId` into `metadata`, e.g. cards.ts:64/129/171/209/268). **Zero migration** (`metadata` is free-form jsonb). Agents can then `recall` across `task|pr|artifact|memory` corpora filtered by `initiativeId`.
-- **Optional (include if cheap):** add `'initiative'` to `knowledgeEntities.kind` (schema:1216 already lists `'mission'`) and a dedicated `{workspaceId}:initiative` corpus + `buildInitiativeCard` mirrored via `mirrorWorkProduct` on initiative create/update, so the initiative's own description/rollup is embedded and recall-able. This touches the `Corpus` type, `knowledgeChunks.corpus` (schema:1184 — **verify pgEnum vs text**; if pgEnum, additive `ALTER TYPE ADD VALUE`, which cannot run inside a txn), and the scope enums (`buildd-mcp-server.ts:186`, `mcp-tools.ts:177`). If this adds risk, ship 4d-brief + `metadata.initiativeId` now and defer the corpus.
+- **Dedicated corpus — SHIPPED (follow-up):** added `'initiative'` to `knowledgeEntities.kind` and a dedicated `initiative` corpus + `buildInitiativeCard` mirrored via `mirrorWorkProduct` on initiative create/update, so the initiative's own description/rollup is embedded and recall-able. `knowledgeChunks.corpus` and `knowledgeEntities.kind` are plain `text` (verified — **not** pgEnum), so **zero migration**. Scoping: initiatives are team-level (workspaceId nullable), so the corpus is **team-scoped** `{teamId}:initiative` (like `memory`), NOT `{workspaceId}:initiative` as originally sketched. Touched: `Corpus` type, `knowledgeChunks.corpus`/`knowledgeEntities.kind` `$type`, `CORPUS_AUTHORITY`/`HALF_LIFE_DAYS` (recency-authority.ts), and the scope enums (`buildd-mcp-server.ts` recall, `mcp-tools.ts` recall/query_knowledge namespacing + error messages).
 
 ---
 
@@ -152,7 +156,7 @@ No change to `NAV_ITEMS`.
 3. `/api/initiatives` routes + `initiativeId` on missions/artifacts routes + tests (+ `/objectives` golden snapshot first).
 4. MCP: `manage_initiatives`, `initiativeId` on `manage_missions`/`create_artifact`/`list_artifacts`, `buildInitiativeContext`, `metadata.initiativeId` cards.
 5. Web UI: group-by-initiative view, initiative detail route, breadcrumbs, create flows.
-6. (Optional) initiative KB corpus + `buildInitiativeCard` if low-risk.
+6. ✅ initiative KB corpus + `buildInitiativeCard` (team-scoped, zero-migration) — shipped as a follow-up.
 
 ---
 

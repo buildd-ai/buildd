@@ -4,30 +4,32 @@ import type { Corpus, QueryResult } from './types';
 // Higher = more authoritative. Used to weight the final score.
 
 export const CORPUS_AUTHORITY: Record<Corpus, number> = {
-  spec:     1.0,
-  docs:     0.9,
-  code:     0.8,
-  plan:     0.6,
-  memory:   0.5,
-  pr:       0.5,
-  task:     0.4,
-  artifact: 0.4,
-  session:  0.2,
+  spec:       1.0,
+  docs:       0.9,
+  code:       0.8,
+  initiative: 0.7,
+  plan:       0.6,
+  memory:     0.5,
+  pr:         0.5,
+  task:       0.4,
+  artifact:   0.4,
+  session:    0.2,
 };
 
 // ── Recency decay half-lives (days) ──────────────────────────────────────────
 // 2^(−age / halfLife) — at one half-life, decay = 0.5.
 
 export const HALF_LIFE_DAYS: Record<Corpus, number> = {
-  spec:     365,
-  docs:     180,
-  code:     90,
-  plan:     60,
-  memory:   120,
-  pr:       45,
-  task:     30,
-  artifact: 30,
-  session:  7,
+  spec:       365,
+  docs:       180,
+  initiative: 180,
+  code:       90,
+  plan:       60,
+  memory:     120,
+  pr:         45,
+  task:       30,
+  artifact:   30,
+  session:    7,
 };
 
 /**

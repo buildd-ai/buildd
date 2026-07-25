@@ -32,6 +32,39 @@ describe('manage_initiatives', () => {
     expect((res as any).content[0].text).toContain('init-1');
   });
 
+  it('mirrors the created initiative into the team-scoped `initiative` corpus', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Platform', description: 'Harden it', status: 'active', priority: 0 });
+    const upsert = mock(async () => ({ inserted: 1, updated: 0 }));
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'create', title: 'Platform', description: 'Harden it' },
+      createMockContext({ teamId: 'team-x', knowledgeStore: { upsert } as any }));
+    expect(upsert).toHaveBeenCalledTimes(1);
+    const [ns, chunks] = upsert.mock.calls[0];
+    expect(ns).toBe('team-x:initiative'); // team-scoped, not workspace-scoped
+    expect(chunks[0].id).toBe('initiative:init-1');
+    expect(chunks[0].sourceType).toBe('initiative');
+    expect(chunks[0].content).toContain('Platform');
+    expect(chunks[0].content).toContain('Harden it');
+  });
+
+  it('re-mirrors on update so the card stays in sync', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'init-1', title: 'Renamed', description: null, status: 'paused' });
+    const upsert = mock(async () => ({ inserted: 0, updated: 1 }));
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'update', initiativeId: 'init-1', title: 'Renamed', status: 'paused' },
+      createMockContext({ teamId: 'team-x', knowledgeStore: { upsert } as any }));
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(upsert.mock.calls[0][0]).toBe('team-x:initiative');
+    expect(upsert.mock.calls[0][1][0].content).toContain('Renamed');
+  });
+
+  it('create succeeds even when there is no knowledgeStore (mirror is best-effort)', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'init-2', title: 'NoKB', status: 'active', priority: 0 });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_initiatives',
+      { action: 'create', title: 'NoKB' }, createMockContext({ teamId: 'team-x' }));
+    expect((res as any).content[0].text).toContain('init-2');
+  });
+
   it('get returns a KB-optimized brief with rollup + missions', async () => {
     mockApi.mockResolvedValueOnce({
       id: 'init-1', title: 'Platform', status: 'active', description: 'Harden the platform',
