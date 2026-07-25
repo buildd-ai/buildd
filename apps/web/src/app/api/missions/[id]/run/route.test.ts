@@ -9,6 +9,8 @@ const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as strin
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'task-new' } } as any));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
+const mockTeamsFindFirst = mock(() => null as any);
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -39,7 +41,10 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: mockMissionsFindFirst },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
+      teams: { findFirst: mockTeamsFindFirst },
     },
+    insert: () => ({ values: () => Promise.resolve() }),
   },
 }));
 
@@ -52,6 +57,8 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', teamId: 'teamId' },
   teamMembers: { teamId: 'teamId', role: 'role', userId: 'userId' },
+  missionNotes: {},
+  teams: { id: 'id', slug: 'slug' },
   tasks: { id: 'id' },
   workspaces: { id: 'id' },
 }));
@@ -80,9 +87,13 @@ describe('POST /api/missions/[id]/run', () => {
     mockRunMission.mockReset();
     mockMissionsFindFirst.mockReset();
     mockTeamMembersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTeamsFindFirst.mockReset();
 
     // Default auth
     mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    mockTeamsFindFirst.mockResolvedValue(null);
     mockRunMission.mockResolvedValue({ task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' } });
   });
 
@@ -125,6 +136,8 @@ describe('POST /api/missions/[id]/run', () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-1',
+      workspaceId: null,
+      orchestrationMode: 'auto',
     });
     mockRunMission.mockRejectedValue(new Error('Cannot run mission with status: paused. Only active missions can be run.'));
 
@@ -140,6 +153,11 @@ describe('POST /api/missions/[id]/run', () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-1',
+      workspaceId: null,
+      orchestrationMode: 'auto',
+    });
+    mockRunMission.mockResolvedValue({
+      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' },
     });
 
     const createdTask = {
@@ -170,6 +188,11 @@ describe('POST /api/missions/[id]/run', () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-123',
       teamId: 'team-1',
+      workspaceId: null,
+      orchestrationMode: 'auto',
+    });
+    mockRunMission.mockResolvedValue({
+      task: { id: 'task-new', title: 'Mission: Test', mode: 'planning', missionId: 'obj-123' },
     });
 
     const request = new NextRequest('http://localhost:3000/api/missions/obj-123/run', {
@@ -181,6 +204,7 @@ describe('POST /api/missions/[id]/run', () => {
     });
 
     const response = await callHandler(request, 'obj-123');
+    expect(mockRunMission).toHaveBeenCalled();
     expect(response.status).toBe(201);
   });
 

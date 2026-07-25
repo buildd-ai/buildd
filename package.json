@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
-    "test": "bun test apps/web/src apps/runner/__tests__/unit packages/core",
+    "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
     "test:all": "bun test",
     "test:integration": "bun test --env-file tests/.env.test apps/web/tests/integration/ apps/runner/__tests__/integration*",
