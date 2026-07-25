@@ -278,3 +278,58 @@ above. Future predicate operators require a versioned schema extension.
 - Replacing GitHub webhooks with polling.
 - General DAG cycles or creating a child task per iteration.
 - Changing merge policy, retry caps, or defaults for non-looped tasks.
+
+## Rollout Verified
+
+**Acceptance harness added:** 2026-07-25
+
+**Live rollout verdict:** Pending a dedicated full-stack environment
+
+The manually gated acceptance suite is
+`tests/e2e/loop-until-verified.test.ts`. It creates tasks in a real workspace
+through the public API, claims and completes deterministic synthetic-runner
+workers through the same HTTP routes used by a runner, and reads the resulting
+persisted task state through the API. Direct test-database writes are limited to
+facts normally supplied by independent systems: a budget reset floor and a
+GitHub `mergedAt` webhook fact.
+
+The suite proves:
+
+- a failed first command evaluation and passing second evaluation produce
+  exactly two history entries, preserve the branch and expose the first
+  `failureContext` in the second claim;
+- `context.retryCount` remains zero across unmet command iterations;
+- a condition that fails twice with `maxLoops = 2` exhausts with both worker
+  evaluations in `result.loopHistory`;
+- the authenticated cleanup cron cannot alter a healthy deferred loop;
+- an existing later budget floor wins over loop backoff, and concurrent claims
+  after the floor yield exactly one worker;
+- a dependant remains unclaimable after loop satisfaction while the upstream
+  PR is open, then releases after the merge fact is persisted; and
+- a task without `loopConfig` has null loop state, no history, and no second
+  dispatch.
+
+Run it only against a disposable server/database pair:
+
+```bash
+LOOP_ACCEPTANCE_E2E=1 \
+BUILDD_TEST_SERVER=http://localhost:3000 \
+BUILDD_API_KEY=... \
+BUILDD_ADMIN_API_KEY=... \
+DATABASE_URL=... \
+bun test tests/e2e/loop-until-verified.test.ts
+```
+
+The harness safely skips unless `LOOP_ACCEPTANCE_E2E=1`; when enabled, it fails
+fast if any required credential is absent. In the implementation worktree the
+safe-skip and compile checks passed, along with 158 focused loop, completion,
+claim, dependency, deferred-start, stale-worker, and cleanup tests. A live run
+was not possible because no test server, matching database URL, or admin test
+credential was available, so rollout is not yet declared green.
+
+**Default recommendation:** keep looping opt-in. Do not make
+`verificationCommand` imply looping platform-wide until this suite passes
+against the deployment candidate and its task/worker cleanup leaves no
+unexpected dispatches. After a green run, reconsider an explicit workspace
+default rather than silently changing the meaning of every existing
+`verificationCommand`.
