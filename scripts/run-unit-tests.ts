@@ -2,6 +2,7 @@ const UNIT_TEST_ROOTS = [
   'apps/web/src/',
   'apps/runner/__tests__/unit/',
   'packages/core/',
+  'scripts/run-unit-tests.test.ts',
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {
