@@ -86,6 +86,15 @@ export function ensureStableCodexHome(workerId: string, explicitPath?: string): 
  * reads `api_key` and passes it to the SDK directly, bypassing auth.json parsing.
  */
 export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
+  // codex-cli 0.144 hard-errors "missing field `id_token`" when id_token is absent from
+  // auth.json. Fail preflight (<1s) with a clear message instead of burning turns on a
+  // spawn crash that looks like an unrelated error.
+  if (credential.credentialType !== 'api_key' && !credential.idToken) {
+    throw new Error(
+      'Reconnect ChatGPT — stored credential is incomplete (missing id_token). ' +
+      'Go to Settings → Credentials → Reconnect ChatGPT to fix this.',
+    );
+  }
   const authJson = credential.credentialType === 'api_key'
     ? { api_key: credential.apiKey }
     : {
