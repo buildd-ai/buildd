@@ -2758,13 +2758,11 @@ export async function handleBuilddAction(
       return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
-    // Spec-drift compare (admin/dev only). Retrieves evidence from the unified
-    // workspace store ({workspaceId}:code + {workspaceId}:spec) for a feature/term,
-    // and returns BOTH sides for the CALLER to judge. There is no LLM in core —
-    // the judging (implemented / removed / contradicted) is done by the calling agent
-    // or interactive session reading the snippets. Scores SURFACE candidates; they do
-    // NOT decide drift (a reranker always returns a best match, so a removed feature
-    // still scores moderately against its semantic neighbour).
+    // Spec-drift compare (admin/dev only). Two-hop retrieval bridges the prose→code
+    // vocabulary gap: query :spec first, extract implementation anchors (file paths,
+    // camelCase symbols, PascalCase types, route paths), then issue a SECOND lexical
+    // :code query using those anchors. Results are fused with the direct semantic
+    // code query. No LLM in core — judging is done by the calling agent reading snippets.
     case 'spec_compare': {
 
       const feature = (params.feature || params.query) as string | undefined;
@@ -2775,18 +2773,58 @@ export async function handleBuilddAction(
 
       const topK = Math.min((params.topK as number) || 5, 20);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
-      const [codeHits, specHits] = await Promise.all([
-        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
+
+      // Step 1: query :spec and direct :code in parallel (prose vocabulary works for spec)
+      const [specHits, directCodeHits] = await Promise.all([
         ks.query(buildNamespace(wsId, 'spec'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
       ]);
 
-      const fmt = (hits: typeof codeHits) => hits.length
+      // Step 2: extract implementation anchors from spec chunks to bridge the vocabulary gap
+      const anchors = extractImplementationAnchors(specHits);
+
+      // Step 3: lexical code query using anchors (identifier tokens = high-signal exact matches)
+      let anchorCodeHits: QueryResult[] = [];
+      if (anchors.length > 0) {
+        anchorCodeHits = await ks.query(buildNamespace(wsId, 'code'), {
+          text: anchors.join(' '),
+          mode: 'lexical',
+          topK,
+          trackHits: false,
+        });
+      }
+
+      // Step 4: fuse direct + anchor code results; prefer higher score when ids collide
+      const codeById = new Map<string, QueryResult>();
+      for (const r of [...anchorCodeHits, ...directCodeHits]) {
+        const existing = codeById.get(r.id);
+        if (!existing || r.score > existing.score) codeById.set(r.id, r);
+      }
+      const codeHits = [...codeById.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+
+      const fmt = (hits: QueryResult[]) => hits.length
         ? hits.map((r, i) => `${i + 1}. [${r.score.toFixed(3)}] ${r.sourcePath ?? r.sourceType}\n   ${r.content.replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
         : '   (no matches)';
 
+      const anchorSection = anchors.length > 0
+        ? `**Spec→Code bridges** (${anchors.length} anchor(s) extracted from SPEC — used for lexical code retrieval):\n` +
+          anchors.slice(0, 10).map(a => `  • ${a}`).join('\n') + '\n\n'
+        : `**No implementation anchors found in SPEC** — code evidence below is from semantic search only. ` +
+          `Low scores here may indicate inconclusive retrieval rather than absent implementation. ` +
+          `Retry with implementation-vocabulary terms (function names, file paths).\n\n`;
+
+      const codeSection = codeHits.length === 0 && anchors.length === 0
+        ? `   (retrieval inconclusive — no implementation anchors could be extracted from spec; ` +
+          `semantic-only search returned no code matches. Search directly with identifiers such as ` +
+          `function names, type names, or file paths for higher-confidence results.)`
+        : fmt(codeHits);
+
       return text(
         `# spec_compare: "${feature}"\n\n` +
-        `## CODE evidence (what is actually implemented)\n${fmt(codeHits)}\n\n` +
+        anchorSection +
+        `## CODE evidence (what is actually implemented)\n${codeSection}\n\n` +
         `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}\n\n` +
         `## How to judge\n` +
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
@@ -2875,7 +2913,7 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
-import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
+import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
@@ -2935,6 +2973,40 @@ type MemoryActionCtx = {
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
 };
+
+/**
+ * Extracts implementation anchors from spec chunks for two-hop code retrieval.
+ * Captures file paths, route paths, camelCase symbols, and PascalCase types —
+ * the identifiers spec docs use to reference implementing code. These anchors
+ * bridge the prose→identifier vocabulary gap when querying the :code namespace
+ * with lexical search.
+ */
+function extractImplementationAnchors(chunks: QueryResult[]): string[] {
+  const combined = chunks.map(r => r.content).join('\n');
+  const anchors = new Set<string>();
+
+  // File paths: apps/* and packages/*
+  for (const m of combined.matchAll(/\b(?:apps|packages)\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|sql|md|mdx)\b/g)) {
+    anchors.add(m[0]);
+  }
+
+  // Route paths: /api/...
+  for (const m of combined.matchAll(/\/api\/[a-zA-Z0-9/[\]_-]+/g)) {
+    anchors.add(m[0]);
+  }
+
+  // camelCase symbols (function/variable names): lowercase start, uppercase within, ≥6 chars
+  for (const m of combined.matchAll(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g)) {
+    if (m[0].length >= 6) anchors.add(m[0]);
+  }
+
+  // PascalCase types/classes/interfaces: uppercase start, ≥6 chars
+  for (const m of combined.matchAll(/\b[A-Z][a-z][a-zA-Z0-9]{4,}\b/g)) {
+    anchors.add(m[0]);
+  }
+
+  return [...anchors].slice(0, 20);
+}
 
 /**
  * Heuristic: short queries without whitespace (IDs, symbol names, error codes)
