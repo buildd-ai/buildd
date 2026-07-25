@@ -652,6 +652,13 @@
       "when": 1784983715759,
       "tag": "0092_aspiring_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1785007260952,
+      "tag": "0093_vengeful_power_pack",
+      "breakpoints": true
     }
   ]
 }

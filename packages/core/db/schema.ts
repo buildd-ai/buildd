@@ -1738,6 +1738,41 @@ export const connectorSharesRelations = relations(connectorShares, ({ one }) => 
   sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
 }));
 
+// Generic provider link layer between buildd's native tier (initiatives → missions →
+// tasks) and external work trackers (Linear, GitHub). Phase 1 makes a link exist,
+// persist, and stay authenticated — it does NOT read progress back or import graphs.
+// `builddEntityId` is POLYMORPHIC (points at one of initiatives/missions/tasks) so it
+// deliberately carries NO cross-table FK — existence is enforced in app code on write,
+// and orphan rows are harmless (filtered on read). Team-cascade covers team deletion.
+export const externalLinks = pgTable('external_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  provider: text('provider').notNull().$type<'linear' | 'github'>(),
+  builddEntityType: text('buildd_entity_type').notNull().$type<'initiative' | 'mission' | 'task'>(),
+  builddEntityId: uuid('buildd_entity_id').notNull(),
+  externalId: text('external_id'),
+  externalUrl: text('external_url'),
+  // Phase 3 echo-suppression watermark — last-seen external mtime.
+  externalUpdatedAt: timestamp('external_updated_at', { withTimezone: true }),
+  // Phase 3 echo-suppression — hash of the last payload we pushed.
+  lastPushedHash: text('last_pushed_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // Partial unique — idempotent ON CONFLICT DO UPDATE keyed on (provider, externalId);
+  // the WHERE clause allows many rows with a null externalId (unlinked entities).
+  providerExternalIdx: uniqueIndex('external_links_provider_external_idx')
+    .on(t.provider, t.externalId)
+    .where(sql`${t.externalId} IS NOT NULL`),
+  // Reverse lookup — "links for this mission/initiative/task".
+  entityIdx: index('external_links_entity_idx').on(t.builddEntityType, t.builddEntityId),
+  teamIdx: index('external_links_team_idx').on(t.teamId),
+}));
+
+export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
+  team: one(teams, { fields: [externalLinks.teamId], references: [teams.id] }),
+}));
+
 // Model tier registry — maps premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
 // See docs/design/model-tiers.md for the resolution chain.
@@ -1809,6 +1844,9 @@ export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
 export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
 export type ConnectorShare = typeof connectorShares.$inferSelect;
 export type NewConnectorShare = typeof connectorShares.$inferInsert;
+
+export type ExternalLink = typeof externalLinks.$inferSelect;
+export type NewExternalLink = typeof externalLinks.$inferInsert;
 
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;

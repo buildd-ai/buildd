@@ -203,6 +203,27 @@ describe('GET /api/connectors', () => {
     const data = await res.json();
     expect(data.connectors[0].status).toBe('expired');
   });
+
+  // Ground truth #4 regression: a dead credential is marked by the refresher with
+  // tokenExpiresAt=null + lastVerificationError set. That must render 'expired'
+  // (reconnect banner), not fall through to 'connected'.
+  it('marks connector as expired when tokenExpiresAt is null but lastVerificationError is set', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([{ id: 'conn-1', name: 'OAuth', url: 'https://mcp.example.com', authMode: 'oauth' }]);
+    mockSecretsFindMany.mockResolvedValue([{ label: 'conn-1', tokenExpiresAt: null, lastVerificationError: 'HTTP 400 invalid_grant' }]);
+    const res = await GET(makeGetReq());
+    const data = await res.json();
+    expect(data.connectors[0].status).toBe('expired');
+  });
+
+  it('marks connector as connected when tokenExpiresAt is null and no lastVerificationError', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindMany.mockResolvedValue([{ id: 'conn-1', name: 'OAuth', url: 'https://mcp.example.com', authMode: 'oauth' }]);
+    mockSecretsFindMany.mockResolvedValue([{ label: 'conn-1', tokenExpiresAt: null, lastVerificationError: null }]);
+    const res = await GET(makeGetReq());
+    const data = await res.json();
+    expect(data.connectors[0].status).toBe('connected');
+  });
 });
 
 describe('POST /api/connectors', () => {

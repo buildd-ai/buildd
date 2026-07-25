@@ -42,6 +42,7 @@ export default function ConnectorsSection({
   const [connectors, setConnectors] = useState<ConnectorWithWorkspaces[]>([]);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   // Which team's connectors to show. Without this the API falls back to the user's
   // *first* team, so connectors owned by any other team are invisible here — which
@@ -86,6 +87,28 @@ export default function ConnectorsSection({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Re-run the OAuth authorization flow for an expired/dead credential. Reuses the
+  // same POST /connect → authorizationUrl redirect that /app/connections uses to
+  // connect — no new endpoint.
+  async function handleReconnect(connectorId: string) {
+    setReconnecting(connectorId);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/connectors/${connectorId}/connect`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        window.location.href = data.authorizationUrl;
+      } else {
+        const err = await res.json();
+        setMessage({ type: 'error', text: err.error || 'Failed to start reconnect' });
+        setReconnecting(null);
+      }
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to start reconnect' });
+      setReconnecting(null);
+    }
+  }
 
   async function toggleWorkspace(connectorId: string, workspaceId: string, enabled: boolean) {
     const key = `${connectorId}:${workspaceId}`;
@@ -177,23 +200,38 @@ export default function ConnectorsSection({
                   </div>
                   <div className="text-xs text-text-muted font-mono truncate">{connector.url}</div>
                 </div>
-                {workspaces.length === 1 ? (
-                  <button
-                    onClick={() => toggleWorkspace(
-                      connector.id,
-                      workspaces[0].id,
-                      !connector.enabledWorkspaceIds.has(workspaces[0].id),
-                    )}
-                    disabled={toggling === `${connector.id}:${workspaces[0].id}`}
-                    className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-50 ${
-                      connector.enabledWorkspaceIds.has(workspaces[0].id)
-                        ? 'border-status-success/40 text-status-success bg-status-success/10'
-                        : 'border-border-default text-text-secondary'
-                    }`}
-                  >
-                    {connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'Enabled' : 'Disabled'}
-                  </button>
-                ) : null}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {/* Expired => dead/stale OAuth credential (spec §1b): a distinct
+                      warning-toned Reconnect CTA, not the red transient-error banner
+                      and not the green connected/enabled state. Grantees can't
+                      reconnect a shared-in connector (owner holds the credential). */}
+                  {connector.status === 'expired' && !connector.shared && connector.authMode === 'oauth' && (
+                    <button
+                      onClick={() => handleReconnect(connector.id)}
+                      disabled={reconnecting === connector.id}
+                      className="px-3 py-1.5 text-xs rounded-md border border-status-warning/30 text-status-warning bg-status-warning/10 hover:bg-status-warning/20 disabled:opacity-50 transition-colors"
+                    >
+                      {reconnecting === connector.id ? 'Redirecting…' : 'Reconnect'}
+                    </button>
+                  )}
+                  {workspaces.length === 1 ? (
+                    <button
+                      onClick={() => toggleWorkspace(
+                        connector.id,
+                        workspaces[0].id,
+                        !connector.enabledWorkspaceIds.has(workspaces[0].id),
+                      )}
+                      disabled={toggling === `${connector.id}:${workspaces[0].id}`}
+                      className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-50 ${
+                        connector.enabledWorkspaceIds.has(workspaces[0].id)
+                          ? 'border-status-success/40 text-status-success bg-status-success/10'
+                          : 'border-border-default text-text-secondary'
+                      }`}
+                    >
+                      {connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'Enabled' : 'Disabled'}
+                    </button>
+                  ) : null}
+                </div>
               </div>
 
               {workspaces.length > 1 && (
