@@ -45,18 +45,15 @@ jobs:
         run: cd packages/core && bun db:migrate
 
       # code corpus: all TypeScript/JS/etc. source files under packages/ and apps/.
-      # Skips tests, migrations, and generated output directories.
-      - name: Ingest code corpus (packages/)
+      # Both directories are passed in one invocation so the namespace-wide orphan
+      # sweep can evict chunks for files that moved between sub-trees (e.g. a file
+      # previously at packages/foo.ts now at apps/foo.ts, or paths that no longer
+      # exist at all). Skips tests, migrations, and generated output directories.
+      - name: Ingest code corpus
         env:
           INGEST_SKIP_TESTS: "1"
           INGEST_SKIP_DIRS: "drizzle,__tests__"
-        run: bun packages/core/scripts/ingest-knowledge.ts --corpus code packages
-
-      - name: Ingest code corpus (apps/)
-        env:
-          INGEST_SKIP_TESTS: "1"
-          INGEST_SKIP_DIRS: "drizzle,__tests__"
-        run: bun packages/core/scripts/ingest-knowledge.ts --corpus code apps
+        run: bun packages/core/scripts/ingest-knowledge.ts --corpus code packages apps
 
       # docs corpus: all Markdown files under docs/.
       - name: Ingest docs corpus

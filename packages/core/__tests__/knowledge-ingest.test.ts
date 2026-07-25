@@ -307,4 +307,62 @@ describe('pruneOrphans', () => {
     const orphans = await pruneOrphans(minimal, 'ws-1', 'code', 'apps', new Set());
     expect(orphans).toEqual([]);
   });
+
+  it('namespace-wide prune (prefix="") evicts cross-prefix orphans that prefix-scoped runs miss', async () => {
+    // Reproduces the design/ → docs/design/ stale-chunk bug.
+    // Old chunks were ingested at design/merge-policy.md (when the docs walk
+    // covered design/). After files moved to docs/design/, the per-prefix prune
+    // of docs/ never queried design/ paths, so old chunks survived indefinitely.
+    const { store, chunks, deletedSources } = makeRecordingStore();
+
+    // Simulate: old chunks ingested when design/ was the docs dir.
+    await ingestFiles(store, 'ws-1', 'docs', [
+      { path: 'design/merge-policy.md', content: '# Merge Policy (old location)' },
+    ]);
+
+    // Files are now under docs/design/ — this is what the current walk finds.
+    await ingestFiles(store, 'ws-1', 'docs', [
+      { path: 'docs/design/merge-policy.md', content: '# Merge Policy' },
+    ]);
+
+    // Old prefix-scoped prune (prefix='docs') would NOT evict design/ paths:
+    const prefixScopedOrphans = await pruneOrphans(
+      store, 'ws-1', 'docs', 'docs', new Set(['docs/design/merge-policy.md']),
+    );
+    // design/merge-policy.md is outside the 'docs' prefix → prefix-scoped prune misses it
+    expect(prefixScopedOrphans).toEqual([]);
+    expect([...chunks.values()].some(c => c.sourcePath === 'design/merge-policy.md')).toBe(true);
+
+    // Namespace-wide prune (prefix='') DOES evict cross-prefix orphans:
+    const fullOrphans = await pruneOrphans(
+      store, 'ws-1', 'docs', '', new Set(['docs/design/merge-policy.md']),
+    );
+    expect(fullOrphans).toEqual(['design/merge-policy.md']);
+    expect(deletedSources.some(d => d.sourcePath === 'design/merge-policy.md')).toBe(true);
+    expect([...chunks.values()].some(c => c.sourcePath === 'design/merge-policy.md')).toBe(false);
+    // New path is untouched
+    expect([...chunks.values()].some(c => c.sourcePath === 'docs/design/merge-policy.md')).toBe(true);
+  });
+
+  it('multi-dir namespace-wide prune evicts paths outside all walked dirs', async () => {
+    // Simulates the combined packages/ + apps/ code corpus walk.
+    // A chunk at src/old.ts (from a previous top-level dir walk) should be
+    // evicted when the walk now covers only packages/ and apps/.
+    const { store, chunks } = makeRecordingStore();
+
+    await ingestFiles(store, 'ws-1', 'code', [
+      { path: 'src/old.ts', content: 'const old = 1;' },
+      { path: 'packages/core/new.ts', content: 'const n = 1;' },
+      { path: 'apps/web/app.ts', content: 'const a = 1;' },
+    ]);
+
+    // Union of all seen paths from packages/ + apps/ walks:
+    const allSeen = new Set(['packages/core/new.ts', 'apps/web/app.ts']);
+    const orphans = await pruneOrphans(store, 'ws-1', 'code', '', allSeen);
+
+    expect(orphans).toEqual(['src/old.ts']);
+    expect([...chunks.values()].some(c => c.sourcePath === 'src/old.ts')).toBe(false);
+    expect([...chunks.values()].some(c => c.sourcePath === 'packages/core/new.ts')).toBe(true);
+    expect([...chunks.values()].some(c => c.sourcePath === 'apps/web/app.ts')).toBe(true);
+  });
 });
