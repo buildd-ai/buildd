@@ -33,6 +33,7 @@ import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
+import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -464,9 +465,10 @@ export async function PATCH(
   // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
   const isSandboxMountGap = body.sandboxMountGap === true;
   if (status === 'failed' || status === 'error') {
-    updates.exitCause = isBudgetError ? 'budget_limited'
-      : isSandboxMountGap ? 'sandbox_mount_gap'
-      : 'code_failure';
+    updates.exitCause = classifyReportedFailure({
+      budgetLimited: isBudgetError,
+      sandboxMountGap: isSandboxMountGap,
+    });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
