@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -21,6 +21,7 @@ import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { findBlockingPr } from '@buildd/core/path-overlap';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
+import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -759,6 +760,53 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
+  // Batch-fetch mission rows and active worker counts for all tasks that reference
+  // a mission. Used by three claim-loop guards:
+  //   1. budget_exhausted status → skip task (never claim into an exhausted mission)
+  //   2. maxConcurrentTasks     → skip when mission-level cap is reached
+  //   3. pacing                 → skip when the minimum inter-start interval hasn't elapsed
+  //
+  // These are enforced in-loop so they skip individual tasks without blocking other
+  // missions or non-mission tasks in the same poll.
+  type MissionClaimData = {
+    id: string;
+    status: string;
+    maxConcurrentTasks: number | null;
+    pacingMode: 'eager' | 'paced';
+    pacingMaxPerHour: number | null;
+    lastTaskStartedAt: Date | null;
+  };
+  const missionClaimMap = new Map<string, MissionClaimData>();
+  const missionActiveCountMap = new Map<string, number>();
+
+  const filteredMissionIds = [...new Set(
+    filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
+  )];
+  if (filteredMissionIds.length > 0) {
+    const missionRows = await db.query.missions.findMany({
+      where: inArray(missions.id, filteredMissionIds),
+      columns: { id: true, status: true, maxConcurrentTasks: true, pacingMode: true, pacingMaxPerHour: true, lastTaskStartedAt: true },
+    });
+    for (const m of missionRows) {
+      missionClaimMap.set(m.id, m as MissionClaimData);
+    }
+
+    // Count active workers per mission for the concurrency gate.
+    const missionConcurrencyCounts = await db
+      .select({ missionId: tasks.missionId, count: sql<number>`COUNT(*)::int` })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(and(
+        inArray(tasks.missionId, filteredMissionIds),
+        inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
+      ))
+      .groupBy(tasks.missionId);
+    for (const row of missionConcurrencyCounts) {
+      if (row.missionId) missionActiveCountMap.set(row.missionId, row.count);
+    }
+  }
+
   for (const task of filteredTasks) {
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
@@ -779,6 +827,44 @@ export async function POST(req: NextRequest) {
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         continue;
+      }
+    }
+
+    // ── Mission-level gates ──────────────────────────────────────────────────────
+    // Applied before workspace concurrency and model routing (cheap short-circuits).
+    const taskMissionId = (task as any).missionId as string | null;
+    if (taskMissionId) {
+      const missionData = missionClaimMap.get(taskMissionId);
+      if (missionData) {
+        // 1. Budget exhausted: never claim new tasks from an exhausted mission.
+        //    Already-running workers are unaffected (they were claimed earlier).
+        if (missionData.status === 'budget_exhausted') {
+          console.log(`[claim] task ${task.id} skipped: mission ${taskMissionId} budget_exhausted`);
+          continue;
+        }
+
+        // 2. Mission-level concurrency cap. Enforces missions.maxConcurrentTasks, which
+        //    previously existed in the schema but was never read by the claim loop.
+        const concurrencyBlock = checkMissionConcurrencyGate(
+          missionData.maxConcurrentTasks,
+          missionActiveCountMap.get(taskMissionId) ?? 0,
+        );
+        if (concurrencyBlock) {
+          console.log(`[claim] task ${task.id} deferred: mission ${taskMissionId} at concurrency cap (${concurrencyBlock.active}/${concurrencyBlock.cap})`);
+          continue;
+        }
+
+        // 3. Pacing gate: paced missions enforce a minimum interval between task starts.
+        //    Skipping is cheap — the task stays pending and is eligible on the next poll.
+        const pacingBlock = checkMissionPacingGate(missionData, now);
+        if (pacingBlock) {
+          console.log(
+            `[claim] task ${task.id} deferred: mission ${taskMissionId} paced ` +
+            `(next eligible ${pacingBlock.nextEligibleAt.toISOString()}, ` +
+            `interval ${pacingBlock.intervalSec}s, elapsed ${Math.round(pacingBlock.elapsedSec)}s)`,
+          );
+          continue;
+        }
       }
     }
 
@@ -977,6 +1063,26 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+
+    // Mission-level post-claim bookkeeping: update in-memory counters so
+    // subsequent tasks in the same batch respect the gates we just passed.
+    if (taskMissionId) {
+      // Increment concurrency count so a second task from the same mission in
+      // this batch sees the updated active count.
+      missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
+
+      const missionData = missionClaimMap.get(taskMissionId);
+      if (missionData?.pacingMode === 'paced') {
+        // Stamp lastTaskStartedAt in-memory to block same-batch double-starts.
+        missionData.lastTaskStartedAt = now;
+        // Persist to DB asynchronously — best-effort; pacing is maintained correctly
+        // in-memory for the current batch, and the DB timestamp governs future polls.
+        db.update(missions)
+          .set({ lastTaskStartedAt: now, updatedAt: now })
+          .where(eq(missions.id, taskMissionId))
+          .catch(err => console.warn(`[claim] Failed to stamp mission lastTaskStartedAt for ${taskMissionId}:`, err));
+      }
+    }
 
     // Keep the in-memory task copy in sync so downstream enrichment and the
     // returned worker payload see the patched context.

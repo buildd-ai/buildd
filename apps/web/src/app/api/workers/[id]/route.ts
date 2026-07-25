@@ -22,6 +22,7 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
+import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
@@ -51,6 +52,26 @@ function collectSecretValues(label: string, plaintext: string): Array<{ label: s
   }
   return values;
 }
+/**
+ * Check whether a mission's cumulative worker spend has breached its costBudgetUsd
+ * cap. If so, atomically transition the mission to budget_exhausted and notify.
+ * Idempotent and non-fatal — safe to fire-and-forget after each terminal worker.
+ */
+async function checkAndExhaustMissionBudget(missionId: string): Promise<void> {
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { id: true, title: true, status: true, costBudgetUsd: true },
+  });
+  if (!mission || mission.status !== 'active') return;
+  if (mission.costBudgetUsd == null) return;
+
+  const budgetUsd = parseFloat(mission.costBudgetUsd as string);
+  const spendUsd = await getMissionSpendUsd(missionId);
+  if (spendUsd < budgetUsd) return;
+
+  await exhaustMissionBudget(missionId, mission.title, spendUsd, budgetUsd);
+}
+
 // GET /api/workers/[id] - Get worker details
 export async function GET(
   req: NextRequest,
@@ -1218,6 +1239,16 @@ export async function PATCH(
     .set(updates)
     .where(eq(workers.id, id))
     .returning();
+
+  // Mission cost-budget gate: check whether the mission's cumulative spend has
+  // crossed its costBudgetUsd cap. Only fires on terminal worker status so we
+  // read a stable, post-update cost from the DB. Never kills running workers —
+  // it transitions the mission to budget_exhausted so future CLAIMS are blocked
+  // (enforced in the claim loop's mission budget_exhausted check).
+  if ((status === 'completed' || status === 'failed' || status === 'error') && taskMissionId && !isBudgetReset) {
+    checkAndExhaustMissionBudget(taskMissionId)
+      .catch(err => console.error(`[Worker ${id}] Mission budget check failed:`, err));
+  }
 
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
   const taskContext = worker.taskId
