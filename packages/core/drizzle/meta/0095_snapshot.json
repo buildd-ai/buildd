@@ -1,6 +1,6 @@
 {
-  "id": "4976d46d-ab89-44ae-a3cd-415c55bdb5b9",
-  "prevId": "e9f3f3e2-888c-4e2b-b236-f67c67027652",
+  "id": "595600f6-afa8-4527-bd6b-997694d3e430",
+  "prevId": "4976d46d-ab89-44ae-a3cd-415c55bdb5b9",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3265,6 +3265,13 @@
         },
         "decomposition_skipped": {
           "name": "decomposition_skipped",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_held": {
+          "name": "is_held",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

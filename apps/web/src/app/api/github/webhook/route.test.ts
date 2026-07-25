@@ -237,6 +237,11 @@ mock.module('@/lib/reviewer', () => ({
   preflightEscalationCheck: mockPreflightEscalationCheck,
 }));
 
+const mockInspectPullRequestMigrations = mock(() => Promise.resolve({ safe: true as const }));
+mock.module('@/lib/migration-inspector', () => ({
+  inspectPullRequestMigrations: mockInspectPullRequestMigrations,
+}));
+
 const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,

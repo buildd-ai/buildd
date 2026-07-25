@@ -2,7 +2,7 @@
  * Acceptance probe: bwrap mount-allowlist isolation.
  * Spec: docs/design/worker-mount-isolation.md § "Probe Test Design"
  *
- * Run: bun test tests/e2e/sandbox-probe.test.ts
+ * Run: bun test ./apps/runner/src/__tests__/mount-isolation.e2e.ts
  *
  * The negative/positive/taxonomy-subprocess tests require:
  *   - Linux with unprivileged user namespaces enabled
@@ -12,9 +12,8 @@
  *
  * The escape-hatch and pattern-matching tests are pure-JS and always run.
  *
- * Full happy-path (bun install → test → git commit → push) requires a live runner
- * with BUILDD_SANDBOX_MOUNT_ALLOWLIST=1; that path is described in the probe design
- * and is exercised via the normal E2E runner flow (tests/e2e/server-worker-flow.test.ts).
+ * The positive probe runs the complete install → build → test → commit → push
+ * sequence against a temporary linked worktree and local bare remote.
  *
  * NOTE: test fixtures live in /var/tmp (not /tmp) because buildWorkerBwrapArgv adds
  * `--tmpfs /tmp` — a fresh empty tmpfs — which would hide any fixture files created
@@ -30,15 +29,19 @@ import {
   rmSync,
   existsSync,
 } from 'fs';
-import { join, resolve } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 
 import {
   buildWorkerBwrapArgv,
   isMountAllowlistEnabled,
-} from '../../apps/runner/src/bwrap-mount-allowlist';
-import { scanToolResult } from '../../apps/runner/src/error-trace-scanner';
+} from '../bwrap-mount-allowlist';
+import { scanToolResult } from '../error-trace-scanner';
+import {
+  classifyReportedFailure,
+  consumesRetryAttempt,
+} from '../../../web/src/lib/worker-exit-taxonomy';
 
 // ---------------------------------------------------------------------------
 // bwrap availability guard
@@ -69,8 +72,8 @@ const BWRAP_AVAILABLE = probeBwrap();
 
 if (!BWRAP_AVAILABLE) {
   console.log(
-    '⏭️  bwrap not available on this host — isolation subprocess tests will be skipped.\n' +
-    '   Install bubblewrap (apt-get install bubblewrap) to run the full probe suite.\n' +
+    '⏭️  bwrap user namespaces are unavailable on this host — isolation subprocess tests will be skipped.\n' +
+    '   Install bubblewrap and enable user namespaces to run the full probe suite.\n' +
     '   Escape-hatch and pattern-matching tests still run.',
   );
 }
@@ -99,6 +102,13 @@ function runInBwrap(
   };
 }
 
+function runOnHost(cmd: string, args: string[], cwd?: string): void {
+  const result = spawnSync(cmd, args, { cwd, encoding: 'utf-8', timeout: 10_000 });
+  if (result.status !== 0) {
+    throw new Error(`${cmd} ${args.join(' ')} failed:\n${result.stderr || result.stdout}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures — written to /var/tmp to avoid the `--tmpfs /tmp` wipe
 // ---------------------------------------------------------------------------
@@ -110,6 +120,7 @@ let siblingWorktreeDir: string;  // (b) sibling workspace — NOT in allowlist
 let canaryDir: string;           // (a) runner coordination dir — NOT in allowlist
 let canaryFile: string;
 let foreignCodexHome: string;    // (c) non-active backend credential — NOT in allowlist
+let remoteDir: string;
 
 const VAR_TMP = '/var/tmp';
 
@@ -117,17 +128,20 @@ beforeAll(() => {
   // Use /var/tmp so fixture files survive the `--tmpfs /tmp` mount inside bwrap
   tmpBase = mkdtempSync(join(VAR_TMP, 'buildd-sp-'));
 
+  remoteDir = join(tmpBase, 'remote.git');
+  runOnHost('git', ['init', '--bare', remoteDir]);
   repoDir = join(tmpBase, 'repo');
-  mkdirSync(join(repoDir, '.git'), { recursive: true });
-  writeFileSync(join(repoDir, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n');
-
+  runOnHost('git', ['init', repoDir]);
+  writeFileSync(join(repoDir, 'README.md'), '# sandbox-probe fixture\n');
+  runOnHost('git', ['add', 'README.md'], repoDir);
+  runOnHost('git', ['-c', 'user.name=Buildd Probe', '-c', 'user.email=probe@buildd.dev', 'commit', '-m', 'seed'], repoDir);
+  runOnHost('git', ['remote', 'add', 'origin', remoteDir], repoDir);
   worktreeDir = join(tmpBase, 'worktree');
-  mkdirSync(worktreeDir, { recursive: true });
-  writeFileSync(join(worktreeDir, 'README.md'), '# sandbox-probe fixture\n');
+  runOnHost('git', ['worktree', 'add', '-b', 'sandbox-probe', worktreeDir], repoDir);
 
   // (b) sibling worktree — same parent dir, but not in the bwrap argv
   siblingWorktreeDir = join(tmpBase, 'sibling-worktree');
-  mkdirSync(siblingWorktreeDir, { recursive: true });
+  runOnHost('git', ['worktree', 'add', '-b', 'sibling-probe', siblingWorktreeDir], repoDir);
   writeFileSync(join(siblingWorktreeDir, 'other-tenant-secret.txt'), 'SIBLING:secret\n');
 
   // (a) canary dir — runner coordination file, explicitly absent from allowlist
@@ -260,7 +274,7 @@ describe('positive: allowed operations succeed', () => {
     try { rmSync(testFile); } catch { /* ok */ }
   });
 
-  bwrapTest('repo .git directory (bound ro) is readable inside sandbox', () => {
+  bwrapTest('repo .git directory (bound rw) is readable inside sandbox', () => {
     const argv = makeBwrapArgv();
     const { exitCode } = runInBwrap(argv, 'ls', [join(repoDir, '.git')]);
 
@@ -284,6 +298,38 @@ describe('positive: allowed operations succeed', () => {
     // The file must NOT appear on the host (sandbox /tmp is isolated)
     expect(existsSync('/tmp/probe.txt')).toBe(false);
   });
+
+  bwrapTest('full worker happy path installs, builds, tests, commits, and pushes', () => {
+    writeFileSync(join(worktreeDir, 'package.json'), JSON.stringify({
+      name: 'sandbox-happy-path',
+      private: true,
+      scripts: {
+        build: 'mkdir -p dist && cp src.ts dist/out.ts',
+        test: 'bun test probe.test.ts',
+      },
+    }));
+    writeFileSync(join(worktreeDir, 'src.ts'), 'export const answer = 42;\n');
+    writeFileSync(
+      join(worktreeDir, 'probe.test.ts'),
+      "import { expect, test } from 'bun:test';\nimport { answer } from './src';\ntest('answer', () => expect(answer).toBe(42));\n",
+    );
+
+    // A real runner pushes over the network. The local bare remote is explicitly
+    // mounted rw so this deterministic E2E exercises the same Git object/ref writes.
+    const argv = makeBwrapArgv({ extraMounts: `${remoteDir}:rw` });
+    const command = [
+      'bun install',
+      'bun run build',
+      'bun test',
+      'git add package.json bun.lock src.ts probe.test.ts dist/out.ts',
+      'git -c user.name="Buildd Probe" -c user.email=probe@buildd.dev commit -m "test: sandbox happy path"',
+      'git push origin HEAD:refs/heads/sandbox-happy-path',
+    ].join(' && ');
+    const result = runInBwrap(argv, '/bin/sh', ['-lc', command]);
+
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(existsSync(join(remoteDir, 'refs', 'heads', 'sandbox-happy-path'))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -301,6 +347,24 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const gap = traces.find(t => t.pattern === 'sandbox_mount_gap');
     expect(gap).toBeDefined();
     expect(gap!.excerpt).toContain('.npmrc');
+  });
+
+  test('gap trace is classified as sandbox_mount_gap and does not consume a retry', () => {
+    const gapPath = '/home/runner/.npmrc';
+    const traces = scanToolResult(
+      'probe-worker-taxonomy-lifecycle',
+      `ENOENT: no such file or directory, open '${gapPath}'`,
+      'bash',
+    );
+    const gap = traces.find(trace => trace.pattern === 'sandbox_mount_gap');
+
+    expect(gap?.excerpt).toContain(gapPath);
+    const exitCause = classifyReportedFailure({
+      budgetLimited: false,
+      sandboxMountGap: Boolean(gap),
+    });
+    expect(exitCause).toBe('sandbox_mount_gap');
+    expect(consumesRetryAttempt(exitCause)).toBe(false);
   });
 
   test('scanToolResult detects sandbox_mount_gap for .gitconfig ENOENT', () => {

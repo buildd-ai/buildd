@@ -13,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
+import type { MigrationSafety } from '@/lib/migration-safety';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -57,11 +58,9 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
 
 // ── Schema-touching path patterns ────────────────────────────────────────────
 
-const SCHEMA_PATHS = ['drizzle/', 'packages/core/db/schema.ts'];
-
 export function isSchemaTouchingFile(filename: string): boolean {
-  // drizzle/*.sql — any SQL migration file under the drizzle/ directory
-  if (filename.startsWith('drizzle/') && filename.endsWith('.sql')) return true;
+  // Generated SQL migration under any package's drizzle directory.
+  if (/(?:^|\/)drizzle\/\d{4}_[^/]+\.sql$/.test(filename)) return true;
   // packages/core/db/schema.ts — exact match
   if (filename === 'packages/core/db/schema.ts') return true;
   return false;
@@ -80,14 +79,16 @@ export function isSchemaTouchingFile(filename: string): boolean {
 export function preflightEscalationCheck(
   prFiles: Array<{ filename: string }>,
   policy: MergePolicy,
+  migrationSafety?: MigrationSafety,
 ): { shouldEscalate: true; reason: string } | { shouldEscalate: false } {
-  // Schema migration check
-  for (const f of prFiles) {
-    if (isSchemaTouchingFile(f.filename)) {
-      return {
-        shouldEscalate: true,
-        reason: `PR touches schema migration file: ${f.filename}`,
-      };
+  // The inspector loads the complete paginated file list, so honor an unsafe
+  // result even if GitHub's initial files response was truncated.
+  if (migrationSafety && !migrationSafety.safe) {
+    return { shouldEscalate: true, reason: migrationSafety.reason };
+  }
+  if (prFiles.some((file) => isSchemaTouchingFile(file.filename))) {
+    if (!migrationSafety) {
+      return { shouldEscalate: true, reason: 'could not inspect generated SQL migration' };
     }
   }
 

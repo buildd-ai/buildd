@@ -121,7 +121,8 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
+      pacingMode, pacingMaxPerHour,
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
 
     let deferredStart;
     try {
@@ -147,6 +148,12 @@ export async function POST(req: NextRequest) {
     }
     const effectiveOrchestrationMode: 'auto' | 'manual' = orchestrationMode || 'auto';
 
+    const validStartModes = ['armed', 'held'];
+    if (startMode !== undefined && !validStartModes.includes(startMode)) {
+      return NextResponse.json({ error: `Invalid startMode: must be "armed" or "held"` }, { status: 400 });
+    }
+    const effectiveIsHeld = startMode === 'held';
+
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
     }
@@ -156,6 +163,14 @@ export async function POST(req: NextRequest) {
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
+
+    if (pacingMode !== undefined && pacingMode !== 'eager' && pacingMode !== 'paced') {
+      return NextResponse.json({ error: 'pacingMode must be "eager" or "paced"' }, { status: 400 });
+    }
+
+    if (pacingMaxPerHour !== undefined && pacingMaxPerHour !== null && (!Number.isInteger(pacingMaxPerHour) || pacingMaxPerHour < 1)) {
+      return NextResponse.json({ error: 'pacingMaxPerHour must be an integer >= 1' }, { status: 400 });
     }
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
@@ -246,11 +261,13 @@ export async function POST(req: NextRequest) {
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
+        isHeld: effectiveIsHeld,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
         ...(mergePolicy != null ? { mergePolicy } : {}),
         ...(costBudgetUsd != null ? { costBudgetUsd: String(costBudgetUsd) } : {}),
+        ...(pacingMode === 'paced' ? { pacingMode: 'paced', ...(pacingMaxPerHour != null ? { pacingMaxPerHour } : {}) } : {}),
         ...(deferredStart.startAt ? {
           startAt: deferredStart.startAt,
           startResolution: deferredStart.resolution,

@@ -146,7 +146,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate) } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
@@ -2333,9 +2333,12 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.pacingMode !== undefined) body.pacingMode = params.pacingMode;
+          if (params.pacingMaxPerHour !== undefined) body.pacingMaxPerHour = params.pacingMaxPerHour;
           if (params.startAt !== undefined) body.startAt = params.startAt;
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
+          if (params.startMode !== undefined) body.startMode = params.startMode;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2345,7 +2348,8 @@ export async function handleBuilddAction(
             : data.heartbeatInfo
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
+          const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
         }
         case 'get': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2361,11 +2365,15 @@ export async function handleBuilddAction(
             : schedCtx?.heartbeat
               ? `\nOrchestration: auto\nHeartbeat: ${heartbeatRunning ? 'enabled' : 'paused'}${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}`
               : '\nOrchestration: auto';
-          const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
+          const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks} (mission-level cap)` : '';
           const depInfo = data.dependsOnMissionId ? `\nDependency: ${data.dependsOnMissionId} (gate: ${data.gateCondition})${data.blocked ? ` — BLOCKED: ${data.blockedReason}` : ' — unblocked'}` : '';
           const budgetInfo = data.costBudgetUsd != null ? `\nBudget: $${parseFloat(data.costBudgetUsd).toFixed(2)} limit${data.status === 'budget_exhausted' ? ' — EXHAUSTED (raise to resume)' : ''}` : '';
+          const pacingInfo = data.pacingMode === 'paced'
+            ? `\nPacing: max ${data.pacingMaxPerHour ?? 1} task(s)/hr${data.lastTaskStartedAt ? ` (last start ${new Date(data.lastTaskStartedAt).toISOString()})` : ''}`
+            : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${concurrentInfo}${depInfo}${budgetInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2393,15 +2401,27 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.pacingMode !== undefined) body.pacingMode = params.pacingMode;
+          if (params.pacingMaxPerHour !== undefined) body.pacingMaxPerHour = params.pacingMaxPerHour;
           if (params.startAt !== undefined) body.startAt = params.startAt;
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
+          if (params.startMode !== undefined) body.startMode = params.startMode;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
-          return text(`Mission updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+          const heldStatus = data.isHeld ? ' [HELD — tasks not claimable]' : '';
+          return text(`Mission updated: "${data.title}" [${data.status}]${heldStatus} (ID: ${data.id})`);
+        }
+        case 'arm': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ arm: true }),
+          });
+          return text(`Mission armed: "${data.title}" (ID: ${data.id}) — tasks are now claimable by workers.`);
         }
         case 'delete': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2425,7 +2445,7 @@ export async function handleBuilddAction(
           return text(`Task ${params.taskId} unlinked from mission`);
         }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task`);
       }
     }
 

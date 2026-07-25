@@ -29,6 +29,8 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockDecrypt = mock((value: string) => value);
+const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
+const mockExhaustMissionBudget = mock(() => Promise.resolve());
 
 // Explicit `db.select(...)` (added to dodge the RQB "missing FROM-clause" bug)
 // is used for the task-row fetches in the handler. The chain is fully thenable
@@ -49,6 +51,11 @@ const mockSelect = mock(() => {
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/mission-budget', () => ({
+  getMissionSpendUsd: mockGetMissionSpendUsd,
+  exhaustMissionBudget: mockExhaustMissionBudget,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -279,6 +286,27 @@ mock.module('@/lib/reviewer', () => ({
 const mockExecuteRelease = mock(() => Promise.resolve({ status: 'skipped', message: 'no release config' }));
 mock.module('@/lib/release-executor', () => ({
   executeRelease: mockExecuteRelease,
+}));
+
+// Override any cross-test contamination from webhook/route.test.ts which mocks this module.
+// Provide the real resolvePolicy logic so gateCondition checks work correctly.
+mock.module('@/lib/merge-policy', () => ({
+  resolvePolicy: (
+    workspace: { gitConfig?: { mergePolicy?: any; autoMergeOnGreenCI?: boolean; autoMergePR?: boolean; autoMergeMaxLines?: number; autoMergeDenyPaths?: string[] } | null },
+    mission?: { mergePolicy?: any } | null,
+  ) => {
+    if (mission?.mergePolicy) return mission.mergePolicy;
+    if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
+    const legacyAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR ?? true;
+    if (!legacyAutoMerge) return { tier: 'human' };
+    return {
+      tier: 'auto-threshold',
+      threshold: {
+        maxLines: workspace.gitConfig?.autoMergeMaxLines ?? 800,
+        denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
+      },
+    };
+  },
 }));
 
 import { GET, PATCH } from './route';
@@ -3584,6 +3612,64 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
     });
 
+    it('does not leave a mount-gap task pending when its terminal cost exhausts the mission budget', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        status: 'in_progress',
+        workspaceId: 'ws-1',
+        missionId: 'mission-budget-1',
+        outputRequirement: 'none',
+        context: null,
+      });
+      mockMissionsFindFirst
+        .mockResolvedValueOnce({ status: 'active' })
+        .mockResolvedValueOnce({
+          id: 'mission-budget-1',
+          title: 'Budgeted mission',
+          status: 'active',
+          costBudgetUsd: '1.00',
+        });
+      mockGetMissionSpendUsd.mockResolvedValueOnce(1.25);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          costUsd: 0.25,
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockExhaustMissionBudget).toHaveBeenCalledWith(
+        'mission-budget-1',
+        'Budgeted mission',
+        1.25,
+        1,
+      );
+      expect(taskSetCalls.some((updates: any) => updates.status === 'failed')).toBe(true);
+    });
+
     it('does not set exitCause for non-terminal status updates', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({
@@ -3756,6 +3842,218 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+  });
+
+  describe('loop dispatch (loop-until-verified)', () => {
+    function makeLoopWorker(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/loop-branch',
+        lastCommitSha: 'abc123',
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+        prUrl: null,
+        prNumber: null,
+        prLifecycleStatus: null,
+        ...overrides,
+      };
+    }
+
+    function makeLoopTask(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'task-1',
+        outputRequirement: 'none',
+        missionId: null,
+        context: {},
+        loopConfig: {
+          exitCondition: { type: 'command', command: 'bun test' },
+          maxLoops: 5,
+          backoffMinutes: 0,
+        },
+        loopIteration: 0,
+        loopState: 'running',
+        startAt: null,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    });
+
+    it('requeues task to pending when condition is unmet (command exit code != 0)', async () => {
+      const taskSetCalls: any[] = [];
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Worker must carry exitCause='condition_unmet'
+      const workerFinalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(workerFinalSet.exitCause).toBe('condition_unmet');
+
+      // Task must be requeued to pending
+      const taskPendingSet = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(taskPendingSet).toBeDefined();
+      expect(taskPendingSet.loopState).toBe('condition_unmet');
+      expect(taskPendingSet.loopIteration).toBe(1);
+
+      // Loop history and branch continuity preserved
+      const ctx = taskPendingSet.context;
+      expect(Array.isArray(ctx.loopHistory)).toBe(true);
+      expect(ctx.loopHistory[0].iteration).toBe(0);
+      expect(ctx.loopHistory[0].satisfied).toBe(false);
+      expect(ctx.resumeBranch).toBe('buildd/loop-branch');
+    });
+
+    it('sets task to failed with loopState=exhausted when maxLoops reached', async () => {
+      const taskSetCalls: any[] = [];
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      // maxLoops=1: iteration 0 → newIteration 1 >= 1 → exhausted
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({
+        loopConfig: { exitCondition: { type: 'command', command: 'bun test' }, maxLoops: 1, backoffMinutes: 0 },
+        loopIteration: 0,
+      }));
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      const workerFinalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(workerFinalSet.exitCause).toBe('condition_unmet');
+
+      const taskFinalSet = taskSetCalls[taskSetCalls.length - 1];
+      expect(taskFinalSet.status).toBe('failed');
+      expect(taskFinalSet.loopState).toBe('exhausted');
+      expect(taskFinalSet.loopIteration).toBe(1);
+      expect(taskFinalSet.result?.error).toMatch(/Loop condition unmet/);
+      expect(Array.isArray(taskFinalSet.result?.loopHistory)).toBe(true);
+    });
+
+    it('completes normally with loopState=satisfied when condition is met', async () => {
+      const workerSetCalls: any[] = [];
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Worker must NOT have condition_unmet exitCause
+      const workerFinalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(workerFinalSet.exitCause).not.toBe('condition_unmet');
+
+      // Release executor may issue a second update without status — find the primary update.
+      const taskStatusSet = taskSetCalls.find((u: any) => u.status !== undefined);
+      expect(taskStatusSet?.status).toBe('completed');
+      expect(taskStatusSet?.loopState).toBe('satisfied');
+      expect(taskStatusSet?.loopIteration).toBe(1);
+    });
+
+    it('rejects evidence with wrong workerId — treats condition as unmet', async () => {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-WRONG', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Evidence binding mismatch → condition_unmet
+      const workerFinalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(workerFinalSet.exitCause).toBe('condition_unmet');
+    });
+
+    it('does not set loop fields when task has no loopConfig', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null, context: {} });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const taskStatusSet = taskSetCalls.find((u: any) => u.status !== undefined);
+      expect(taskStatusSet?.status).toBe('completed');
+      expect(taskStatusSet?.loopState).toBeUndefined();
+      expect(taskStatusSet?.loopIteration).toBeUndefined();
     });
   });
 });

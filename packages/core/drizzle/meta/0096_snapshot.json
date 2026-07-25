@@ -1,6 +1,6 @@
 {
-  "id": "4976d46d-ab89-44ae-a3cd-415c55bdb5b9",
-  "prevId": "e9f3f3e2-888c-4e2b-b236-f67c67027652",
+  "id": "e31df6d0-e6d0-47e0-b1d9-8cc965e32da9",
+  "prevId": "595600f6-afa8-4527-bd6b-997694d3e430",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2970,6 +2970,12 @@
           "notNull": true,
           "default": "'open'"
         },
+        "superseded_by_pr_number": {
+          "name": "superseded_by_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3265,6 +3271,13 @@
         },
         "decomposition_skipped": {
           "name": "decomposition_skipped",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_held": {
+          "name": "is_held",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -4993,6 +5006,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "ci_retry_pr_number": {
+          "name": "ci_retry_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ci_retry_head_sha": {
+          "name": "ci_retry_head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "category": {
           "name": "category",
           "type": "text",
@@ -5324,6 +5349,34 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tasks_ci_retry_event_unique": {
+          "name": "tasks_ci_retry_event_unique",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ci_retry_pr_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ci_retry_head_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tasks\".\"creation_source\" = 'webhook' AND \"tasks\".\"ci_retry_pr_number\" IS NOT NULL AND \"tasks\".\"ci_retry_head_sha\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

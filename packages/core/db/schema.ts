@@ -569,6 +569,13 @@ export const missions = pgTable('missions', {
   dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
+  // Pacing controls: 'eager' starts every claimable task immediately (current default).
+  // 'paced' enforces a minimum interval between task starts for this mission:
+  // at most pacingMaxPerHour starts per hour (default 1 when null).
+  // lastTaskStartedAt is updated atomically each time a task from this mission is claimed.
+  pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
+  pacingMaxPerHour: integer('pacing_max_per_hour'),
+  lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
   // Shared feature branch for this mission. All mission tasks push commits here;
   // a single PR tracks all mission work. Generated lazily on first task creation.
   workingBranch: text('working_branch'),
@@ -591,6 +598,11 @@ export const missions = pgTable('missions', {
   // decompose/create new build tasks on its own initiative. This prevents duplicate work when
   // a creator files a task chain at the same time as an auto-decomposing mission.
   decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
+  // When true, tasks filed under this mission are not claimable by workers. Arm the
+  // mission (set isHeld=false) to release all tasks at once. Force-starting a single
+  // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
+  // (which controls organizer initiative) — held is purely about worker claim eligibility.
+  isHeld: boolean('is_held').default(false).notNull(),
   // Earliest time autonomous orchestration may begin. Deferred missions remain
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),
@@ -789,7 +801,7 @@ export const workers = pgTable('workers', {
   mergedAt: timestamp('merged_at', { withTimezone: true }),
   // PR/git lifecycle state — kept live by GitHub webhook events.
   // null = no PR yet or status unknown (pre-migration workers).
-  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),

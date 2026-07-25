@@ -4,6 +4,7 @@ import { eq, and, or, not, inArray, lt, gt, notInArray } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -68,9 +69,7 @@ async function resolveStaleTask(
       ),
       columns: { id: true, exitCause: true },
     });
-    const chargeableFailures = failedWorkers.filter(
-      w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure' && w.exitCause !== 'sandbox_mount_gap'
-    );
+    const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
 
     if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
       // Retry cap reached — permanently fail the task
