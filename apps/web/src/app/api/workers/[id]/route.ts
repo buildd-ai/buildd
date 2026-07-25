@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets, missions } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, or, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -27,6 +27,7 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { resolvePolicy } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -1472,11 +1473,38 @@ async function handleReviewerOutcomeIfNeeded(
 
   switch (output.verdict) {
     case 'approve': {
-      // BT-7: Approve path — trigger auto-merge
+      // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
         columns: { id: true, gitConfig: true },
       });
+
+      // Resolve policy to check gateCondition. approve-only = agent verifies, human merges.
+      const missionForPolicy = missionId
+        ? await db.query.missions.findFirst({
+            where: eq(missions.id, missionId),
+            columns: { mergePolicy: true },
+          })
+        : null;
+      const approvePolicy = workspace ? resolvePolicy(workspace, missionForPolicy) : null;
+
+      if (approvePolicy?.agentReview?.gateCondition === 'approve-only') {
+        // Reviewer approved but gateCondition requires human to press merge.
+        // Post a note and surface in escalation inbox — do NOT auto-merge.
+        if (missionId) {
+          await db.insert(missionNotes).values({
+            missionId,
+            taskId: originalTaskId,
+            authorType: 'system',
+            type: 'reviewer_approved',
+            title: `PR #${prNumber} approved — awaiting human merge`,
+            body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
+            status: 'open',
+          });
+        }
+        console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
+        break;
+      }
 
       // Find original worker to get its id (needed for tryAutoMergeWorkerPr signature)
       const originalWorker = await db.query.workers.findFirst({

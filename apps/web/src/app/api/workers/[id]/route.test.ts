@@ -20,6 +20,7 @@ const mockTasksUpdate = mock(() => ({
   })),
 }));
 const mockTasksFindFirst = mock(() => Promise.resolve(null));
+const mockMissionsFindFirst = mock(() => Promise.resolve(null));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
@@ -77,6 +78,7 @@ mock.module('@buildd/core/db', () => ({
       teams: { findFirst: mockTeamsFindFirst },
       connectors: { findFirst: mockConnectorsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
+      missions: { findFirst: mockMissionsFindFirst },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -2629,6 +2631,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockNotify.mockReset();
       mockDispatchNewTask.mockReset();
       mockDispatchNewTask.mockResolvedValue(undefined);
+      mockMissionsFindFirst.mockReset();
+      mockMissionsFindFirst.mockResolvedValue(null); // default: no mission override
     }
 
     function makeReviewerPatchRequest(verdict: 'approve' | 'request-changes' | 'escalate', extra: Record<string, unknown> = {}) {
@@ -2663,6 +2667,56 @@ describe('PATCH /api/workers/[id]', () => {
       });
       // No retry task
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('approve with gateCondition approve-only: posts note and does NOT auto-merge', async () => {
+      setupReviewerTaskCompletion('approve');
+      // Workspace has approve-only gateCondition
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: {
+          mergePolicy: {
+            tier: 'agent-review',
+            agentReview: {
+              reviewerRole: 'reviewer',
+              gateCondition: 'approve-only',
+            },
+          },
+        },
+      });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Must NOT call auto-merge — human presses merge
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      // Must NOT create retry task
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('approve with gateCondition approve-only via mission override: does NOT auto-merge', async () => {
+      setupReviewerTaskCompletion('approve');
+      // Workspace default is approve-and-merge, but mission overrides to approve-only
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: {
+          mergePolicy: {
+            tier: 'agent-review',
+            agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-and-merge' },
+          },
+        },
+      });
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: {
+          tier: 'agent-review',
+          agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' },
+        },
+      });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {

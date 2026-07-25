@@ -16,6 +16,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { mergePullRequest } from '@/lib/github';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 export async function POST(
@@ -100,6 +101,11 @@ export async function POST(
   await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
     taskId: worker.taskId,
   });
+
+  // Unblock tasks that depend on this task (mergedAt now set — gate is clear)
+  checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
+    console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
+  );
 
   // Unblock dependent missions if this task belonged to one
   const missionId = (worker.task as any)?.missionId;
