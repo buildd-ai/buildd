@@ -125,6 +125,7 @@ export default async function HomePage({
     inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
     lastDeferralReason: string | null;
     lastDeferredAt: string | null;
+    blockedPRCount: number;
   }[] = [];
 
   let completedLast12h = 0;
@@ -151,6 +152,21 @@ export default async function HomePage({
   }[] = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+
+  let waitingOnYou: Array<{
+    kind: 'merge' | 'approve' | 'answer';
+    prUrl?: string;
+    prNumber?: number;
+    upstreamTaskId?: string;
+    upstreamTaskTitle?: string;
+    unblockCount?: number;
+    taskId?: string;
+    taskTitle?: string;
+    workerId?: string;
+    question?: string;
+    missionId?: string | null;
+    missionTitle?: string | null;
+  }> = [];
 
   let escalationInbox: {
     workerId: string;
@@ -416,8 +432,8 @@ export default async function HomePage({
             columns: { id: true, title: true, description: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
-                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true },
-                with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true }, limit: 5 } },
+                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, dependsOn: true },
+                with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true }, limit: 5 } },
               },
               schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
               workspace: { columns: { id: true, name: true } },
@@ -449,6 +465,31 @@ export default async function HomePage({
                 activeWorkerCounts[row.missionId] = row.activeCount;
               }
             }
+          }
+
+          // Build cross-mission task map for blocked-PR computation
+          const homeMissionTaskMap = new Map<string, { id: string; status: string; workers: any[] }>();
+          for (const m of allMissions) {
+            for (const t of m.tasks) {
+              homeMissionTaskMap.set(t.id, t as any);
+            }
+          }
+          function countHomeMissionBlockedByPR(missionTasks: any[]): number {
+            let count = 0;
+            for (const t of missionTasks) {
+              if (t.status !== 'pending') continue;
+              const deps = (t.dependsOn as string[] | null) ?? [];
+              for (const depId of deps) {
+                const dep = homeMissionTaskMap.get(depId);
+                if (!dep || dep.status !== 'completed') continue;
+                const depW = dep.workers?.[0];
+                if (depW?.prNumber && !depW.mergedAt && depW.prLifecycleStatus !== 'closed') {
+                  count++;
+                  break;
+                }
+              }
+            }
+            return count;
           }
 
           missions = allMissions.map(mission => {
@@ -491,6 +532,7 @@ export default async function HomePage({
               inFlightTasks: mission.tasks.flatMap(t => t.workers.filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
               lastDeferralReason: (mission.schedule as any)?.lastDeferralReason ?? null,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
+              blockedPRCount: countHomeMissionBlockedByPR(mission.tasks as any[]),
             };
           });
         }
@@ -593,6 +635,161 @@ export default async function HomePage({
           }
         }
 
+        // "Waiting on You" action queue
+        {
+          // 1. PR blockers: pending tasks whose upstream deps are completed but have open PRs
+          const pendingWithDeps = await db
+            .select({ id: tasks.id, missionId: tasks.missionId, dependsOn: tasks.dependsOn })
+            .from(tasks)
+            .where(and(
+              inArray(tasks.workspaceId, wsIds),
+              eq(tasks.status, 'pending'),
+              sql`${tasks.dependsOn} IS NOT NULL AND ${tasks.dependsOn}::jsonb != '[]'::jsonb`
+            ))
+            .limit(300);
+
+          if (pendingWithDeps.length > 0) {
+            const upstreamIds = [...new Set(
+              pendingWithDeps.flatMap(t => (t.dependsOn as string[] | null) ?? [])
+            )];
+
+            if (upstreamIds.length > 0) {
+              const upstreamTasks = await db.query.tasks.findMany({
+                where: and(
+                  inArray(tasks.id, upstreamIds),
+                  eq(tasks.status, 'completed'),
+                ),
+                columns: { id: true, title: true, missionId: true },
+                with: {
+                  workers: {
+                    where: and(
+                      isNotNull(workers.prUrl),
+                      isNull(workers.mergedAt),
+                      sql`COALESCE(${workers.prLifecycleStatus}, '') != 'closed'`
+                    ),
+                    columns: { prUrl: true, prNumber: true },
+                    orderBy: desc(workers.createdAt),
+                    limit: 1,
+                  },
+                  mission: { columns: { id: true, title: true } },
+                },
+              });
+
+              // Load mission titles for the downstream blocked tasks
+              const downstreamMissionIds = [...new Set(
+                pendingWithDeps.map(t => t.missionId).filter(Boolean) as string[]
+              )];
+              const downstreamMissionMap = new Map<string, string>();
+              if (downstreamMissionIds.length > 0) {
+                const missionRows = await db
+                  .select({ id: missionsTable.id, title: missionsTable.title })
+                  .from(missionsTable)
+                  .where(inArray(missionsTable.id, downstreamMissionIds));
+                for (const m of missionRows) downstreamMissionMap.set(m.id, m.title);
+              }
+
+              for (const upstream of upstreamTasks) {
+                const w = (upstream.workers as any[])[0];
+                if (!w?.prNumber) continue;
+
+                const blockedTasks = pendingWithDeps.filter(t =>
+                  ((t.dependsOn as string[]) ?? []).includes(upstream.id)
+                );
+                if (blockedTasks.length === 0) continue;
+
+                // Determine which mission(s) the blocked tasks belong to
+                const blockedMissionIds = [...new Set(
+                  blockedTasks.map(t => t.missionId).filter(Boolean) as string[]
+                )];
+                const missionTitle = blockedMissionIds.length === 1
+                  ? (downstreamMissionMap.get(blockedMissionIds[0]) ?? (upstream.mission as any)?.title ?? null)
+                  : null;
+
+                waitingOnYou.push({
+                  kind: 'merge',
+                  prUrl: w.prUrl,
+                  prNumber: w.prNumber,
+                  upstreamTaskId: upstream.id,
+                  upstreamTaskTitle: upstream.title,
+                  unblockCount: blockedTasks.length,
+                  missionId: blockedMissionIds[0] ?? null,
+                  missionTitle,
+                });
+              }
+
+              // Sort merge items by unblock fan-out (most impactful first)
+              waitingOnYou.sort((a, b) => (b.unblockCount ?? 0) - (a.unblockCount ?? 0));
+            }
+          }
+
+          // 2. Unanswered worker questions (waiting_input with waitingFor set)
+          const waitingInputWorkers = await db.query.workers.findMany({
+            where: and(
+              inArray(workers.workspaceId, wsIds),
+              eq(workers.status, 'waiting_input'),
+              isNotNull(workers.waitingFor),
+            ),
+            columns: { id: true, taskId: true, waitingFor: true },
+            with: {
+              task: {
+                columns: { id: true, title: true, missionId: true },
+                with: { mission: { columns: { id: true, title: true } } },
+              },
+            },
+            limit: 5,
+          });
+          for (const w of waitingInputWorkers) {
+            const wf = w.waitingFor as { type: string; prompt: string } | null;
+            if (!wf?.prompt) continue;
+            waitingOnYou.push({
+              kind: 'answer',
+              workerId: w.id,
+              taskId: (w.task as any)?.id ?? '',
+              taskTitle: (w.task as any)?.title ?? '',
+              question: wf.prompt,
+              missionId: (w.task as any)?.missionId ?? null,
+              missionTitle: (w.task as any)?.mission?.title ?? null,
+            });
+          }
+
+          // 3. Pending plan approvals: planning tasks completed with plan, not yet approved
+          const planningTaskRows = await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.workspaceId, wsIds),
+              eq(tasks.mode, 'planning'),
+              eq(tasks.status, 'completed'),
+              isNotNull(tasks.result),
+            ),
+            columns: { id: true, title: true, missionId: true, result: true },
+            with: { mission: { columns: { id: true, title: true } } },
+            orderBy: desc(tasks.updatedAt),
+            limit: 10,
+          });
+          if (planningTaskRows.length > 0) {
+            // Check which planning tasks already have child tasks (already approved)
+            const planIds = planningTaskRows.map(t => t.id);
+            const childRows = await db
+              .select({ parentTaskId: tasks.parentTaskId })
+              .from(tasks)
+              .where(inArray(tasks.parentTaskId, planIds));
+            const approvedPlanIds = new Set(
+              childRows.map(r => r.parentTaskId).filter(Boolean) as string[]
+            );
+            for (const t of planningTaskRows) {
+              if (approvedPlanIds.has(t.id)) continue;
+              const plan = (t.result as any)?.structuredOutput?.plan;
+              if (!Array.isArray(plan) || plan.length === 0) continue;
+              waitingOnYou.push({
+                kind: 'approve',
+                taskId: t.id,
+                taskTitle: t.title,
+                missionId: t.missionId,
+                missionTitle: (t.mission as any)?.title ?? null,
+              });
+            }
+          }
+        }
+
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
@@ -663,6 +860,104 @@ export default async function HomePage({
                 {subheading}
               </p>
             </div>
+
+            {/* Waiting on You — action queue: merge PRs, approve plans, answer questions */}
+            {waitingOnYou.length > 0 && (
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="section-label">Waiting on You</div>
+                  <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
+                    {waitingOnYou.length}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {waitingOnYou.map((item, i) => {
+                    if (item.kind === 'merge') {
+                      return (
+                        <div key={`merge-${item.upstreamTaskId}`} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
+                                  Merge
+                                </span>
+                                <span className="text-[12px] text-text-secondary">
+                                  {item.upstreamTaskTitle}
+                                </span>
+                              </div>
+                              <div className="text-[13px] font-medium text-text-primary">
+                                PR #{item.prNumber} → unblocks {item.unblockCount} task{(item.unblockCount ?? 0) !== 1 ? 's' : ''}
+                                {item.missionTitle && (
+                                  <span className="text-text-secondary font-normal"> in {item.missionTitle}</span>
+                                )}
+                              </div>
+                            </div>
+                            <a
+                              href={item.prUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-shrink-0 px-3 py-1.5 text-[12px] font-medium border border-primary text-primary rounded-[6px] hover:bg-primary hover:text-white transition-colors"
+                            >
+                              Open PR ↗
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.kind === 'answer') {
+                      return (
+                        <Link
+                          key={`answer-${item.workerId}`}
+                          href={`/app/tasks/${item.taskId}`}
+                          className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
+                              Answer
+                            </span>
+                            {item.missionTitle && (
+                              <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
+                            )}
+                          </div>
+                          <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
+                            {item.taskTitle}
+                          </div>
+                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
+                        </Link>
+                      );
+                    }
+                    if (item.kind === 'approve') {
+                      return (
+                        <Link
+                          key={`approve-${item.taskId}`}
+                          href={`/app/tasks/${item.taskId}`}
+                          className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-mono font-medium text-accent-text tracking-wide uppercase">
+                              Approve Plan
+                            </span>
+                            {item.missionTitle && (
+                              <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
+                            )}
+                          </div>
+                          <div className="text-[13px] font-medium text-text-primary truncate">
+                            {item.taskTitle}
+                          </div>
+                        </Link>
+                      );
+                    }
+                    return null;
+                  })}
+                </div>
+              </div>
+            )}
+            {waitingOnYou.length === 0 && activeItems.length > 0 && (
+              <div className="mb-8">
+                <div className="section-label mb-3">Waiting on You</div>
+                <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
+              </div>
+            )}
 
             {/* Right Now */}
             <div className="mb-8">
@@ -987,6 +1282,18 @@ export default async function HomePage({
                                           <span className="text-accent-text font-medium">
                                             {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
                                           </span>
+                                        </>
+                                      )}
+                                      {mission.blockedPRCount > 0 && (
+                                        <>
+                                          <span className="mx-0.5">&middot;</span>
+                                          <Link
+                                            href="/app/home"
+                                            className="text-primary font-medium hover:underline"
+                                            onClick={e => e.stopPropagation()}
+                                          >
+                                            blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
+                                          </Link>
                                         </>
                                       )}
                                     </div>
