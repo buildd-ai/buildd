@@ -434,6 +434,45 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.base).toBe('dev');
   });
 
+  it('ignores task context baseBranch when it matches the PR head', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      workspace: {
+        githubRepoId: 'repo-1',
+        githubInstallationId: 'inst-1',
+        gitConfig: { targetBranch: 'dev' },
+      },
+      task: {
+        context: { baseBranch: 'feature-branch' },
+      },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 10,
+      html_url: 'https://github.com/owner/repo/pull/10',
+      state: 'open',
+      title: 'Test PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'Test PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    const [, , options] = mockGithubApi.mock.calls[1];
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.base).toBe('dev');
+  });
+
   it('falls back to repo defaultBranch when no gitConfig.targetBranch', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
