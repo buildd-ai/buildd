@@ -64,9 +64,26 @@ export async function inspectPullRequestMigrations(params: {
     return { safe: false, reason: 'could not inspect complete PR file list' };
   }
 
-  const migrationFiles = completeFiles.filter(
-    (file) => file.status !== 'removed' && isGeneratedMigrationPath(file.filename),
+  const allMigrationFiles = completeFiles.filter((file) =>
+    isGeneratedMigrationPath(file.filename),
   );
+  const removedMigration = allMigrationFiles.find((file) => file.status === 'removed');
+  if (removedMigration) {
+    return {
+      safe: false,
+      reason: `deletes generated migration ${removedMigration.filename}`,
+    };
+  }
+  const changedExistingMigration = allMigrationFiles.find(
+    (file) => file.status !== 'added',
+  );
+  if (changedExistingMigration) {
+    return {
+      safe: false,
+      reason: `modifies existing migration ${changedExistingMigration.filename}`,
+    };
+  }
+  const migrationFiles = allMigrationFiles;
   const touchesSchema = completeFiles.some(
     (file) => file.filename === 'packages/core/db/schema.ts',
   );
