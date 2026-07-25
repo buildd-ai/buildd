@@ -204,6 +204,8 @@ export default function NewMissionForm({
   const artifactId = searchParams.get('artifactId');
   const artifactTitle = searchParams.get('artifactTitle');
   const sourceMission = searchParams.get('sourceMission');
+  // When creating from an initiative detail page, file the new mission under it.
+  const initiativeId = searchParams.get('initiative');
 
   const [name, setName] = useState(
     artifactTitle ? `Build: ${artifactTitle}` : ''
@@ -300,6 +302,10 @@ export default function NewMissionForm({
 
       if (artifactId) {
         payload.contextArtifactIds = [artifactId];
+      }
+
+      if (initiativeId) {
+        payload.initiativeId = initiativeId;
       }
 
       const parsedBudget = costBudgetUsd.trim() ? parseFloat(costBudgetUsd.trim()) : null;

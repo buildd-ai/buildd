@@ -31,17 +31,8 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: Symbol('missionNotes'),
 }));
 
-// Mock mission-helpers — must match real logic for dormancy tests
-mock.module('@buildd/core/mission-helpers', () => ({
-  isDeliverableTask(t: { title: string; mode?: string | null }): boolean {
-    if (t.mode === 'planning') return false;
-    if (t.title.startsWith('Aggregate results:')) return false;
-    if (t.title.startsWith('Evaluate mission completion:')) return false;
-    if (t.title.startsWith('Mission:')) return false;
-    return true;
-  },
-}));
-
+// Uses the REAL @buildd/core/mission-helpers (isDeliverableTask) — no mock, so
+// nothing leaks into later files that depend on the real rollup helpers.
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
