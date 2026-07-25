@@ -876,30 +876,28 @@ export async function handleBuilddAction(
     case 'update_progress': {
       const workerId = resolveWorkerId(params.workerId, ctx);
 
-      // Plan submission
-      if (params.plan) {
-        await api(`/api/workers/${workerId}/plan`, {
-          method: 'POST',
-          body: JSON.stringify({ plan: params.plan }),
-        });
-        return text('Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.');
-      }
-
       let response;
       try {
-        const statusMilestone = params.message ? {
-          appendMilestones: [{
+        const milestoneTs = Date.now();
+        const appendMilestones = [
+          ...(params.plan ? [{
+            type: 'plan',
+            label: params.plan,
+            progress: params.progress || 0,
+            ts: milestoneTs,
+          }] : []),
+          ...(params.message ? [{
             type: 'status',
             label: params.message,
             progress: params.progress || 0,
-            ts: Date.now(),
-          }],
-        } : {};
+            ts: milestoneTs,
+          }] : []),
+        ];
 
         const progressBody: Record<string, unknown> = {
           status: 'running',
           progress: params.progress || 0,
-          ...statusMilestone,
+          ...(appendMilestones.length > 0 && { appendMilestones }),
         };
         if (params.message) progressBody.currentAction = params.message;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
