@@ -1,6 +1,6 @@
 # Native Initiatives Tier + Optional Linear Sync
 
-**Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 scoped: `docs/plans/linear-phase-1.md`. Phases 1-4 (Linear) Proposed.
+**Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 Shipped (link layer + token refresh, PR #1459; plan archived at `docs/plans/archive/linear-phase-1.md`). Phases 2-4 (Linear) Proposed.
 **Correction:** `external_links` was listed under Phase 0 below but was **not** built there (shipped Phase 0 = initiatives tier only). It is owned by **Phase 1** — see the Phase 1 plan.
 **Related:**
 - `docs/specs/work-tracker-integration.md` — the shipped/partial work-tracker contract; §3 inbound webhook is a Phase-3 prerequisite here
@@ -115,7 +115,7 @@ existing missions (`initiativeId = null`) behave identically. **Note:**
 `external_links` was originally listed here but moved to Phase 1 — it was not built
 in Phase 0.
 
-**Phase 1 — Make linking real.** ⟶ scoped in `docs/plans/linear-phase-1.md`.
+**Phase 1 — Make linking real. ✅ SHIPPED (PR #1459).** ⟶ plan archived at `docs/plans/archive/linear-phase-1.md`.
 Create the `external_links` table (moved from Phase 0). Implement the real link
 action (retire the dead `/link-linear` advertisement) writing to `external_links`
 (+ dual-write the mission column). Wire `getConnectorAccessToken` →
