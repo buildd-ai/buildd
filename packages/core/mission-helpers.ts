@@ -92,3 +92,65 @@ export function computeMissionProgress(tasks: Array<{
     segments,
   };
 }
+
+// ─── Initiative rollup ────────────────────────────────────────────────────────
+
+/** Mission status vocabulary — mirrors missions.status in schema.ts. */
+export type MissionStatus = 'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted';
+
+/**
+ * The per-child input to an initiative rollup: a mission's own status plus its
+ * already-computed task tallies (from computeMissionProgress). The helper does
+ * NOT query — callers pass these in.
+ */
+export interface ChildMissionProgress {
+  status: MissionStatus;
+  totalTasks: number;
+  completedTasks: number;
+}
+
+export interface InitiativeProgress {
+  totalMissions: number;
+  completedMissions: number;
+  totalTasks: number;
+  completedTasks: number;
+  /** 0-100. Task-weighted; falls back to mission-weighted when no countable tasks exist. */
+  progress: number;
+  status: 'empty' | 'active' | 'blocked' | 'paused' | 'completed';
+}
+
+/**
+ * Roll a set of child missions up into an initiative-level summary.
+ *
+ * - Progress is task-weighted (sum completed / sum total across missions). When
+ *   no mission has any countable task, it falls back to mission-weighted
+ *   (completed missions / total missions) so an initiative of task-less but
+ *   finished missions still reads as done rather than 0%.
+ * - Status precedence: any budget_exhausted → 'blocked'; else any active →
+ *   'active'; else any paused → 'paused'; else (all completed/archived) →
+ *   'completed'. No missions → 'empty'.
+ * - completedMissions counts mission STATUS === 'completed', independent of task
+ *   completion (a mission with all tasks done but still active is not complete).
+ */
+export function computeInitiativeProgress(children: ChildMissionProgress[]): InitiativeProgress {
+  const totalMissions = children.length;
+  if (totalMissions === 0) {
+    return { totalMissions: 0, completedMissions: 0, totalTasks: 0, completedTasks: 0, progress: 0, status: 'empty' };
+  }
+
+  const totalTasks = children.reduce((n, c) => n + c.totalTasks, 0);
+  const completedTasks = children.reduce((n, c) => n + c.completedTasks, 0);
+  const completedMissions = children.filter(c => c.status === 'completed').length;
+
+  const status: InitiativeProgress['status'] =
+    children.some(c => c.status === 'budget_exhausted') ? 'blocked'
+    : children.some(c => c.status === 'active') ? 'active'
+    : children.some(c => c.status === 'paused') ? 'paused'
+    : 'completed';
+
+  const progress = totalTasks > 0
+    ? Math.round((completedTasks / totalTasks) * 100)
+    : Math.round((completedMissions / totalMissions) * 100);
+
+  return { totalMissions, completedMissions, totalTasks, completedTasks, progress, status };
+}

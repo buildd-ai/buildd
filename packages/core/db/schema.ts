@@ -557,6 +557,9 @@ export const missions = pgTable('missions', {
   defaultBackend: agentBackendEnum('default_backend'),
   scheduleId: uuid('schedule_id'),
   parentMissionId: uuid('parent_mission_id'),
+  // Optional parent initiative — an execution-free planning container above missions.
+  // Null = mission is ungrouped and behaves exactly as before (default no-op).
+  initiativeId: uuid('initiative_id').references(() => initiatives.id, { onDelete: 'set null' }),
   lastEvaluationTaskId: uuid('last_evaluation_task_id'),
   // Mission-level dependency sequencing: this mission won't run until the gate condition
   // is met on dependsOnMissionId. 'merged' = upstream PRs landed; 'completed' = mission.status='completed'.
@@ -608,6 +611,45 @@ export const missions = pgTable('missions', {
   statusIdx: index('missions_status_idx').on(t.status),
   parentIdx: index('missions_parent_idx').on(t.parentMissionId),
   dependsOnIdx: index('missions_depends_on_idx').on(t.dependsOnMissionId),
+  initiativeIdx: index('missions_initiative_idx').on(t.initiativeId),
+}));
+
+// Denormalized initiative rollup. Shape mirrors InitiativeProgress in
+// mission-helpers.ts (kept as a local interface to avoid a schema→helpers import).
+export interface InitiativeProgressCache {
+  totalMissions: number;
+  completedMissions: number;
+  totalTasks: number;
+  completedTasks: number;
+  progress: number;
+  status: 'empty' | 'active' | 'blocked' | 'paused' | 'completed';
+  computedAt: string;
+}
+
+// Initiatives — a pure planning container above missions. Deliberately carries
+// NONE of the mission execution columns (no orchestrationMode, budget, schedule,
+// workingBranch, release trigger): an initiative structurally cannot trip the
+// orchestrator/heartbeat/release/budget engine. mission = project, task = issue.
+export const initiatives = pgTable('initiatives', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Nullable — an initiative may group missions across repos (like missions can be workspace-null).
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  title: text('title').notNull(),
+  description: text('description'),
+  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived'>(),
+  priority: integer('priority').default(0).notNull(),
+  // Denormalized rollup from computeInitiativeProgress, refreshed on child-mission change.
+  progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
+  // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
+  contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('initiatives_team_idx').on(t.teamId),
+  workspaceIdx: index('initiatives_workspace_idx').on(t.workspaceId),
+  statusIdx: index('initiatives_status_idx').on(t.status),
 }));
 
 
@@ -817,6 +859,8 @@ export const artifacts = pgTable('artifacts', {
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // Initiative-level artifacts (roadmap/spec) not tied to a specific mission.
+  initiativeId: uuid('initiative_id').references(() => initiatives.id, { onDelete: 'set null' }),
   key: text('key'),
   type: text('type').notNull(),
   title: text('title'),
@@ -832,6 +876,7 @@ export const artifacts = pgTable('artifacts', {
   workspaceIdx: index('artifacts_workspace_idx').on(t.workspaceId),
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
   missionIdx: index('artifacts_mission_idx').on(t.missionId),
+  initiativeIdx: index('artifacts_initiative_idx').on(t.initiativeId),
 }));
 
 // Mission notes — lightweight append-only feed for agent↔user communication
@@ -1321,6 +1366,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   accounts: many(accounts),
   workspaces: many(workspaces),
   missions: many(missions),
+  initiatives: many(initiatives),
   invitations: many(teamInvitations),
   workspaceSkills: many(workspaceSkills),
   connectors: many(connectors),
@@ -1361,6 +1407,7 @@ export const missionsRelations = relations(missions, ({ one, many }) => ({
   createdByUser: one(users, { fields: [missions.createdByUserId], references: [users.id] }),
   parentMission: one(missions, { fields: [missions.parentMissionId], references: [missions.id], relationName: 'subMissions' }),
   subMissions: many(missions, { relationName: 'subMissions' }),
+  initiative: one(initiatives, { fields: [missions.initiativeId], references: [initiatives.id] }),
   dependsOnMission: one(missions, { fields: [missions.dependsOnMissionId], references: [missions.id], relationName: 'dependentMissions' }),
   dependentMissions: many(missions, { relationName: 'dependentMissions' }),
   tasks: many(tasks),
@@ -1379,6 +1426,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   taskSchedules: many(taskSchedules),
   workspaceSkills: many(workspaceSkills),
   missions: many(missions),
+  initiatives: many(initiatives),
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
   connectorWorkspaces: many(connectorWorkspaces),
@@ -1411,6 +1459,15 @@ export const artifactsRelations = relations(artifacts, ({ one }) => ({
   worker: one(workers, { fields: [artifacts.workerId], references: [workers.id] }),
   workspace: one(workspaces, { fields: [artifacts.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [artifacts.missionId], references: [missions.id] }),
+  initiative: one(initiatives, { fields: [artifacts.initiativeId], references: [initiatives.id] }),
+}));
+
+export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
+  team: one(teams, { fields: [initiatives.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [initiatives.workspaceId], references: [workspaces.id] }),
+  createdByUser: one(users, { fields: [initiatives.createdByUserId], references: [users.id] }),
+  missions: many(missions),
+  artifacts: many(artifacts),
 }));
 
 export const missionNotesRelations = relations(missionNotes, ({ one }) => ({
@@ -1752,3 +1809,6 @@ export type ConnectorWorkspace = typeof connectorWorkspaces.$inferSelect;
 export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
 export type ConnectorShare = typeof connectorShares.$inferSelect;
 export type NewConnectorShare = typeof connectorShares.$inferInsert;
+
+export type Initiative = typeof initiatives.$inferSelect;
+export type NewInitiative = typeof initiatives.$inferInsert;
