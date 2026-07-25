@@ -228,7 +228,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
         'Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.',
         {
           query: z.string().optional(),
-          scope: z.enum(['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec']).optional(),
+          scope: z.enum(['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative']).optional(),
           type: z.string().optional(),
           files: z.array(z.string()).optional(),
           limit: z.number().optional(),

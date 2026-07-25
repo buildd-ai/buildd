@@ -439,6 +439,10 @@ export interface Task {
   backend?: AgentBackend;
   requiresReview?: boolean;
   startAt?: Date | null;
+  // Loop primitive — null when not a looped task (behaves exactly as today)
+  loopConfig?: LoopConfig | null;
+  loopIteration?: number;
+  loopState?: LoopState | null;
   createdAt: Date;
   updatedAt: Date;
   workspace?: Workspace;
@@ -451,6 +455,13 @@ export interface Task {
   parentTask?: Task;
   subTasks?: Task[];
 }
+
+export type WorkerExitCause =
+  | 'code_failure'
+  | 'budget_limited'
+  | 'infra_failure'
+  | 'reassigned'
+  | 'condition_unmet';
 
 export interface Worker {
   id: string;
@@ -467,6 +478,7 @@ export interface Worker {
   startedAt: Date | null;
   completedAt: Date | null;
   error: string | null;
+  exitCause?: WorkerExitCause | null;
   createdAt: Date;
   updatedAt: Date;
   mcpCalls?: McpToolCall[];
@@ -987,6 +999,48 @@ export interface SSEEvent<T = unknown> {
 }
 
 // ============================================================================
+// LOOP PRIMITIVE (condition-driven task loops)
+// See docs/design/loop-until-verified.md
+// ============================================================================
+
+export type LoopExitCondition =
+  | { type: 'command'; command?: string }
+  | { type: 'pr_checks_green' }
+  | {
+      type: 'structured_predicate';
+      predicate?: {
+        /** JSON Pointer into TaskResult.structuredOutput */
+        path: string;
+        operator: 'eq' | 'neq' | 'exists' | 'gt' | 'gte' | 'lt' | 'lte';
+        value?: string | number | boolean | null;
+      };
+    };
+
+export interface LoopConfig {
+  exitCondition: LoopExitCondition;
+  /** 1–50, defaults to 5 */
+  maxLoops?: number;
+  /** 0–10080 (7 days in minutes), defaults to 0 */
+  backoffMinutes?: number;
+}
+
+export type LoopState =
+  | 'running'
+  | 'condition_unmet'
+  | 'exhausted'
+  | 'satisfied';
+
+export interface LoopHistoryEntry {
+  iteration: number;
+  workerId: string;
+  evaluatedAt: string;
+  conditionType: LoopExitCondition['type'];
+  satisfied: boolean;
+  summary: string;
+  evidence?: Record<string, unknown>;
+}
+
+// ============================================================================
 // CONSTANTS
 // ============================================================================
 
@@ -1036,3 +1090,4 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
+export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';

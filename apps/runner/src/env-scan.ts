@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
-import { CAPABILITY_BROWSER } from '@buildd/shared';
+import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
@@ -280,6 +280,13 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
     envKeys.push(CAPABILITY_BROWSER);
   } else {
     console.log('[env-scan] Headless Chromium not found — browser capability not advertised. Install via: bunx playwright install --with-deps chromium');
+  }
+
+  if (
+    process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST === '1'
+    && process.env.BUILDD_DISABLE_SANDBOX !== '1'
+  ) {
+    envKeys.push(CAPABILITY_SANDBOX_MOUNT_ALLOWLIST);
   }
 
   return {

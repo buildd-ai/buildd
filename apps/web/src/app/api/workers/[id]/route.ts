@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets, missions } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq, and, or, desc, inArray, isNull, sql } from 'drizzle-orm';
+import { eq, and, or, desc, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -27,6 +27,7 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { resolvePolicy } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -474,10 +475,20 @@ export async function PATCH(
   let isBudgetReset = false;
 
   if (isCodexDeferral && worker.taskId) {
-    await db
-      .update(tasks)
-      .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
-      .where(eq(tasks.id, worker.taskId));
+    // Guard: a cancelled task must not be re-queued even by a deferral report from
+    // its aborted worker. Read the current status first so we can skip the update
+    // entirely for cancelled tasks (WHERE clause alone prevents the DB write, but
+    // we want to avoid the call when we already know the task is gone).
+    const deferralTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, worker.taskId),
+      columns: { status: true },
+    });
+    if (deferralTask?.status !== 'cancelled') {
+      await db
+        .update(tasks)
+        .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+    }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
   }
 
@@ -496,7 +507,7 @@ export async function PATCH(
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
       where: eq(tasks.id, worker.taskId),
-      columns: { context: true, workspaceId: true, title: true, backend: true, startAt: true },
+      columns: { context: true, workspaceId: true, title: true, backend: true, startAt: true, status: true },
       with: { workspace: { columns: { teamId: true, name: true } } },
     });
     const budgetTaskCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
@@ -557,8 +568,9 @@ export async function PATCH(
 
     // Reset task to pending (not failed) — retried when budget resets, or
     // immediately on Codex when a failover backend was resolved.
+    // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
     const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
-    await db
+    if (taskForBudget?.status !== 'cancelled') await db
       .update(tasks)
       .set({
         status: 'pending',
@@ -582,7 +594,7 @@ export async function PATCH(
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
       })
-      .where(eq(tasks.id, worker.taskId));
+      .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
     if (failoverBackend) {
       console.log(`[workers PATCH] Task ${worker.taskId} failed over to Codex after Claude budget/session exhaustion`);
@@ -709,12 +721,14 @@ export async function PATCH(
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
-          columns: { missionId: true, context: true },
+          columns: { missionId: true, context: true, status: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
         const retryCount = (taskCtxForRetry.retryCount as number) || 0;
         const maxRetries = taskForRetry?.missionId ? 1 : 0;
         shouldAutoRetry = retryCount < maxRetries;
+        // A cancelled task must not be auto-retried — the user explicitly cancelled it.
+        if (taskForRetry?.status === 'cancelled') shouldAutoRetry = false;
         if (shouldAutoRetry) {
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
@@ -837,10 +851,12 @@ export async function PATCH(
         }
       }
 
+      // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
+      // its terminal status overridden by a worker that was aborted mid-flight.
       await db
         .update(tasks)
         .set(taskUpdate)
-        .where(eq(tasks.id, worker.taskId));
+        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
@@ -1472,11 +1488,38 @@ async function handleReviewerOutcomeIfNeeded(
 
   switch (output.verdict) {
     case 'approve': {
-      // BT-7: Approve path — trigger auto-merge
+      // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
         columns: { id: true, gitConfig: true },
       });
+
+      // Resolve policy to check gateCondition. approve-only = agent verifies, human merges.
+      const missionForPolicy = missionId
+        ? await db.query.missions.findFirst({
+            where: eq(missions.id, missionId),
+            columns: { mergePolicy: true },
+          })
+        : null;
+      const approvePolicy = workspace ? resolvePolicy(workspace, missionForPolicy) : null;
+
+      if (approvePolicy?.agentReview?.gateCondition === 'approve-only') {
+        // Reviewer approved but gateCondition requires human to press merge.
+        // Post a note and surface in escalation inbox — do NOT auto-merge.
+        if (missionId) {
+          await db.insert(missionNotes).values({
+            missionId,
+            taskId: originalTaskId,
+            authorType: 'system',
+            type: 'reviewer_approved',
+            title: `PR #${prNumber} approved — awaiting human merge`,
+            body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
+            status: 'open',
+          });
+        }
+        console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
+        break;
+      }
 
       // Find original worker to get its id (needed for tryAutoMergeWorkerPr signature)
       const originalWorker = await db.query.workers.findFirst({

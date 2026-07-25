@@ -5,6 +5,7 @@ import {
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,
+  buildInitiativeCard,
   renderPlanText,
   truncate,
   CARD_CONTENT_CAP,
@@ -170,6 +171,13 @@ describe('buildArtifactCard', () => {
     expect(chunk.content.length).toBeLessThan(big.length);
     expect(chunk.sourceUrl).toBe('https://buildd.dev/s/a-7');
   });
+
+  it('threads initiativeId into metadata when present, omits it when absent', () => {
+    const withInit = buildArtifactCard({ artifactId: 'a-8', title: 'Roadmap', initiativeId: 'init-1' });
+    expect(withInit.metadata?.initiativeId).toBe('init-1');
+    const without = buildArtifactCard({ artifactId: 'a-9', title: 'Notes' });
+    expect(without.metadata?.initiativeId).toBeUndefined();
+  });
 });
 
 // ── buildPlanCard (corpus plan, phase plan) ──────────────────────────────────
@@ -210,6 +218,51 @@ describe('buildPlanCard', () => {
     expect(chunk.content).toContain('Build SSO');
     expect(chunk.content).toContain('Build API');
     expect(chunk.sourceUrl).toBe('/app/tasks/t-1');
+  });
+});
+
+// ── buildInitiativeCard (corpus initiative, phase initiative) ────────────────
+
+describe('buildInitiativeCard', () => {
+  it('builds an initiative:{id} sourceId with initiative phase, linkage, and synthesized card', () => {
+    const chunk = buildInitiativeCard({
+      initiativeId: 'init-1',
+      title: 'Q3 Billing Overhaul',
+      description: 'Migrate all billing to the new metered pipeline',
+      status: 'active',
+      progress: { progress: 40, completedMissions: 2, totalMissions: 5, completedTasks: 8, totalTasks: 20 },
+    });
+
+    expect(chunk.id).toBe('initiative:init-1');
+    expect(chunk.sourceType).toBe('initiative');
+    expect(chunk.metadata?.phase).toBe('initiative');
+    expect(chunk.metadata?.initiativeId).toBe('init-1');
+    expect(chunk.metadata?.status).toBe('active');
+    // Card is synthesized text, not a raw dump
+    expect(chunk.content).toContain('Q3 Billing Overhaul');
+    expect(chunk.content).toContain('Migrate all billing to the new metered pipeline');
+    expect(chunk.content).toContain('active');
+    expect(chunk.content).toContain('40%');
+    expect(chunk.content).toContain('2/5 missions');
+    expect(chunk.sourceUrl).toBe('/app/initiatives/init-1');
+    // lexicalText carries title + description for BM25
+    expect(chunk.lexicalText).toContain('Q3 Billing Overhaul');
+    expect(chunk.lexicalText).toContain('metered pipeline');
+  });
+
+  it('omits description, status, and rollup when absent', () => {
+    const chunk = buildInitiativeCard({ initiativeId: 'init-2', title: 'Untitled goal' });
+    expect(chunk.id).toBe('initiative:init-2');
+    expect(chunk.content).toContain('Untitled goal');
+    expect(chunk.content).not.toContain('Progress');
+    expect(chunk.metadata?.status).toBeUndefined();
+  });
+
+  it('keys by initiativeId so an updated initiative upserts in place', () => {
+    const a = buildInitiativeCard({ initiativeId: 'init-9', title: 'v1' });
+    const b = buildInitiativeCard({ initiativeId: 'init-9', title: 'v2 renamed' });
+    expect(a.id).toBe(b.id);
+    expect(a.id).toBe('initiative:init-9');
   });
 });
 

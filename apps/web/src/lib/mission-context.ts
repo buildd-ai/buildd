@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, workspaces, missionNotes, initiatives } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
+import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { LIVE_WORKER_STATUSES } from './task-timestamps';
@@ -209,6 +210,101 @@ export async function getWorkspaceRoles(workspaceId: string) {
 }
 
 /**
+ * Load an initiative and roll up its child missions' progress. Shared by
+ * buildMissionContext (parent-initiative section) and buildInitiativeContext.
+ * Returns null if the initiative does not exist.
+ */
+async function getInitiativeRollup(initiativeId: string) {
+  const initiative = await db.query.initiatives.findFirst({
+    where: eq(initiatives.id, initiativeId),
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, contextArtifactIds: true },
+  });
+  if (!initiative) return null;
+
+  const childMissions = await db.query.missions.findMany({
+    where: eq(missions.initiativeId, initiativeId),
+    columns: { id: true, title: true, status: true, priority: true },
+    with: {
+      tasks: {
+        columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
+      },
+    },
+    orderBy: [desc(missions.priority), desc(missions.createdAt)],
+  });
+
+  const children: ChildMissionProgress[] = [];
+  const missionSummaries = childMissions.map((m) => {
+    const { totalTasks, completedTasks, progress } = computeMissionProgress((m as any).tasks || []);
+    children.push({ status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks });
+    return { id: m.id, title: m.title, status: m.status, progress, totalTasks, completedTasks };
+  });
+
+  return { ...initiative, missions: missionSummaries, progress: computeInitiativeProgress(children) };
+}
+
+/**
+ * Build a KB-optimized context brief for an initiative — the rolled-up progress,
+ * child missions, initiative-level artifacts, and available roles. Mirrors the
+ * `{ description, context }` contract of buildMissionContext. Used when planning
+ * or reasoning about an initiative as a whole. Returns null if not found.
+ */
+export async function buildInitiativeContext(initiativeId: string) {
+  const rollup = await getInitiativeRollup(initiativeId);
+  if (!rollup) return null;
+
+  const initiativeArtifacts = await db.query.artifacts.findMany({
+    where: eq(artifacts.initiativeId, initiativeId),
+    orderBy: [desc(artifacts.updatedAt)],
+    limit: 10,
+    columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
+  });
+
+  const descParts: string[] = [];
+  descParts.push(`## Initiative: ${rollup.title} [${rollup.status}]`);
+  if (rollup.description) descParts.push(rollup.description);
+  descParts.push(
+    `\n## Rollup\n${rollup.progress.progress}% — ` +
+    `${rollup.progress.completedMissions}/${rollup.progress.totalMissions} missions complete, ` +
+    `${rollup.progress.completedTasks}/${rollup.progress.totalTasks} tasks [${rollup.progress.status}]`
+  );
+
+  if (rollup.missions.length > 0) {
+    descParts.push('\n## Missions');
+    for (const m of rollup.missions) {
+      descParts.push(`- [${m.status}] ${m.title} — ${m.progress}% (${m.completedTasks}/${m.totalTasks}) — ID: ${m.id}`);
+    }
+  } else {
+    descParts.push('\nNo missions yet. Create the first with manage_missions action=create initiativeId=' + rollup.id + '.');
+  }
+
+  if (initiativeArtifacts.length > 0) {
+    descParts.push('\n## Initiative Artifacts');
+    for (const a of initiativeArtifacts) {
+      const preview = a.content?.slice(0, 150) || '';
+      descParts.push(`- **${a.title || 'Untitled'}** [${a.type}]${a.key ? ` (key: ${a.key})` : ''} — ID: ${a.id}${preview ? `\n  ${preview}${preview.length >= 150 ? '...' : ''}` : ''}`);
+    }
+  }
+
+  // Available roles for planning under this initiative (best-effort).
+  let roles: Awaited<ReturnType<typeof getWorkspaceRoles>> = [];
+  if (rollup.workspaceId) {
+    roles = await getWorkspaceRoles(rollup.workspaceId).catch(() => []);
+  }
+
+  const context: Record<string, unknown> = {
+    initiativeId: rollup.id,
+    initiativeTitle: rollup.title,
+    status: rollup.status,
+    progress: rollup.progress,
+    missions: rollup.missions,
+    priorArtifacts: initiativeArtifacts.map(a => ({ artifactId: a.id, key: a.key, type: a.type, title: a.title, updatedAt: a.updatedAt })),
+    availableRoles: roles,
+  };
+
+  return { description: descParts.join('\n'), context };
+}
+
+/**
  * Build rich context for a mission planning task.
  * Queries task history, active tasks, failures, and available roles.
  * Detects heartbeat mode from the schedule's taskTemplate context and produces specialised instructions.
@@ -227,6 +323,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       scheduleId: true,
       lastEvaluationTaskId: true,
       contextArtifactIds: true,
+      initiativeId: true,
     },
   });
   if (!mission) return null;
@@ -399,6 +496,22 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   const descParts: string[] = [];
   descParts.push(`## Mission: ${mission.title}`);
   if (mission.description) descParts.push(mission.description);
+
+  // Parent initiative — orient the planner to the larger goal this mission serves.
+  let parentInitiative: { id: string; title: string; status: string; progress: number } | null = null;
+  if (mission.initiativeId) {
+    const summary = await getInitiativeRollup(mission.initiativeId);
+    if (summary) {
+      parentInitiative = { id: summary.id, title: summary.title, status: summary.status, progress: summary.progress.progress };
+      descParts.push(
+        `\n## Parent Initiative: ${summary.title} [${summary.status}]\n` +
+        `This mission is one project under initiative \`${summary.id}\` — ${summary.progress.progress}% ` +
+        `(${summary.progress.completedMissions}/${summary.progress.totalMissions} missions complete).` +
+        `${summary.description ? `\nInitiative goal: ${summary.description}` : ''}\n` +
+        `Keep this mission's work scoped to advancing the initiative; don't duplicate sibling missions.`
+      );
+    }
+  }
 
   // Surface cycle info from closed-loop re-triggers
   const cycleNumber = templateContext?.cycleNumber as number | undefined;
@@ -719,6 +832,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     missionId: mission.id,
     missionTitle: mission.title,
     orchestrator: true,
+    ...(parentInitiative ? { parentInitiative } : {}),
     ...(decompositionSkippedCtx ? { decompositionSkipped: true } : {}),
     workspaceState: workspaceState || { name: '__coordination', repo: null, isCoordination: true, hasGitHubApp: false },
     teamWorkspaces: projectWorkspaces.map(tw => ({ id: tw.id, name: tw.name, repo: tw.repo })),

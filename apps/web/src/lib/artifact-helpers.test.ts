@@ -45,9 +45,10 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
-mock.module('crypto', () => ({
-  randomBytes: () => ({ toString: () => 'generated-share-token' }),
-}));
+// NOTE: do NOT globally mock 'crypto' here. mock.module is global + persistent
+// in bun (not undone by mock.restore), so a partial crypto stub leaks a frozen
+// randomBytes / missing createHash into later files (e.g. claude-oauth-login's
+// PKCE verifier). generateShareToken is tested against the real crypto below.
 
 import {
   generateShareToken,

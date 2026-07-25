@@ -1595,6 +1595,7 @@ describe('POST /api/github/webhook', () => {
         id: 'task-1',
         title: 'Add feature X',
         description: 'Build feature X',
+        backend: 'codex',
         missionId: 'mission-1',
         pathManifest: ['apps/web/src/lib/feature-x.ts'],
         context: { iteration: 0, maxIterations: 3 },
@@ -1622,6 +1623,7 @@ describe('POST /api/github/webhook', () => {
         prNumber: 42,
         reviewerRole: 'reviewer',
         originalTaskId: 'task-1',
+        originalTask: { backend: 'codex' },
       });
       // Auto-merge must NOT be called when reviewer is dispatched
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();

@@ -12,6 +12,8 @@ const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
 };
 
+const NOTE_TYPES = ['decision', 'question', 'warning', 'suggestion', 'update'] as const;
+
 /** Convert named priority levels (e.g. "medium") to integer 0-10. */
 function normalizePriority(val: unknown, fallback = 5): number {
   if (val === undefined || val === null) return fallback;
@@ -87,6 +89,7 @@ export const adminActions = [
   'manage_secrets',
   'approve_plan', 'reject_plan',
   'manage_missions',
+  'manage_initiatives',
   'manage_workspaces',
   'manage_watched_projects',
   'manage_model_tiers',
@@ -123,9 +126,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) } — updates task metadata. To redirect a running agent mid-flight, use send_agent_message instead; update_task changes do not reach an active worker.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
-    create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
+    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
-    list_artifacts: '{ workspaceId?, missionId?, key?, type?, limit? }',
+    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -142,7 +145,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -152,7 +156,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
-    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.',
+    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
@@ -174,7 +178,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, and artifacts. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory uses {teamId}:memory; all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -618,9 +622,17 @@ async function mirrorWorkProduct(
 ): Promise<UpsertResult | null> {
   if (!ctx.knowledgeStore) return null;
   try {
-    const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
-    if (!wsId) return null;
-    const ns = buildNamespace(wsId, corpus);
+    // Team-scoped corpora (memory, initiative) namespace by teamId so they're
+    // recallable across every workspace in the team; work-product corpora
+    // (task, pr, plan, artifact, session) are per-workspace.
+    let ns: string | null;
+    if (corpus === 'memory' || corpus === 'initiative') {
+      ns = ctx.teamId ? buildNamespace(ctx.teamId, corpus) : null;
+    } else {
+      const wsId = ctx.workspaceId || (await ctx.getWorkspaceId());
+      ns = wsId ? buildNamespace(wsId, corpus) : null;
+    }
+    if (!ns) return null;
     const result = await ctx.knowledgeStore.upsert(ns, [chunk]);
     return result ?? null;
   } catch {
@@ -872,30 +884,28 @@ export async function handleBuilddAction(
     case 'update_progress': {
       const workerId = resolveWorkerId(params.workerId, ctx);
 
-      // Plan submission
-      if (params.plan) {
-        await api(`/api/workers/${workerId}/plan`, {
-          method: 'POST',
-          body: JSON.stringify({ plan: params.plan }),
-        });
-        return text('Your plan has been submitted for review. Please wait for the task author to approve it before proceeding with implementation. Do not make any changes until you receive approval.');
-      }
-
       let response;
       try {
-        const statusMilestone = params.message ? {
-          appendMilestones: [{
+        const milestoneTs = Date.now();
+        const appendMilestones = [
+          ...(params.plan ? [{
+            type: 'plan',
+            label: params.plan,
+            progress: params.progress || 0,
+            ts: milestoneTs,
+          }] : []),
+          ...(params.message ? [{
             type: 'status',
             label: params.message,
             progress: params.progress || 0,
-            ts: Date.now(),
-          }],
-        } : {};
+            ts: milestoneTs,
+          }] : []),
+        ];
 
         const progressBody: Record<string, unknown> = {
           status: 'running',
           progress: params.progress || 0,
-          ...statusMilestone,
+          ...(appendMilestones.length > 0 && { appendMilestones }),
         };
         if (params.message) progressBody.currentAction = params.message;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
@@ -1838,11 +1848,17 @@ export async function handleBuilddAction(
     }
 
     case 'post_note': {
-      if (!params.type || !params.title) throw new Error('type and title are required');
+      const missing = ['type', 'title'].filter(field => !params[field]);
+      if (missing.length > 0) {
+        const parameterLabel = missing.length === 1 ? 'parameter' : 'parameters';
+        throw new Error(
+          `post_note missing required ${parameterLabel}: ${missing.join(', ')}. ` +
+          `type must be one of: ${NOTE_TYPES.join(', ')}`,
+        );
+      }
 
-      const validNoteTypes = ['decision', 'question', 'warning', 'suggestion', 'update'];
-      if (!validNoteTypes.includes(params.type as string)) {
-        throw new Error(`Invalid type. Must be one of: ${validNoteTypes.join(', ')}`);
+      if (!NOTE_TYPES.includes(params.type as typeof NOTE_TYPES[number])) {
+        throw new Error(`Invalid type. Must be one of: ${NOTE_TYPES.join(', ')}`);
       }
 
       const workerId = resolveWorkerId(params.workerId, ctx);
@@ -1897,9 +1913,14 @@ export async function handleBuilddAction(
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
 
-      // Support mission-level artifacts (no worker required) or worker artifacts
+      // Support initiative-level, mission-level (no worker required), or worker artifacts
       let artifactData;
-      if (params.missionId) {
+      if (params.initiativeId) {
+        artifactData = await api(`/api/initiatives/${params.initiativeId}/artifacts`, {
+          method: 'POST',
+          body: JSON.stringify(artifactBody),
+        });
+      } else if (params.missionId) {
         artifactData = await api(`/api/missions/${params.missionId}/artifacts`, {
           method: 'POST',
           body: JSON.stringify(artifactBody),
@@ -1925,6 +1946,7 @@ export async function handleBuilddAction(
         shareUrl: art.shareUrl ?? null,
         taskId: art.taskId ?? null,
         missionId: (params.missionId as string) ?? art.missionId ?? null,
+        initiativeId: (params.initiativeId as string) ?? art.initiativeId ?? null,
       }));
 
       return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
@@ -1973,6 +1995,20 @@ export async function handleBuilddAction(
     }
 
     case 'list_artifacts': {
+      const formatArtifact = (a: any, workspace?: string) => {
+        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
+        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})${workspace ? ` [${workspace}]` : ''}\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
+      };
+
+      // Initiative-scoped: one call returns initiative-level + rolled-up child-mission artifacts.
+      if (params.initiativeId) {
+        const data = await api(`/api/initiatives/${params.initiativeId}/artifacts`);
+        const artifactsList = data.artifacts || [];
+        if (artifactsList.length === 0) return text('No artifacts found for this initiative.');
+        const summary = artifactsList.map((a: any) => formatArtifact(a)).join('\n\n');
+        return text(`${artifactsList.length} artifact(s) for initiative ${params.initiativeId} (including child missions):\n\n${summary}`);
+      }
+
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
       const searchParams = new URLSearchParams();
@@ -1980,11 +2016,6 @@ export async function handleBuilddAction(
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
       if (params.limit) searchParams.set('limit', String(params.limit));
-
-      const formatArtifact = (a: any, workspace?: string) => {
-        const preview = a.content && a.content.length > 200 ? a.content.slice(0, 200) + '...' : a.content;
-        return `- **${a.title}** (${a.type}${a.key ? `, key: ${a.key}` : ''})${workspace ? ` [${workspace}]` : ''}\n  ID: ${a.id}\n  Updated: ${a.updatedAt}\n  Share: ${a.shareUrl || 'N/A'}${preview ? `\n  Preview: ${preview}` : ''}`;
-      };
 
       if (wsId) {
         const data = await api(`/api/workspaces/${wsId}/artifacts?${searchParams}`);
@@ -2286,6 +2317,7 @@ export async function handleBuilddAction(
           }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.initiativeId !== undefined) body.initiativeId = params.initiativeId;
           if (params.skillSlugs) body.skillSlugs = params.skillSlugs;
           if (params.model) body.model = params.model;
           if (params.status !== undefined) body.status = params.status;
@@ -2346,6 +2378,7 @@ export async function handleBuilddAction(
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
           }
+          if (params.initiativeId !== undefined) body.initiativeId = params.initiativeId;
           if (params.skillSlugs !== undefined) body.skillSlugs = params.skillSlugs;
           if (params.model !== undefined) body.model = params.model;
           if (params.isHeartbeat !== undefined) body.isHeartbeat = params.isHeartbeat;
@@ -2391,6 +2424,125 @@ export async function handleBuilddAction(
         }
         default:
           throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+      }
+    }
+
+    // ── Initiatives ────────────────────────────────────────────────────────
+    // An initiative is an execution-free planning container above missions
+    // (initiative → mission → task). It has NO orchestration engine of its own.
+
+    case 'manage_initiatives': {
+      const initiativeAction = params.action as string;
+      if (!initiativeAction) throw new Error('action is required (list, create, get, update, delete, link_mission, unlink_mission)');
+
+      switch (initiativeAction) {
+        case 'list': {
+          const qs = new URLSearchParams();
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (wsId) qs.set('workspaceId', wsId);
+          }
+          if (params.status) qs.set('status', params.status as string);
+          const data = await api(`/api/initiatives?${qs}`);
+          const initiatives = data.initiatives || [];
+          if (initiatives.length === 0) return text('No initiatives found.');
+          const summary = initiatives.map((i: any) =>
+            `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}`
+          ).join('\n\n');
+          return text(`${initiatives.length} initiative(s):\n\n${summary}`);
+        }
+        case 'create': {
+          if (!params.title) throw new Error('title is required');
+          const body: Record<string, unknown> = { title: params.title };
+          if (params.description) body.description = params.description;
+          if (params.workspaceId) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
+          if (params.status !== undefined) body.status = params.status;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          const data = await api('/api/initiatives', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          // Best-effort: mirror into the team-scoped `initiative` corpus so it's recallable.
+          await mirrorWorkProduct(ctx, 'initiative', buildInitiativeCard({
+            initiativeId: data.id,
+            title: data.title,
+            description: data.description ?? (params.description as string | undefined) ?? null,
+            status: data.status,
+          }));
+          return text(`Initiative created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n\nCreate missions under it with manage_missions action=create initiativeId=${data.id}.`);
+        }
+        case 'get': {
+          // KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts.
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}`);
+          const p = data.progress || {};
+          const missionList = (data.missions || []).map((m: any) =>
+            `  - [${m.status}] ${m.title} — ${m.progress ?? 0}% (${m.completedTasks ?? 0}/${m.totalTasks ?? 0}) (${m.id})`
+          ).join('\n');
+          const artifactList = (data.artifacts || []).map((a: any) =>
+            `  - ${a.title} (${a.type}) — ${a.id}`
+          ).join('\n');
+          return text(
+            `**${data.title}** [${data.status}]\nID: ${data.id}\n` +
+            `Rollup: ${p.progress ?? 0}% — ${p.completedMissions ?? 0}/${p.totalMissions ?? 0} missions, ${p.completedTasks ?? 0}/${p.totalTasks ?? 0} tasks [${p.status ?? 'empty'}]\n` +
+            `${data.description ? `Description: ${data.description}\n` : ''}` +
+            `${missionList ? `\nMissions:\n${missionList}` : '\nNo missions yet.'}` +
+            `${artifactList ? `\n\nInitiative artifacts:\n${artifactList}` : ''}`
+          );
+        }
+        case 'update': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const body: Record<string, unknown> = {};
+          if (params.title !== undefined) body.title = params.title;
+          if (params.description !== undefined) body.description = params.description;
+          if (params.status !== undefined) body.status = params.status;
+          if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.workspaceId !== undefined) {
+            const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+            if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
+            body.workspaceId = wsId;
+          }
+          if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          // Best-effort: keep the team-scoped `initiative` corpus card in sync.
+          await mirrorWorkProduct(ctx, 'initiative', buildInitiativeCard({
+            initiativeId: data.id,
+            title: data.title,
+            description: data.description ?? null,
+            status: data.status,
+          }));
+          return text(`Initiative updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+        }
+        case 'delete': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          await api(`/api/initiatives/${params.initiativeId}`, { method: 'DELETE' });
+          return text(`Initiative deleted: ${params.initiativeId} (child missions were unlinked, not deleted)`);
+        }
+        case 'link_mission': {
+          if (!params.initiativeId || !params.missionId) throw new Error('initiativeId and missionId are required');
+          await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ initiativeId: params.initiativeId }),
+          });
+          return text(`Mission ${params.missionId} linked to initiative ${params.initiativeId}`);
+        }
+        case 'unlink_mission': {
+          if (!params.missionId) throw new Error('missionId is required');
+          await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ initiativeId: null }),
+          });
+          return text(`Mission ${params.missionId} unlinked from its initiative`);
+        }
+        default:
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
       }
     }
 
@@ -2758,13 +2910,11 @@ export async function handleBuilddAction(
       return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
     }
 
-    // Spec-drift compare (admin/dev only). Retrieves evidence from the unified
-    // workspace store ({workspaceId}:code + {workspaceId}:spec) for a feature/term,
-    // and returns BOTH sides for the CALLER to judge. There is no LLM in core —
-    // the judging (implemented / removed / contradicted) is done by the calling agent
-    // or interactive session reading the snippets. Scores SURFACE candidates; they do
-    // NOT decide drift (a reranker always returns a best match, so a removed feature
-    // still scores moderately against its semantic neighbour).
+    // Spec-drift compare (admin/dev only). Two-hop retrieval bridges the prose→code
+    // vocabulary gap: query :spec first, extract implementation anchors (file paths,
+    // camelCase symbols, PascalCase types, route paths), then issue a SECOND lexical
+    // :code query using those anchors. Results are fused with the direct semantic
+    // code query. No LLM in core — judging is done by the calling agent reading snippets.
     case 'spec_compare': {
 
       const feature = (params.feature || params.query) as string | undefined;
@@ -2775,18 +2925,58 @@ export async function handleBuilddAction(
 
       const topK = Math.min((params.topK as number) || 5, 20);
       const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
-      const [codeHits, specHits] = await Promise.all([
-        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
+
+      // Step 1: query :spec and direct :code in parallel (prose vocabulary works for spec)
+      const [specHits, directCodeHits] = await Promise.all([
         ks.query(buildNamespace(wsId, 'spec'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
       ]);
 
-      const fmt = (hits: typeof codeHits) => hits.length
+      // Step 2: extract implementation anchors from spec chunks to bridge the vocabulary gap
+      const anchors = extractImplementationAnchors(specHits);
+
+      // Step 3: lexical code query using anchors (identifier tokens = high-signal exact matches)
+      let anchorCodeHits: QueryResult[] = [];
+      if (anchors.length > 0) {
+        anchorCodeHits = await ks.query(buildNamespace(wsId, 'code'), {
+          text: anchors.join(' '),
+          mode: 'lexical',
+          topK,
+          trackHits: false,
+        });
+      }
+
+      // Step 4: fuse direct + anchor code results; prefer higher score when ids collide
+      const codeById = new Map<string, QueryResult>();
+      for (const r of [...anchorCodeHits, ...directCodeHits]) {
+        const existing = codeById.get(r.id);
+        if (!existing || r.score > existing.score) codeById.set(r.id, r);
+      }
+      const codeHits = [...codeById.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+
+      const fmt = (hits: QueryResult[]) => hits.length
         ? hits.map((r, i) => `${i + 1}. [${r.score.toFixed(3)}] ${r.sourcePath ?? r.sourceType}\n   ${r.content.replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
         : '   (no matches)';
 
+      const anchorSection = anchors.length > 0
+        ? `**Spec→Code bridges** (${anchors.length} anchor(s) extracted from SPEC — used for lexical code retrieval):\n` +
+          anchors.slice(0, 10).map(a => `  • ${a}`).join('\n') + '\n\n'
+        : `**No implementation anchors found in SPEC** — code evidence below is from semantic search only. ` +
+          `Low scores here may indicate inconclusive retrieval rather than absent implementation. ` +
+          `Retry with implementation-vocabulary terms (function names, file paths).\n\n`;
+
+      const codeSection = codeHits.length === 0 && anchors.length === 0
+        ? `   (retrieval inconclusive — no implementation anchors could be extracted from spec; ` +
+          `semantic-only search returned no code matches. Search directly with identifiers such as ` +
+          `function names, type names, or file paths for higher-confidence results.)`
+        : fmt(codeHits);
+
       return text(
         `# spec_compare: "${feature}"\n\n` +
-        `## CODE evidence (what is actually implemented)\n${fmt(codeHits)}\n\n` +
+        anchorSection +
+        `## CODE evidence (what is actually implemented)\n${codeSection}\n\n` +
         `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}\n\n` +
         `## How to judge\n` +
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
@@ -2875,7 +3065,7 @@ export async function handleBuilddAction(
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
 import { MemoryClient } from './memory-client';
-import type { KnowledgeStore, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
+import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
@@ -2884,6 +3074,7 @@ import {
   buildPrCard,
   buildArtifactCard,
   buildPlanCard,
+  buildInitiativeCard,
   renderPlanText,
 } from './knowledge-store/cards';
 
@@ -2909,7 +3100,11 @@ import {
  * Returns null when the required id is missing.
  */
 function knowledgeNamespace(ctx: { workspaceId?: string; teamId?: string }, corpus: Corpus): string | null {
-  if (corpus === 'memory') return ctx.teamId ? buildNamespace(ctx.teamId, 'memory') : null;
+  // memory and initiative are team-scoped (initiatives span the whole team);
+  // every other corpus is workspace-scoped.
+  if (corpus === 'memory' || corpus === 'initiative') {
+    return ctx.teamId ? buildNamespace(ctx.teamId, corpus) : null;
+  }
   return ctx.workspaceId ? buildNamespace(ctx.workspaceId, corpus) : null;
 }
 
@@ -2935,6 +3130,40 @@ type MemoryActionCtx = {
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
 };
+
+/**
+ * Extracts implementation anchors from spec chunks for two-hop code retrieval.
+ * Captures file paths, route paths, camelCase symbols, and PascalCase types —
+ * the identifiers spec docs use to reference implementing code. These anchors
+ * bridge the prose→identifier vocabulary gap when querying the :code namespace
+ * with lexical search.
+ */
+function extractImplementationAnchors(chunks: QueryResult[]): string[] {
+  const combined = chunks.map(r => r.content).join('\n');
+  const anchors = new Set<string>();
+
+  // File paths: apps/* and packages/*
+  for (const m of combined.matchAll(/\b(?:apps|packages)\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|sql|md|mdx)\b/g)) {
+    anchors.add(m[0]);
+  }
+
+  // Route paths: /api/...
+  for (const m of combined.matchAll(/\/api\/[a-zA-Z0-9/[\]_-]+/g)) {
+    anchors.add(m[0]);
+  }
+
+  // camelCase symbols (function/variable names): lowercase start, uppercase within, ≥6 chars
+  for (const m of combined.matchAll(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g)) {
+    if (m[0].length >= 6) anchors.add(m[0]);
+  }
+
+  // PascalCase types/classes/interfaces: uppercase start, ≥6 chars
+  for (const m of combined.matchAll(/\b[A-Z][a-z][a-zA-Z0-9]{4,}\b/g)) {
+    anchors.add(m[0]);
+  }
+
+  return [...anchors].slice(0, 20);
+}
 
 /**
  * Heuristic: short queries without whitespace (IDs, symbol names, error codes)
@@ -2989,8 +3218,8 @@ export async function handleRecallAction(
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
   if (!ns) {
-    return errorResult(scope === 'memory'
-      ? 'teamId required for recall with scope=memory'
+    return errorResult(scope === 'memory' || scope === 'initiative'
+      ? `teamId required for recall with scope=${scope}`
       : `workspaceId required for recall with scope=${scope}`);
   }
 
@@ -3344,8 +3573,8 @@ export async function handleMemoryAction(
       const ns = knowledgeNamespace(ctx, corpus);
 
       if (!ns) {
-        throw new Error(corpus === 'memory'
-          ? 'teamId required for memory query_knowledge'
+        throw new Error(corpus === 'memory' || corpus === 'initiative'
+          ? `teamId required for query_knowledge with corpus=${corpus}`
           : 'workspaceId required for query_knowledge');
       }
 

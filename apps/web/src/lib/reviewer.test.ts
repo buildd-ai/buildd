@@ -1,10 +1,17 @@
 import { describe, it, expect, mock } from 'bun:test';
 
+let insertedTask: Record<string, unknown> | undefined;
+
 // reviewer.ts imports @buildd/core/db at the top level — stub the whole thing
 // so these pure-function tests don't need a database connection.
 mock.module('@buildd/core/db', () => ({
   db: {
-    insert: mock(() => ({ values: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'task-1' }])) })) })),
+    insert: mock(() => ({
+      values: mock((values: Record<string, unknown>) => {
+        insertedTask = values;
+        return { returning: mock(() => Promise.resolve([{ id: 'task-1' }])) };
+      }),
+    })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
     },
@@ -23,8 +30,35 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
 }));
 
-import { preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
+import { createReviewerTask, preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
+import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
+
+describe('createReviewerTask', () => {
+  it('inherits the original task backend', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-1',
+      originalTask: {
+        title: 'Codex change',
+        description: 'Change made with Codex',
+        backend: 'codex',
+        missionId: null,
+      },
+      worker: { branch: 'buildd/original' },
+      prNumber: 42,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/42',
+      headSha: 'abc123',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect(insertedTask?.backend).toBe('codex');
+  });
+});
 
 // ── isSchemaTouchingFile ─────────────────────────────────────────────────────
 
@@ -117,5 +151,38 @@ describe('preflightEscalationCheck', () => {
     ];
     const result = preflightEscalationCheck(files, agentReviewPolicy);
     expect(result.shouldEscalate).toBe(false);
+  });
+});
+
+// ── resolvePolicy — spec §10 named cases ────────────────────────────────────
+// These four cases are the canonical unit test table from docs/design/merge-policy.md §10.
+
+describe('resolvePolicy', () => {
+  it('returns auto-threshold from legacy autoMergePR: true', () => {
+    const policy = resolvePolicy({ gitConfig: { autoMergePR: true } as any });
+    expect(policy.tier).toBe('auto-threshold');
+  });
+
+  it('returns human from legacy autoMergePR: false', () => {
+    const policy = resolvePolicy({ gitConfig: { autoMergePR: false } as any });
+    expect(policy.tier).toBe('human');
+  });
+
+  it('mission mergePolicy overrides workspace policy', () => {
+    const policy = resolvePolicy(
+      { gitConfig: { mergePolicy: { tier: 'auto-threshold' } } as any },
+      { mergePolicy: { tier: 'human' } },
+    );
+    expect(policy.tier).toBe('human');
+  });
+
+  it('pre-flight escalation guard returns escalate for schema-touching PRs', () => {
+    const schemaPolicy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer' },
+    };
+    const files = [{ filename: 'packages/core/db/schema.ts' }];
+    const result = preflightEscalationCheck(files, schemaPolicy);
+    expect(result.shouldEscalate).toBe(true);
   });
 });

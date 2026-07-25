@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, workspaces, missionNotes, initiatives } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -167,7 +167,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, cronExpression, workspaceId, skillSlugs, outputSchema, model,
+    const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
@@ -252,6 +252,19 @@ export async function PATCH(
     if (externalIssueUrl !== undefined) updateData.externalIssueUrl = externalIssueUrl || null;
     if (maxConcurrentTasks !== undefined) updateData.maxConcurrentTasks = maxConcurrentTasks;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
+    // Assign to / unlink from a parent initiative. null clears the link.
+    if (initiativeId !== undefined) {
+      if (initiativeId) {
+        const init = await db.query.initiatives.findFirst({
+          where: eq(initiatives.id, initiativeId),
+          columns: { id: true, teamId: true },
+        });
+        if (!init || init.teamId !== existing.teamId) {
+          return NextResponse.json({ error: 'initiative not found' }, { status: 404 });
+        }
+      }
+      updateData.initiativeId = initiativeId || null;
+    }
     if (backend !== undefined) {
       updateData.defaultBackend = backend === 'claude' || backend === 'codex' ? backend : null;
     }

@@ -9,6 +9,7 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -537,6 +538,15 @@ async function handlePullRequestEvent(event: {
     });
   }
 
+  if (pr.merged && worker?.task) {
+    // Unconditionally unblock dependents now that mergedAt is stamped — this fires even
+    // when the task was already completed, because checkDependsOnResolved now gates on
+    // mergedAt and would have held back any downstream dispatch until this moment.
+    checkDependsOnResolved(worker.task.id).catch((e) =>
+      console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
+    );
+  }
+
   if (pr.merged && worker?.task && worker.task.status !== 'completed') {
     await db
       .update(tasks)
@@ -920,7 +930,7 @@ async function maybeDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
     });
     if (!task) return false;
 
@@ -984,6 +994,7 @@ async function maybeDispatchReviewer(
     const originalTask = {
       title: task.title,
       description: task.description,
+      backend: task.backend,
       missionId: task.missionId ?? null,
       pathManifest: task.pathManifest as string[] | null ?? null,
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,

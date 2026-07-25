@@ -10,6 +10,31 @@ function context(): ActionContext {
 }
 
 describe('post_note', () => {
+  it('enumerates missing fields and accepted note types', async () => {
+    const api = mock(async () => ({ id: 'note-1' }));
+
+    await expect(
+      handleBuilddAction(api as unknown as ApiFn, 'post_note', {}, context()),
+    ).rejects.toThrow(
+      'post_note missing required parameters: type, title. type must be one of: decision, question, warning, suggestion, update',
+    );
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('reports only the required field that is missing', async () => {
+    const api = mock(async () => ({ id: 'note-1' }));
+
+    await expect(
+      handleBuilddAction(
+        api as unknown as ApiFn,
+        'post_note',
+        { type: 'decision' },
+        context(),
+      ),
+    ).rejects.toThrow('post_note missing required parameter: title');
+    expect(api).not.toHaveBeenCalled();
+  });
+
   it('posts to the mission feed when the current task has a mission', async () => {
     const api = mock(async (endpoint: string) => {
       if (endpoint === '/api/workers/worker-1') {

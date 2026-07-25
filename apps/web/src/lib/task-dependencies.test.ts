@@ -45,13 +45,18 @@ mock.module('@buildd/core/db', () => ({
     select: (...args: any[]) => {
       mockSelect(...args);
       const callIndex = selectCallCount++;
+      const result = () => selectWhereResults[callIndex] || [];
       return {
         from: (...args2: any[]) => {
           mockFrom(...args2);
           return {
             where: (...args3: any[]) => {
               mockWhere(...args3);
-              return Promise.resolve(selectWhereResults[callIndex] || []);
+              // Support optional .orderBy() chaining — still awaitable via .then()
+              const p = Promise.resolve(result());
+              return Object.assign(p, {
+                orderBy: () => Promise.resolve(result()),
+              });
             },
           };
         },
@@ -97,7 +102,7 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchUnblockedTask: mockDispatchUnblockedTask,
 }));
 
-import { resolveCompletedTask } from './task-dependencies';
+import { resolveCompletedTask, checkDependsOnResolved } from './task-dependencies';
 
 function resetMocks() {
   mockFindFirst.mockReset();
@@ -184,10 +189,12 @@ describe('task-dependencies', () => {
     findFirstResults[0] = { parentTaskId: null };
     // select[0]: one task depends on the completed task
     // select[1]: fetch dep statuses — all resolved
-    // select[2]: workspace lookup for dispatch
+    // select[2]: workers with open PRs — none
+    // select[3]: workspace lookup for dispatch
     selectWhereResults = [
       [{ id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1', title: 'Phase 2', description: null, mode: 'execution', priority: 0, missionId: null }],
       [{ id: 'task-1', status: 'completed' }],
+      [],
       [{ id: 'ws-1', name: 'my-workspace', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
     ];
 
@@ -233,13 +240,15 @@ describe('task-dependencies', () => {
     findFirstResults[0] = { parentTaskId: null };
     // select[0]: two tasks depend on the completed task
     // select[1]: fetch dep statuses
-    // select[2]: workspace lookup for both
+    // select[2]: workers with open PRs — none
+    // select[3]: workspace lookup for both
     selectWhereResults = [
       [
         { id: 'dependent-1', dependsOn: ['task-1'], workspaceId: 'ws-1', title: 'Phase 2a', description: null, mode: 'execution', priority: 0, missionId: null },
         { id: 'dependent-2', dependsOn: ['task-1'], workspaceId: 'ws-2', title: 'Phase 2b', description: null, mode: 'execution', priority: 0, missionId: null },
       ],
       [{ id: 'task-1', status: 'completed' }],
+      [],
       [
         { id: 'ws-1', name: 'workspace-a', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null },
         { id: 'ws-2', name: 'workspace-b', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null },
@@ -572,6 +581,8 @@ describe('dependency failure cascade', () => {
         { id: 'dep-A', status: 'completed' },
         { id: 'dep-B', status: 'completed' },
       ],
+      // workers with open PRs — none
+      [],
       // workspace lookup
       [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd', webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
     ];
@@ -611,5 +622,86 @@ describe('dependency failure cascade', () => {
     const eventNames = calls.map((c: any) => c[1]);
     expect(eventNames).toContain('task:dependency_failed');
     expect(eventNames).not.toContain('task:unblocked');
+  });
+});
+
+// ── checkDependsOnResolved: mergedAt gate (review-gate-ux.md §5.3) ──────────────
+
+describe('checkDependsOnResolved — mergedAt gate', () => {
+  beforeEach(resetMocks);
+
+  it('does NOT dispatch when dependency is completed but has an open (unmerged) PR', async () => {
+    // select[0]: dependent task 'phase-2' depends on 'phase-1'
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1', title: 'Phase 2',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: dep statuses
+      [{ id: 'phase-1', status: 'completed' }],
+      // select[2]: workers with open PR (mergedAt null)
+      [{ taskId: 'phase-1', mergedAt: null }],
+    ];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+  });
+
+  it('dispatches when dependency is completed AND PR is merged', async () => {
+    selectWhereResults = [
+      // select[0]: dependent task
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1', title: 'Phase 2',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: dep statuses
+      [{ id: 'phase-1', status: 'completed' }],
+      // select[2]: worker has mergedAt set
+      [{ taskId: 'phase-1', mergedAt: new Date('2026-01-01T12:00:00Z') }],
+      // select[3]: workspace for dispatch
+      [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd',
+         webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
+    ];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:unblocked',
+      { taskId: 'phase-2', resolvedDependency: 'phase-1' }
+    );
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches when dependency has no PR at all (pure task dep, no PR gate)', async () => {
+    selectWhereResults = [
+      // select[0]: dependent task
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1', title: 'Phase 2',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: dep statuses
+      [{ id: 'phase-1', status: 'completed' }],
+      // select[2]: no workers with prUrl for this dep — pure task dep
+      [],
+      // select[3]: workspace for dispatch
+      [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd',
+         webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
+    ];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:unblocked',
+      { taskId: 'phase-2', resolvedDependency: 'phase-1' }
+    );
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not dispatch when dependent task is already completed or failed', async () => {
+    // No pending dependents — select returns empty
+    selectWhereResults = [[]];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
   });
 });

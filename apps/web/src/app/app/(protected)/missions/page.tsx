@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -7,11 +7,12 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { MissionGrid } from './MissionGrid';
+import { InitiativesStrip, type InitiativeStripItem } from './InitiativesStrip';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
 export const dynamic = 'force-dynamic';
@@ -82,6 +83,40 @@ export default async function MissionsPage({
     .select({ id: workspaces.id, name: workspaces.name })
     .from(workspaces)
     .where(eq(workspaces.teamId, activeTeamId));
+
+  // Load the active team's initiatives with rolled-up progress for the strip.
+  const teamInitiatives = await db.query.initiatives.findMany({
+    where: and(
+      eq(initiatives.teamId, activeTeamId),
+      inArray(initiatives.status, ['active', 'paused']),
+    ),
+    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    limit: 12,
+    columns: { id: true, title: true, status: true },
+    with: {
+      missions: {
+        columns: { id: true, status: true },
+        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true } } },
+      },
+    },
+  });
+
+  const initiativeItems: InitiativeStripItem[] = teamInitiatives.map((init) => {
+    const children: ChildMissionProgress[] = (init.missions || []).map((m: any) => {
+      const { totalTasks, completedTasks } = computeMissionProgress(m.tasks || []);
+      return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
+    });
+    const rollup = computeInitiativeProgress(children);
+    return {
+      id: init.id,
+      title: init.title,
+      status: init.status,
+      progress: rollup.progress,
+      completedMissions: rollup.completedMissions,
+      totalMissions: rollup.totalMissions,
+      rollupStatus: rollup.status,
+    };
+  });
 
   // Query roles for display
   const wsIds = await getUserWorkspaceIds(user.id);
@@ -285,6 +320,8 @@ export default async function MissionsPage({
           </Link>
         </div>
       </div>
+
+      <InitiativesStrip initiatives={initiativeItems} />
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
