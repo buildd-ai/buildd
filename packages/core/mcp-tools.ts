@@ -12,6 +12,8 @@ const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
 };
 
+const NOTE_TYPES = ['decision', 'question', 'warning', 'suggestion', 'update'] as const;
+
 /** Convert named priority levels (e.g. "medium") to integer 0-10. */
 function normalizePriority(val: unknown, fallback = 5): number {
   if (val === undefined || val === null) return fallback;
@@ -154,7 +156,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
-    post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.',
+    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
@@ -1840,11 +1842,17 @@ export async function handleBuilddAction(
     }
 
     case 'post_note': {
-      if (!params.type || !params.title) throw new Error('type and title are required');
+      const missing = ['type', 'title'].filter(field => !params[field]);
+      if (missing.length > 0) {
+        const parameterLabel = missing.length === 1 ? 'parameter' : 'parameters';
+        throw new Error(
+          `post_note missing required ${parameterLabel}: ${missing.join(', ')}. ` +
+          `type must be one of: ${NOTE_TYPES.join(', ')}`,
+        );
+      }
 
-      const validNoteTypes = ['decision', 'question', 'warning', 'suggestion', 'update'];
-      if (!validNoteTypes.includes(params.type as string)) {
-        throw new Error(`Invalid type. Must be one of: ${validNoteTypes.join(', ')}`);
+      if (!NOTE_TYPES.includes(params.type as typeof NOTE_TYPES[number])) {
+        throw new Error(`Invalid type. Must be one of: ${NOTE_TYPES.join(', ')}`);
       }
 
       const workerId = resolveWorkerId(params.workerId, ctx);
