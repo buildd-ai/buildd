@@ -351,6 +351,108 @@ describe('cleanupStuckWaitingInput', () => {
   });
 });
 
+describe('cleanupStaleWorkers — cancelled task protection', () => {
+  // Regression: cancelled tasks were being re-queued when their aborted worker
+  // expired and resolveStaleTask reset them to 'pending' without a status check.
+  // Sequence: cancel task → abort worker → stale cleanup → task re-queued → re-claimed.
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('does not re-queue a cancelled task when its stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'Aborted by user' }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // resolveStaleTask reads task status first; resolveCompletedTask reads parentTaskId
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'cancelled', context: {} })   // status check
+      .mockResolvedValueOnce({ parentTaskId: null });                 // dep resolution
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // No task status update must occur — task stays cancelled
+    expect(taskUpdateSet).toBeNull();
+  });
+
+  it('does not override cancelled status even when the stale worker has deliverables', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #5',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: 'https://github.com/pr/5', prNumber: 5, commitCount: 2, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'cancelled', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task must stay cancelled — deliverables from an aborted worker must not win
+    expect(taskUpdateSet).toBeNull();
+  });
+
+  it('still resets a non-cancelled task to pending when its stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'expired' }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([])   // failed workers count
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })  // not cancelled → proceed normally
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+});
+
 describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
   beforeEach(() => {
     mockWorkersFindMany.mockReset();
