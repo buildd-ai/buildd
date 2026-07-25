@@ -6,6 +6,8 @@
  * - apps/web/src/app/api/mcp/route.ts (HTTP server)
  */
 
+import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const PRIORITY_NAMES: Record<string, number> = {
@@ -119,13 +121,13 @@ export function buildToolDescription(actions: readonly string[]): string {
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) } — updates task metadata. To redirect a running agent mid-flight, use send_agent_message instead; update_task changes do not reach an active worker.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -763,6 +765,39 @@ export async function handleBuilddAction(
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
       lines.push(`**Task URL:** ${taskUrl}`);
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
+      if (task.loopConfig) {
+        const maxLoops = task.loopConfig.maxLoops ?? 5;
+        const attempt = Math.min((task.loopIteration ?? 0) + 1, maxLoops);
+        lines.push(`**Loop:** ${task.loopState ?? 'pending'} — attempt ${attempt}/${maxLoops}`);
+        const condition = task.loopConfig.exitCondition;
+        const conditionDetail = condition.type === 'command' && condition.command
+          ? `: \`${condition.command}\``
+          : '';
+        lines.push(`**Exit condition:** ${condition.type}${conditionDetail}`);
+
+        const history = Array.isArray(task.result?.loopHistory)
+          ? task.result.loopHistory
+          : Array.isArray(task.context?.loopHistory)
+            ? task.context.loopHistory
+            : [];
+        lines.push('', `## Loop history (${history.length})`);
+        if (history.length === 0) {
+          lines.push('No iterations evaluated yet.');
+        } else {
+          for (const entry of history) {
+            const evidence = entry.evidence && typeof entry.evidence === 'object'
+              ? entry.evidence as Record<string, unknown>
+              : {};
+            const durationMs = typeof evidence.durationMs === 'number' ? evidence.durationMs : null;
+            const duration = durationMs === null ? '' : ` · ${(durationMs / 1000).toFixed(2)}s`;
+            const excerptValue = evidence.output ?? evidence.stderr ?? evidence.stdout;
+            const excerpt = typeof excerptValue === 'string'
+              ? `\n  Evidence: ${excerptValue.slice(0, 300)}${excerptValue.length > 300 ? '…' : ''}`
+              : '';
+            lines.push(`- **Iteration ${(entry.iteration ?? 0) + 1}:** ${entry.satisfied ? 'met' : 'unmet'} · ${entry.conditionType}${duration}\n  ${entry.summary ?? 'No summary'}${excerpt}`);
+          }
+        }
+      }
       if (task.workspace?.name || task.workspace?.repo) {
         lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
       }
@@ -1150,9 +1185,20 @@ export async function handleBuilddAction(
       if (params.priority !== undefined) updateFields.priority = normalizePriority(params.priority);
       if (params.project !== undefined) updateFields.project = params.project;
       if (params.status !== undefined) updateFields.status = params.status;
+      if (params.maxLoops !== undefined) {
+        if (
+          typeof params.maxLoops !== 'number'
+          || !Number.isInteger(params.maxLoops)
+          || params.maxLoops < LOOP_MAX_LOOPS_MIN
+          || params.maxLoops > LOOP_MAX_LOOPS_MAX
+        ) {
+          throw new Error(`maxLoops must be an integer between ${LOOP_MAX_LOOPS_MIN} and ${LOOP_MAX_LOOPS_MAX}`);
+        }
+        updateFields.maxLoops = params.maxLoops;
+      }
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority, project, status) must be provided');
+        throw new Error('At least one field (title, description, priority, project, status, maxLoops) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
@@ -1160,7 +1206,10 @@ export async function handleBuilddAction(
         body: JSON.stringify(updateFields),
       });
 
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}`);
+      const loopInfo = params.maxLoops !== undefined
+        ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
+        : '';
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}`);
     }
 
     case 'create_task': {
@@ -1171,6 +1220,7 @@ export async function handleBuilddAction(
         'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
+        'loopConfig', 'loopUntilVerified',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
@@ -1209,6 +1259,27 @@ export async function handleBuilddAction(
       if (params.startAt !== undefined) taskBody.startAt = params.startAt;
       if (params.startIn !== undefined) taskBody.startIn = params.startIn;
       if (params.startAfter !== undefined) taskBody.startAfter = params.startAfter;
+
+      if (params.loopUntilVerified !== undefined && params.loopUntilVerified !== true) {
+        throw new Error('loopUntilVerified must be true when provided');
+      }
+      if (params.loopUntilVerified === true && params.loopConfig !== undefined) {
+        throw new Error('Provide either loopConfig or loopUntilVerified, not both');
+      }
+      if (params.loopUntilVerified === true) {
+        if (typeof params.verificationCommand !== 'string' || params.verificationCommand.trim() === '') {
+          throw new Error('loopUntilVerified requires a non-blank verificationCommand');
+        }
+        taskBody.loopConfig = parseLoopConfig(
+          { exitCondition: { type: 'command' } },
+          params.verificationCommand,
+        );
+      } else if (params.loopConfig !== undefined) {
+        taskBody.loopConfig = parseLoopConfig(
+          params.loopConfig,
+          typeof params.verificationCommand === 'string' ? params.verificationCommand : undefined,
+        );
+      }
 
       // Auto-link to mission: explicit param takes precedence, then inherit from caller's task
       if (params.missionId) {

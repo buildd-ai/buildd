@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { parseLoopConfig } from '@buildd/core/loop-config';
 
 // GET /api/tasks/[id] - Get a single task.
 // Query params:
@@ -164,7 +165,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl, backend } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl, backend, maxLoops } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -189,6 +190,30 @@ export async function PATCH(
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
+    }
+    if (maxLoops !== undefined) {
+      if (!task.loopConfig) {
+        return NextResponse.json(
+          { error: 'maxLoops can only be adjusted on an existing looped task' },
+          { status: 400 },
+        );
+      }
+      let normalized;
+      try {
+        normalized = parseLoopConfig({ ...task.loopConfig, maxLoops });
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : 'Invalid maxLoops' },
+          { status: 400 },
+        );
+      }
+      if (normalized && normalized.maxLoops! < task.loopIteration) {
+        return NextResponse.json(
+          { error: `maxLoops cannot be lower than the ${task.loopIteration} completed loop iterations` },
+          { status: 400 },
+        );
+      }
+      updateData.loopConfig = normalized;
     }
 
     if (status !== undefined) {

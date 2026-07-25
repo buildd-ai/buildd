@@ -156,6 +156,48 @@ describe('get_task', () => {
     expect(text).not.toContain('Artifacts (');
   });
 
+  it('returns loop configuration, state, attempt, and history', async () => {
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Looping task',
+      status: 'pending',
+      priority: 3,
+      loopConfig: {
+        exitCondition: { type: 'command', command: 'bun test' },
+        maxLoops: 4,
+        backoffMinutes: 1,
+      },
+      loopIteration: 1,
+      loopState: 'condition_unmet',
+      context: {
+        loopHistory: [{
+          iteration: 0,
+          workerId: 'worker-1',
+          evaluatedAt: '2026-07-25T10:00:00.000Z',
+          conditionType: 'command',
+          satisfied: false,
+          summary: 'Command exited with code 1',
+          evidence: { durationMs: 1250, output: '1 test failed' },
+        }],
+      },
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID, include: [] },
+      ctx(),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain('Loop:** condition_unmet — attempt 2/4');
+    expect(text).toContain('command: `bun test`');
+    expect(text).toContain('Iteration 1');
+    expect(text).toContain('Command exited with code 1');
+    expect(text).toContain('1 test failed');
+    expect(text).toContain('1.25s');
+  });
+
   it('includes taskUrl in output when appBaseUrl is set', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,

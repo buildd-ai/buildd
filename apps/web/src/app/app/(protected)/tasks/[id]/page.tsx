@@ -23,6 +23,8 @@ import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
+import type { LoopHistoryEntry } from '@buildd/shared';
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -317,6 +319,14 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus}>
                 <StatusBadge status={displayStatus} />
               </span>
+              {task.loopConfig && (
+                <LoopStatusChip
+                  loopIteration={task.loopIteration}
+                  maxLoops={task.loopConfig.maxLoops ?? 5}
+                  loopState={task.loopState}
+                  startAt={task.startAt?.toISOString() ?? null}
+                />
+              )}
               {errorTraces.length > 0 && (
                 <a
                   href="#agent-error-traces"
@@ -490,6 +500,19 @@ export default async function TaskDetailPage({
                 : 'Auto-retries when it resets.'}
             </div>
           </div>
+        )}
+
+        {/* Loop history */}
+        {task.loopConfig && (
+          <LoopHistory
+            entries={Array.isArray((task.result as Record<string, unknown> | null)?.loopHistory)
+              ? (task.result as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
+              : Array.isArray((task.context as Record<string, unknown> | null)?.loopHistory)
+                ? (task.context as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
+                : []}
+            loopState={task.loopState}
+            maxLoops={task.loopConfig.maxLoops ?? 5}
+          />
         )}
 
         {/* Description */}
