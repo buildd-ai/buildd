@@ -3442,3 +3442,4 @@ describe('entity catalog injection at claim time', () => {
     expect(data.detail).toBeTruthy();
   });
 });
+// smoke-test-1: auto-threshold baseline 1784978027
