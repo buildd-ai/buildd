@@ -40,6 +40,7 @@ export interface MissionItem {
   activeAgents: number;
   nextScanMins: number | null;
   nextRunAt: string | null;
+  startAt: string | null;
   lastRunAt: string | null;
   lastDeferralReason: string | null;
   lastDeferredAt: string | null;
@@ -58,6 +59,7 @@ export interface MissionItem {
   effectivePolicyLabel: string | null;
   healthState: import('@/lib/mission-helpers').Health;
   inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
+  blockedPRCount: number;
 }
 
 interface WorkspaceBucket {
@@ -374,7 +376,9 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
         )}
 
         <div className="flex items-center gap-1.5 flex-wrap">
-          <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+          {mission.startAt && new Date(mission.startAt).getTime() > Date.now()
+            ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
+            : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />}
           {mission.workspaceId && mission.effectivePolicyLabel && (
             <Link
               href={`/app/settings/workspace/${mission.workspaceId}`}
@@ -442,6 +446,17 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               </span>
             </>
           )}
+          {mission.blockedPRCount > 0 && (
+            <>
+              <span className="mx-0.5">&middot;</span>
+              <Link
+                href="/app/home"
+                className="text-primary font-medium hover:underline"
+              >
+                blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
+              </Link>
+            </>
+          )}
         </div>
       </div>
 
@@ -487,7 +502,9 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           </div>
         </div>
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-          <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+          {mission.startAt && new Date(mission.startAt).getTime() > Date.now()
+            ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
+            : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />}
           {mission.workspaceId && mission.effectivePolicyLabel && (
             <Link
               href={`/app/settings/workspace/${mission.workspaceId}`}

@@ -44,9 +44,11 @@ function fsTest(name: string, fn: () => void | Promise<void>) {
 }
 
 const cred = {
+  credentialType: 'oauth' as const,
   accessToken: 'tok_access_123',
   refreshToken: 'tok_refresh_456',
   accountId: 'acct_789',
+  idToken: 'id_tok_test',
   expiresAt: null,
 };
 
@@ -79,11 +81,16 @@ describe('stable per-worker CODEX_HOME (Phase 1C / R5)', () => {
     expect(p).toBe(stableCodexHomePath(workerId)); // stable across calls
   });
 
-  fsTest('materializeStableCodexHome creates the dir and writes auth.json', () => {
+  fsTest('materializeStableCodexHome creates the dir and writes auth.json in nested tokens shape', () => {
     const { codexHome } = materializeStableCodexHome(workerId, cred);
     expect(existsSync(codexHome)).toBe(true);
     const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth).toEqual({ access_token: 'tok_access_123', refresh_token: 'tok_refresh_456', account_id: 'acct_789' });
+    // codex-cli 0.144 requires the nested tokens shape with id_token
+    expect(auth.tokens.access_token).toBe('tok_access_123');
+    expect(auth.tokens.refresh_token).toBe('tok_refresh_456');
+    expect(auth.tokens.account_id).toBe('acct_789');
+    expect(auth.tokens.id_token).toBe('id_tok_test');
+    expect(auth.OPENAI_API_KEY).toBeNull();
   });
 
   fsTest('re-seeding auth + rewriting config does NOT delete the sessions subtree', () => {

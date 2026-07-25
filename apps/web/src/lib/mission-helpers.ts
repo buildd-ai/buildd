@@ -341,3 +341,27 @@ export function cronToHuman(cron: string): string {
 
   return cron;
 }
+
+/**
+ * Returns the maximum number of minutes any PR in the provided set has been
+ * waiting (measured from the worker's completedAt timestamp). Used by the
+ * mission timeline gate chip to show "Waiting N min" in the chip header.
+ */
+export function computeGateChipMaxWaitMins(
+  workers: Array<{ completedAt: Date | string | null | undefined }>,
+  now = Date.now(),
+): number {
+  return workers.reduce((max, w) => {
+    if (!w.completedAt) return max;
+    const mins = Math.floor((now - new Date(w.completedAt).getTime()) / 60_000);
+    return Math.max(max, mins);
+  }, 0);
+}
+
+/** Format a wait duration in minutes for display (e.g. "5m", "1h30m"). */
+export function formatWaitDuration(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
+}

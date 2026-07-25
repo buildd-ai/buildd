@@ -75,6 +75,11 @@ function blob(access: string, refresh: string, account: string) {
   return `enc:${JSON.stringify({ access_token: access, refresh_token: refresh, account_id: account })}`;
 }
 
+// helper: blob with id_token (required by codex-cli 0.144 — must be present in auth.json)
+function blobWithIdToken(access: string, refresh: string, account: string, idToken = 'it_test') {
+  return `enc:${JSON.stringify({ access_token: access, refresh_token: refresh, account_id: account, id_token: idToken })}`;
+}
+
 function apiKeyBlob(key: string) {
   return `enc:${JSON.stringify({ api_key: key })}`;
 }
@@ -106,21 +111,21 @@ describe('normalizeCodexAuthJson', () => {
   });
 
   it('accepts an already-flat object with explicit expires_in', () => {
-    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expires_in: 7200 });
+    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', id_token: 'it', expires_in: 7200 });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.expires_in).toBe(7200);
   });
 
   it('passes through an explicit expiry timestamp', () => {
-    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', expiry: '2026-07-01T00:00:00Z' });
+    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', id_token: 'it', expiry: '2026-07-01T00:00:00Z' });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.expiry).toBe('2026-07-01T00:00:00Z');
   });
 
   it('accepts a credential with no derivable expiry (non-JWT access token)', () => {
-    const res = normalizeCodexAuthJson({ tokens: { access_token: 'opaque', refresh_token: 'rt', account_id: 'acc' } });
+    const res = normalizeCodexAuthJson({ tokens: { access_token: 'opaque', refresh_token: 'rt', account_id: 'acc', id_token: 'it' } });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value.expires_in).toBeUndefined();
@@ -130,6 +135,22 @@ describe('normalizeCodexAuthJson', () => {
   it('rejects missing required fields', () => {
     const res = normalizeCodexAuthJson({ tokens: { access_token: 'at', account_id: 'acc' } });
     expect(res.ok).toBe(false);
+  });
+
+  it('rejects an OAuth blob missing id_token (required by codex-cli 0.144)', () => {
+    const res = normalizeCodexAuthJson({ access_token: 'at', refresh_token: 'rt', account_id: 'acc' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toContain('id_token');
+    }
+  });
+
+  it('rejects an OAuth blob with id_token nested under tokens but missing at all levels', () => {
+    const res = normalizeCodexAuthJson({ tokens: { access_token: 'at', refresh_token: 'rt', account_id: 'acc' } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toContain('id_token');
+    }
   });
 
   it('rejects non-objects', () => {
@@ -524,7 +545,7 @@ describe('verifyCodexCredential', () => {
   // only and cannot detect validity or revocation for OAuth credentials.
 
   it('[oauth] uses refresh grant (not GET /v1/models) for verification', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('AT', 'RT', 'acc'), healthStatus: 'unknown' });
     const fetched: string[] = [];
     globalThis.fetch = mock((url: string) => {
       fetched.push(url);
@@ -540,23 +561,33 @@ describe('verifyCodexCredential', () => {
   });
 
   it('[oauth] returns verified:true and writes back rotated tokens on refresh success', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('old-AT', 'old-RT', 'acc-1'), healthStatus: 'unknown' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('old-AT', 'old-RT', 'acc-1', 'old-IT'), healthStatus: 'unknown' });
     globalThis.fetch = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', expires_in: 3600 }),
     })) as any;
     const result = await verifyCodexCredential('s-1');
     expect(result).toEqual({ verified: true, error: null });
-    // The update must include the rotated tokens and verification stamp
-    expect(setArg?.encryptedValue).toBe(blob('new-AT', 'new-RT', 'acc-1'));
+    // The update must include the rotated tokens, preserved id_token, and verification stamp
+    expect(setArg?.encryptedValue).toBe(blobWithIdToken('new-AT', 'new-RT', 'acc-1', 'old-IT'));
     expect('lastVerifiedAt' in (setArg ?? {})).toBe(true);
     expect('lastRefreshedAt' in (setArg ?? {})).toBe(true);
     expect(setArg?.lastVerificationError).toBeNull();
     expect(setArg?.tokenExpiresAt).toBeInstanceOf(Date);
   });
 
+  it('[oauth] uses new id_token from refresh response when provided', async () => {
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('old-AT', 'old-RT', 'acc-1', 'old-IT'), healthStatus: 'unknown' });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', id_token: 'new-IT', expires_in: 3600 }),
+    })) as any;
+    await verifyCodexCredential('s-1');
+    expect(setArg?.encryptedValue).toBe(blobWithIdToken('new-AT', 'new-RT', 'acc-1', 'new-IT'));
+  });
+
   it('[oauth] returns verified:false when refresh grant returns 4xx (revocation)', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('AT', 'RT', 'acc'), healthStatus: 'unknown' });
     globalThis.fetch = mock(() => Promise.resolve({
       ok: false, status: 401,
       json: () => Promise.resolve({ error: 'invalid_grant', error_description: 'Token has been revoked' }),
@@ -569,7 +600,7 @@ describe('verifyCodexCredential', () => {
   });
 
   it('[oauth] returns verified:false when fetch throws', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'unknown' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('AT', 'RT', 'acc'), healthStatus: 'unknown' });
     globalThis.fetch = mock(() => Promise.reject(new Error('connection refused'))) as any;
     const result = await verifyCodexCredential('s-1');
     expect(result).toEqual({ verified: false, error: 'connection refused' });
@@ -577,7 +608,7 @@ describe('verifyCodexCredential', () => {
 
   it('[oauth] returns verified:false when no refresh_token is present', async () => {
     mockDbFindFirst.mockResolvedValue({
-      encryptedValue: `enc:${JSON.stringify({ access_token: 'AT', account_id: 'acc' })}`,
+      encryptedValue: `enc:${JSON.stringify({ access_token: 'AT', account_id: 'acc', id_token: 'it' })}`,
       healthStatus: 'unknown',
     });
     const fetchSpy = mock(() => Promise.resolve({ ok: true })) as any;
@@ -587,8 +618,21 @@ describe('verifyCodexCredential', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('[oauth] returns verified:false and marks health failure when stored blob is missing id_token', async () => {
+    mockDbFindFirst.mockResolvedValue({
+      encryptedValue: blob('AT', 'RT', 'acc'), // blob() does not include id_token
+      healthStatus: 'unknown',
+    });
+    const fetchSpy = mock(() => Promise.resolve({ ok: true })) as any;
+    globalThis.fetch = fetchSpy;
+    const result = await verifyCodexCredential('s-1');
+    expect(result.verified).toBe(false);
+    expect(result.error).toContain('id_token');
+    expect(fetchSpy).not.toHaveBeenCalled(); // fast-fail before hitting the API
+  });
+
   it('[oauth] does not reset health to healthy when credential is worker-observed revoked (mirrors #1302)', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('AT', 'RT', 'acc'), healthStatus: 'revoked' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('AT', 'RT', 'acc'), healthStatus: 'revoked' });
     globalThis.fetch = mock(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve({ access_token: 'new-AT', refresh_token: 'new-RT', expires_in: 3600 }),
@@ -601,7 +645,7 @@ describe('verifyCodexCredential', () => {
   });
 
   it('[oauth] does not log token values', async () => {
-    mockDbFindFirst.mockResolvedValue({ encryptedValue: blob('SECRET_AT', 'SECRET_RT', 'acc'), healthStatus: 'unknown' });
+    mockDbFindFirst.mockResolvedValue({ encryptedValue: blobWithIdToken('SECRET_AT', 'SECRET_RT', 'acc'), healthStatus: 'unknown' });
     globalThis.fetch = mock(() => Promise.resolve({
       ok: false, status: 500,
       json: () => Promise.reject(new Error('x')),

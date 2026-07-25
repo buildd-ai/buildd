@@ -41,11 +41,11 @@ describe('approve_plan', () => {
 
   it('requires admin level', async () => {
     const ctx = createMockContext({ getLevel: async () => 'worker' });
-
-    await expect(
-      handleBuilddAction(mockApi as unknown as ApiFn, 'approve_plan', { taskId: 'plan-123' }, ctx),
-    ).rejects.toThrow('This operation requires an admin-level token');
-
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'approve_plan', { taskId: 'plan-123' }, ctx);
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe('forbidden');
+    expect(body.requiredLevel).toBe('admin');
     expect(mockApi).not.toHaveBeenCalled();
   });
 
@@ -100,16 +100,11 @@ describe('reject_plan', () => {
 
   it('requires admin level', async () => {
     const ctx = createMockContext({ getLevel: async () => 'worker' });
-
-    await expect(
-      handleBuilddAction(
-        mockApi as unknown as ApiFn,
-        'reject_plan',
-        { taskId: 'plan-123', feedback: 'Bad plan' },
-        ctx,
-      ),
-    ).rejects.toThrow('This operation requires an admin-level token');
-
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'reject_plan', { taskId: 'plan-123', feedback: 'Bad plan' }, ctx);
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe('forbidden');
+    expect(body.requiredLevel).toBe('admin');
     expect(mockApi).not.toHaveBeenCalled();
   });
 

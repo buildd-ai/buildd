@@ -109,19 +109,19 @@ export type MemoryAction = (typeof memoryActions)[number];
 // ── Description Builders ─────────────────────────────────────────────────────
 
 export function buildToolDescription(actions: readonly string[]): string {
-  return `Task coordination tool. Available actions: ${actions.join(', ')}. Use action parameter to select operation, params for action-specific arguments.`;
+  return `Task coordination tool. Available actions: ${actions.join(', ')}. Use action parameter to select operation, params for action-specific arguments.\n\nA 401 on [admin]-marked actions means your token lacks admin level, not that auth expired — verify with list_schedules (available at all token levels) before re-authenticating.`;
 }
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId? } — auto-assigns highest-priority pending task',
+    claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) }',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) }',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) } — updates task metadata. To redirect a running agent mid-flight, use send_agent_message instead; update_task changes do not reach an active worker.',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId instead to create a mission-level artifact without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -130,7 +130,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
-    delete_schedule: '{ scheduleId (required), workspaceId? } — permanently remove a schedule [admin]',
+    delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. 401 means token lacks admin level. [admin]',
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
@@ -142,7 +142,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, skillSlugs?, model?, isHeartbeat?: boolean (default true — heartbeat auto-enabled on create; set false to disable), heartbeatChecklist?: string, activeHoursStart?: number (0-23), activeHoursEnd?: number (0-23), activeHoursTimezone?: string, maxConcurrentTasks?: number (null = no cap, >= 1 = max active tasks from this mission), dependsOnMission?: string (mission ID — this mission is BLOCKED until the upstream mission satisfies gateCondition; set to null to remove), gateCondition?: "merged" | "completed" (default "merged" — "merged" requires upstream PRs actually merged to target branch via webhook; "completed" requires upstream.status==="completed"), orchestrationMode?: "auto" | "manual" (default "auto" — "manual" keeps heartbeat config but suppresses ALL orchestrator initiative: no heartbeat evaluation, no task spawning, no retrigger. Tasks already in the mission still execute. Use "auto" to arm, "manual" to disarm. One-shot "Run now" always works in either mode. Precedence: manual=disarmed entirely; auto+pre-filed tasks=coordinate-only (organizer detected pre-filed task chain and will coordinate rather than decompose); auto+no pre-filed tasks=full decomposition.), costBudgetUsd?: number (optional spend ceiling in USD — when aggregate worker spend reaches this amount, no new tasks are spawned and mission transitions to budget_exhausted status; in-flight tasks finish normally; raise or clear the budget on update to resume) } — manage team missions [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
     manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
@@ -155,9 +155,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     post_note: '{ type (required: decision|question|warning|suggestion|update), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.',
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
-    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent for the given task. Requires admin-level token. [admin]',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates via buildd_memory update with supersedes. [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
@@ -403,6 +403,35 @@ async function requireWorkerLevel(ctx: ActionContext, action: string): Promise<T
   return null;
 }
 
+// Actions that require admin level (non-admin tokens must get a structured 403)
+const adminActionsSet = new Set<string>([...adminActions]);
+
+/**
+ * Pre-flight admin level check. Returns a structured 403-style error result for
+ * non-admin tokens so that callers can distinguish privilege failures from
+ * authentication failures (expired/invalid tokens → 401; wrong level → 403).
+ *
+ * Using `return` instead of `throw` keeps the error in-band as a ToolResult
+ * and prevents the route-level catch from re-wrapping it as a generic "Error: …".
+ */
+async function requireAdminLevel(ctx: ActionContext, action: string): Promise<ToolResult | null> {
+  if (!adminActionsSet.has(action)) return null;
+  const level = await ctx.getLevel();
+  if (level === 'admin') return null;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        error: 'forbidden',
+        reason: `action '${action}' requires admin token level`,
+        tokenLevel: level,
+        requiredLevel: 'admin',
+      }),
+    }],
+    isError: true,
+  };
+}
+
 /**
  * Mutating actions that must be blocked when the calling worker's task has
  * been externally terminated (cancelled/failed by admin). This prevents a
@@ -610,6 +639,41 @@ export async function handleBuilddAction(
   const levelErr = await requireWorkerLevel(ctx, action);
   if (levelErr) return levelErr;
 
+  // Admin-only pre-flight: returns structured 403 for non-admin tokens so agents
+  // can distinguish privilege gaps from expired/invalid auth (401 vs 403).
+  const adminErr = await requireAdminLevel(ctx, action);
+  if (adminErr) return adminErr;
+
+  // claim_task is the first lifecycle call agents are instructed to make, but
+  // hosted agents can arrive with a worker already assigned in their MCP URL.
+  // Make that call idempotent: without this check, the generic claim endpoint
+  // either returned "No tasks available" or assigned an unrelated pending task
+  // while the caller continued working on its pre-provisioned assignment.
+  //
+  // This intentionally runs before the multi-workspace guard. The worker lookup
+  // is account-scoped and identifies one exact assignment, so no ambiguous
+  // workspace selection or new mutation occurs.
+  if (action === 'claim_task' && ctx.workerId) {
+    try {
+      const worker = await api(`/api/workers/${ctx.workerId}`);
+      const workerIsActive = ['idle', 'running', 'starting', 'waiting_input'].includes(worker?.status);
+      const taskIsActive = ['assigned', 'in_progress'].includes(worker?.task?.status);
+      if (workerIsActive && taskIsActive) {
+        return text(
+          `Current assignment already active (no new task claimed):\n\n` +
+          `**Worker ID:** ${worker.id}\n` +
+          `**Task:** ${worker.task.title}\n` +
+          `**Branch:** ${worker.branch || 'Not set'}\n` +
+          `**Description:** ${worker.task.description || 'No description'}\n\n` +
+          'Continue using this worker ID for progress reporting and completion.',
+        );
+      }
+    } catch {
+      // Preserve the existing claim flow when contextual worker recovery fails.
+      // The claim endpoint remains the source of truth for unassigned callers.
+    }
+  }
+
   // Multi-workspace guard: OAuth tokens must pass workspaceId for ambiguous
   // actions when they can see >1 workspace.
   const wsErr = await requireExplicitWorkspace(api, action, params, ctx);
@@ -684,6 +748,7 @@ export async function handleBuilddAction(
       lines.push(`**Task:** ${task.title} (${task.id})`);
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
       lines.push(`**Task URL:** ${taskUrl}`);
+      if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
       if (task.workspace?.name || task.workspace?.repo) {
         lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
       }
@@ -783,7 +848,7 @@ export async function handleBuilddAction(
                 const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
                 return `- **[${m.type}] ${m.title}**: ${truncContent}`;
               });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nUse \`buildd_memory\` action=search for more context.`;
+              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall for more context.`;
             }
           }
         }
@@ -1088,6 +1153,15 @@ export async function handleBuilddAction(
 
     case 'create_task': {
       if (!params.title || !params.description) throw new Error('title and description are required');
+      const allowedCreateTaskParams = new Set([
+        'title', 'description', 'workspaceId', 'priority', 'category', 'outputRequirement',
+        'outputSchema', 'project', 'missionId', 'parentTaskId', 'dependsOn', 'pathManifest',
+        'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
+        'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
+        'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
+      ]);
+      const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
+      if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
@@ -1120,6 +1194,9 @@ export async function handleBuilddAction(
         taskBody.outputSchema = params.outputSchema;
       }
       if (params.project) taskBody.project = params.project;
+      if (params.startAt !== undefined) taskBody.startAt = params.startAt;
+      if (params.startIn !== undefined) taskBody.startIn = params.startIn;
+      if (params.startAfter !== undefined) taskBody.startAfter = params.startAfter;
 
       // Auto-link to mission: explicit param takes precedence, then inherit from caller's task
       if (params.missionId) {
@@ -1197,12 +1274,10 @@ export async function handleBuilddAction(
         return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
       }
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: Queued — no runner has claimed it yet. A runner will pick it up on its next poll; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${task.startAt ? `Deferred until ${new Date(task.startAt).toISOString()}` : 'Queued — no runner has claimed it yet'}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.cronExpression || !params.title) {
         throw new Error('name, cronExpression, and title are required');
       }
@@ -1251,8 +1326,6 @@ export async function handleBuilddAction(
     }
 
     case 'update_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.scheduleId) throw new Error('scheduleId is required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1291,8 +1364,6 @@ export async function handleBuilddAction(
     }
 
     case 'delete_schedule': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.scheduleId) throw new Error('scheduleId is required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1467,8 +1538,6 @@ export async function handleBuilddAction(
     }
 
     case 'pause_schedules': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
@@ -1549,8 +1618,6 @@ export async function handleBuilddAction(
     }
 
     case 'register_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.name || !params.content) throw new Error('name and content are required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1584,8 +1651,6 @@ export async function handleBuilddAction(
     }
 
     case 'list_skills': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
 
@@ -1652,8 +1717,6 @@ export async function handleBuilddAction(
     }
 
     case 'get_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to fetch');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1688,8 +1751,6 @@ export async function handleBuilddAction(
     }
 
     case 'update_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to update');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1715,8 +1776,6 @@ export async function handleBuilddAction(
     }
 
     case 'delete_skill': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.slug) throw new Error('slug is required to identify the skill to delete');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -1732,8 +1791,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_secrets': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const subAction = params.action as string;
       if (!subAction || !['list', 'set', 'delete'].includes(subAction)) {
@@ -2157,8 +2214,6 @@ export async function handleBuilddAction(
     }
 
     case 'approve_plan': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.taskId) throw new Error('taskId is required');
 
       const data = await api(`/api/tasks/${params.taskId}/approve-plan`, {
@@ -2188,8 +2243,6 @@ export async function handleBuilddAction(
     }
 
     case 'reject_plan': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.taskId) throw new Error('taskId is required');
       if (!params.feedback) throw new Error('feedback is required');
 
@@ -2202,8 +2255,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_missions': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const missionAction = params.action as string;
       if (!missionAction) throw new Error('action is required (list, create, get, update, delete, link_task, unlink_task)');
@@ -2248,6 +2299,9 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.startAt !== undefined) body.startAt = params.startAt;
+          if (params.startIn !== undefined) body.startIn = params.startIn;
+          if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2257,7 +2311,7 @@ export async function handleBuilddAction(
             : data.heartbeatInfo
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
         }
         case 'get': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2276,7 +2330,8 @@ export async function handleBuilddAction(
           const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
           const depInfo = data.dependsOnMissionId ? `\nDependency: ${data.dependsOnMissionId} (gate: ${data.gateCondition})${data.blocked ? ` — BLOCKED: ${data.blockedReason}` : ' — unblocked'}` : '';
           const budgetInfo = data.costBudgetUsd != null ? `\nBudget: $${parseFloat(data.costBudgetUsd).toFixed(2)} limit${data.status === 'budget_exhausted' ? ' — EXHAUSTED (raise to resume)' : ''}` : '';
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${concurrentInfo}${depInfo}${budgetInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${concurrentInfo}${depInfo}${budgetInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2303,6 +2358,9 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.startAt !== undefined) body.startAt = params.startAt;
+          if (params.startIn !== undefined) body.startIn = params.startIn;
+          if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
@@ -2339,8 +2397,6 @@ export async function handleBuilddAction(
     // ── Workspaces ─────────────────────────────────────────────────────────
 
     case 'manage_workspaces': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wsAction = params.action as string;
       if (!wsAction) throw new Error('action is required (list, create, update, create_repo, init)');
@@ -2463,8 +2519,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_watched_projects': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
 
       const wpAction = params.action as string;
       if (!wpAction) throw new Error('action is required (list, create, update, delete, run)');
@@ -2526,8 +2580,6 @@ export async function handleBuilddAction(
     }
 
     case 'trigger_release': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const body: Record<string, unknown> = {};
@@ -2555,8 +2607,6 @@ export async function handleBuilddAction(
     }
 
     case 'release_status': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('This operation requires an admin-level token');
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const qs = new URLSearchParams();
@@ -2603,6 +2653,7 @@ export async function handleBuilddAction(
       if (task.priority !== undefined) parts.push(`**Priority:** ${task.priority}`);
       if (task.category) parts.push(`**Category:** ${task.category}`);
       if (task.missionId) parts.push(`**Mission:** ${task.missionId}`);
+      if (task.startAt) parts.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
 
       // Active worker info (populated by enhanced task GET endpoint)
       const worker = task.activeWorker;
@@ -2671,8 +2722,6 @@ export async function handleBuilddAction(
     }
 
     case 'send_agent_message': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('send_agent_message requires an admin-level token');
       if (!params.taskId || !params.message) throw new Error('taskId and message are required');
 
       // Fetch task with workers so we can find the live worker by worker.status,
@@ -2717,8 +2766,6 @@ export async function handleBuilddAction(
     // NOT decide drift (a reranker always returns a best match, so a removed feature
     // still scores moderately against its semantic neighbour).
     case 'spec_compare': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('spec_compare requires an admin-level token (dev tooling)');
 
       const feature = (params.feature || params.query) as string | undefined;
       if (!feature) throw new Error('feature (or query) is required');
@@ -2750,8 +2797,6 @@ export async function handleBuilddAction(
     }
 
     case 'manage_model_tiers': {
-      const level = await ctx.getLevel();
-      if (level !== 'admin') throw new Error('manage_model_tiers requires an admin-level token');
 
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)

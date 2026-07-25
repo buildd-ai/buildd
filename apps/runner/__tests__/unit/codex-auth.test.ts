@@ -233,6 +233,42 @@ describe('checkCodexCredentialExpiry', () => {
   });
 });
 
+// ─── writeCodexAuthJson: preflight for missing id_token ──────────────────────
+
+describe('writeCodexAuthJson — id_token preflight', () => {
+  fsTest('throws a clear preflight error for an OAuth credential missing id_token', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-preflight-test-'));
+    try {
+      const cred = {
+        credentialType: 'oauth' as const,
+        accessToken: 'at',
+        refreshToken: 'rt',
+        accountId: 'acc',
+        // idToken deliberately absent
+        expiresAt: null,
+      };
+      expect(() => writeCodexAuthJson(dir, cred)).toThrow(/id_token/);
+      expect(() => writeCodexAuthJson(dir, cred)).toThrow(/Reconnect ChatGPT/);
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  fsTest('does NOT throw for an API key credential even when idToken is absent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-preflight-apikey-'));
+    try {
+      const cred = {
+        credentialType: 'api_key' as const,
+        apiKey: 'sk-test',
+        expiresAt: null,
+      };
+      expect(() => writeCodexAuthJson(dir, cred)).not.toThrow();
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  });
+});
+
 // ─── API key: writeCodexApiKey ────────────────────────────────────────────────
 
 describe('writeCodexApiKeyToHome', () => {

@@ -13,7 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
-import { and, eq, isNotNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
 import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
@@ -72,11 +72,14 @@ export async function GET(req: NextRequest) {
   );
 
   // ── Claude credentials (claude_credential) expiring within 1 hour ───────────
+  // Skip revoked rows — 400/401 from Anthropic means the refresh_token family is
+  // permanently dead. Retrying wastes calls and won't recover; the user must reconnect.
   const expiringClaude = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'claude_credential'),
       isNotNull(secrets.tokenExpiresAt),
       lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      ne(secrets.healthStatus, 'revoked'),
     ),
     columns: { id: true },
   });
@@ -99,6 +102,28 @@ export async function GET(req: NextRequest) {
   console.log(
     `[Cron] Claude token refresh: checked=${expiringClaude.length} refreshed=${claudeRefreshed} locked=${claudeLocked} errors=${claudeErrors}`,
   );
+
+  // ── Zombie claude_credential detection ────────────────────────────────────────
+  // Rows with tokenExpiresAt = null (set by 400/401 on refresh) are permanently dead.
+  // Log them so ops can see which workspaces need user reconnect. Workers fall back to
+  // the setup token (oauth_token purpose) automatically via the health-aware resolver,
+  // so these zombies don't block work — but they silently imply the managed refresh
+  // is disabled until the user reconnects.
+  const zombieClaude = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.purpose, 'claude_credential'),
+      isNull(secrets.tokenExpiresAt),
+    ),
+    columns: { id: true, teamId: true, workspaceId: true, healthStatus: true, lastVerificationError: true },
+  });
+
+  if (zombieClaude.length > 0) {
+    for (const z of zombieClaude) {
+      console.warn(
+        `[Cron] Zombie claude_credential: id=${z.id} team=${z.teamId} workspace=${z.workspaceId ?? 'team-wide'} healthStatus=${z.healthStatus} lastError=${z.lastVerificationError ?? 'none'} — user must reconnect`,
+      );
+    }
+  }
 
   // ── MCP connector credentials expiring within 10 minutes ───────────────────
   // Only query rows that have a tokenExpiresAt — header-auth secrets never set it.
@@ -174,6 +199,7 @@ export async function GET(req: NextRequest) {
       errors: claudeErrors,
       noCredential: claudeNoCredential,
       secrets: claudeRefreshResults,
+      zombies: zombieClaude.length,
     },
     mcp: {
       checked: expiringMcp.length,
