@@ -165,6 +165,20 @@ mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
 }));
 
+// Override webhook/route.test.ts's merge-policy module mock when Bun runs the
+// entire web suite in one process. Bun module mocks leak across test files.
+mock.module('@/lib/merge-policy', () => ({
+  resolvePolicy: (
+    workspace: { gitConfig?: { mergePolicy?: any } | null },
+    mission?: { mergePolicy?: any } | null,
+  ) =>
+    mission?.mergePolicy ??
+    workspace.gitConfig?.mergePolicy ?? {
+      tier: 'auto-threshold',
+      threshold: { maxLines: 800, denyPaths: [] },
+    },
+}));
+
 const mockUpsertAutoArtifact = mock(() => Promise.resolve());
 const mockFormatStructuredOutput = mock((structuredOutput?: any, summary?: string) => {
   if (structuredOutput) return '## Status: ok\nFormatted output';
