@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { eq, and, sql, inArray, like, lt } from 'drizzle-orm';
+import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core/db/schema';
+import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
@@ -304,7 +304,7 @@ async function maybeCreateAggregationTask(
  * For each dependent task, verify all its dependencies are in terminal state,
  * then fire a TASK_UNBLOCKED Pusher event and dispatch the task so runners are woken up.
  */
-async function checkDependsOnResolved(
+export async function checkDependsOnResolved(
   completedTaskId: string
 ): Promise<void> {
   // Find all PENDING tasks where dependsOn contains the completed task ID.
@@ -349,6 +349,31 @@ async function checkDependsOnResolved(
 
   const statusMap = new Map(depTasks.map((t) => [t.id, t.status]));
 
+  // Also check if any dep has an open (unmerged) PR. A dependency is truly resolved
+  // only when status=completed AND (no PR, or PR merged). This prevents dispatching
+  // downstream tasks that would fail the claim route's mergedAt gate.
+  const depWorkers = await db
+    .select({
+      taskId: workers.taskId,
+      mergedAt: workers.mergedAt,
+    })
+    .from(workers)
+    .where(
+      and(
+        inArray(workers.taskId, Array.from(allDepIds)),
+        isNotNull(workers.prUrl),
+      )
+    )
+    .orderBy(desc(workers.createdAt));
+
+  // Build map: taskId → hasOpenPr (most-recent worker with a PR, mergedAt null)
+  const openPrMap = new Map<string, boolean>();
+  for (const w of depWorkers) {
+    if (w.taskId && !openPrMap.has(w.taskId)) {
+      openPrMap.set(w.taskId, w.mergedAt === null);
+    }
+  }
+
   // Check each dependent task to see if all its dependencies are resolved
   const unblockedTasks: typeof dependentTasks = [];
   for (const task of dependentTasks) {
@@ -357,7 +382,8 @@ async function checkDependsOnResolved(
 
     const allCompleted = deps.every((depId) => {
       const status = statusMap.get(depId);
-      return status === 'completed';
+      const hasOpenPr = openPrMap.get(depId) ?? false;
+      return status === 'completed' && !hasOpenPr;
     });
 
     if (allCompleted) {

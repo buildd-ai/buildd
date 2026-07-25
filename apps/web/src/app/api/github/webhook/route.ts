@@ -9,6 +9,7 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -535,6 +536,15 @@ async function handlePullRequestEvent(event: {
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
+  }
+
+  if (pr.merged && worker?.task) {
+    // Unconditionally unblock dependents now that mergedAt is stamped — this fires even
+    // when the task was already completed, because checkDependsOnResolved now gates on
+    // mergedAt and would have held back any downstream dispatch until this moment.
+    checkDependsOnResolved(worker.task.id).catch((e) =>
+      console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
+    );
   }
 
   if (pr.merged && worker?.task && worker.task.status !== 'completed') {
