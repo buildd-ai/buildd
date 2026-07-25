@@ -12,6 +12,7 @@ import { eq } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 
 const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
 
@@ -73,9 +74,31 @@ export async function evaluateAutoMergeSafety(
   }
 
   if (denyPaths.length > 0) {
-    const hit = files.find((f) => denyPaths.some((p) => f.filename.startsWith(p)));
-    if (hit) {
-      return { ok: false, reason: `touches protected path (${hit.filename})` };
+    const hits = files.flatMap((file) =>
+      denyPaths
+        .filter((path) => file.filename.startsWith(path))
+        .map((path) => ({ file, path })),
+    );
+    const schemaSpecific = (path: string) =>
+      path.includes('drizzle/') || path === 'packages/core/db/schema.ts';
+    const ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
+    if (ordinaryHit) {
+      return { ok: false, reason: `touches protected path (${ordinaryHit.file.filename})` };
+    }
+    // Inspect whenever a schema-specific rule is configured. The inspector
+    // paginates independently, so migrations beyond GitHub's first files page
+    // cannot bypass collision/destructive-SQL checks.
+    if (denyPaths.some(schemaSpecific)) {
+      const migrationSafety = await inspectPullRequestMigrations({
+        installationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        files,
+      });
+      if (!migrationSafety.safe) {
+        return { ok: false, reason: migrationSafety.reason };
+      }
     }
   }
 
