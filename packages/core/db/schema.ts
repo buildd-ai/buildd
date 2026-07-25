@@ -19,7 +19,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -682,6 +682,10 @@ export const tasks = pgTable('tasks', {
   // Earliest claim time. Shared by explicit scheduling and budget-limited resume;
   // writers always retain the later floor.
   startAt: timestamp('start_at', { withTimezone: true }),
+  // Loop primitive — null when not a looped task; see docs/design/loop-until-verified.md
+  loopConfig: jsonb('loop_config').$type<LoopConfig | null>(),
+  loopIteration: integer('loop_iteration').default(0).notNull(),
+  loopState: text('loop_state').$type<LoopState | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -764,12 +768,13 @@ export const workers = pgTable('workers', {
     durationMs?: number;
   }>>(),
   // Exit cause taxonomy — set when a worker reaches a terminal state.
-  // code_failure:   the agent or task logic failed (default for unknown failures).
-  // budget_limited: session/usage cap hit — not a real failure; task auto-resumes.
-  // infra_failure:  runner went offline or worker timed out (heartbeat/stale kill).
-  // reassigned:     worker was superseded by a newer session.
+  // code_failure:    the agent or task logic failed (default for unknown failures).
+  // budget_limited:  session/usage cap hit — not a real failure; task auto-resumes.
+  // infra_failure:   runner went offline or worker timed out (heartbeat/stale kill).
+  // reassigned:      worker was superseded by a newer session.
+  // condition_unmet: loop exit condition evaluated false; task requeues (not a failure).
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | 'condition_unmet' | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
