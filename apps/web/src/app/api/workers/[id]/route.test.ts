@@ -3532,6 +3532,58 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskUpdate.claimedAt).toBeNull();
     });
 
+    it('does not reset task to pending when mission is budget_exhausted (precedence: budget > mount-gap requeue)', async () => {
+      // INTERACTION TEST: sandbox_mount_gap on a task in a budget_exhausted mission.
+      // The claim loop (PR #1457) skips tasks from exhausted missions, so a pending task
+      // in such a mission would be silently stuck. The precedence rule in route.ts must
+      // leave the task failed (not pending) so the error is visible and the claim loop
+      // can resume the task once the mission budget is raised.
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      // Task belongs to a mission with a cost budget cap.
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        status: 'in_progress',
+        workspaceId: 'ws-1',
+        missionId: 'mission-budget-1',
+        outputRequirement: 'none',
+        context: null,
+      });
+      // Mission has exhausted its budget — the claim loop will skip its pending tasks.
+      mockMissionsFindFirst.mockResolvedValueOnce({ status: 'budget_exhausted' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // The task must NOT be reset to pending — pending tasks in a budget_exhausted mission
+      // are skipped by the claim loop, creating a silently-stuck task.
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+
     it('does not set exitCause for non-terminal status updates', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({
