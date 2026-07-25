@@ -1,6 +1,7 @@
 # Native Initiatives Tier + Optional Linear Sync
 
-**Status:** Phase 0 Implemented (native tier); Phases 1-4 (Linear) Proposed
+**Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 scoped: `docs/plans/linear-phase-1.md`. Phases 1-4 (Linear) Proposed.
+**Correction:** `external_links` was listed under Phase 0 below but was **not** built there (shipped Phase 0 = initiatives tier only). It is owned by **Phase 1** — see the Phase 1 plan.
 **Related:**
 - `docs/specs/work-tracker-integration.md` — the shipped/partial work-tracker contract; §3 inbound webhook is a Phase-3 prerequisite here
 - `packages/core/db/schema.ts` — `missions` (~545-607, esp. `parentMissionId:559`, `externalIssueId/Url:596-597`, `orchestrationMode`, `costBudgetUsd`, `scheduleId`, `workingBranch`, `releasedAt`), `tasks` (~610-697, `missionId:645`, `externalIssueId/Url:616-617` — note: **no `teamId`**), `connectors` (~1595-1667)
@@ -105,16 +106,22 @@ on top and must never be a prerequisite for native hierarchy value.
 
 ## Implementation sketch (each phase shippable, defaults no-op)
 
-**Phase 0 — Native initiatives tier. Zero Linear. ⭐ LOAD-BEARING.**
-Migration (`bun db:generate`, commit files): `initiatives` + `external_links`
-tables + nullable `missions.initiativeId`. `computeInitiativeProgress` helper.
-UI to create/nest/roll-up initiatives and assign missions. Prove it with no
-connector installed. Existing missions (`initiativeId = null`) behave identically.
+**Phase 0 — Native initiatives tier. Zero Linear. ⭐ LOAD-BEARING. ✅ SHIPPED.**
+Migration (`bun db:generate`, commit files): `initiatives` table + nullable
+`missions.initiativeId` (+ `artifacts.initiativeId`). `computeInitiativeProgress`
+helper. UI to create/roll-up initiatives and assign missions. Team-scoped
+initiative KB corpus (follow-up, #1452). Proven with no connector installed;
+existing missions (`initiativeId = null`) behave identically. **Note:**
+`external_links` was originally listed here but moved to Phase 1 — it was not built
+in Phase 0.
 
-**Phase 1 — Make linking real.** Implement `/link-linear` (or remove the dead
-advertisement) writing to `external_links`. Wire `getConnectorAccessToken` →
-`refreshMcpConnectorCredential` on expiry; surface auth-expired as a reconnect
-banner distinct from a transient error.
+**Phase 1 — Make linking real.** ⟶ scoped in `docs/plans/linear-phase-1.md`.
+Create the `external_links` table (moved from Phase 0). Implement the real link
+action (retire the dead `/link-linear` advertisement) writing to `external_links`
+(+ dual-write the mission column). Wire `getConnectorAccessToken` →
+`refreshMcpConnectorCredential` on expiry; fix `deriveStatus` so a dead credential
+(`tokenExpiresAt` null + `lastVerificationError`) surfaces as a reconnect banner
+distinct from a transient error.
 
 **Phase 2 — Read-back tracking panel.** `fetchProgress` on the Linear provider;
 panel on `missions/[id]` (and initiative view) renders **only** when an
