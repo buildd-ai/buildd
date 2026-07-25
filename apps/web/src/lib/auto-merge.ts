@@ -135,3 +135,5 @@ export async function tryAutoMergeWorkerPr(params: {
     console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
   }
 }
+
+// Smoke test marker: human-tier mission policy must bypass reviewer dispatch.
