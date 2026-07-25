@@ -22,6 +22,7 @@ import { findBlockingPr } from '@buildd/core/path-overlap';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
+import { missionNotHeld } from './held-gate';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -288,6 +289,11 @@ export async function POST(req: NextRequest) {
       AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
     )`
   );
+
+  // Exclude tasks whose mission is held. A held mission gates ALL its tasks
+  // until explicitly armed (mission.isHeld=false). Force-starting a single task
+  // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
+  claimableConditions.push(missionNotHeld());
 
   // Exclude tasks whose dependencies haven't been satisfied yet.
   // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed

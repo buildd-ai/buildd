@@ -146,7 +146,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       tasks: {
@@ -225,6 +225,7 @@ export default async function MissionsPage({
       lastRunAt,
       nextRunAt,
       orchestrationMode: obj.orchestrationMode,
+      isHeld: obj.isHeld ?? false,
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
@@ -264,6 +265,7 @@ export default async function MissionsPage({
           }
         : null,
       orchestrationMode: obj.orchestrationMode || null,
+      isHeld: obj.isHeld ?? false,
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       primaryPrUrl: (obj as any).primaryPrUrl || null,

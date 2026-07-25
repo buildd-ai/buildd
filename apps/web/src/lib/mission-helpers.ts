@@ -1,4 +1,4 @@
-export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted';
+export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted' | 'held';
 
 // ─── Drive state ──────────────────────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: strin
   attention: { label: 'NEEDS ATTENTION', color: 'var(--status-warning)' },
   review:    { label: 'AWAITING REVIEW', color: 'var(--status-success)' },
   scheduled: { label: 'SCHEDULED',       color: 'var(--status-info)' },
-  paused:    { label: 'PAUSED',          color: 'var(--text-muted)' },
+  paused:    { label: 'PAUSED / HELD',   color: 'var(--text-muted)' },
   completed: { label: 'COMPLETED',       color: 'var(--text-muted)' },
 };
 
@@ -160,6 +160,7 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     case 'on-schedule': return 'scheduled';
     case 'paused': return 'paused';
     case 'budget-exhausted': return 'paused';
+    case 'held': return 'paused';
     case 'shipped': return 'completed';
     // Done-but-unarchived (100%) missions await user review; a cron archives
     // them after 24h of quiet (lib/mission-archive.ts). Anything short of
@@ -200,9 +201,11 @@ export function deriveMissionHealth(opts: {
   lastRunAt: string | Date | null;
   nextRunAt: string | Date | null;
   orchestrationMode?: string | null;
+  isHeld?: boolean;
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
+  if (opts.isHeld) return 'held';
   if (opts.status === 'budget_exhausted') return 'budget-exhausted';
   if (opts.activeAgents > 0) return 'active';
 
@@ -257,6 +260,7 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   stalled: { label: 'Stalled', colorClass: 'health-pill-stalled' },
   shipped: { label: 'Shipped', colorClass: 'health-pill-shipped' },
   paused: { label: 'Paused', colorClass: 'health-pill-paused' },
+  held: { label: 'Held', colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
   'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
 };
