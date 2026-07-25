@@ -969,6 +969,9 @@ export async function POST(req: NextRequest) {
         status: 'assigned',
         predictedModel: resolvedModel,
         context: patchedContext,
+        // Mark loopState as 'running' so the completion route knows this iteration
+        // is active and can safely evaluate the exit condition (double-evaluation guard).
+        ...(task.loopConfig ? { loopState: 'running' } : {}),
       })
       .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
       .returning({ id: tasks.id });

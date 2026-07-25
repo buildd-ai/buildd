@@ -341,13 +341,16 @@ export async function checkDependsOnResolved(
     }
   }
 
-  // Fetch statuses for all dependency tasks in a single query
+  // Fetch statuses for all dependency tasks in a single query.
+  // loopState is also fetched: a looping task must reach 'satisfied' (or null for non-looped)
+  // before it can unblock dependents — a task still between loop iterations is not done.
   const depTasks = await db
-    .select({ id: tasks.id, status: tasks.status })
+    .select({ id: tasks.id, status: tasks.status, loopState: tasks.loopState })
     .from(tasks)
     .where(inArray(tasks.id, Array.from(allDepIds)));
 
   const statusMap = new Map(depTasks.map((t) => [t.id, t.status]));
+  const loopStateMap = new Map(depTasks.map((t) => [t.id, t.loopState]));
 
   // Also check if any dep has an open (unmerged) PR. A dependency is truly resolved
   // only when status=completed AND (no PR, or PR merged). This prevents dispatching
@@ -383,7 +386,10 @@ export async function checkDependsOnResolved(
     const allCompleted = deps.every((depId) => {
       const status = statusMap.get(depId);
       const hasOpenPr = openPrMap.get(depId) ?? false;
-      return status === 'completed' && !hasOpenPr;
+      const loopState = loopStateMap.get(depId);
+      // A looping dependency must reach 'satisfied' (loopState=null means non-looped task).
+      const loopResolved = loopState === null || loopState === undefined || loopState === 'satisfied';
+      return status === 'completed' && !hasOpenPr && loopResolved;
     });
 
     if (allCompleted) {

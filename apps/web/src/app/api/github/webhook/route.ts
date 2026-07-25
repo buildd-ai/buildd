@@ -368,6 +368,12 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           continue;
         }
 
+        // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
+        await db
+          .update(workers)
+          .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
+          .where(eq(workers.id, worker.id));
+
         // requiresReview gate — hold PR for human review if task or mission requires it.
         if (worker.taskId) {
           const reviewTask = await db.query.tasks.findFirst({
