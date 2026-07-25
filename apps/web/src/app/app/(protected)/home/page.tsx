@@ -11,6 +11,7 @@ import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
+import InternalLink from '@/components/InternalLink';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
@@ -1287,13 +1288,12 @@ export default async function HomePage({
                                       {mission.blockedPRCount > 0 && (
                                         <>
                                           <span className="mx-0.5">&middot;</span>
-                                          <Link
+                                          <InternalLink
                                             href="/app/home"
                                             className="text-primary font-medium hover:underline"
-                                            onClick={e => e.stopPropagation()}
                                           >
                                             blocked on {mission.blockedPRCount} PR{mission.blockedPRCount !== 1 ? 's' : ''}
-                                          </Link>
+                                          </InternalLink>
                                         </>
                                       )}
                                     </div>
