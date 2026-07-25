@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
@@ -53,6 +54,7 @@ export interface MissionItem {
   primaryPrNumber: number | null;
   latestTaskId: string | null;
   orchestrationMode: string | null;
+  isHeld: boolean;
   costBudgetUsd: string | null;
   spendUsd: string | null;
   segments: MissionSegment[];
@@ -338,6 +340,36 @@ function FilterTabBar({
   );
 }
 
+/* ── Arm button — releases a held mission ── */
+function ArmButton({ missionId }: { missionId: string }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  async function handleArm() {
+    try {
+      await fetch(`/api/missions/${missionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arm: true }),
+      });
+      startTransition(() => router.refresh());
+    } catch {
+      // non-fatal
+    }
+  }
+
+  return (
+    <button
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleArm(); }}
+      disabled={isPending}
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono font-medium bg-primary text-white border border-primary hover:bg-primary-hover transition-colors disabled:opacity-50"
+      title="Arm this mission — release all tasks for workers to claim"
+    >
+      {isPending ? 'Arming…' : 'Arm →'}
+    </button>
+  );
+}
+
 /* ── Full Mission Card (running, scheduled, attention) ── */
 function FullMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
   const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
@@ -376,7 +408,14 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
         )}
 
         <div className="flex items-center gap-1.5 flex-wrap">
-          {mission.startAt && new Date(mission.startAt).getTime() > Date.now()
+          {mission.isHeld
+            ? (
+              <>
+                <span className="font-mono text-[10px] uppercase tracking-wide border border-border-strong text-text-muted px-1.5 py-0.5">Held</span>
+                <ArmButton missionId={mission.id} />
+              </>
+            )
+            : mission.startAt && new Date(mission.startAt).getTime() > Date.now()
             ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
             : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />}
           {mission.workspaceId && mission.effectivePolicyLabel && (
@@ -502,7 +541,14 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           </div>
         </div>
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-          {mission.startAt && new Date(mission.startAt).getTime() > Date.now()
+          {mission.isHeld
+            ? (
+              <>
+                <span className="font-mono text-[10px] uppercase tracking-wide border border-border-strong text-text-muted px-1.5 py-0.5">Held</span>
+                <ArmButton missionId={mission.id} />
+              </>
+            )
+            : mission.startAt && new Date(mission.startAt).getTime() > Date.now()
             ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
             : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />}
           {mission.workspaceId && mission.effectivePolicyLabel && (

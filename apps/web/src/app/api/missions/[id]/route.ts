@@ -171,7 +171,8 @@ export async function PATCH(
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       pacingMode, pacingMaxPerHour,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
+      startMode, arm } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
@@ -191,6 +192,10 @@ export async function PATCH(
 
     if (orchestrationMode !== undefined && orchestrationMode !== 'auto' && orchestrationMode !== 'manual') {
       return NextResponse.json({ error: 'orchestrationMode must be "auto" or "manual"' }, { status: 400 });
+    }
+
+    if (startMode !== undefined && startMode !== 'armed' && startMode !== 'held') {
+      return NextResponse.json({ error: 'startMode must be "armed" or "held"' }, { status: 400 });
     }
 
     if (dependsOnMission !== undefined) {
@@ -305,6 +310,13 @@ export async function PATCH(
     }
     if (pacingMode !== undefined) updateData.pacingMode = pacingMode;
     if (pacingMaxPerHour !== undefined) updateData.pacingMaxPerHour = pacingMaxPerHour ?? null;
+    // startMode: 'held' → isHeld=true (workers cannot claim tasks); 'armed' → isHeld=false.
+    // arm: true is shorthand for startMode='armed'.
+    if (arm === true) {
+      updateData.isHeld = false;
+    } else if (startMode !== undefined) {
+      updateData.isHeld = startMode === 'held';
+    }
 
     // Handle schedule updates
     const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || outputSchema !== undefined || isHeartbeat !== undefined
@@ -449,6 +461,22 @@ export async function PATCH(
         body: `${modeDesc} (by ${actor})`,
         status: 'open',
       }).catch(e => console.error('[missions/patch] Failed to emit mode-change note:', e));
+    }
+
+    // Emit audit note when held state changes
+    if (updateData.isHeld !== undefined && updateData.isHeld !== existing.isHeld) {
+      const actor = user?.id ? `user ${user.id}` : 'API caller';
+      const held = updateData.isHeld;
+      await db.insert(missionNotes).values({
+        missionId: id,
+        authorType: 'system',
+        type: 'update',
+        title: held ? 'Mission held' : 'Mission armed',
+        body: held
+          ? `Tasks under this mission are now held — workers will not claim them until armed. (by ${actor})`
+          : `Mission armed — tasks are now claimable by workers. (by ${actor})`,
+        status: 'open',
+      }).catch(e => console.error('[missions/patch] Failed to emit held-state note:', e));
     }
 
     return NextResponse.json(updated);
