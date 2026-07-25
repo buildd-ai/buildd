@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { parseGitHubIssueUrl, parseLinearUrl, getConnectorAccessToken } from './work-tracker';
+import { parseGitHubIssueUrl, parseLinearUrl, getConnectorAccessToken, fetchLinearProgress } from './work-tracker';
 
 describe('parseGitHubIssueUrl', () => {
   it('parses a standard GitHub issue URL', () => {
@@ -135,5 +135,81 @@ describe('getConnectorAccessToken — refresh wiring', () => {
     const token = await getConnectorAccessToken(CONN, TEAM, { db, refresh, decrypt: identityDecrypt });
     expect(refresh).not.toHaveBeenCalled();
     expect(token).toBeNull();
+  });
+});
+
+describe('fetchLinearProgress', () => {
+  const opts = (kind: 'project' | 'issue', externalId = 'x') => ({
+    connectorId: 'conn-1',
+    teamId: 'team-1',
+    externalId,
+    kind,
+  });
+  const goodToken = mock(async () => 'live-token');
+
+  it('project happy path: progress 0.4 → percent 40, name/state passed through', async () => {
+    const graphql = mock(async () => ({
+      data: { project: { name: 'Mobile App', progress: 0.4, state: 'started' } },
+    }));
+    const result = await fetchLinearProgress(opts('project'), { getToken: goodToken, graphql });
+    expect(result).toEqual({ title: 'Mobile App', percent: 40, state: 'started' });
+  });
+
+  it('project rounds fractional progress (0.666 → 67)', async () => {
+    const graphql = mock(async () => ({
+      data: { project: { name: 'P', progress: 0.666, state: null } },
+    }));
+    const result = await fetchLinearProgress(opts('project'), { getToken: goodToken, graphql });
+    expect(result).toEqual({ title: 'P', percent: 67, state: null });
+  });
+
+  it('issue happy path: title + state.name, percent always null', async () => {
+    const graphql = mock(async () => ({
+      data: { issue: { identifier: 'ACM-42', title: 'Fix the bug', state: { name: 'In Progress' } } },
+    }));
+    const result = await fetchLinearProgress(opts('issue', 'ACM-42'), { getToken: goodToken, graphql });
+    expect(result).toEqual({ title: 'Fix the bug', percent: null, state: 'In Progress' });
+  });
+
+  it('issue falls back to identifier when title is absent', async () => {
+    const graphql = mock(async () => ({
+      data: { issue: { identifier: 'ACM-7', title: null, state: null } },
+    }));
+    const result = await fetchLinearProgress(opts('issue', 'ACM-7'), { getToken: goodToken, graphql });
+    expect(result).toEqual({ title: 'ACM-7', percent: null, state: null });
+  });
+
+  it('returns null when there is no token (never calls graphql)', async () => {
+    const noToken = mock(async () => null);
+    const graphql = mock(async () => ({ data: {} }));
+    const result = await fetchLinearProgress(opts('project'), { getToken: noToken, graphql });
+    expect(result).toBeNull();
+    expect(graphql).not.toHaveBeenCalled();
+  });
+
+  it('returns null on a GraphQL null response (network/error)', async () => {
+    const graphql = mock(async () => null);
+    const result = await fetchLinearProgress(opts('project'), { getToken: goodToken, graphql });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the entity is missing from the response', async () => {
+    const graphql = mock(async () => ({ data: { project: null } }));
+    const result = await fetchLinearProgress(opts('project'), { getToken: goodToken, graphql });
+    expect(result).toBeNull();
+  });
+
+  it('never throws — a throwing graphql yields null', async () => {
+    const graphql = mock(async () => {
+      throw new Error('boom');
+    });
+    const result = await fetchLinearProgress(opts('issue'), { getToken: goodToken, graphql });
+    expect(result).toBeNull();
+  });
+
+  it('nulls percent when progress is not a number', async () => {
+    const graphql = mock(async () => ({ data: { project: { name: 'P', progress: null, state: 'planned' } } }));
+    const result = await fetchLinearProgress(opts('project'), { getToken: goodToken, graphql });
+    expect(result).toEqual({ title: 'P', percent: null, state: 'planned' });
   });
 });
