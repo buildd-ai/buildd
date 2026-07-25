@@ -146,7 +146,7 @@ describe('GET /api/prs/escalation-inbox', () => {
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindMany.mockResolvedValue([makeWorker()]);
     mockMissionNotesFindMany.mockResolvedValue([
-      { taskId: 't-1', title: 'Escalated', body: 'Reviewer could not decide' },
+      { taskId: 't-1', title: 'Escalated', body: 'Reviewer could not decide', status: 'open' },
     ]);
     mockWorkspacesFindMany.mockResolvedValue([
       { id: 'ws-1', name: 'Acme', gitConfig: null },
@@ -155,5 +155,26 @@ describe('GET /api/prs/escalation-inbox', () => {
     const body = await res.json();
     expect(body.count).toBe(1);
     expect(body.items[0].escalationReason).toBe('Reviewer could not decide');
+  });
+
+  it('excludes a superseded hold even when the workspace policy is human', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    mockMissionNotesFindMany.mockResolvedValue([
+      {
+        taskId: 't-1',
+        title: 'Escalated',
+        body: 'Original hold',
+        status: 'superseded',
+        supersededByPrNumber: 43,
+      },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+
+    const res = await GET(makeRequest());
+    expect((await res.json()).count).toBe(0);
   });
 });

@@ -81,6 +81,7 @@ export async function POST(req: NextRequest) {
       where: and(
         inArray(missionNotes.taskId, taskIds),
         eq(missionNotes.type, 'reviewer_escalated'),
+        eq(missionNotes.status, 'open'),
       ),
       columns: { taskId: true },
     });

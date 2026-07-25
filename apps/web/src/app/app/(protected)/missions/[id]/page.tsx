@@ -142,13 +142,28 @@ export default async function MissionDetailPage({
           inArray(missionNotes.taskId, allMissionTaskIds),
           inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
         ),
-        columns: { taskId: true, type: true, title: true, body: true, createdAt: true },
+        columns: {
+          taskId: true,
+          type: true,
+          title: true,
+          body: true,
+          status: true,
+          supersededByPrNumber: true,
+          createdAt: true,
+        },
         orderBy: desc(missionNotes.createdAt),
       })
     : [];
 
   // Map taskId → latest reviewer note
-  const reviewerNoteMap = new Map<string, { type: string; title: string; body: string | null; createdAt: Date }>();
+  const reviewerNoteMap = new Map<string, {
+    type: string;
+    title: string;
+    body: string | null;
+    status: string;
+    supersededByPrNumber: number | null;
+    createdAt: Date;
+  }>();
   for (const note of reviewerNotes) {
     if (note.taskId && !reviewerNoteMap.has(note.taskId)) {
       reviewerNoteMap.set(note.taskId, note);
@@ -842,6 +857,10 @@ export default async function MissionDetailPage({
 
                                 if (noteType === 'reviewer_escalated') {
                                   const prWorker = latestWorker;
+                                  const successorPrNumber = reviewNote.supersededByPrNumber;
+                                  const successorUrl = successorPrNumber && prWorker?.prUrl
+                                    ? prWorker.prUrl.replace(/\/pull\/\d+$/, `/pull/${successorPrNumber}`)
+                                    : null;
                                   return (
                                     <div className="pl-7 pb-1 mt-1">
                                       <div className="bg-status-error/5 border border-status-error/20 rounded px-2.5 py-2">
@@ -863,7 +882,19 @@ export default async function MissionDetailPage({
                                             <MergeConfirmButton prNumber={prWorker.prNumber} prUrl={prWorker.prUrl ?? ''} />
                                           )}
                                           {prWorker?.prLifecycleStatus === 'closed' && (
-                                            <span className="text-[11px] text-text-muted">closed</span>
+                                            <span className="text-[11px] text-text-muted">
+                                              closed
+                                              {reviewNote.status === 'superseded' && successorPrNumber && (
+                                                <>
+                                                  {' — superseded by '}
+                                                  {successorUrl ? (
+                                                    <ExternalLink href={successorUrl} className="text-accent-text hover:underline">
+                                                      #{successorPrNumber} →
+                                                    </ExternalLink>
+                                                  ) : `#${successorPrNumber} →`}
+                                                </>
+                                              )}
+                                            </span>
                                           )}
                                         </div>
                                       </div>

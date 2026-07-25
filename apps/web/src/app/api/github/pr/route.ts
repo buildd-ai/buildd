@@ -4,6 +4,7 @@ import { workers, githubRepos, missions } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
@@ -62,6 +63,7 @@ export async function POST(req: NextRequest) {
       }).where(eq(workers.id, workerId));
       if (prNumber) {
         await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl);
+        await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prNumber);
       }
       return NextResponse.json({
         ok: true,
@@ -88,6 +90,11 @@ export async function POST(req: NextRequest) {
           .update(workers)
           .set({ prUrl: siblingWorkerWithPr.prUrl, prNumber: siblingWorkerWithPr.prNumber, updatedAt: new Date() })
           .where(eq(workers.id, workerId));
+        await supersedeAncestorEscalations(
+          db,
+          worker.task?.parentTaskId,
+          siblingWorkerWithPr.prNumber,
+        );
         return NextResponse.json({
           ok: true,
           pr: {
@@ -160,6 +167,7 @@ export async function POST(req: NextRequest) {
           .where(eq(workers.id, workerId));
 
         await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
+        await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
         return NextResponse.json({
           ok: true,
@@ -219,6 +227,7 @@ export async function POST(req: NextRequest) {
       .where(eq(workers.id, workerId));
 
     await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
+    await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
 
     // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
     const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);

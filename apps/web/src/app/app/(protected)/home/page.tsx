@@ -589,11 +589,17 @@ export default async function HomePage({
                     inArray(missionNotes.taskId, openTaskIds),
                     eq(missionNotes.type, 'reviewer_escalated'),
                   ),
-                  columns: { taskId: true, body: true, title: true },
+                  columns: { taskId: true, body: true, title: true, status: true },
                 })
               : [];
             const escalatedMap = new Map<string, string>();
+            const supersededTaskIds = new Set<string>();
             for (const n of escalatedNotes) {
+              if (n.taskId && n.status === 'superseded') {
+                supersededTaskIds.add(n.taskId);
+                continue;
+              }
+              if (n.status !== 'open') continue;
               if (n.taskId && !escalatedMap.has(n.taskId)) {
                 escalatedMap.set(n.taskId, n.body ?? n.title);
               }
@@ -609,6 +615,7 @@ export default async function HomePage({
               .filter(w => {
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
+                if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
                 if (w.taskId && escalatedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
                 if (!ws) return false;
