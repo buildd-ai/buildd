@@ -84,7 +84,10 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
   const bunInstall = resolve(config.bunInstallPath ?? join(home, '.bun'));
   const mounts: ExtraMount[] = [
     { path: resolve(config.worktreePath), mode: 'rw' },
-    { path: resolve(config.repoPath, '.git'), mode: 'ro' },
+    // Linked worktrees store refs, index state, and newly-created objects under
+    // the parent clone's .git/worktrees/<id> and .git/objects directories.
+    // Commit and push therefore require this project-scoped store to be writable.
+    { path: resolve(config.repoPath, '.git'), mode: 'rw' },
     ...SYSTEM_RO_BINDS.map(path => ({ path, mode: 'ro' as const })),
     { path: bunInstall, mode: 'ro' },
     { path: join(bunInstall, 'install', 'cache'), mode: 'rw' },

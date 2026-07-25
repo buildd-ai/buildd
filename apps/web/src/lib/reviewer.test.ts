@@ -65,7 +65,7 @@ describe('createReviewerTask', () => {
 describe('isSchemaTouchingFile', () => {
   it('detects drizzle SQL migration files', () => {
     expect(isSchemaTouchingFile('drizzle/0001_initial.sql')).toBe(true);
-    expect(isSchemaTouchingFile('drizzle/0042_add_merge_policy.sql')).toBe(true);
+    expect(isSchemaTouchingFile('packages/core/drizzle/0042_add_merge_policy.sql')).toBe(true);
   });
 
   it('detects schema.ts', () => {
@@ -106,7 +106,7 @@ describe('preflightEscalationCheck', () => {
     ];
     const result = preflightEscalationCheck(files, agentReviewPolicy);
     expect(result.shouldEscalate).toBe(true);
-    expect((result as any).reason).toMatch(/drizzle\/0042_add_column\.sql/);
+    expect((result as any).reason).toBe('could not inspect generated SQL migration');
   });
 
   it('escalates for a PR touching packages/core/db/schema.ts', () => {
@@ -151,6 +151,32 @@ describe('preflightEscalationCheck', () => {
     ];
     const result = preflightEscalationCheck(files, agentReviewPolicy);
     expect(result.shouldEscalate).toBe(false);
+  });
+
+  it('does not escalate additive generated SQL when no other deny path matches', () => {
+    const files = [
+      { filename: 'packages/core/db/schema.ts' },
+      { filename: 'packages/core/drizzle/0094_add_summary.sql' },
+    ];
+    const result = preflightEscalationCheck(
+      files,
+      agentReviewNoEscalatePaths,
+      { safe: true },
+    );
+    expect(result.shouldEscalate).toBe(false);
+  });
+
+  it('surfaces the destructive classifier reason', () => {
+    const files = [{ filename: 'packages/core/drizzle/0094_drop_legacy.sql' }];
+    const result = preflightEscalationCheck(
+      files,
+      agentReviewNoEscalatePaths,
+      { safe: false, reason: 'drops column missions.legacy_mode' },
+    );
+    expect(result).toEqual({
+      shouldEscalate: true,
+      reason: 'drops column missions.legacy_mode',
+    });
   });
 });
 

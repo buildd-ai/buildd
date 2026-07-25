@@ -37,6 +37,8 @@ import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
+import { getLinksForEntity } from '@buildd/core/external-links';
+import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -155,11 +157,11 @@ export default async function MissionDetailPage({
     }
   }
 
-  // BT-13: count tasks awaiting merge (completed + has PR + not yet merged)
+  // BT-13: count tasks awaiting merge (completed + has open PR + not yet merged)
   const awaitingMerge = (mission.tasks || []).filter(t => {
     if (t.status !== 'completed') return false;
     const latestWorker = (t.workers as any[])?.[0];
-    return latestWorker?.prUrl && !latestWorker?.mergedAt;
+    return latestWorker?.prUrl && !latestWorker?.mergedAt && latestWorker?.prLifecycleStatus !== 'closed';
   }).length;
 
   // BT-21: resolve effective merge policy tier for mission header chip
@@ -224,6 +226,9 @@ export default async function MissionDetailPage({
   // Cost budget
   const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
   const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
+
+  // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
+  const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
   // Heartbeat status
   const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
@@ -741,7 +746,7 @@ export default async function MissionDetailPage({
                                     currentAction={latestWorker?.currentAction ?? null}
                                   />
                                   {/* BT-14: tier badge + wait duration on awaiting-merge rows */}
-                                  {isDone && latestWorker?.prUrl && !latestWorker?.mergedAt && (() => {
+                                  {isDone && latestWorker?.prUrl && !latestWorker?.mergedAt && latestWorker?.prLifecycleStatus !== 'closed' && (() => {
                                     const waitMins = latestWorker.completedAt
                                       ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
                                       : 0;
@@ -859,8 +864,11 @@ export default async function MissionDetailPage({
                                               PR #{prWorker.prNumber} ↗
                                             </ExternalLink>
                                           )}
-                                          {prWorker?.prNumber && !prWorker?.mergedAt && (
+                                          {prWorker?.prNumber && !prWorker?.mergedAt && prWorker?.prLifecycleStatus !== 'closed' && (
                                             <MergeConfirmButton prNumber={prWorker.prNumber} prUrl={prWorker.prUrl ?? ''} />
+                                          )}
+                                          {prWorker?.prLifecycleStatus === 'closed' && (
+                                            <span className="text-[11px] text-text-muted">closed</span>
                                           )}
                                         </div>
                                       </div>
@@ -881,7 +889,7 @@ export default async function MissionDetailPage({
                       const awaitingPrs = cycle.tasks
                         .filter(t => t.status === 'completed')
                         .map(t => ({ task: t, worker: (t.workers as any[])?.[0] }))
-                        .filter(({ worker }) => worker?.prUrl && !worker?.mergedAt);
+                        .filter(({ worker }) => worker?.prUrl && !worker?.mergedAt && worker?.prLifecycleStatus !== 'closed');
                       if (awaitingPrs.length === 0) return null;
                       const maxWaitMins = computeGateChipMaxWaitMins(
                         awaitingPrs.map(({ worker: w }) => ({ completedAt: w?.completedAt ?? null }))
@@ -929,7 +937,7 @@ export default async function MissionDetailPage({
                                       <span className="text-text-muted truncate">{reviewStatus}</span>
                                     )}
                                   </div>
-                                  {w.prNumber && !w.mergedAt && (
+                                  {w.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed' && (
                                     <MergeConfirmButton
                                       prNumber={w.prNumber}
                                       prUrl={w.prUrl ?? ''}
@@ -1047,6 +1055,11 @@ export default async function MissionDetailPage({
               activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
               costBudgetUsd={costBudgetUsd}
             />
+          )}
+
+          {/* Linear Phase 2 — read-back tracking (only when linked) */}
+          {trackerLinks.some(l => l.provider === 'linear') && (
+            <TrackerProgressPanel entityType="mission" entityId={id} />
           )}
         </MissionSecondaryPanel>
       )}

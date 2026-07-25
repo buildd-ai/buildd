@@ -17,6 +17,7 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
 import { buildWorkflowRunOutcome } from '@/lib/release/workflow-run';
@@ -963,7 +964,14 @@ async function maybeDispatchReviewer(
     }
 
     // BT-10: Pre-flight escalation guard
-    const preflight = preflightEscalationCheck(prFiles, policy);
+    const migrationSafety = await inspectPullRequestMigrations({
+      installationId,
+      repoFullName,
+      prNumber: pr.number,
+      headSha: pr.head.sha,
+      files: prFiles,
+    });
+    const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety);
     if (preflight.shouldEscalate) {
       console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${preflight.reason}`);
       if (task.missionId) {

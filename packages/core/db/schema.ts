@@ -569,6 +569,13 @@ export const missions = pgTable('missions', {
   dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
+  // Pacing controls: 'eager' starts every claimable task immediately (current default).
+  // 'paced' enforces a minimum interval between task starts for this mission:
+  // at most pacingMaxPerHour starts per hour (default 1 when null).
+  // lastTaskStartedAt is updated atomically each time a task from this mission is claimed.
+  pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
+  pacingMaxPerHour: integer('pacing_max_per_hour'),
+  lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
   // Shared feature branch for this mission. All mission tasks push commits here;
   // a single PR tracks all mission work. Generated lazily on first task creation.
   workingBranch: text('working_branch'),

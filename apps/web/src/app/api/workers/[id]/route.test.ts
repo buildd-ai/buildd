@@ -29,6 +29,8 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockDecrypt = mock((value: string) => value);
+const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
+const mockExhaustMissionBudget = mock(() => Promise.resolve());
 
 // Explicit `db.select(...)` (added to dodge the RQB "missing FROM-clause" bug)
 // is used for the task-row fetches in the handler. The chain is fully thenable
@@ -49,6 +51,11 @@ const mockSelect = mock(() => {
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/mission-budget', () => ({
+  getMissionSpendUsd: mockGetMissionSpendUsd,
+  exhaustMissionBudget: mockExhaustMissionBudget,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -3530,6 +3537,116 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskUpdate).toBeDefined();
       expect(taskUpdate.claimedBy).toBeNull();
       expect(taskUpdate.claimedAt).toBeNull();
+    });
+
+    it('does not reset task to pending when mission is budget_exhausted (precedence: budget > mount-gap requeue)', async () => {
+      // INTERACTION TEST: sandbox_mount_gap on a task in a budget_exhausted mission.
+      // The claim loop (PR #1457) skips tasks from exhausted missions, so a pending task
+      // in such a mission would be silently stuck. The precedence rule in route.ts must
+      // leave the task failed (not pending) so the error is visible and the claim loop
+      // can resume the task once the mission budget is raised.
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      // Task belongs to a mission with a cost budget cap.
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        status: 'in_progress',
+        workspaceId: 'ws-1',
+        missionId: 'mission-budget-1',
+        outputRequirement: 'none',
+        context: null,
+      });
+      // Mission has exhausted its budget — the claim loop will skip its pending tasks.
+      mockMissionsFindFirst.mockResolvedValueOnce({ status: 'budget_exhausted' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // The task must NOT be reset to pending — pending tasks in a budget_exhausted mission
+      // are skipped by the claim loop, creating a silently-stuck task.
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+    });
+
+    it('does not leave a mount-gap task pending when its terminal cost exhausts the mission budget', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        status: 'in_progress',
+        workspaceId: 'ws-1',
+        missionId: 'mission-budget-1',
+        outputRequirement: 'none',
+        context: null,
+      });
+      mockMissionsFindFirst
+        .mockResolvedValueOnce({ status: 'active' })
+        .mockResolvedValueOnce({
+          id: 'mission-budget-1',
+          title: 'Budgeted mission',
+          status: 'active',
+          costBudgetUsd: '1.00',
+        });
+      mockGetMissionSpendUsd.mockResolvedValueOnce(1.25);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          costUsd: 0.25,
+          error: 'Sandbox mount gap: "/home/coder/.npmrc" is not mounted in the bwrap sandbox.',
+          sandboxMountGap: true,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockExhaustMissionBudget).toHaveBeenCalledWith(
+        'mission-budget-1',
+        'Budgeted mission',
+        1.25,
+        1,
+      );
+      expect(taskSetCalls.some((updates: any) => updates.status === 'failed')).toBe(true);
     });
 
     it('does not set exitCause for non-terminal status updates', async () => {

@@ -1,6 +1,6 @@
 # Plan — Linear Phase 1 (make linking real + token refresh)
 
-**Status:** Proposed — not started.
+**Status:** ✅ Shipped (PR #1459, merged to `dev`) — migration `0093`, `external_links` + helper, `POST /api/missions/[id]/link`, `link_tracker` MCP action, `getConnectorAccessToken` refresh wiring, `deriveStatus` reconnect fix + CTA. Archived.
 **Design:** `docs/design/linear-hierarchy-ingest.md` (Phase 1)
 **Spec:** `docs/specs/work-tracker-integration.md` (§3 inbound webhook is a Phase-3 prereq, not Phase 1)
 **Scope:** Two independent, individually shippable workstreams. **Zero behaviour change for any team without a Linear connector installed** — `external_links` is empty and the refresh path is a no-op.

@@ -22,6 +22,7 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
+import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
@@ -35,6 +36,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry } from '@buildd/shared';
+import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -53,6 +55,28 @@ function collectSecretValues(label: string, plaintext: string): Array<{ label: s
   }
   return values;
 }
+/**
+ * Check whether a mission's cumulative worker spend has breached its costBudgetUsd
+ * cap. If so, atomically transition the mission to budget_exhausted and notify.
+ * Returns whether the mission is exhausted so retry classification can honor
+ * mission-budget precedence after the terminal worker cost is persisted.
+ */
+async function checkAndExhaustMissionBudget(missionId: string): Promise<boolean> {
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { id: true, title: true, status: true, costBudgetUsd: true },
+  });
+  if (!mission || mission.status !== 'active') return mission?.status === 'budget_exhausted';
+  if (mission.costBudgetUsd == null) return false;
+
+  const budgetUsd = parseFloat(mission.costBudgetUsd as string);
+  const spendUsd = await getMissionSpendUsd(missionId);
+  if (spendUsd < budgetUsd) return false;
+
+  await exhaustMissionBudget(missionId, mission.title, spendUsd, budgetUsd);
+  return true;
+}
+
 // GET /api/workers/[id] - Get worker details
 export async function GET(
   req: NextRequest,
@@ -367,22 +391,23 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
-  // missionId for the completing task — fetched in the status==='completed' block below,
-  // used later in the mission-complete release hook.
-  let taskMissionId: string | null = null;
+  // Fetch mission ownership for every terminal transition. Completion also uses
+  // outputRequirement; failed/error transitions still need missionId so their
+  // final recorded cost can enforce the mission budget.
+  const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
+  const terminalTaskRow = isTerminalStatus && worker.taskId
+    ? await db
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId })
+        .from(tasks)
+        .where(eq(tasks.id, worker.taskId))
+        .limit(1)
+    : [];
+  const taskMissionId = terminalTaskRow[0]?.missionId ?? null;
   if (status === 'completed') {
     // Fetch task to check outputRequirement. Explicit select (not the
     // relational query builder): `tasks` has a `workers` relation and the RQB
     // can intermittently emit "missing FROM-clause entry for table workers".
-    const taskRow = worker.taskId
-      ? await db
-          .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId })
-          .from(tasks)
-          .where(eq(tasks.id, worker.taskId))
-          .limit(1)
-      : [];
-    const outputReq = taskRow[0]?.outputRequirement ?? 'auto';
-    taskMissionId = taskRow[0]?.missionId ?? null;
+    const outputReq = terminalTaskRow[0]?.outputRequirement ?? 'auto';
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
@@ -468,9 +493,10 @@ export async function PATCH(
   // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
   const isSandboxMountGap = body.sandboxMountGap === true;
   if (status === 'failed' || status === 'error') {
-    updates.exitCause = isBudgetError ? 'budget_limited'
-      : isSandboxMountGap ? 'sandbox_mount_gap'
-      : 'code_failure';
+    updates.exitCause = classifyReportedFailure({
+      budgetLimited: isBudgetError,
+      sandboxMountGap: isSandboxMountGap,
+    });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
   // Codex worker per workspace and reports extras as failed with a "Deferred:"
@@ -629,18 +655,50 @@ export async function PATCH(
   // or tool binary). Task is infra-class — reset to pending so it can be retried once
   // the operator adds the path via BUILDD_MOUNT_ALLOWLIST_EXTRA. Does NOT count against
   // code-retry attempts (stale-workers mirrors this via the chargeableFailures exclusion).
+  //
+  // PRECEDENCE RULE — mission-level budget exhaustion wins over task-level requeue.
+  // If the task belongs to a budget_exhausted mission, do NOT reset to pending. A pending
+  // task in an exhausted mission is silently skipped by the claim loop (PR #1457 refuses to
+  // dispatch into exhausted missions), making it invisible to the operator. Instead, fall
+  // through to the normal failure path so the mount-gap error surfaces and the failure
+  // notification fires. The task becomes retryable once the user raises the mission budget
+  // (mission transitions active → tasks claimable again).
+  //
+  // This flag is also checked in the mission auto-retry block below so that the general
+  // 1-retry requeue path for mission tasks is similarly suppressed when budget is exhausted.
+  //
+  // Coupling note: budget_exhausted status is introduced by PR #1457 (mission cost-budget
+  // enforcement). This guard is a no-op on branches that lack that status but becomes
+  // load-bearing once #1457 lands; #1457 should rebase onto this branch.
+  let sandboxGapMissionExhausted = false; // lifted so the auto-retry block can read it
   if (isSandboxMountGap && worker.taskId) {
     const gapTask = await db.query.tasks.findFirst({
       where: eq(tasks.id, worker.taskId),
-      columns: { status: true },
+      columns: { status: true, missionId: true },
     });
-    if (gapTask?.status !== 'cancelled') {
-      await db
-        .update(tasks)
-        .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+
+    // Check whether the task's mission has exhausted its cost budget before deciding
+    // to requeue — budget exhaustion takes precedence over the mount-gap infra requeue.
+    const gapMissionId = (gapTask as any)?.missionId as string | null | undefined;
+    if (gapMissionId) {
+      const missionRow = await db.query.missions.findFirst({
+        where: eq(missions.id, gapMissionId),
+        columns: { status: true },
+      });
+      sandboxGapMissionExhausted = missionRow?.status === 'budget_exhausted';
     }
-    isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
+
+    if (!sandboxGapMissionExhausted) {
+      if (gapTask?.status !== 'cancelled') {
+        await db
+          .update(tasks)
+          .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
+          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      }
+      isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
+    }
+    // sandboxGapMissionExhausted=true: fall through so the failure notification fires and
+    // the mount-gap error is visible. Task resumes when the mission budget is raised.
   }
 
   let shouldAutoRetry = false;
@@ -819,6 +877,10 @@ export async function PATCH(
         shouldAutoRetry = retryCount < maxRetries;
         // A cancelled task must not be auto-retried — the user explicitly cancelled it.
         if (taskForRetry?.status === 'cancelled') shouldAutoRetry = false;
+        // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
+        // Same guard as the sandbox_mount_gap block above — a pending task in an
+        // exhausted mission is skipped by the claim loop and would be silently stuck.
+        if (isSandboxMountGap && sandboxGapMissionExhausted) shouldAutoRetry = false;
         if (shouldAutoRetry) {
           taskCtxForRetry = { ...taskCtxForRetry, retryCount: retryCount + 1 };
         }
@@ -1334,6 +1396,29 @@ export async function PATCH(
     .set(updates)
     .where(eq(workers.id, id))
     .returning();
+
+  // Mission cost-budget gate: check whether the mission's cumulative spend has
+  // crossed its costBudgetUsd cap. Only fires on terminal worker status so we
+  // read a stable, post-update cost from the DB. Never kills running workers —
+  // it transitions the mission to budget_exhausted so future CLAIMS are blocked
+  // (enforced in the claim loop's mission budget_exhausted check).
+  if (isTerminalStatus && taskMissionId) {
+    try {
+      const missionBudgetExhausted = await checkAndExhaustMissionBudget(taskMissionId);
+      // A sandbox mount gap is normally held pending for infrastructure retry.
+      // If this terminal worker's newly-recorded cost exhausts its mission, that
+      // pending row would be skipped forever by the claim loop. Preserve the
+      // authoritative budget-over-requeue precedence by making the failure visible.
+      if (missionBudgetExhausted && isSandboxMountGap && worker.taskId) {
+        await db
+          .update(tasks)
+          .set({ status: 'failed', updatedAt: new Date() })
+          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      }
+    } catch (err) {
+      console.error(`[Worker ${id}] Mission budget check failed:`, err);
+    }
+  }
 
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
   const taskContext = worker.taskId

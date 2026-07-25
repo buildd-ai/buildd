@@ -172,6 +172,90 @@ export async function linearGraphQL(
 }
 
 /**
+ * Read-back progress for a linked Linear project or issue (Phase 2).
+ *
+ * BEST-EFFORT: returns `null` on missing token / network / GraphQL error, and
+ * nulls any individual field that's absent. Never throws — the tracking panel
+ * must never break the page.
+ *
+ * - `project`: reads `project(id)` → `name`, `progress` (Float 0..1, converted
+ *   to a rounded 0..100 percent), and `state` (a status label string).
+ * - `issue`: reads `issue(id)` → `title`/`identifier` and `state { name }`.
+ *   Issues have no progress fraction, so `percent` is always null.
+ *
+ * Dependencies (token getter + graphql fn) are injectable for testing, mirroring
+ * the DI style of {@link getConnectorAccessToken}.
+ */
+export async function fetchLinearProgress(
+  opts: {
+    connectorId: string;
+    teamId: string;
+    externalId: string;
+    kind: 'project' | 'issue';
+  },
+  deps: {
+    getToken?: typeof getConnectorAccessToken;
+    graphql?: typeof linearGraphQL;
+  } = {},
+): Promise<{ title: string | null; percent: number | null; state: string | null } | null> {
+  const getToken = deps.getToken ?? getConnectorAccessToken;
+  const graphql = deps.graphql ?? linearGraphQL;
+
+  try {
+    const token = await getToken(opts.connectorId, opts.teamId);
+    if (!token) return null;
+
+    if (opts.kind === 'project') {
+      const data = await graphql(
+        token,
+        `
+        query ProjectProgress($id: String!) {
+          project(id: $id) {
+            name
+            progress
+            state
+          }
+        }
+      `,
+        { id: opts.externalId },
+      );
+      const project = (data as any)?.data?.project;
+      if (!project) return null;
+      const rawProgress = project.progress;
+      const percent = typeof rawProgress === 'number' ? Math.round(rawProgress * 100) : null;
+      return {
+        title: project.name ?? null,
+        percent,
+        state: typeof project.state === 'string' ? project.state : null,
+      };
+    }
+
+    const data = await graphql(
+      token,
+      `
+      query IssueProgress($id: String!) {
+        issue(id: $id) {
+          identifier
+          title
+          state { name }
+        }
+      }
+    `,
+      { id: opts.externalId },
+    );
+    const issue = (data as any)?.data?.issue;
+    if (!issue) return null;
+    return {
+      title: issue.title ?? issue.identifier ?? null,
+      percent: null,
+      state: issue.state?.name ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Post a completion comment on a Linear issue and transition its state.
  *
  * @param opts.externalIssueId  - Linear issue ID

@@ -170,10 +170,19 @@ export async function PATCH(
     const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
+      pacingMode, pacingMaxPerHour,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter } = body;
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer >= 1' }, { status: 400 });
+    }
+
+    if (pacingMode !== undefined && pacingMode !== 'eager' && pacingMode !== 'paced') {
+      return NextResponse.json({ error: 'pacingMode must be "eager" or "paced"' }, { status: 400 });
+    }
+
+    if (pacingMaxPerHour !== undefined && pacingMaxPerHour !== null && (!Number.isInteger(pacingMaxPerHour) || pacingMaxPerHour < 1)) {
+      return NextResponse.json({ error: 'pacingMaxPerHour must be an integer >= 1' }, { status: 400 });
     }
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
@@ -294,6 +303,8 @@ export async function PATCH(
         }
       }
     }
+    if (pacingMode !== undefined) updateData.pacingMode = pacingMode;
+    if (pacingMaxPerHour !== undefined) updateData.pacingMaxPerHour = pacingMaxPerHour ?? null;
 
     // Handle schedule updates
     const scheduleNeedsUpdate = cronExpression !== undefined || skillSlugs !== undefined || outputSchema !== undefined || isHeartbeat !== undefined

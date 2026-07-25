@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -30,12 +30,13 @@ export async function GET(_req: NextRequest) {
     return NextResponse.json({ items: [], count: 0 });
   }
 
-  // Find workers with open (unmerged) PRs in user's workspaces
+  // Find workers with open (unmerged, non-closed) PRs in user's workspaces
   const openPrWorkers = await db.query.workers.findMany({
     where: and(
       inArray(workers.workspaceId, wsIds),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
+      sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
     ),
     columns: {
       id: true,
@@ -43,6 +44,7 @@ export async function GET(_req: NextRequest) {
       workspaceId: true,
       prUrl: true,
       prNumber: true,
+      prLifecycleStatus: true,
       completedAt: true,
     },
     with: {
@@ -87,9 +89,12 @@ export async function GET(_req: NextRequest) {
   });
   const wsMap = new Map(workspaceRows.map(ws => [ws.id, ws]));
 
-  // Filter to escalation-inbox items
+  // Filter to escalation-inbox items; exclude test-generated holds and terminal-state PRs
   const items = openPrWorkers
     .filter(w => {
+      if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
+      const taskTitle = (w.task as any)?.title ?? '';
+      if (taskTitle.startsWith('[smoke-test')) return false;
       if (w.taskId && escalationMap.has(w.taskId)) return true;
       const ws = wsMap.get(w.workspaceId);
       if (!ws) return false;
