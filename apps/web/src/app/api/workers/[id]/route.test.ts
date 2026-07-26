@@ -72,6 +72,7 @@ mock.module('@/lib/pusher', () => ({
     WORKER_COMPLETED: 'worker:completed',
     WORKER_FAILED: 'worker:failed',
     WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
+    WORKER_CONNECTOR_PERMISSION_INSUFFICIENT: 'worker:connector-permission-insufficient',
   },
 }));
 
@@ -3100,6 +3101,113 @@ describe('PATCH /api/workers/[id]', () => {
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
         body: { event: 'connector_auth_expired', status: 'waiting_input' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockConnectorsFindFirst).not.toHaveBeenCalled();
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('connector_permission_insufficient event', () => {
+    const baseWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockConnectorsFindFirst.mockReset();
+      mockSecretsUpdate.mockReset();
+      mockSecretsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+    });
+
+    it('records the permission gap without expiring the token', async () => {
+      const mockSetFn = mock(() => ({ where: mock(() => Promise.resolve()) }));
+      mockSecretsUpdate.mockReturnValue({ set: mockSetFn });
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_permission_insufficient',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretsUpdate).toHaveBeenCalled();
+      // Must record permission gap — NOT set tokenExpiresAt
+      expect(mockSetFn).toHaveBeenCalledWith(
+        expect.objectContaining({ lastVerificationError: 'mid_task_403_permission' })
+      );
+      expect(mockSetFn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ tokenExpiresAt: expect.anything() })
+      );
+    });
+
+    it('emits WORKER_CONNECTOR_PERMISSION_INSUFFICIENT Pusher event with correct shape', async () => {
+      mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-1', name: 'GitHub' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_permission_insufficient',
+          connectorId: 'conn-1',
+          connectorUrl: 'https://mcp.github.com/',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const calls = mockTriggerEvent.mock.calls;
+      const permCall = calls.find((c: any[]) => c[1] === 'worker:connector-permission-insufficient');
+      expect(permCall).toBeTruthy();
+      expect(permCall[0]).toBe('workspace-ws-1');
+      expect(permCall[2]).toMatchObject({
+        workerId: 'worker-1',
+        connectorId: 'conn-1',
+        connectorName: 'GitHub',
+      });
+    });
+
+    it('skips update and Pusher event when connector is not found', async () => {
+      mockConnectorsFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          event: 'connector_permission_insufficient',
+          connectorId: 'conn-unknown',
+          status: 'waiting_input',
+        },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockSecretsUpdate).not.toHaveBeenCalled();
+      const calls = mockTriggerEvent.mock.calls;
+      const permCall = calls.find((c: any[]) => c[1] === 'worker:connector-permission-insufficient');
+      expect(permCall).toBeUndefined();
+    });
+
+    it('ignores event field when connectorId is missing', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { event: 'connector_permission_insufficient', status: 'waiting_input' },
       });
       await PATCH(req, { params: mockParams });
 

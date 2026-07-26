@@ -1,11 +1,31 @@
 import { describe, it, expect } from 'bun:test';
+import {
+  AUTH_401_PATTERN,
+  AUTH_403_PERMISSION_PATTERN,
+  toServerKey,
+  extractServerKey,
+  findConnectorFor,
+  shouldFireCircuitBreaker,
+  is401Error,
+  is403PermissionError,
+  type ConnectorRef,
+} from './connector-auth-detection';
 
-// Unit tests for the 401 detection logic implemented in handleMessage (workers.ts).
-// The detection pattern:
+// Unit tests for connector auth detection helpers (connector-auth-detection.ts).
+// These helpers are used in workers.ts handleMessage to detect auth failures from
+// MCP connector tool results and fire the appropriate circuit breaker / event.
+//
+// 401 detection pattern:
 //   1. block.is_error === true
-//   2. text matches /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i
+//   2. text matches AUTH_401_PATTERN
 //   3. source tool name starts with 'mcp__' → extract serverKey = source.split('__')[1]
 //   4. find connector where name.toLowerCase().replace(/[^a-z0-9_]/g, '_') === serverKey
+//
+// 403 detection pattern:
+//   1. block.is_error === true
+//   2. text matches AUTH_403_PERMISSION_PATTERN ("resource not accessible by integration")
+//   3. same source → connector resolution as 401
+//   → emits connector_permission_insufficient (token is valid; App lacks permission scope)
 //
 // Assertion-mode reconciliation (§F.2):
 //   - If the connector is assertion-mode AND assertionReAuthFailed does NOT contain the server name
@@ -13,39 +33,6 @@ import { describe, it, expect } from 'bun:test';
 //   - If the connector is assertion-mode AND assertionReAuthFailed contains the server name
 //     → fire circuit breaker (re-exchange exhausted)
 //   - If the connector is NOT assertion-mode → fire circuit breaker immediately
-
-const AUTH_401_PATTERN = /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i;
-
-function toServerKey(connectorName: string): string {
-  return connectorName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-}
-
-function extractServerKey(toolName: string): string | undefined {
-  if (!toolName.startsWith('mcp__')) return undefined;
-  return toolName.split('__')[1];
-}
-
-interface Connector { id: string; name: string; url: string }
-
-function findConnectorFor(
-  source: string | undefined,
-  connectors: Connector[],
-): Connector | undefined {
-  if (!source || !source.startsWith('mcp__')) return undefined;
-  const serverKey = extractServerKey(source);
-  return connectors.find(c => toServerKey(c.name) === serverKey);
-}
-
-/** Mirrors the circuit breaker gate logic in workers.ts handleMessage. */
-function shouldFireCircuitBreaker(
-  connector: Connector,
-  assertionConnectors: { name: string }[],
-  assertionReAuthFailed: Set<string>,
-): boolean {
-  const isAssertion = assertionConnectors.some(a => a.name === connector.name);
-  const reAuthFailed = assertionReAuthFailed.has(connector.name);
-  return !isAssertion || reAuthFailed;
-}
 
 describe('401 detection regex', () => {
   it('matches plain 401', () => {
@@ -86,6 +73,61 @@ describe('401 detection regex', () => {
   });
 });
 
+describe('is401Error helper', () => {
+  it('returns true for a 401 message', () => {
+    expect(is401Error('HTTP 401 Unauthorized')).toBe(true);
+  });
+
+  it('returns false for an unrelated error', () => {
+    expect(is401Error('Connection refused')).toBe(false);
+  });
+
+  it('returns false for a 403 permission error', () => {
+    expect(is401Error('HTTP 403 Resource not accessible by integration')).toBe(false);
+  });
+});
+
+describe('403 permission detection', () => {
+  it('matches the exact GitHub App permission-gap phrase', () => {
+    expect(AUTH_403_PERMISSION_PATTERN.test('HTTP 403 Resource not accessible by integration')).toBe(true);
+  });
+
+  it('matches case-insensitively', () => {
+    expect(AUTH_403_PERMISSION_PATTERN.test('resource not accessible by integration')).toBe(true);
+    expect(AUTH_403_PERMISSION_PATTERN.test('RESOURCE NOT ACCESSIBLE BY INTEGRATION')).toBe(true);
+  });
+
+  it('matches when the phrase is embedded in a longer message', () => {
+    expect(AUTH_403_PERMISSION_PATTERN.test(
+      'RequestError: Resource not accessible by integration – https://docs.github.com/...'
+    )).toBe(true);
+  });
+
+  it('does not match unrelated 403 errors', () => {
+    expect(AUTH_403_PERMISSION_PATTERN.test('HTTP 403 Forbidden')).toBe(false);
+    expect(AUTH_403_PERMISSION_PATTERN.test('403 rate limit exceeded')).toBe(false);
+  });
+
+  it('does not match 401 auth errors', () => {
+    expect(AUTH_403_PERMISSION_PATTERN.test('HTTP 401 Unauthorized')).toBe(false);
+    expect(AUTH_403_PERMISSION_PATTERN.test('authentication failed')).toBe(false);
+  });
+});
+
+describe('is403PermissionError helper', () => {
+  it('returns true for the GitHub App permission-gap message', () => {
+    expect(is403PermissionError('HTTP 403 Resource not accessible by integration')).toBe(true);
+  });
+
+  it('returns false for a plain 403 Forbidden', () => {
+    expect(is403PermissionError('HTTP 403 Forbidden')).toBe(false);
+  });
+
+  it('returns false for a 401 error', () => {
+    expect(is403PermissionError('HTTP 401 Unauthorized')).toBe(false);
+  });
+});
+
 describe('connector name → server key mapping', () => {
   it('lowercases the name', () => {
     expect(toServerKey('GitHub')).toBe('github');
@@ -113,7 +155,7 @@ describe('connector name → server key mapping', () => {
 });
 
 describe('MCP tool source → connector lookup', () => {
-  const connectors: Connector[] = [
+  const connectors: ConnectorRef[] = [
     { id: 'conn-gh', name: 'GitHub', url: 'https://mcp.github.com/' },
     { id: 'conn-ln', name: 'Linear', url: 'https://mcp.linear.app/' },
     { id: 'conn-sl', name: 'My Slack', url: 'https://mcp.slack.com/' },
@@ -147,8 +189,8 @@ describe('MCP tool source → connector lookup', () => {
 });
 
 describe('circuit breaker gate — assertion-mode vs oauth/static', () => {
-  const oauthConnector: Connector = { id: 'conn-gh', name: 'GitHub', url: 'https://mcp.github.com/' };
-  const assertionConnector: Connector = { id: 'conn-cue', name: 'Cue', url: 'https://cue.buildd.dev/api/mcp' };
+  const oauthConnector: ConnectorRef = { id: 'conn-gh', name: 'GitHub', url: 'https://mcp.github.com/' };
+  const assertionConnector: ConnectorRef = { id: 'conn-cue', name: 'Cue', url: 'https://cue.buildd.dev/api/mcp' };
   const assertionMeta = [{ name: 'Cue', mintApiUrl: 'https://buildd.dev/api/connectors/x/assertion', tokenEndpoint: 'https://cue.buildd.dev/token' }];
 
   it('fires circuit breaker immediately for oauth/static connectors', () => {
@@ -166,7 +208,7 @@ describe('circuit breaker gate — assertion-mode vs oauth/static', () => {
 
   it('only targets the specific connector that failed — others remain gated', () => {
     const failed = new Set(['Cue']);
-    const otherAssertionConnector: Connector = { id: 'conn-dispatch', name: 'Dispatch', url: 'https://dispatch.buildd.dev/api/mcp' };
+    const otherAssertionConnector: ConnectorRef = { id: 'conn-dispatch', name: 'Dispatch', url: 'https://dispatch.buildd.dev/api/mcp' };
     const otherMeta = [...assertionMeta, { name: 'Dispatch', mintApiUrl: 'https://buildd.dev/api/connectors/y/assertion', tokenEndpoint: 'https://dispatch.buildd.dev/token' }];
     expect(shouldFireCircuitBreaker(otherAssertionConnector, otherMeta, failed)).toBe(false);
   });
