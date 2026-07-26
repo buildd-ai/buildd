@@ -665,6 +665,19 @@ export const initiatives = pgTable('initiatives', {
   statusIdx: index('initiatives_status_idx').on(t.status),
 }));
 
+// Per-user snapshot of the last initiative-rollup progress a user saw, so the
+// Home arc headline can detect a milestone CROSSING ("crossed 75%") since their
+// last visit. Purely a UI memory — no execution semantics. Refreshed to current
+// on every Home render; a first view seeds the baseline without a headline.
+export const initiativeProgressSeen = pgTable('initiative_progress_seen', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  initiativeId: uuid('initiative_id').references(() => initiatives.id, { onDelete: 'cascade' }).notNull(),
+  lastProgress: integer('last_progress').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.initiativeId] }),
+}));
+
 
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),

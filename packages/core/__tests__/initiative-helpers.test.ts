@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   computeInitiativeProgress,
   computeInitiativeSegments,
+  crossedMilestone,
   type ChildMissionProgress,
   type MissionSegment,
 } from '../mission-helpers';
@@ -118,5 +119,29 @@ describe('computeInitiativeSegments', () => {
   it('tolerates a child with an undefined segments field', () => {
     const a = { segments: [seg('a1', 'notch')] };
     expect(computeInitiativeSegments([a, {}])).toEqual([seg('a1', 'notch')]);
+  });
+});
+
+describe('crossedMilestone', () => {
+  it('returns the highest threshold crossed prev→curr', () => {
+    expect(crossedMilestone(68, 82)).toBe(75); // crosses 75, not 90
+    expect(crossedMilestone(48, 52)).toBe(50);
+    expect(crossedMilestone(0, 100)).toBe(100); // highest of many crossed
+    expect(crossedMilestone(76, 95)).toBe(90);
+  });
+
+  it('returns null when nothing is crossed', () => {
+    expect(crossedMilestone(10, 20)).toBeNull(); // no threshold in (10,20]
+    expect(crossedMilestone(75, 80)).toBeNull(); // 90 not yet reached
+  });
+
+  it('never fires on a non-increase (stalled or regressed)', () => {
+    expect(crossedMilestone(50, 50)).toBeNull();
+    expect(crossedMilestone(90, 40)).toBeNull();
+  });
+
+  it('treats the threshold as inclusive on curr, exclusive on prev', () => {
+    expect(crossedMilestone(49, 50)).toBe(50); // reaches exactly 50
+    expect(crossedMilestone(50, 74)).toBeNull(); // already past 50, not yet 75
   });
 });
