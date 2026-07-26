@@ -563,6 +563,103 @@ describe('PATCH /api/workers/[id]', () => {
     expect(data.abort).toBe(true);
   });
 
+  it('rejects a running update after a human interrupted the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'failed',
+      error: 'Interrupted — human takeover',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Late agent write' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.abort).toBe(true);
+  });
+
+  it('rejects a write when an interrupt wins after the worker was read', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+    // Simulate the interrupt changing the worker from running -> failed between
+    // this handler's initial read and its final conditional update.
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => []),
+        })),
+      })),
+    });
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Late concurrent write' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.abort).toBe(true);
+  });
+
+  it('rejects a terminal reviewer completion before any outcome side effects when interrupt wins', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+      taskId: 'reviewer-task-1',
+      milestones: [],
+    });
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'none', missionId: null }]),
+        })),
+      })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => []),
+        })),
+      })),
+    });
+    lastInsertTable = null;
+    lastInsertValues = null;
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'completed',
+        structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'Looks good' },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
+    expect(lastInsertTable).toBeNull();
+    expect(lastInsertValues).toBeNull();
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+  });
+
   it('updates worker status successfully', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

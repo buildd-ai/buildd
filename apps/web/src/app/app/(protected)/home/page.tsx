@@ -10,6 +10,7 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
+import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
 import TaskCard from '@/components/TaskCard';
@@ -18,6 +19,7 @@ import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { InterruptReviewButton } from './InterruptReviewButton';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
@@ -37,6 +39,7 @@ import {
   type MissionGroup,
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
+import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 
 // --- Helpers ---
 
@@ -191,8 +194,24 @@ export default async function HomePage({
     prNumber: number | null;
     prUrl: string | null;
     policyTier: string;
+    leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
+    verdictSummary: string | null;
     waitingMinutes: number | null;
+  }[] = [];
+
+  let agentReviewingPrs: {
+    workerId: string;
+    taskId: string;
+    taskTitle: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    workspaceId: string;
+    workspaceName: string;
+    reviewerWorkerId: string;
+    reviewerRoleSlug: string | null;
+    reviewerStartedAt: Date | null;
+    missionId: string | null;
   }[] = [];
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
@@ -630,7 +649,7 @@ export default async function HomePage({
             };
           });
 
-        // Escalation inbox (BT-15): PRs needing human action
+        // Escalation inbox (BT-15) + agent-review lease detection
         {
           const openPrWorkers = await db.query.workers.findMany({
             where: and(
@@ -645,27 +664,68 @@ export default async function HomePage({
 
           if (openPrWorkers.length > 0) {
             const openTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
-            const escalatedNotes = openTaskIds.length > 0
+            const openTaskIdSet = new Set(openTaskIds);
+
+            // ── Reviewer lease detection ──────────────────────────────────────
+            // Find active reviewer tasks (category='review') with a live worker
+            // linked to our open PR tasks via context.reviewerFor.
+            const reviewerLiveMap = new Map<string, {
+              reviewerWorkerId: string;
+              reviewerRoleSlug: string | null;
+              reviewerStartedAt: Date | null;
+            }>();
+            if (openTaskIds.length > 0) {
+              const reviewerTasksWithWorkers = await db.query.tasks.findMany({
+                where: and(
+                  inArray(tasks.workspaceId, wsIds),
+                  eq(tasks.category, 'review'),
+                  inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+                ),
+                columns: { id: true, context: true, roleSlug: true },
+                with: {
+                  workers: {
+                    where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                    columns: { id: true, status: true, startedAt: true },
+                    limit: 1,
+                  },
+                },
+              });
+              for (const rt of reviewerTasksWithWorkers) {
+                const ctx = (rt.context ?? {}) as Record<string, unknown>;
+                const origTaskId = ctx.reviewerFor as string | undefined;
+                if (!origTaskId || !openTaskIdSet.has(origTaskId)) continue;
+                const liveWorker = (rt as any).workers?.[0];
+                if (liveWorker) {
+                  reviewerLiveMap.set(origTaskId, {
+                    reviewerWorkerId: liveWorker.id,
+                    reviewerRoleSlug: rt.roleSlug ?? null,
+                    reviewerStartedAt: liveWorker.startedAt ?? null,
+                  });
+                }
+              }
+            }
+            // ─────────────────────────────────────────────────────────────────
+
+            const allReviewerNotes = openTaskIds.length > 0
               ? await db.query.missionNotes.findMany({
                   where: and(
                     inArray(missionNotes.taskId, openTaskIds),
-                    eq(missionNotes.type, 'reviewer_escalated'),
+                    inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
                   ),
-                  columns: { taskId: true, body: true, title: true, status: true },
+                  columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
                 })
               : [];
-            const escalatedMap = new Map<string, string>();
-            const supersededTaskIds = new Set<string>();
-            for (const n of escalatedNotes) {
-              if (n.taskId && n.status === 'superseded') {
-                supersededTaskIds.add(n.taskId);
-                continue;
-              }
-              if (n.status !== 'open') continue;
-              if (n.taskId && !escalatedMap.has(n.taskId)) {
-                escalatedMap.set(n.taskId, n.body ?? n.title);
-              }
-            }
+            const {
+              escalationMap: reviewerEscalationMap,
+              approvalMap: reviewerApprovalMap,
+              supersededTaskIds,
+            } = selectReviewerEvidence(allReviewerNotes);
+            const escalatedMap = new Map(
+              [...reviewerEscalationMap].map(([taskId, evidence]) => [taskId, evidence.reason]),
+            );
+            const approvedMap = new Map(
+              [...reviewerApprovalMap].map(([taskId, evidence]) => [taskId, evidence.summary]),
+            );
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
@@ -673,12 +733,38 @@ export default async function HomePage({
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
 
+            const agentReviewingTaskIds = new Set(reviewerLiveMap.keys());
+
+            // Build agent-reviewing cards (shown in Right Now, not in the human queue)
+            agentReviewingPrs = openPrWorkers
+              .filter(w => w.taskId && agentReviewingTaskIds.has(w.taskId))
+              .map(w => {
+                const ws = wsInboxMap.get(w.workspaceId);
+                const reviewer = reviewerLiveMap.get(w.taskId!)!;
+                return {
+                  workerId: w.id,
+                  taskId: w.taskId ?? '',
+                  taskTitle: (w.task as any)?.title ?? '',
+                  prNumber: w.prNumber,
+                  prUrl: w.prUrl,
+                  workspaceId: w.workspaceId,
+                  workspaceName: ws?.name ?? '',
+                  reviewerWorkerId: reviewer.reviewerWorkerId,
+                  reviewerRoleSlug: reviewer.reviewerRoleSlug,
+                  reviewerStartedAt: reviewer.reviewerStartedAt,
+                  missionId: (w.task as any)?.missionId ?? null,
+                };
+              });
+
             escalationInbox = openPrWorkers
               .filter(w => {
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+                // Exclude while under active agent-review lease
+                if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
                 if (w.taskId && escalatedMap.has(w.taskId)) return true;
+                if (w.taskId && approvedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
                 if (!ws) return false;
                 return resolvePolicy(ws).tier === 'human';
@@ -686,11 +772,16 @@ export default async function HomePage({
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
                 const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
-                const reason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
+                const escalationReason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
                   ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null);
+                const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
                 const waitingMinutes = w.completedAt
                   ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
                   : null;
+                const leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human' =
+                  verdictSummary ? 'agent_approved'
+                  : escalationReason && policy.tier !== 'human' ? 'agent_flagged'
+                  : 'pending_human';
                 return {
                   workerId: w.id,
                   taskId: w.taskId ?? '',
@@ -700,7 +791,9 @@ export default async function HomePage({
                   prNumber: w.prNumber,
                   prUrl: w.prUrl,
                   policyTier: policy.tier,
-                  escalationReason: reason,
+                  leaseState,
+                  escalationReason,
+                  verdictSummary,
                   waitingMinutes,
                 };
               })
@@ -1160,7 +1253,7 @@ export default async function HomePage({
             {/* Right Now */}
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
-              {activeItems.length === 0 && teamWorkspaces.length === 0 ? (
+              {activeItems.length === 0 && agentReviewingPrs.length === 0 && teamWorkspaces.length === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
@@ -1173,7 +1266,7 @@ export default async function HomePage({
                     Connect a repo
                   </Link>
                 </div>
-              ) : activeItems.length === 0 && totalTaskCount === 0 ? (
+              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && totalTaskCount === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
@@ -1215,7 +1308,7 @@ export default async function HomePage({
                     </div>
                   </div>
                 </div>
-              ) : activeItems.length === 0 ? (
+              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 ? (
                 <div>
                   <div className="text-[14px] text-text-secondary mb-3">No agents running.</div>
                   {teamRoles.length > 0 && (
@@ -1240,6 +1333,48 @@ export default async function HomePage({
                 </div>
               ) : (
                 <div className="space-y-2">
+                  {/* Agent-reviewing PR cards — ambient presence, not actionable */}
+                  {agentReviewingPrs.map((item) => (
+                    <div
+                      key={item.reviewerWorkerId}
+                      className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                            <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                              Agent Reviewing
+                            </span>
+                            {item.reviewerRoleSlug && (
+                              <span className="text-[10px] text-text-muted">· {item.reviewerRoleSlug}</span>
+                            )}
+                            {item.reviewerStartedAt && (
+                              <span className="text-[10px] text-text-muted">
+                                {timeAgo(item.reviewerStartedAt)}
+                              </span>
+                            )}
+                          </div>
+                          <Link
+                            href={`/app/tasks/${item.taskId}`}
+                            className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                          >
+                            {item.taskTitle}
+                          </Link>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            {item.workspaceName && (
+                              <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                            )}
+                            {item.prUrl && (
+                              <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                                PR #{item.prNumber} ↗
+                              </ExternalLink>
+                            )}
+                          </div>
+                        </div>
+                        <InterruptReviewButton workerId={item.reviewerWorkerId} />
+                      </div>
+                    </div>
+                  ))}
                   {activeItems.map((item) => (
                     <TaskCard
                       key={item.id}
