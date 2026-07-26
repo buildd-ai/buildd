@@ -30,6 +30,10 @@ export interface EscalationRawItem {
 
 export interface ActionQueueItem {
   subjectKey: string;
+  // Set on Home when the item's mission belongs to an initiative — drives the
+  // initiative filter chips (scoping only; buildActionQueue itself never sets it).
+  initiativeId?: string | null;
+  initiativeTitle?: string | null;
   chip: ActionChip;
   prUrl?: string;
   prNumber?: number;
