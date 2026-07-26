@@ -11,6 +11,7 @@ interface ArtifactItem {
   title: string | null;
   content: string | null;
   shareToken: string | null;
+  visibility?: 'private' | 'public';
   metadata: Record<string, unknown>;
   createdAt: string;
   taskTitle: string | null;
@@ -38,6 +39,75 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  // Local overrides so share/unshare reflect immediately without a page refresh.
+  const [shareOverrides, setShareOverrides] = useState<
+    Record<string, { visibility: 'private' | 'public'; shareToken: string | null }>
+  >({});
+
+  function shareStateFor(a: ArtifactItem): { visibility: 'private' | 'public'; shareToken: string | null } {
+    const override = shareOverrides[a.id];
+    if (override) return override;
+    const visibility = a.visibility ?? (a.shareToken ? 'public' : 'private');
+    return { visibility, shareToken: a.shareToken };
+  }
+
+  function flashCopied(id: string) {
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 2000);
+  }
+
+  async function handleShare(artifact: ArtifactItem) {
+    setLoadingId(artifact.id);
+    try {
+      const res = await fetch(`/api/artifacts/${artifact.id}/share`, {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error(`share failed (${res.status})`);
+      const data = (await res.json()) as { shareUrl?: string; shareToken?: string };
+      const url = data.shareUrl ?? '';
+      const token =
+        data.shareToken ??
+        (url ? url.split('/share/')[1]?.split(/[?#]/)[0] ?? null : null);
+      setShareOverrides((prev) => ({
+        ...prev,
+        [artifact.id]: { visibility: 'public', shareToken: token },
+      }));
+      const copyUrl = url || (token ? `${baseUrl}/share/${token}` : '');
+      if (copyUrl) {
+        try {
+          await navigator.clipboard.writeText(copyUrl);
+          flashCopied(artifact.id);
+        } catch {
+          /* clipboard may be unavailable; sharing still succeeded */
+        }
+      }
+    } catch {
+      /* leave state unchanged so the card keeps working */
+    } finally {
+      setLoadingId(null);
+    }
+  }
+
+  async function handleUnshare(artifact: ArtifactItem) {
+    setLoadingId(artifact.id);
+    try {
+      const res = await fetch(`/api/artifacts/${artifact.id}/share`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error(`unshare failed (${res.status})`);
+      setShareOverrides((prev) => ({
+        ...prev,
+        [artifact.id]: { visibility: 'private', shareToken: null },
+      }));
+    } catch {
+      /* leave state unchanged */
+    } finally {
+      setLoadingId(null);
+    }
+  }
 
   const filtered = artifacts.filter((a) => {
     if (typeFilter !== 'all' && a.type !== typeFilter) return false;
@@ -53,12 +123,10 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
   });
 
   function copyShareLink(artifact: ArtifactItem) {
-    if (!artifact.shareToken) return;
-    const url = `${baseUrl}/share/${artifact.shareToken}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setCopiedId(artifact.id);
-      setTimeout(() => setCopiedId(null), 2000);
-    });
+    const token = shareStateFor(artifact).shareToken;
+    if (!token) return;
+    const url = `${baseUrl}/share/${token}`;
+    navigator.clipboard.writeText(url).then(() => flashCopied(artifact.id));
   }
 
   function getPreview(artifact: ArtifactItem): string | null {
@@ -125,6 +193,9 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
           const style = TYPE_STYLES[artifact.type] || TYPE_STYLES.summary;
           const preview = getPreview(artifact);
           const isCopied = copiedId === artifact.id;
+          const share = shareStateFor(artifact);
+          const isPublic = share.visibility === 'public';
+          const isSharing = loadingId === artifact.id;
 
           return (
             <Link
@@ -207,10 +278,42 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                     Task
                   </Link>
 
-                  {artifact.shareToken && (
+                  {isPublic ? (
+                    <>
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyShareLink(artifact); }}
+                        className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
+                      >
+                        {isCopied ? (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                            </svg>
+                            Copy link
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUnshare(artifact); }}
+                        disabled={isSharing}
+                        title="Make private"
+                        className="px-2 py-1 text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-50"
+                      >
+                        {isSharing ? '…' : 'Unshare'}
+                      </button>
+                    </>
+                  ) : (
                     <button
-                      onClick={(e) => { e.preventDefault(); copyShareLink(artifact); }}
-                      className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleShare(artifact); }}
+                      disabled={isSharing}
+                      className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors disabled:opacity-50"
                     >
                       {isCopied ? (
                         <>
@@ -224,7 +327,7 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
                           </svg>
-                          Share
+                          {isSharing ? 'Sharing…' : 'Share'}
                         </>
                       )}
                     </button>

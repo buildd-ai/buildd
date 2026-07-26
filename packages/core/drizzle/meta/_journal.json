@@ -687,6 +687,13 @@
       "when": 1785064852045,
       "tag": "0097_mysterious_shiver_man",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1785067038939,
+      "tag": "0098_magical_scourge",
+      "breakpoints": true
     }
   ]
 }
