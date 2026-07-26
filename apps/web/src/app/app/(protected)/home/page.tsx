@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -22,6 +22,7 @@ import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
 import { sortInitiatives } from '@/lib/initiative-presentation';
+import { crossedMilestone } from '@buildd/core/mission-helpers';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -163,6 +164,8 @@ export default async function HomePage({
   const RAIL_LIMIT = 6;
   // Initiatives present among the Waiting-on-you items — drives the scoping chips.
   let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
+  // Arc headline: an initiative that crossed a milestone since this user's last visit.
+  let arcHeadline: string | null = null;
 
   let waitingOnYou: Array<{
     kind: 'merge' | 'approve' | 'answer';
@@ -253,6 +256,36 @@ export default async function HomePage({
       const missionToInitiative = new Map<string, { id: string; title: string }>();
       for (const ini of sortedInitiatives) {
         for (const m of ini.missions) missionToInitiative.set(m.id, { id: ini.id, title: ini.title });
+      }
+
+      // Arc headline — detect a milestone crossing since this user's last visit,
+      // then refresh the per-user snapshot to current. A first-ever view seeds the
+      // baseline silently (no snapshot ⇒ no headline).
+      if (sortedInitiatives.length > 0) {
+        const seenRows = await db
+          .select({ initiativeId: initiativeProgressSeen.initiativeId, lastProgress: initiativeProgressSeen.lastProgress })
+          .from(initiativeProgressSeen)
+          .where(and(
+            eq(initiativeProgressSeen.userId, user.id),
+            inArray(initiativeProgressSeen.initiativeId, sortedInitiatives.map((i) => i.id)),
+          ));
+        const seenMap = new Map(seenRows.map((r) => [r.initiativeId, r.lastProgress]));
+        let best: { title: string; milestone: number } | null = null;
+        for (const ini of sortedInitiatives) {
+          const prev = seenMap.get(ini.id);
+          if (prev === undefined) continue; // first view → baseline only
+          const m = crossedMilestone(prev, ini.progress.progress);
+          if (m !== null && (!best || m > best.milestone)) best = { title: ini.title, milestone: m };
+        }
+        if (best) arcHeadline = `${best.title} crossed ${best.milestone}%`;
+
+        await db
+          .insert(initiativeProgressSeen)
+          .values(sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress })))
+          .onConflictDoUpdate({
+            target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
+            set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
+          });
       }
 
       if (wsIds.length > 0) {
@@ -892,9 +925,14 @@ export default async function HomePage({
   // Server runs UTC; assume EST (UTC-5) for time-aware copy
   const hour = (new Date().getUTCHours() - 5 + 24) % 24;
   const timePeriod = hour < 12 ? 'overnight' : 'today';
-  const subheading = completedLast12h > 0
-    ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
-    : 'Your agents are standing by';
+  // Arc-aware subheading: overnight throughput + the actionable "waiting on you"
+  // count (the milestone, when one crossed, leads as the headline above).
+  const shipClause = completedLast12h > 0
+    ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
+    : null;
+  const waitClause = actionQueue.length > 0 ? `${actionQueue.length} waiting on you` : null;
+  const subParts = [shipClause, waitClause].filter(Boolean) as string[];
+  const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
 
   // Chips SCOPE the Waiting-on-you queue (never group it). The section still
   // gates on the unfiltered queue so a filter that empties it doesn't hide the
@@ -916,9 +954,16 @@ export default async function HomePage({
         <div className="md:flex md:gap-0">
           {/* Left column: Greeting + Right Now */}
           <div className="md:w-[60%] md:pr-8">
-            {/* Greeting */}
+            {/* Greeting — replaced by an arc headline when an initiative crossed
+                a milestone since the user's last visit. */}
             <div className="mb-8 md:mb-10">
-              <Greeting firstName={firstName} />
+              {arcHeadline ? (
+                <h1 className="text-[28px] font-semibold text-text-primary leading-tight uppercase tracking-tight">
+                  {arcHeadline}
+                </h1>
+              ) : (
+                <Greeting firstName={firstName} />
+              )}
               <p className="text-[15px] text-text-secondary font-light mt-1.5">
                 {subheading}
               </p>
