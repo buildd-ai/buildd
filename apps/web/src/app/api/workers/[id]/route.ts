@@ -229,6 +229,31 @@ export async function PATCH(
     }
   }
 
+  // connector_permission_insufficient: the connector token is valid but the GitHub App
+  // installation lacks a required permission scope (403 "Resource not accessible by integration").
+  // We do NOT expire the secret — the credential itself is fine. We record the permission gap
+  // and broadcast so the workspace can surface a fix hint.
+  if (body.event === 'connector_permission_insufficient' && typeof body.connectorId === 'string') {
+    const connectorRow = await db.query.connectors.findFirst({
+      where: eq(connectors.id, body.connectorId),
+      columns: { id: true, name: true },
+    });
+    if (connectorRow) {
+      await db
+        .update(secrets)
+        .set({ lastVerificationError: 'mid_task_403_permission', updatedAt: sql`NOW()` })
+        .where(and(
+          eq(secrets.label, body.connectorId),
+          eq(secrets.purpose, 'mcp_connector_credential'),
+        ));
+      void triggerEvent(
+        channels.workspace(worker.workspaceId),
+        events.WORKER_CONNECTOR_PERMISSION_INSUFFICIENT,
+        { workerId: id, connectorId: body.connectorId, connectorName: connectorRow.name },
+      );
+    }
+  }
+
   const {
     status, error, costUsd, turns, localUiUrl, currentAction, milestones,
     appendMilestones,
