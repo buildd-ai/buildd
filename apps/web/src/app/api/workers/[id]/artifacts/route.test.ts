@@ -290,6 +290,41 @@ describe('POST /api/workers/[id]/artifacts', () => {
     expect(mockTriggerEvent).toHaveBeenCalled();
   });
 
+  it('creates artifact PRIVATE by default with no share token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+
+    let insertedValues: any = null;
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertedValues = vals;
+        return {
+          returning: mock(() => [{ id: 'artifact-1', type: 'content', title: 'Test', ...vals }]),
+        };
+      }),
+    });
+
+    const req = createMockPostRequest(
+      { type: 'content', title: 'Private Artifact', content: 'Some content' },
+      'bld_test'
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Insert must not set a share token and must default to private visibility.
+    expect(insertedValues?.shareToken).toBeNull();
+    expect(insertedValues?.visibility).toBe('private');
+    // Response no longer exposes a live share URL for freshly created artifacts.
+    expect(data.artifact.shareUrl).toBeNull();
+  });
+
   it('artifact created by mission-linked worker gets missionId set', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

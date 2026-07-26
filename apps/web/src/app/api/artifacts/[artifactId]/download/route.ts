@@ -32,7 +32,8 @@ export async function GET(
   // Auth: share token (public) or API key/session
   const token = req.nextUrl.searchParams.get('token');
   if (token) {
-    if (token !== artifact.shareToken) {
+    // A valid token grants access only while the artifact is public.
+    if (token !== artifact.shareToken || artifact.visibility !== 'public') {
       return NextResponse.json({ error: 'Invalid token' }, { status: 403 });
     }
   } else {

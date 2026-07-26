@@ -2024,7 +2024,10 @@ export async function handleBuilddAction(
         initiativeId: (params.initiativeId as string) ?? art.initiativeId ?? null,
       }));
 
-      return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
+      const visibilityLine = art.shareUrl
+        ? `Share URL: ${art.shareUrl}`
+        : `Visibility: private (not shared)`;
+      return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\n${visibilityLine}`);
     }
 
     case 'upload_artifact': {

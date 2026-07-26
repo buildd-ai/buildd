@@ -511,6 +511,10 @@ export function normalizeWaitingForOptions(
   );
 }
 
+/** Artifact access control. Private artifacts are visible only to logged-in
+ *  workspace members; public artifacts are viewable by anyone with the share link. */
+export type ArtifactVisibility = 'private' | 'public';
+
 export interface Artifact {
   id: string;
   workerId: string;
@@ -521,6 +525,7 @@ export interface Artifact {
   content: string | null;
   storageKey: string | null;
   shareToken: string | null;
+  visibility: ArtifactVisibility;
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;

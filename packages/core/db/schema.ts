@@ -965,6 +965,10 @@ export const artifacts = pgTable('artifacts', {
   content: text('content'),
   storageKey: text('storage_key'),
   shareToken: text('share_token'),
+  // Access control: 'private' = only logged-in workspace members (default);
+  // 'public' = anyone with the shareToken link. Set to 'public' only via an
+  // explicit Share action, which also (re)generates the shareToken.
+  visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

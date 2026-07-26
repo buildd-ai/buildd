@@ -8,6 +8,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import MarkdownContent from '@/components/MarkdownContent';
 import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
+import ArtifactShareControl from '@/components/ArtifactShareControl';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,13 +72,12 @@ export default async function ArtifactDetailPage({
   const isImage = artifact.storageKey && fileMimeType?.startsWith('image/');
   const isFile = artifact.storageKey && !isImage;
   const downloadUrl = artifact.storageKey
-    ? `/api/artifacts/${artifact.id}/download?token=${artifact.shareToken}`
+    ? `/api/artifacts/${artifact.id}/download`
     : undefined;
   const taskTitle = artifact.worker?.task?.title;
   const taskId = artifact.worker?.task?.id;
   const style = TYPE_STYLES[artifact.type] || { bg: 'bg-surface-3', text: 'text-text-secondary', label: artifact.type };
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-  const shareUrl = artifact.shareToken ? `${baseUrl}/share/${artifact.shareToken}` : null;
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
@@ -126,17 +126,13 @@ export default async function ArtifactDetailPage({
           )}
         </div>
 
-        {/* Share link */}
-        {shareUrl && (
-          <div className="flex items-center gap-2 mb-6 text-sm text-text-muted">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-            </svg>
-            <a href={shareUrl} target="_blank" rel="noopener noreferrer" className="hover:text-text-secondary break-all">
-              {shareUrl}
-            </a>
-          </div>
-        )}
+        {/* Share control (gated: private → Share, public → copy/unshare) */}
+        <ArtifactShareControl
+          artifactId={artifact.id}
+          baseUrl={baseUrl}
+          initialVisibility={(artifact.visibility as 'private' | 'public') ?? 'private'}
+          initialShareToken={artifact.shareToken}
+        />
 
         {/* Content */}
         <div className="bg-surface-2 border border-border-default rounded-[10px] p-6">
