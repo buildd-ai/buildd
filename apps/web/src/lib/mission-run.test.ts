@@ -6,6 +6,13 @@ const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
+const mockPrepareSubjectFiling = mock(() => Promise.resolve({
+  taskValues: {},
+  anchor: null,
+  match: null,
+  warnings: [],
+}) as any);
+const mockRecordSubjectMatchObserved = mock(() => Promise.resolve());
 
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
@@ -86,6 +93,8 @@ const deps = {
   getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace as any,
   getMissionSpendUsd: mockGetMissionSpendUsd as any,
   exhaustMissionBudget: mockExhaustMissionBudget as any,
+  prepareSubjectFiling: mockPrepareSubjectFiling as any,
+  recordSubjectMatchObserved: mockRecordSubjectMatchObserved as any,
 };
 
 describe('runMission', () => {
@@ -104,6 +113,15 @@ describe('runMission', () => {
     mockGetMissionSpendUsd.mockReset();
     mockGetMissionSpendUsd.mockResolvedValue(0);
     mockExhaustMissionBudget.mockReset();
+    mockPrepareSubjectFiling.mockReset();
+    mockPrepareSubjectFiling.mockResolvedValue({
+      taskValues: {},
+      anchor: null,
+      match: null,
+      warnings: [],
+    } as any);
+    mockRecordSubjectMatchObserved.mockReset();
+    mockRecordSubjectMatchObserved.mockResolvedValue();
     mockUpdate.mockReset();
     mockUpdate.mockImplementation(() => ({
       set: () => ({
@@ -360,6 +378,12 @@ describe('runMission', () => {
     expect(result.task.id).toBe('task-existing');
     // Must not create a new task
     expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockRecordSubjectMatchObserved).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: 'organizer',
+        match: expect.objectContaining({ taskId: 'task-existing', outcome: 'attach' }),
+      }),
+    );
     // Must not dispatch
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });

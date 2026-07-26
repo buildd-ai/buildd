@@ -72,6 +72,33 @@ describe('create_task — parentTaskId support', () => {
     expect(body.context.baseBranch).toBe('buildd/abc12345-fix-tests');
   });
 
+  it('passes explicit and legacy subject identity through to task intake', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: '[friction] sandbox failure',
+        description: 'Observed the known sandbox failure.',
+        subjectAnchor: {
+          version: 1,
+          kind: 'error',
+          errorSignature: 'bwrap_namespace_denied',
+          source: 'context',
+          confidence: 'exact',
+        },
+        context: {
+          frictionSignature: 'bwrap_namespace_denied',
+          frictionExcerpt: 'bwrap: No permissions to create a new namespace',
+        },
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.subjectAnchor.errorSignature).toBe('bwrap_namespace_denied');
+    expect(body.context.frictionSignature).toBe('bwrap_namespace_denied');
+  });
+
   it('passes verificationCommand in context when provided', async () => {
     await handleBuilddAction(
       mockApi as unknown as ApiFn,

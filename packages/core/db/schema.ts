@@ -160,6 +160,7 @@ export interface WorkspaceGitConfig {
   requiresPR: boolean;
   targetBranch?: string;              // Where PRs should target
   autoCreatePR: boolean;
+  subjectPolicy?: import('../subject-anchor-observe').SubjectPolicy;
 
   // Agent instructions (prepended to prompt)
   agentInstructions?: string;         // Free-form, admin-defined
