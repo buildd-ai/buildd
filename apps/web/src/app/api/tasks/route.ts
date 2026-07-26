@@ -16,6 +16,12 @@ import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import {
+  prepareSubjectFiling,
+  recordSubjectMatchObserved,
+} from '@/lib/subject-anchor-observer';
+import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
+import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -245,6 +251,7 @@ export async function POST(req: NextRequest) {
       startIn: rawStartIn,
       startAfter: rawStartAfter,
       loopConfig: rawLoopConfig,
+      subjectAnchor: rawSubjectAnchor,
     } = body;
 
     if (!title) {
@@ -334,7 +341,7 @@ export async function POST(req: NextRequest) {
           sql`${tasks.context}->>'frictionSignature' = ${frictionSignature}`,
           notInArray(tasks.status, ['completed', 'failed', 'cancelled']),
         ),
-        columns: { id: true, title: true, description: true },
+        columns: { id: true, title: true, description: true, creationSource: true },
       });
 
       if (existing) {
@@ -344,7 +351,26 @@ export async function POST(req: NextRequest) {
           .set({ description: sql`${tasks.description} || ${appendText}`, updatedAt: new Date() })
           .where(eq(tasks.id, existing.id));
 
-        return NextResponse.json({ ...existing, deduplicated: true }, { status: 200 });
+        const observedAnchor = extractSubjectAnchor({
+          context: incomingContext as Record<string, unknown>,
+        }).anchor;
+        if (observedAnchor) {
+          await recordSubjectMatchObserved({
+            workspaceId,
+            origin: 'friction',
+            reporterId: apiAccount?.id ?? null,
+            anchor: observedAnchor,
+            match: {
+              taskId: existing.id,
+              matchedOrigin: existing.creationSource ?? 'api',
+              outcome: 'attach',
+              keyType: 'error',
+            },
+          });
+        }
+
+        const { creationSource: _creationSource, ...existingResponse } = existing;
+        return NextResponse.json({ ...existingResponse, deduplicated: true }, { status: 200 });
       }
     }
 
@@ -411,6 +437,28 @@ export async function POST(req: NextRequest) {
       createdByWorkerId,
       parentTaskId,
       creationSource: requestedSource,
+    });
+    const creationSource = creatorContext.creationSource ?? 'api';
+    const subjectOrigin: SubjectFilingOrigin = title.startsWith('[friction] ')
+      ? 'friction'
+      : creationSource === 'dashboard' || creationSource === 'mcp'
+        ? creationSource
+        : 'api';
+    const workspaceRepo = targetWorkspace.repo
+      ?.replace(/^https?:\/\/github\.com\//, '')
+      .replace(/\.git$/, '')
+      .replace(/^\/|\/$/g, '');
+    const subjectObservation = await prepareSubjectFiling({
+      workspaceId,
+      workspaceRepo,
+      gitConfig: targetWorkspace.gitConfig,
+      title,
+      description,
+      context: typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext)
+        ? incomingContext
+        : undefined,
+      subjectAnchor: rawSubjectAnchor,
+      origin: subjectOrigin,
     });
 
     const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
@@ -584,6 +632,7 @@ export async function POST(req: NextRequest) {
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
         ...(resolvedStartAt ? { startAt: resolvedStartAt } : {}),
         ...(loopConfig ? { loopConfig } : {}),
+        ...subjectObservation.taskValues,
         // Creator tracking (from service)
         ...creatorContext,
         ...(deferredStart.resolution ? {
@@ -597,6 +646,17 @@ export async function POST(req: NextRequest) {
         } : {}),
       })
       .returning();
+
+    if (subjectObservation.anchor && subjectObservation.match) {
+      await recordSubjectMatchObserved({
+        workspaceId,
+        origin: subjectOrigin,
+        reportingTaskId: task.id,
+        reporterId: creatorContext.createdByAccountId,
+        anchor: subjectObservation.anchor,
+        match: subjectObservation.match,
+      });
+    }
 
     await dispatchNewTask(task, targetWorkspace, {
       assignToLocalUiUrl,

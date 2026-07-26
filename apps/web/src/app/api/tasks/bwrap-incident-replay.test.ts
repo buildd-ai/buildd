@@ -250,8 +250,8 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     expect(data.id).toBe('task-T1');
     expect(data.deduplicated).toBe(true);
 
-    // No new task created
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // No new task is returned; the only insert is the observe-mode subject report.
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
 
     // Description was updated to append Worker B's report
     expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
@@ -280,8 +280,8 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     expect(data.id).toBe('task-T1');
     expect(data.deduplicated).toBe(true);
 
-    // Still no new task
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // Still no new task; the observe-mode report is persisted.
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
 
     // Third report appended
     expect(mockTasksUpdate).toHaveBeenCalledTimes(1);

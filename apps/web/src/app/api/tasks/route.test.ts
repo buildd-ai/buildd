@@ -459,8 +459,12 @@ describe('POST /api/tasks', () => {
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' }); // Workspace exists, no webhook
 
+    let insertedValues: any;
     const mockReturning = mock(() => [createdTask]);
-    const mockValues = mock(() => ({ returning: mockReturning }));
+    const mockValues = mock((values: any) => {
+      insertedValues = values;
+      return { returning: mockReturning };
+    });
     mockTasksInsert.mockReturnValue({ values: mockValues });
 
     const request = createMockRequest({
@@ -571,8 +575,12 @@ describe('POST /api/tasks', () => {
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
+    let insertedValues: any;
     const mockReturning = mock(() => [createdTask]);
-    const mockValues = mock(() => ({ returning: mockReturning }));
+    const mockValues = mock((values: any) => {
+      insertedValues = values;
+      return { returning: mockReturning };
+    });
     mockTasksInsert.mockReturnValue({ values: mockValues });
 
     const request = createMockRequest({
@@ -1572,8 +1580,12 @@ describe('POST /api/tasks', () => {
       title: '[friction] bwrap namespace denied',
       context: { frictionSignature: 'bwrap_namespace_denied' },
     };
+    let insertedValues: any;
     const mockReturning = mock(() => [createdTask]);
-    const mockValues = mock(() => ({ returning: mockReturning }));
+    const mockValues = mock((values: any) => {
+      insertedValues = values;
+      return { returning: mockReturning };
+    });
     mockTasksInsert.mockReturnValue({ values: mockValues });
 
     const request = createMockRequest({
@@ -1595,6 +1607,12 @@ describe('POST /api/tasks', () => {
     expect(data.deduplicated).toBeUndefined();
     // db.insert was called (task was created)
     expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+    expect(insertedValues.subjectAnchor).toMatchObject({
+      kind: 'error',
+      errorSignature: 'bwrap_namespace_denied',
+      source: 'context',
+    });
+    expect(insertedValues.subjectErrorSignature).toBe('bwrap_namespace_denied');
     // db.update was NOT called
     expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
@@ -1626,8 +1644,8 @@ describe('POST /api/tasks', () => {
     // Returns existing task id
     expect(data.id).toBe('task-T1');
     expect(data.deduplicated).toBe(true);
-    // db.insert was NOT called (no new task)
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // The only insert is the observe-mode subject report; no new task is returned.
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
     // db.update was called to append the report
     expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
     expect(mockTasksUpdateSet).toHaveBeenCalledTimes(1);
@@ -1659,7 +1677,7 @@ describe('POST /api/tasks', () => {
     const data = await response.json();
     expect(data.id).toBe('task-T1');
     expect(data.deduplicated).toBe(true);
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockTasksInsert).toHaveBeenCalledTimes(1);
     expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
   });
 
@@ -1764,7 +1782,7 @@ describe('POST /api/tasks', () => {
     expect(mockTasksInsert).toHaveBeenCalledTimes(1);
   });
 
-  it('non-friction task with frictionSignature bypasses dedup gate', async () => {
+  it('non-friction task with frictionSignature remains fileable while observe mode checks its anchor', async () => {
     frictionSetup();
 
     const createdTask = { id: 'task-T5', workspaceId: 'ws-1', title: 'Normal task' };
@@ -1784,8 +1802,9 @@ describe('POST /api/tasks', () => {
     const response = await POST(request);
 
     expect(response.status).toBe(200);
-    // Gate only triggers when title starts with '[friction] '
-    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    // The legacy friction gate still does not deduplicate this filing. Observe
+    // mode performs a read-only subject lookup without changing the response.
+    expect(mockTasksFindFirst).toHaveBeenCalledTimes(1);
     expect(mockTasksInsert).toHaveBeenCalledTimes(1);
   });
 
