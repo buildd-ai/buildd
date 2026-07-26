@@ -21,6 +21,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 
 export const dynamic = 'force-dynamic';
 
@@ -122,34 +123,8 @@ export async function GET(_req: NextRequest) {
       })
     : [];
 
-  // Build maps: taskId → escalation reason, taskId → approval summary
-  const escalationMap = new Map<string, { reason: string; notedAt: Date }>();
-  const approvalMap = new Map<string, { summary: string; notedAt: Date }>();
-  const supersededTaskIds = new Set<string>();
-
-  for (const note of allReviewerNotes) {
-    if (!note.taskId) continue;
-
-    if (note.status === 'superseded') {
-      supersededTaskIds.add(note.taskId);
-      continue;
-    }
-    if (note.status !== 'open') continue;
-
-    if (note.type === 'reviewer_escalated' && !escalationMap.has(note.taskId)) {
-      escalationMap.set(note.taskId, {
-        reason: note.body ?? note.title,
-        notedAt: note.createdAt,
-      });
-    }
-
-    if (note.type === 'reviewer_approved' && !approvalMap.has(note.taskId)) {
-      approvalMap.set(note.taskId, {
-        summary: note.body ?? note.title,
-        notedAt: note.createdAt,
-      });
-    }
-  }
+  const { escalationMap, approvalMap, supersededTaskIds } =
+    selectReviewerEvidence(allReviewerNotes);
 
   // Load workspace gitConfigs for policy detection
   const uniqueWsIds = [...new Set(openPrWorkers.map(w => w.workspaceId))];

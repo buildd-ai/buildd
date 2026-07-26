@@ -1486,8 +1486,15 @@ export async function PATCH(
   const [updated] = await db
     .update(workers)
     .set(updates)
-    .where(eq(workers.id, id))
+    .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
     .returning();
+
+  if (!updated) {
+    return NextResponse.json(
+      { error: 'Worker state changed concurrently', abort: true },
+      { status: 409 },
+    );
+  }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
   // crossed its costBudgetUsd cap. Only fires on terminal worker status so we

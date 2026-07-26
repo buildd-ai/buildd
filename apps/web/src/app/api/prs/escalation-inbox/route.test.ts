@@ -262,6 +262,37 @@ describe('GET /api/prs/escalation-inbox', () => {
     expect(body.items[0].escalationReason).toBeNull();
   });
 
+  it('prefers merge-gate evidence regardless of note query order', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    mockMissionNotesFindMany.mockResolvedValue([
+      {
+        taskId: 't-1',
+        type: 'reviewer_approved',
+        title: 'PR #42 approved by reviewer',
+        body: 'Reviewer approved (confidence 0.95): Looks good!',
+        status: 'open',
+        createdAt: new Date('2026-07-20T10:01:00Z'),
+      },
+      {
+        taskId: 't-1',
+        type: 'reviewer_approved',
+        title: 'PR #42 approved — awaiting human merge',
+        body: "Reviewer approved (confidence 0.95): Looks good!\n\nGate condition is 'approve-only'. Merge from the escalation inbox.",
+        status: 'open',
+        createdAt: new Date('2026-07-20T10:00:00Z'),
+      },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'agent-review' } } },
+    ]);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.items[0].verdictSummary).toContain("Gate condition is 'approve-only'");
+  });
+
   it('agent_reviewed lease excludes even if approve-only note exists (review still in progress)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);

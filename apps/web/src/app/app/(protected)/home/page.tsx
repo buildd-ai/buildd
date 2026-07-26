@@ -33,6 +33,7 @@ import {
   type MissionGroup,
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
+import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 
 // --- Helpers ---
 
@@ -651,22 +652,17 @@ export default async function HomePage({
                   columns: { taskId: true, type: true, body: true, title: true, status: true },
                 })
               : [];
-            const escalatedMap = new Map<string, string>();
-            const approvedMap = new Map<string, string>();
-            const supersededTaskIds = new Set<string>();
-            for (const n of allReviewerNotes) {
-              if (n.taskId && n.status === 'superseded') {
-                supersededTaskIds.add(n.taskId);
-                continue;
-              }
-              if (n.status !== 'open') continue;
-              if (n.type === 'reviewer_escalated' && n.taskId && !escalatedMap.has(n.taskId)) {
-                escalatedMap.set(n.taskId, n.body ?? n.title);
-              }
-              if (n.type === 'reviewer_approved' && n.taskId && !approvedMap.has(n.taskId)) {
-                approvedMap.set(n.taskId, n.body ?? n.title);
-              }
-            }
+            const {
+              escalationMap: reviewerEscalationMap,
+              approvalMap: reviewerApprovalMap,
+              supersededTaskIds,
+            } = selectReviewerEvidence(allReviewerNotes);
+            const escalatedMap = new Map(
+              [...reviewerEscalationMap].map(([taskId, evidence]) => [taskId, evidence.reason]),
+            );
+            const approvedMap = new Map(
+              [...reviewerApprovalMap].map(([taskId, evidence]) => [taskId, evidence.summary]),
+            );
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
