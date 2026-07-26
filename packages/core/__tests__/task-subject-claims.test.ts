@@ -33,7 +33,7 @@ function findSubjectClaimsMigration(): string {
 
   for (const file of files.reverse()) {
     const sql = readFileSync(join(DRIZZLE_DIR, file), 'utf8');
-    if (sql.includes('task_subject_claims')) return sql;
+    if (sql.includes('CREATE TABLE "task_subject_claims"')) return sql;
   }
   throw new Error('No migration found that creates task_subject_claims');
 }
@@ -167,10 +167,25 @@ describe('task_subject_claims — schema shape', () => {
     expect(cols).toContain('keyType');
     expect(cols).toContain('keyHash');
     expect(cols).toContain('canonicalTaskId');
+    expect(cols).toContain('reservationToken');
+    expect(cols).toContain('reservationExpiresAt');
     expect(cols).toContain('generation');
     expect(cols).toContain('state');
     expect(cols).toContain('createdAt');
     expect(cols).toContain('releasedAt');
+  });
+});
+
+describe('task_subject_claims — reservation migration', () => {
+  const migrationSql = readFileSync(
+    join(DRIZZLE_DIR, '0099_slow_ben_parker.sql'),
+    'utf8',
+  );
+
+  it('allows an ownerless short-lived reservation before task insertion', () => {
+    expect(migrationSql).toContain('ALTER COLUMN "canonical_task_id" DROP NOT NULL');
+    expect(migrationSql).toContain('ADD COLUMN "reservation_token" uuid');
+    expect(migrationSql).toContain('ADD COLUMN "reservation_expires_at" timestamp with time zone');
   });
 });
 

@@ -829,7 +829,10 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   // SHA-256 hex of the canonical key fields (e.g. prNumber+fullHeadSha for pr_generation).
   keyHash: text('key_hash').notNull(),
   // The one canonical task that owns this subject generation.
-  canonicalTaskId: uuid('canonical_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Null while a short-lived reservation owns the key but has not inserted its task yet.
+  canonicalTaskId: uuid('canonical_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  reservationToken: uuid('reservation_token'),
+  reservationExpiresAt: timestamp('reservation_expires_at', { withTimezone: true }),
   // Monotonic counter bumped on each supersession (new head SHA = new generation).
   generation: integer('generation').default(1).notNull(),
   // 'active' = claim is live; 'released' = subject resolved (merged, closed, superseded).

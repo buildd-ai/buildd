@@ -1062,6 +1062,17 @@ export interface TaskSubjectAnchor {
   confidence: 'exact' | 'derived';
 }
 
+export type SubjectIntakeOutcome =
+  | { action: 'attached'; taskId: string; reportId: string }
+  | { action: 'superseded'; taskId: string; successorTaskId: string }
+  | {
+      action: 'filed_anyway';
+      taskId: string;
+      relatedTaskId: string;
+      reason: string;
+    }
+  | { action: 'created'; taskId: string };
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
