@@ -19,6 +19,7 @@ import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import InitiativeRail from '@/components/InitiativeRail';
+import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
 import { sortInitiatives } from '@/lib/initiative-presentation';
 
@@ -69,9 +70,9 @@ function formatTime(date: Date | string): string {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams?: Promise<{ workspace?: string }>;
+  searchParams?: Promise<{ workspace?: string; initiative?: string }>;
 }) {
-  const { workspace: wsFilter } = (await searchParams) ?? {};
+  const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
   const user = await getCurrentUser();
 
   const isDev = process.env.NODE_ENV === 'development';
@@ -160,6 +161,8 @@ export default async function HomePage({
   // Durable-arc rail — additive, above the ephemeral feed. Empty ⇒ collapses.
   let railInitiatives: InitiativeListItem[] = [];
   const RAIL_LIMIT = 6;
+  // Initiatives present among the Waiting-on-you items — drives the scoping chips.
+  let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
 
   let waitingOnYou: Array<{
     kind: 'merge' | 'approve' | 'answer';
@@ -239,12 +242,18 @@ export default async function HomePage({
       // optionally narrowed by the active workspace filter. Independent of the
       // task/worker wsIds queries below so it survives an empty workspace set.
       const initiativeTeamIds = activeTeamId ? [activeTeamId] : await getUserTeamIds(user.id);
-      railInitiatives = sortInitiatives(
+      const sortedInitiatives = sortInitiatives(
         await loadInitiativeList({
           teamIds: initiativeTeamIds,
           workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
         }),
-      ).slice(0, RAIL_LIMIT);
+      );
+      railInitiatives = sortedInitiatives.slice(0, RAIL_LIMIT);
+      // Map every child mission → its initiative, for the queue scoping chips.
+      const missionToInitiative = new Map<string, { id: string; title: string }>();
+      for (const ini of sortedInitiatives) {
+        for (const m of ini.missions) missionToInitiative.set(m.id, { id: ini.id, title: ini.title });
+      }
 
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
@@ -824,6 +833,19 @@ export default async function HomePage({
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
 
+        // Tag each item with its mission's initiative and collect the distinct
+        // initiatives present (sorted, blocked-first) for the scoping chips.
+        actionQueue = actionQueue.map((item) => {
+          const ini = item.missionId ? missionToInitiative.get(item.missionId) : undefined;
+          return ini ? { ...item, initiativeId: ini.id, initiativeTitle: ini.title } : item;
+        });
+        const presentInitiativeIds = new Set(
+          actionQueue.map((i) => i.initiativeId).filter(Boolean) as string[],
+        );
+        actionQueueInitiatives = sortedInitiatives
+          .filter((i) => presentInitiativeIds.has(i.id))
+          .map((i) => ({ id: i.id, title: i.title }));
+
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
@@ -874,6 +896,13 @@ export default async function HomePage({
     ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
     : 'Your agents are standing by';
 
+  // Chips SCOPE the Waiting-on-you queue (never group it). The section still
+  // gates on the unfiltered queue so a filter that empties it doesn't hide the
+  // chips (leaving the user unable to clear the filter).
+  const filteredActionQueue = initFilter
+    ? actionQueue.filter((i) => i.initiativeId === initFilter)
+    : actionQueue;
+
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
@@ -904,11 +933,20 @@ export default async function HomePage({
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Waiting on You</div>
                   <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                    {actionQueue.length}
+                    {filteredActionQueue.length}
                   </span>
                 </div>
+                {/* Initiative scoping chips — SCOPE the queue, never group it. */}
+                <InitiativeFilterChips
+                  initiatives={actionQueueInitiatives}
+                  selectedId={initFilter ?? null}
+                  workspaceFilter={wsFilter ?? null}
+                />
+                {filteredActionQueue.length === 0 && (
+                  <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
+                )}
                 <div className="space-y-2">
-                  {actionQueue.map((item) => {
+                  {filteredActionQueue.map((item) => {
                     if (item.chip === 'MERGE') {
                       return (
                         <div key={item.subjectKey} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
