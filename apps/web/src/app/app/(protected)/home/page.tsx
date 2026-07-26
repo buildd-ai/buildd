@@ -18,6 +18,9 @@ import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import InitiativeRail from '@/components/InitiativeRail';
+import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
+import { sortInitiatives } from '@/lib/initiative-presentation';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -154,6 +157,10 @@ export default async function HomePage({
 
   let teamWorkspaces: { id: string; name: string }[] = [];
 
+  // Durable-arc rail — additive, above the ephemeral feed. Empty ⇒ collapses.
+  let railInitiatives: InitiativeListItem[] = [];
+  const RAIL_LIMIT = 6;
+
   let waitingOnYou: Array<{
     kind: 'merge' | 'approve' | 'answer';
     prUrl?: string;
@@ -227,6 +234,17 @@ export default async function HomePage({
         // No valid team cookie → show all user workspaces cross-team
         wsIds = await getUserWorkspaceIds(user.id);
       }
+
+      // Initiative rail — team-scoped (matching the cookie/team logic above),
+      // optionally narrowed by the active workspace filter. Independent of the
+      // task/worker wsIds queries below so it survives an empty workspace set.
+      const initiativeTeamIds = activeTeamId ? [activeTeamId] : await getUserTeamIds(user.id);
+      railInitiatives = sortInitiatives(
+        await loadInitiativeList({
+          teamIds: initiativeTeamIds,
+          workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
+        }),
+      ).slice(0, RAIL_LIMIT);
 
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
@@ -876,6 +894,9 @@ export default async function HomePage({
                 {subheading}
               </p>
             </div>
+
+            {/* Durable-arc rail — above the ephemeral feed; collapses when empty. */}
+            <InitiativeRail initiatives={railInitiatives} />
 
             {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE) */}
             {actionQueue.length > 0 && (
