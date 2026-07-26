@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, missionNotes } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -72,8 +72,9 @@ export async function POST(
   const originalTaskId = ctx.reviewerFor as string | undefined;
   const prNumber = ctx.prNumber as number | undefined;
 
-  // Terminate the reviewer worker
-  await db
+  // Atomically terminate the reviewer worker. Completion and takeover race for
+  // the same live-status lease; only the winner may perform downstream effects.
+  const [interrupted] = await db
     .update(workers)
     .set({
       status: 'failed',
@@ -82,7 +83,15 @@ export async function POST(
       completedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(workers.id, id));
+    .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+    .returning({ id: workers.id });
+
+  if (!interrupted) {
+    return NextResponse.json(
+      { error: 'Worker state changed concurrently — interrupt has no effect' },
+      { status: 409 },
+    );
+  }
 
   // Fail the reviewer task so it doesn't get re-claimed
   await db

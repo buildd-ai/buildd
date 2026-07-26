@@ -481,6 +481,26 @@ export async function PATCH(
     }
   }
 
+  // Reserve terminal ownership before mutating the task or running completion
+  // hooks. Human interrupt uses the same status CAS, so exactly one path can
+  // terminate the lease and produce reviewer outcome side effects.
+  let terminalTransitionReserved = false;
+  if (isTerminalStatus && worker.status !== status) {
+    const [reserved] = await db
+      .update(workers)
+      .set({ status, updatedAt: new Date() })
+      .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+      .returning({ id: workers.id });
+
+    if (!reserved) {
+      return NextResponse.json(
+        { error: 'Worker state changed concurrently', abort: true },
+        { status: 409 },
+      );
+    }
+    terminalTransitionReserved = true;
+  }
+
   // Budget exhaustion detection: check if this is a budget-related failure
   const isBudgetError = status === 'failed' && (
     body.budgetExhausted === true ||
@@ -1486,7 +1506,10 @@ export async function PATCH(
   const [updated] = await db
     .update(workers)
     .set(updates)
-    .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+    .where(and(
+      eq(workers.id, id),
+      eq(workers.status, terminalTransitionReserved ? status : worker.status),
+    ))
     .returning();
 
   if (!updated) {

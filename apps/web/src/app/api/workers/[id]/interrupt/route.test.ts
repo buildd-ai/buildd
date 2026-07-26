@@ -18,6 +18,13 @@ function makeUpdateChain() {
   return { set: setMock, _where: whereMock };
 }
 
+function makeReturningUpdateChain(rows: unknown[]) {
+  const returningMock = mock(() => Promise.resolve(rows));
+  const whereMock = mock(() => ({ returning: returningMock }));
+  const setMock = mock(() => ({ where: whereMock }));
+  return { set: setMock, _where: whereMock, _returning: returningMock };
+}
+
 let workersUpdateChain = makeUpdateChain();
 let tasksUpdateChain = makeUpdateChain();
 
@@ -170,6 +177,9 @@ describe('POST /api/workers/[id]/interrupt', () => {
     // Patch update chain
     const db = (await import('@buildd/core/db')).db;
     (db.update as any) = (table: any) => {
+      if (table === 'workers_table') {
+        return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+      }
       return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
     };
     (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
@@ -179,5 +189,39 @@ describe('POST /api/workers/[id]/interrupt', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-rev-1', 'ws-1');
+  });
+
+  it('returns 409 without promotion when completion wins after the live-status read', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-reviewer-1',
+      workspaceId: 'ws-1',
+      taskId: 't-rev-1',
+      status: 'running',
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 't-rev-1',
+      category: 'review',
+      context: { reviewerFor: 't-original', prNumber: 42 },
+    });
+
+    const db = (await import('@buildd/core/db')).db;
+    const taskUpdate = mock();
+    const insertValues = mock();
+    (db.update as any) = (table: any) => {
+      if (table === 'workers_table') return makeReturningUpdateChain([]);
+      taskUpdate();
+      return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+    };
+    (db.insert as any) = () => ({ values: insertValues });
+
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+
+    expect(res.status).toBe(409);
+    expect(taskUpdate).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 });
