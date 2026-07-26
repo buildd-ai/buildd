@@ -12,7 +12,7 @@
   - MCP server (HTTP): `apps/web/src/app/api/mcp/route.ts`
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
-  - Worker runner: `packages/core/worker-runner.ts`
+  - Worker execution (Bun runner): `apps/runner/src/`
 
 ## Architecture
 
@@ -61,7 +61,7 @@ CI will **fail** if you change schema.ts without generating/committing migration
 - **Flow**: Push to `dev` → CI runs. `dev` does **not** auto-merge to `main` — ship via a release PR.
 - **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
 - **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) opens a `Release vX.Y.Z` PR (dev→main); merge tags + deploys. `release:hotfix` = branch→main, patch bump.
-- **CI**: `.github/workflows/build.yml` runs type check + build; `.github/workflows/preview-tests.yml` runs API integration tests against Vercel preview deploys
+- **CI**: `.github/workflows/build.yml` runs type check + build. See `.github/workflows/` for the full set.
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.
@@ -78,7 +78,7 @@ Missions are high-level goals that organize and generate tasks. Tasks are concre
 - **DB table**: `missions` (with `tasks.missionId` FK)
 - **API**: `/api/missions` (CRUD + `/[id]/run` for manual trigger)
 - **Context builder**: `apps/web/src/lib/mission-context.ts` — injects workspace roles + active workers into planning prompts
-- **Status**: Derived from task health via `deriveMissionHealth` in `packages/core/mission-helpers.ts` — NOT stored as a type
+- **Status**: Derived from task health via `deriveMissionHealth` in `apps/web/src/lib/mission-helpers.ts` — NOT stored as a type
 
 ## Roles & Teams
 
@@ -172,7 +172,6 @@ View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?stat
 ### data-testid Conventions
 Key components have `data-testid` attributes for E2E testing:
 - `task-header-status` - Task detail page status badge
-- `sidebar-task-item` - Sidebar task links (includes `data-status`)
 - `worker-needs-input-banner` - "Needs Input" banner
 
 See `docs/testing.md` for details.
@@ -200,11 +199,9 @@ Some workflows exist as GitHub Actions only and must NOT be registered as routab
 
 ## Skills
 
-- **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
-- **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
-- **UI audit**: `.claude/skills/ui-audit/` — UX evaluation framework
-- **Competitive landscape**: `.claude/skills/competitive-landscape/` — Market analysis
-- **SDK changelog monitor**: `.claude/skills/sdk-changelog-monitor/` — Track SDK releases
+Skills live in `.claude/skills/`; the full available set (including plugin/managed skills) is listed at session start — browse there rather than relying on a hardcoded list here.
+
+- **Agent workflow**: `/buildd-workflow` — task lifecycle guide (claim → work → ship). Use when starting a task.
 
 ## Specs & Docs Layout
 
