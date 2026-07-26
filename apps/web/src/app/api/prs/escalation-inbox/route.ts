@@ -4,7 +4,11 @@
  * Returns PRs requiring human action for the escalation inbox (BT-15).
  * Includes:
  * - PRs where the reviewer escalated (reviewer_escalated mission_note exists)
+ * - PRs where the agent approved under approve-only gate (reviewer_approved note)
  * - PRs where workspace merge policy tier = 'human'
+ *
+ * Excludes:
+ * - PRs currently held under an active agent-review lease (agent_reviewing)
  *
  * Auth: session user.
  */
@@ -12,10 +16,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,16 +63,56 @@ export async function GET(_req: NextRequest) {
     return NextResponse.json({ items: [], count: 0 });
   }
 
-  // Find reviewer_escalated notes for these tasks
   const openTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
-  const escalatedNotes = openTaskIds.length > 0
+
+  // ── Lease detection ────────────────────────────────────────────────────────
+  // Find reviewer tasks (category='review') in these workspaces that have a
+  // live worker. Each reviewer task's context.reviewerFor points to the original
+  // task ID — this is the lease: while such a worker is live, the PR is held.
+  const reviewerLiveMap = new Map<string, { reviewerWorkerId: string; reviewerRoleSlug: string | null }>();
+  if (openTaskIds.length > 0) {
+    const reviewerTasksWithWorkers = await db.query.tasks.findMany({
+      where: and(
+        inArray(tasks.workspaceId, wsIds),
+        eq(tasks.category, 'review'),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      columns: { id: true, context: true, roleSlug: true },
+      with: {
+        workers: {
+          where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+          columns: { id: true, status: true },
+          limit: 1,
+        },
+      },
+    });
+
+    const openTaskIdSet = new Set(openTaskIds);
+    for (const rt of reviewerTasksWithWorkers) {
+      const ctx = (rt.context ?? {}) as Record<string, unknown>;
+      const origTaskId = ctx.reviewerFor as string | undefined;
+      if (!origTaskId || !openTaskIdSet.has(origTaskId)) continue;
+      const liveWorker = (rt as any).workers?.[0];
+      if (liveWorker) {
+        reviewerLiveMap.set(origTaskId, {
+          reviewerWorkerId: liveWorker.id,
+          reviewerRoleSlug: rt.roleSlug ?? null,
+        });
+      }
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Find reviewer_escalated and reviewer_approved notes for these tasks
+  const allReviewerNotes = openTaskIds.length > 0
     ? await db.query.missionNotes.findMany({
         where: and(
           inArray(missionNotes.taskId, openTaskIds),
-          eq(missionNotes.type, 'reviewer_escalated'),
+          inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
         ),
         columns: {
           taskId: true,
+          type: true,
           title: true,
           body: true,
           status: true,
@@ -77,24 +122,36 @@ export async function GET(_req: NextRequest) {
       })
     : [];
 
-  // Build a map: taskId → escalation reason
+  // Build maps: taskId → escalation reason, taskId → approval summary
   const escalationMap = new Map<string, { reason: string; notedAt: Date }>();
+  const approvalMap = new Map<string, { summary: string; notedAt: Date }>();
   const supersededTaskIds = new Set<string>();
-  for (const note of escalatedNotes) {
-    if (note.taskId && note.status === 'superseded') {
+
+  for (const note of allReviewerNotes) {
+    if (!note.taskId) continue;
+
+    if (note.status === 'superseded') {
       supersededTaskIds.add(note.taskId);
       continue;
     }
     if (note.status !== 'open') continue;
-    if (note.taskId && !escalationMap.has(note.taskId)) {
+
+    if (note.type === 'reviewer_escalated' && !escalationMap.has(note.taskId)) {
       escalationMap.set(note.taskId, {
         reason: note.body ?? note.title,
         notedAt: note.createdAt,
       });
     }
+
+    if (note.type === 'reviewer_approved' && !approvalMap.has(note.taskId)) {
+      approvalMap.set(note.taskId, {
+        summary: note.body ?? note.title,
+        notedAt: note.createdAt,
+      });
+    }
   }
 
-  // Load workspace gitConfigs for human-tier detection
+  // Load workspace gitConfigs for policy detection
   const uniqueWsIds = [...new Set(openPrWorkers.map(w => w.workspaceId))];
   const workspaceRows = await db.query.workspaces.findMany({
     where: inArray(workspaces.id, uniqueWsIds),
@@ -102,14 +159,21 @@ export async function GET(_req: NextRequest) {
   });
   const wsMap = new Map(workspaceRows.map(ws => [ws.id, ws]));
 
-  // Filter to escalation-inbox items; exclude test-generated holds and terminal-state PRs
+  const agentReviewingTaskIds = new Set(reviewerLiveMap.keys());
+
   const items = openPrWorkers
     .filter(w => {
       if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
       const taskTitle = (w.task as any)?.title ?? '';
       if (taskTitle.startsWith('[smoke-test')) return false;
       if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+
+      // Exclude items currently under an active agent-review lease
+      if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
+
       if (w.taskId && escalationMap.has(w.taskId)) return true;
+      // Include agent-approved items (approve-only gate) so the human can merge
+      if (w.taskId && approvalMap.has(w.taskId)) return true;
       const ws = wsMap.get(w.workspaceId);
       if (!ws) return false;
       const policy = resolvePolicy(ws);
@@ -118,10 +182,16 @@ export async function GET(_req: NextRequest) {
     .map(w => {
       const ws = wsMap.get(w.workspaceId);
       const escalation = w.taskId ? escalationMap.get(w.taskId) : undefined;
+      const approval = w.taskId ? approvalMap.get(w.taskId) : undefined;
       const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
       const waitingMinutes = w.completedAt
         ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
         : null;
+
+      const leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human' =
+        approval ? 'agent_approved'
+        : escalation ? 'agent_flagged'
+        : 'pending_human';
 
       return {
         workerId: w.id,
@@ -133,7 +203,9 @@ export async function GET(_req: NextRequest) {
         prNumber: w.prNumber,
         prUrl: w.prUrl,
         policyTier: policy.tier,
+        leaseState,
         escalationReason: escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null),
+        verdictSummary: approval?.summary ?? null,
         waitingMinutes,
       };
     });

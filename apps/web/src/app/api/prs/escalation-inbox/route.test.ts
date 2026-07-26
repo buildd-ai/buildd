@@ -7,6 +7,7 @@ const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockMissionNotesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
+const mockTasksFindMany = mock(() => [] as any[]);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -23,10 +24,15 @@ mock.module('@/lib/merge-policy', () => ({
   },
 }));
 
+mock.module('@/lib/task-presentation', () => ({
+  LIVE_WORKER_STATUSES: ['idle', 'running', 'starting', 'waiting_input'],
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
+      tasks: { findMany: mockTasksFindMany },
       missionNotes: { findMany: mockMissionNotesFindMany },
       workspaces: { findMany: mockWorkspacesFindMany },
     },
@@ -48,8 +54,9 @@ mock.module('@buildd/core/db/schema', () => ({
     prUrl: 'prUrl',
     mergedAt: 'mergedAt',
     prLifecycleStatus: 'prLifecycleStatus',
+    status: 'status',
   },
-  tasks: { id: 'id', title: 'title', missionId: 'missionId' },
+  tasks: { id: 'id', title: 'title', missionId: 'missionId', workspaceId: 'workspaceId', category: 'category', status: 'status', roleSlug: 'roleSlug', context: 'context' },
   workspaces: { id: 'id' },
   missionNotes: { taskId: 'taskId', type: 'type' },
 }));
@@ -74,6 +81,15 @@ function makeWorker(overrides: Record<string, any> = {}) {
   };
 }
 
+function makeReviewerTask(originalTaskId: string, hasLiveWorker: boolean) {
+  return {
+    id: 'rt-1',
+    context: { reviewerFor: originalTaskId, prNumber: 42 },
+    roleSlug: 'reviewer',
+    workers: hasLiveWorker ? [{ id: 'rw-1', status: 'running' }] : [],
+  };
+}
+
 describe('GET /api/prs/escalation-inbox', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
@@ -81,6 +97,8 @@ describe('GET /api/prs/escalation-inbox', () => {
     mockWorkersFindMany.mockReset();
     mockMissionNotesFindMany.mockReset();
     mockWorkspacesFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -109,6 +127,7 @@ describe('GET /api/prs/escalation-inbox', () => {
     const body = await res.json();
     expect(body.count).toBe(1);
     expect(body.items[0].prNumber).toBe(42);
+    expect(body.items[0].leaseState).toBe('pending_human');
   });
 
   it('excludes closed PR from inbox even if DB returns it', async () => {
@@ -141,12 +160,12 @@ describe('GET /api/prs/escalation-inbox', () => {
     expect(body.count).toBe(0);
   });
 
-  it('includes escalated PR regardless of workspace policy', async () => {
+  it('includes escalated PR regardless of workspace policy (agent_flagged)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindMany.mockResolvedValue([makeWorker()]);
     mockMissionNotesFindMany.mockResolvedValue([
-      { taskId: 't-1', title: 'Escalated', body: 'Reviewer could not decide', status: 'open' },
+      { taskId: 't-1', type: 'reviewer_escalated', title: 'Escalated', body: 'Reviewer could not decide', status: 'open', createdAt: new Date() },
     ]);
     mockWorkspacesFindMany.mockResolvedValue([
       { id: 'ws-1', name: 'Acme', gitConfig: null },
@@ -154,6 +173,7 @@ describe('GET /api/prs/escalation-inbox', () => {
     const res = await GET(makeRequest());
     const body = await res.json();
     expect(body.count).toBe(1);
+    expect(body.items[0].leaseState).toBe('agent_flagged');
     expect(body.items[0].escalationReason).toBe('Reviewer could not decide');
   });
 
@@ -164,10 +184,12 @@ describe('GET /api/prs/escalation-inbox', () => {
     mockMissionNotesFindMany.mockResolvedValue([
       {
         taskId: 't-1',
+        type: 'reviewer_escalated',
         title: 'Escalated',
         body: 'Original hold',
         status: 'superseded',
         supersededByPrNumber: 43,
+        createdAt: new Date(),
       },
     ]);
     mockWorkspacesFindMany.mockResolvedValue([
@@ -176,5 +198,93 @@ describe('GET /api/prs/escalation-inbox', () => {
 
     const res = await GET(makeRequest());
     expect((await res.json()).count).toBe(0);
+  });
+
+  // ── Lease detection tests ────────────────────────────────────────────────
+
+  it('excludes PR from inbox while agent review lease is active (agent_reviewing)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    // Reviewer task with a live worker
+    mockTasksFindMany.mockResolvedValue([makeReviewerTask('t-1', true)]);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(0);
+  });
+
+  it('includes PR in inbox once reviewer worker is gone (lease released)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    // Reviewer task exists but has NO live worker
+    mockTasksFindMany.mockResolvedValue([makeReviewerTask('t-1', false)]);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(1);
+    expect(body.items[0].leaseState).toBe('pending_human');
+  });
+
+  it('includes agent_approved item with verdictSummary when approve-only gate fired', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    mockMissionNotesFindMany.mockResolvedValue([
+      {
+        taskId: 't-1',
+        type: 'reviewer_approved',
+        title: 'PR #42 approved — awaiting human merge',
+        body: "Reviewer approved (confidence 0.95): Looks good!\n\nGate condition is 'approve-only'. Merge from the escalation inbox.",
+        status: 'open',
+        createdAt: new Date(),
+      },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { gateCondition: 'approve-only' } } } },
+    ]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(1);
+    expect(body.items[0].leaseState).toBe('agent_approved');
+    expect(body.items[0].verdictSummary).toContain('approve-only');
+    expect(body.items[0].escalationReason).toBeNull();
+  });
+
+  it('agent_reviewed lease excludes even if approve-only note exists (review still in progress)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker()]);
+    // Both an approved note AND an active reviewer worker would be contradictory but
+    // lease detection wins: the item is excluded while the worker is live.
+    mockMissionNotesFindMany.mockResolvedValue([
+      {
+        taskId: 't-1',
+        type: 'reviewer_approved',
+        title: 'Already approved',
+        body: 'Previous run approved it',
+        status: 'open',
+        createdAt: new Date(),
+      },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    mockTasksFindMany.mockResolvedValue([makeReviewerTask('t-1', true)]);
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(0);
   });
 });
