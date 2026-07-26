@@ -28,6 +28,7 @@ const mockGithubApi = mock(() => Promise.resolve([]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockDecrypt = mock((value: string) => value);
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
@@ -85,6 +86,7 @@ mock.module('@buildd/core/db', () => ({
       teams: { findFirst: mockTeamsFindFirst },
       connectors: { findFirst: mockConnectorsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
+      workerErrorTraces: { findMany: mockWorkerErrorTracesFindMany },
       missions: { findFirst: mockMissionsFindFirst },
     },
     update: (table: any) => {
@@ -162,6 +164,8 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: 'missionNotes',
   connectors: 'connectors',
   secrets: 'secrets',
+  workerErrorTraces: { workerId: 'workerId' },
+  missions: 'missions',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -416,6 +420,8 @@ describe('PATCH /api/workers/[id]', () => {
     mockUpsertAutoArtifact.mockReset();
     mockFormatStructuredOutput.mockReset();
     mockTeamsFindFirst.mockReset();
+    mockWorkerErrorTracesFindMany.mockReset();
+    mockWorkerErrorTracesFindMany.mockResolvedValue([]);
 
     // Defaults
     mockUpsertAutoArtifact.mockResolvedValue(undefined);
@@ -4054,6 +4060,187 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskStatusSet?.status).toBe('completed');
       expect(taskStatusSet?.loopState).toBeUndefined();
       expect(taskStatusSet?.loopIteration).toBeUndefined();
+    });
+  });
+
+  describe('Auth failover to Codex on auth failure', () => {
+    // Base worker setup reused across tests
+    const makeAuthFailWorker = () => ({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      status: 'running',
+      milestones: [],
+      pendingInstructions: null,
+      branch: 'buildd/task-1',
+    });
+
+    // Task row visible to all queries in the handler (findFirst + select)
+    const makeClaudeTask = (ctx: Record<string, unknown> = {}) => ({
+      id: 'task-1',
+      backend: null,       // Claude (null = default)
+      workspaceId: 'ws-1',
+      context: ctx,
+      status: 'pending',
+      missionId: null,
+      outputRequirement: 'auto',
+      title: 'Test task',
+      workspace: { teamId: 'team-1', name: 'test-workspace' },
+    });
+
+    beforeEach(() => {
+      const updatedWorker = { id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
+      });
+    });
+
+    it('flips task to Codex and requeues on auth failure when Codex credential is present', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
+
+      // Codex credential present: secrets.findMany returns a row
+      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Invalid authentication credentials. Please ensure that your API key is correct.',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Task must have been reset to pending with backend='codex'
+      const failoverUpdate = taskSetCalls.find((u: any) => u.status === 'pending' && u.backend === 'codex');
+      expect(failoverUpdate).toBeDefined();
+      expect(failoverUpdate?.context?.authFailoverApplied).toBe(true);
+      expect(failoverUpdate?.context?.failedOverFrom).toBe('claude');
+      expect(failoverUpdate?.context?.failoverReason).toBe('auth_failure');
+
+      // Must NOT also produce a permanent-failure task update
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+    });
+
+    it('fails normally when auth error occurs but no Codex credential is present', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
+
+      // No Codex credential
+      mockSecretsFindMany.mockResolvedValue([]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Invalid authentication credentials. Please ensure that your API key is correct.',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Task must fail normally — no flip to Codex
+      expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+    });
+
+    it('does not flip on a non-auth code failure', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
+
+      // Codex credential present — but error is not auth-related
+      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'npm install failed: Cannot find module react',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // No Codex flip — non-auth failure should fall through to normal failure
+      expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
+    });
+
+    it('does not flip again when authFailoverApplied is already set (ping-pong guard)', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+
+      // Task already flipped once — context carries the guard flag
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask({
+        authFailoverApplied: true,
+        failedOverFrom: 'claude',
+        failoverReason: 'auth_failure',
+      }));
+
+      // Codex credential present — but guard must prevent re-flip
+      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Invalid authentication credentials. Please ensure that your API key is correct.',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+
+      // Guard active — must NOT flip again
+      expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
+      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failedUpdate).toBeDefined();
     });
   });
 });
