@@ -46,9 +46,15 @@ async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
   return membership?.role !== 'member';
 }
 
-function deriveStatus(secret: { tokenExpiresAt: Date | null } | undefined): 'connected' | 'expired' | 'not_connected' {
+function deriveStatus(
+  secret: { tokenExpiresAt: Date | null; lastVerificationError?: string | null } | undefined,
+): 'connected' | 'expired' | 'not_connected' {
   if (!secret) return 'not_connected';
+  // Expired if the token has a past expiry, OR the refresher marked the credential
+  // dead by nulling tokenExpiresAt and recording a verification error (spec §1b /
+  // Ground truth #4). Without the latter, a dead credential renders green.
   if (secret.tokenExpiresAt && secret.tokenExpiresAt < new Date()) return 'expired';
+  if (secret.tokenExpiresAt == null && secret.lastVerificationError != null) return 'expired';
   return 'connected';
 }
 
@@ -95,7 +101,7 @@ export async function GET(req: NextRequest) {
       .map(s => s.connector)
       .filter((c): c is NonNullable<typeof c> => !!c && !ownedIds.has(c.id));
 
-    let secretMap = new Map<string, { tokenExpiresAt: Date | null }>();
+    let secretMap = new Map<string, { tokenExpiresAt: Date | null; lastVerificationError: string | null }>();
     const connectorIds = [...rows.map(r => r.id), ...sharedIn.map(c => c.id)];
     if (connectorIds.length > 0) {
       // Credential status is keyed on each connector's OWNER team (§1b):
@@ -107,10 +113,10 @@ export async function GET(req: NextRequest) {
           eq(secrets.purpose, 'mcp_connector_credential'),
           inArray(secrets.label, connectorIds),
         ),
-        columns: { label: true, tokenExpiresAt: true },
+        columns: { label: true, tokenExpiresAt: true, lastVerificationError: true },
       });
       for (const s of secretRows) {
-        if (s.label) secretMap.set(s.label, { tokenExpiresAt: s.tokenExpiresAt });
+        if (s.label) secretMap.set(s.label, { tokenExpiresAt: s.tokenExpiresAt, lastVerificationError: s.lastVerificationError });
       }
     }
 

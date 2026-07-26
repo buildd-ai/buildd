@@ -6,6 +6,8 @@
  * - apps/web/src/app/api/mcp/route.ts (HTTP server)
  */
 
+import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const PRIORITY_NAMES: Record<string, number> = {
@@ -90,6 +92,7 @@ export const adminActions = [
   'approve_plan', 'reject_plan',
   'manage_missions',
   'manage_initiatives',
+  'link_tracker',
   'manage_workspaces',
   'manage_watched_projects',
   'manage_model_tiers',
@@ -118,13 +121,13 @@ export function buildToolDescription(actions: readonly string[]): string {
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset? }',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields plus the latest worker (id, status, branch, prUrl, prNumber, summary from task.result, error, completedAt) and artifact IDs + shareUrls. Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled — completed/failed require no active worker; cancelled can be set on any task including assigned ones, use it to kill duplicate or unwanted tasks) } — updates task metadata. To redirect a running agent mid-flight, use send_agent_message instead; update_task changes do not reach an active worker.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId? (link retry to original task), dependsOn? (array of task IDs that must complete AND have their PRs merged before this task is claimable — REQUIRED for acceptance/gate/validation tasks; without it the task is claimed immediately even if upstream PRs are still open, causing repeated failures), pathManifest? (array of file paths/globs this task will create or modify — e.g. ["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]; the API auto-adds dependsOn edges when manifests of sibling tasks overlap, preventing two tasks from editing the same file in parallel), roleSlug? (route to specific role), baseBranch? (start worktree from this branch instead of default), verificationCommand? (command to run after completion), iteration? (retry attempt number), maxIterations? (max retry attempts), failureContext? (error output from previous attempt), skillSlugs?, tier? (premium|standard|budget — intelligence tier resolved at dispatch time via team registry; takes precedence over role default but loses to explicit model), model? (full model ID — bypasses tier resolution entirely; use tier instead for registry-managed routing), effort? (low|medium|high — reasoning effort), callbackUrl? (HTTPS URL to POST results on completion), callbackToken? (Bearer token for callback auth), release? ("true"|"false"|"inherit" — override workspace release default; "true" forces release on completion, "false" suppresses it, "inherit" uses workspace setting), backend? (claude|codex — which agent engine runs the task; omit to inherit the role default, then claude) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -145,9 +148,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number, dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number } — deferred missions are active but inert until resolved startAt [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate) } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
-    manage_workspaces: '{ action: "list" | "create" | "update" | "create_repo" | "init", workspaceId? (required for update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
+    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
@@ -761,6 +765,39 @@ export async function handleBuilddAction(
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
       lines.push(`**Task URL:** ${taskUrl}`);
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
+      if (task.loopConfig) {
+        const maxLoops = task.loopConfig.maxLoops ?? 5;
+        const attempt = Math.min((task.loopIteration ?? 0) + 1, maxLoops);
+        lines.push(`**Loop:** ${task.loopState ?? 'pending'} — attempt ${attempt}/${maxLoops}`);
+        const condition = task.loopConfig.exitCondition;
+        const conditionDetail = condition.type === 'command' && condition.command
+          ? `: \`${condition.command}\``
+          : '';
+        lines.push(`**Exit condition:** ${condition.type}${conditionDetail}`);
+
+        const history = Array.isArray(task.result?.loopHistory)
+          ? task.result.loopHistory
+          : Array.isArray(task.context?.loopHistory)
+            ? task.context.loopHistory
+            : [];
+        lines.push('', `## Loop history (${history.length})`);
+        if (history.length === 0) {
+          lines.push('No iterations evaluated yet.');
+        } else {
+          for (const entry of history) {
+            const evidence = entry.evidence && typeof entry.evidence === 'object'
+              ? entry.evidence as Record<string, unknown>
+              : {};
+            const durationMs = typeof evidence.durationMs === 'number' ? evidence.durationMs : null;
+            const duration = durationMs === null ? '' : ` · ${(durationMs / 1000).toFixed(2)}s`;
+            const excerptValue = evidence.output ?? evidence.stderr ?? evidence.stdout;
+            const excerpt = typeof excerptValue === 'string'
+              ? `\n  Evidence: ${excerptValue.slice(0, 300)}${excerptValue.length > 300 ? '…' : ''}`
+              : '';
+            lines.push(`- **Iteration ${(entry.iteration ?? 0) + 1}:** ${entry.satisfied ? 'met' : 'unmet'} · ${entry.conditionType}${duration}\n  ${entry.summary ?? 'No summary'}${excerpt}`);
+          }
+        }
+      }
       if (task.workspace?.name || task.workspace?.repo) {
         lines.push(`**Workspace:** ${task.workspace.name}${task.workspace.repo ? ` (${task.workspace.repo})` : ''}`);
       }
@@ -1148,9 +1185,20 @@ export async function handleBuilddAction(
       if (params.priority !== undefined) updateFields.priority = normalizePriority(params.priority);
       if (params.project !== undefined) updateFields.project = params.project;
       if (params.status !== undefined) updateFields.status = params.status;
+      if (params.maxLoops !== undefined) {
+        if (
+          typeof params.maxLoops !== 'number'
+          || !Number.isInteger(params.maxLoops)
+          || params.maxLoops < LOOP_MAX_LOOPS_MIN
+          || params.maxLoops > LOOP_MAX_LOOPS_MAX
+        ) {
+          throw new Error(`maxLoops must be an integer between ${LOOP_MAX_LOOPS_MIN} and ${LOOP_MAX_LOOPS_MAX}`);
+        }
+        updateFields.maxLoops = params.maxLoops;
+      }
 
       if (Object.keys(updateFields).length === 0) {
-        throw new Error('At least one field (title, description, priority, project, status) must be provided');
+        throw new Error('At least one field (title, description, priority, project, status, maxLoops) must be provided');
       }
 
       const updated = await api(`/api/tasks/${params.taskId}`, {
@@ -1158,7 +1206,10 @@ export async function handleBuilddAction(
         body: JSON.stringify(updateFields),
       });
 
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}`);
+      const loopInfo = params.maxLoops !== undefined
+        ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
+        : '';
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}`);
     }
 
     case 'create_task': {
@@ -1169,6 +1220,7 @@ export async function handleBuilddAction(
         'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
+        'loopConfig', 'loopUntilVerified',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
@@ -1207,6 +1259,27 @@ export async function handleBuilddAction(
       if (params.startAt !== undefined) taskBody.startAt = params.startAt;
       if (params.startIn !== undefined) taskBody.startIn = params.startIn;
       if (params.startAfter !== undefined) taskBody.startAfter = params.startAfter;
+
+      if (params.loopUntilVerified !== undefined && params.loopUntilVerified !== true) {
+        throw new Error('loopUntilVerified must be true when provided');
+      }
+      if (params.loopUntilVerified === true && params.loopConfig !== undefined) {
+        throw new Error('Provide either loopConfig or loopUntilVerified, not both');
+      }
+      if (params.loopUntilVerified === true) {
+        if (typeof params.verificationCommand !== 'string' || params.verificationCommand.trim() === '') {
+          throw new Error('loopUntilVerified requires a non-blank verificationCommand');
+        }
+        taskBody.loopConfig = parseLoopConfig(
+          { exitCondition: { type: 'command' } },
+          params.verificationCommand,
+        );
+      } else if (params.loopConfig !== undefined) {
+        taskBody.loopConfig = parseLoopConfig(
+          params.loopConfig,
+          typeof params.verificationCommand === 'string' ? params.verificationCommand : undefined,
+        );
+      }
 
       // Auto-link to mission: explicit param takes precedence, then inherit from caller's task
       if (params.missionId) {
@@ -2331,9 +2404,12 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.pacingMode !== undefined) body.pacingMode = params.pacingMode;
+          if (params.pacingMaxPerHour !== undefined) body.pacingMaxPerHour = params.pacingMaxPerHour;
           if (params.startAt !== undefined) body.startAt = params.startAt;
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
+          if (params.startMode !== undefined) body.startMode = params.startMode;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2343,7 +2419,8 @@ export async function handleBuilddAction(
             : data.heartbeatInfo
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
+          const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
         }
         case 'get': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2359,11 +2436,15 @@ export async function handleBuilddAction(
             : schedCtx?.heartbeat
               ? `\nOrchestration: auto\nHeartbeat: ${heartbeatRunning ? 'enabled' : 'paused'}${schedCtx.activeHoursStart != null && schedCtx.activeHoursEnd != null ? ` (active ${schedCtx.activeHoursStart}:00-${schedCtx.activeHoursEnd}:00${schedCtx.activeHoursTimezone ? ` ${schedCtx.activeHoursTimezone}` : ''})` : ''}${schedCtx.heartbeatChecklist ? `\nChecklist: ${schedCtx.heartbeatChecklist}` : ''}`
               : '\nOrchestration: auto';
-          const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks}` : '';
+          const concurrentInfo = data.maxConcurrentTasks != null ? `\nMax concurrent tasks: ${data.maxConcurrentTasks} (mission-level cap)` : '';
           const depInfo = data.dependsOnMissionId ? `\nDependency: ${data.dependsOnMissionId} (gate: ${data.gateCondition})${data.blocked ? ` — BLOCKED: ${data.blockedReason}` : ' — unblocked'}` : '';
           const budgetInfo = data.costBudgetUsd != null ? `\nBudget: $${parseFloat(data.costBudgetUsd).toFixed(2)} limit${data.status === 'budget_exhausted' ? ' — EXHAUSTED (raise to resume)' : ''}` : '';
+          const pacingInfo = data.pacingMode === 'paced'
+            ? `\nPacing: max ${data.pacingMaxPerHour ?? 1} task(s)/hr${data.lastTaskStartedAt ? ` (last start ${new Date(data.lastTaskStartedAt).toISOString()})` : ''}`
+            : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${concurrentInfo}${depInfo}${budgetInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2391,15 +2472,27 @@ export async function handleBuilddAction(
           if (params.gateCondition !== undefined) body.gateCondition = params.gateCondition;
           if (params.orchestrationMode !== undefined) body.orchestrationMode = params.orchestrationMode;
           if (params.costBudgetUsd !== undefined) body.costBudgetUsd = params.costBudgetUsd;
+          if (params.pacingMode !== undefined) body.pacingMode = params.pacingMode;
+          if (params.pacingMaxPerHour !== undefined) body.pacingMaxPerHour = params.pacingMaxPerHour;
           if (params.startAt !== undefined) body.startAt = params.startAt;
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
+          if (params.startMode !== undefined) body.startMode = params.startMode;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
-          return text(`Mission updated: "${data.title}" [${data.status}] (ID: ${data.id})`);
+          const heldStatus = data.isHeld ? ' [HELD — tasks not claimable]' : '';
+          return text(`Mission updated: "${data.title}" [${data.status}]${heldStatus} (ID: ${data.id})`);
+        }
+        case 'arm': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ arm: true }),
+          });
+          return text(`Mission armed: "${data.title}" (ID: ${data.id}) — tasks are now claimable by workers.`);
         }
         case 'delete': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2423,7 +2516,7 @@ export async function handleBuilddAction(
           return text(`Task ${params.taskId} unlinked from mission`);
         }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task`);
       }
     }
 
@@ -2546,12 +2639,35 @@ export async function handleBuilddAction(
       }
     }
 
+    // ── External tracker links ─────────────────────────────────────────────
+
+    case 'link_tracker': {
+      const entityType = (params.entityType as string) ?? 'mission';
+      const entityId = params.entityId as string;
+      const url = params.url as string;
+      if (!entityId) throw new Error('entityId is required');
+      if (!url) throw new Error('url is required');
+      // Phase 1 supports mission ↔ Linear project only. The shape is generic so
+      // task/initiative links are a later add, not a redesign.
+      if (entityType !== 'mission') {
+        throw new Error(`Unsupported entityType: ${entityType}. Phase 1 supports "mission" only.`);
+      }
+      const data = await api(`/api/missions/${entityId}/link`, {
+        method: 'POST',
+        body: JSON.stringify({ url }),
+      });
+      return text(
+        `Linked mission ${entityId} to ${data.provider ?? 'linear'} ${data.externalId ?? ''}\n` +
+        `URL: ${data.externalUrl ?? url}`,
+      );
+    }
+
     // ── Workspaces ─────────────────────────────────────────────────────────
 
     case 'manage_workspaces': {
 
       const wsAction = params.action as string;
-      if (!wsAction) throw new Error('action is required (list, create, update, create_repo, init)');
+      if (!wsAction) throw new Error('action is required (list, get, create, update, create_repo, init)');
 
       switch (wsAction) {
         case 'create': {
@@ -2588,6 +2704,12 @@ export async function handleBuilddAction(
             `- **${ws.name}**${ws.repo ? ` (${ws.repo})` : ' (no repo)'}\n  ID: ${ws.id}${ws.accessMode ? ` | Access: ${ws.accessMode}` : ''}`
           ).join('\n\n');
           return text(`${wsList.length} workspace(s):\n\n${summary}`);
+        }
+        case 'get': {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) throw new Error('workspaceId is required for get');
+          const config = await api(`/api/workspaces/${wsId}/config`);
+          return text(`Workspace ${wsId} config:\n${JSON.stringify(config, null, 2)}`);
         }
         case 'update': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -2666,7 +2788,7 @@ export async function handleBuilddAction(
           return text(`Workspace ${wsId} directory will be auto-created by the runner when a task is claimed. No-repo workspaces are resolved to a persistent project directory on the runner (e.g. /home/coder/project/{workspace-name}/). To set up the project:\n1. The runner creates the directory automatically\n2. Run \`git init\` in the workspace directory\n3. Use manage_workspaces action=create_repo or action=update to link a remote repo`);
         }
         default:
-          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, create, update, create_repo, init`);
+          throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, get, create, update, create_repo, init`);
       }
     }
 

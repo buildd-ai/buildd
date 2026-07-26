@@ -180,6 +180,11 @@ export class BuilddClient {
     summary?: string;
     // Budget exhaustion signal
     budgetExhausted?: boolean;
+    // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
+    // The server (completion route) consumes this to decide the loop state transition.
+    verificationEvidence?: Record<string, unknown>;
+    // Structured output (for structured_predicate evaluation by server)
+    structuredOutput?: Record<string, unknown>;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {

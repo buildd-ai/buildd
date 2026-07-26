@@ -569,6 +569,13 @@ export const missions = pgTable('missions', {
   dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
+  // Pacing controls: 'eager' starts every claimable task immediately (current default).
+  // 'paced' enforces a minimum interval between task starts for this mission:
+  // at most pacingMaxPerHour starts per hour (default 1 when null).
+  // lastTaskStartedAt is updated atomically each time a task from this mission is claimed.
+  pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
+  pacingMaxPerHour: integer('pacing_max_per_hour'),
+  lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
   // Shared feature branch for this mission. All mission tasks push commits here;
   // a single PR tracks all mission work. Generated lazily on first task creation.
   workingBranch: text('working_branch'),
@@ -591,6 +598,11 @@ export const missions = pgTable('missions', {
   // decompose/create new build tasks on its own initiative. This prevents duplicate work when
   // a creator files a task chain at the same time as an auto-decomposing mission.
   decompositionSkipped: boolean('decomposition_skipped').default(false).notNull(),
+  // When true, tasks filed under this mission are not claimable by workers. Arm the
+  // mission (set isHeld=false) to release all tasks at once. Force-starting a single
+  // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
+  // (which controls organizer initiative) — held is purely about worker claim eligibility.
+  isHeld: boolean('is_held').default(false).notNull(),
   // Earliest time autonomous orchestration may begin. Deferred missions remain
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),
@@ -680,6 +692,10 @@ export const tasks = pgTable('tasks', {
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
+  // Stable identity for webhook-created CI retries. One failed commit may emit
+  // several check-suite deliveries, but it must create only one retry task.
+  ciRetryPrNumber: integer('ci_retry_pr_number'),
+  ciRetryHeadSha: text('ci_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
@@ -743,6 +759,9 @@ export const tasks = pgTable('tasks', {
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
   startAtIdx: index('tasks_start_at_idx').on(t.startAt),
+  ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
+    .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
+    .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
@@ -782,7 +801,7 @@ export const workers = pgTable('workers', {
   mergedAt: timestamp('merged_at', { withTimezone: true }),
   // PR/git lifecycle state — kept live by GitHub webhook events.
   // null = no PR yet or status unknown (pre-migration workers).
-  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -810,13 +829,15 @@ export const workers = pgTable('workers', {
     durationMs?: number;
   }>>(),
   // Exit cause taxonomy — set when a worker reaches a terminal state.
-  // code_failure:    the agent or task logic failed (default for unknown failures).
-  // budget_limited:  session/usage cap hit — not a real failure; task auto-resumes.
-  // infra_failure:   runner went offline or worker timed out (heartbeat/stale kill).
-  // reassigned:      worker was superseded by a newer session.
-  // condition_unmet: loop exit condition evaluated false; task requeues (not a failure).
+  // code_failure:       the agent or task logic failed (default for unknown failures).
+  // budget_limited:     session/usage cap hit — not a real failure; task auto-resumes.
+  // infra_failure:      runner went offline or worker timed out (heartbeat/stale kill).
+  // reassigned:         worker was superseded by a newer session.
+  // condition_unmet:    loop exit condition evaluated false; task requeues (not a failure).
+  // sandbox_mount_gap:  bwrap allowlist missing a path (npm postinstall, config file, tool binary);
+  //                     task requeues; fix by adding path to BUILDD_MOUNT_ALLOWLIST_EXTRA.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | 'condition_unmet' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -891,7 +912,10 @@ export const missionNotes = pgTable('mission_notes', {
   body: text('body'),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
-  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed'>(),
+  status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Set when a retry opens the replacement PR. Kept on the superseded note so
+  // the timeline remains an audit trail and can link to the successor.
+  supersededByPrNumber: integer('superseded_by_pr_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   missionIdx: index('mission_notes_mission_idx').on(t.missionId),
@@ -1738,6 +1762,41 @@ export const connectorSharesRelations = relations(connectorShares, ({ one }) => 
   sharedWithTeam: one(teams, { fields: [connectorShares.sharedWithTeamId], references: [teams.id] }),
 }));
 
+// Generic provider link layer between buildd's native tier (initiatives → missions →
+// tasks) and external work trackers (Linear, GitHub). Phase 1 makes a link exist,
+// persist, and stay authenticated — it does NOT read progress back or import graphs.
+// `builddEntityId` is POLYMORPHIC (points at one of initiatives/missions/tasks) so it
+// deliberately carries NO cross-table FK — existence is enforced in app code on write,
+// and orphan rows are harmless (filtered on read). Team-cascade covers team deletion.
+export const externalLinks = pgTable('external_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  provider: text('provider').notNull().$type<'linear' | 'github'>(),
+  builddEntityType: text('buildd_entity_type').notNull().$type<'initiative' | 'mission' | 'task'>(),
+  builddEntityId: uuid('buildd_entity_id').notNull(),
+  externalId: text('external_id'),
+  externalUrl: text('external_url'),
+  // Phase 3 echo-suppression watermark — last-seen external mtime.
+  externalUpdatedAt: timestamp('external_updated_at', { withTimezone: true }),
+  // Phase 3 echo-suppression — hash of the last payload we pushed.
+  lastPushedHash: text('last_pushed_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // Partial unique — idempotent ON CONFLICT DO UPDATE keyed on (provider, externalId);
+  // the WHERE clause allows many rows with a null externalId (unlinked entities).
+  providerExternalIdx: uniqueIndex('external_links_provider_external_idx')
+    .on(t.provider, t.externalId)
+    .where(sql`${t.externalId} IS NOT NULL`),
+  // Reverse lookup — "links for this mission/initiative/task".
+  entityIdx: index('external_links_entity_idx').on(t.builddEntityType, t.builddEntityId),
+  teamIdx: index('external_links_team_idx').on(t.teamId),
+}));
+
+export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
+  team: one(teams, { fields: [externalLinks.teamId], references: [teams.id] }),
+}));
+
 // Model tier registry — maps premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
 // See docs/design/model-tiers.md for the resolution chain.
@@ -1810,5 +1869,10 @@ export type NewConnectorWorkspace = typeof connectorWorkspaces.$inferInsert;
 export type ConnectorShare = typeof connectorShares.$inferSelect;
 export type NewConnectorShare = typeof connectorShares.$inferInsert;
 
+export type ExternalLink = typeof externalLinks.$inferSelect;
+export type NewExternalLink = typeof externalLinks.$inferInsert;
+
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;
+
+// smoke-test-3-ci-retry-1 20260725

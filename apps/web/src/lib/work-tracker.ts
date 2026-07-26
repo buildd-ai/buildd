@@ -8,11 +8,15 @@
 import { db } from '@buildd/core/db';
 import { secrets, workspaces, missionNotes, githubInstallations, type WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getSecretsProvider } from '@buildd/core/secrets';
+import { decrypt } from '@buildd/core/secrets';
+import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 
 const LINEAR_API = 'https://api.linear.app/graphql';
+
+/** Renew a token this many ms before its expiry so an in-flight call never uses a dead token. */
+const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 /** Parse a GitHub issue URL into its parts. Returns null if it isn't one. */
 export function parseGitHubIssueUrl(
@@ -24,35 +28,128 @@ export function parseGitHubIssueUrl(
   return { owner: m[1], repo: m[2], number: Number(m[3]) };
 }
 
-async function getConnectorAccessToken(connectorId: string, teamId: string): Promise<string | null> {
-  const secretRow = await db.query.secrets.findFirst({
-    where: and(
-      eq(secrets.teamId, teamId),
-      eq(secrets.purpose, 'mcp_connector_credential'),
-      eq(secrets.label, connectorId),
-    ),
-    columns: { id: true, tokenExpiresAt: true },
-  });
-  if (!secretRow) return null;
+/**
+ * Parse a Linear project/issue URL into a STABLE, deterministic external id.
+ *
+ * The same URL always yields the same id — link idempotency (the
+ * `(provider, external_id)` upsert) depends on this. We take the trailing path
+ * segment, which Linear guarantees carries the entity id/slug:
+ *   - issue:   `https://linear.app/ws/issue/ACM-42/some-slug`   → `ACM-42`
+ *   - project: `https://linear.app/ws/project/mobile-9f8e7d6c`  → `mobile-9f8e7d6c`
+ *
+ * No network call — a GraphQL lookup is best-effort validation only and never
+ * changes the parsed id (see the link route).
+ */
+export function parseLinearUrl(
+  url: string | null | undefined,
+): { type: 'issue' | 'project'; externalId: string } | null {
+  if (!url) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)linear\.app$/i.test(parsed.hostname)) return null;
 
-  if (secretRow.tokenExpiresAt && new Date(secretRow.tokenExpiresAt) < new Date()) {
-    return null; // expired
+  const parts = parsed.pathname.split('/').filter(Boolean);
+
+  const issueIdx = parts.indexOf('issue');
+  if (issueIdx >= 0 && parts[issueIdx + 1]) {
+    // Linear issue identifiers are case-normalised (TEAM-NUMBER).
+    return { type: 'issue', externalId: parts[issueIdx + 1].toUpperCase() };
   }
 
-  const provider = getSecretsProvider();
-  const raw = await provider.get(secretRow.id);
-  if (!raw) return null;
+  const projectIdx = parts.indexOf('project');
+  if (projectIdx >= 0 && parts[projectIdx + 1]) {
+    return { type: 'project', externalId: parts[projectIdx + 1] };
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a live OAuth access token for a connector, refreshing proactively.
+ *
+ * A token is treated as needing refresh when it has no expiry or is within
+ * {@link TOKEN_REFRESH_SKEW_MS} of expiring; on that condition we invoke the
+ * shared refresher and act on its result. Dependencies are injectable for tests.
+ */
+export async function getConnectorAccessToken(
+  connectorId: string,
+  teamId: string,
+  deps: {
+    db?: typeof db;
+    refresh?: typeof refreshMcpConnectorCredential;
+    decrypt?: typeof decrypt;
+  } = {},
+): Promise<string | null> {
+  const database = deps.db ?? db;
+  const refresh = deps.refresh ?? refreshMcpConnectorCredential;
+  const decryptValue = deps.decrypt ?? decrypt;
+
+  const querySecret = () =>
+    database.query.secrets.findFirst({
+      where: and(
+        eq(secrets.teamId, teamId),
+        eq(secrets.purpose, 'mcp_connector_credential'),
+        eq(secrets.label, connectorId),
+      ),
+      columns: { id: true, tokenExpiresAt: true, encryptedValue: true },
+    });
+
+  let secretRow = await querySecret();
+  if (!secretRow) return null;
+
+  const now = Date.now();
+  const expiresAtMs = secretRow.tokenExpiresAt ? new Date(secretRow.tokenExpiresAt).getTime() : null;
+  const needsRefresh = expiresAtMs === null || expiresAtMs < now + TOKEN_REFRESH_SKEW_MS;
+
+  if (needsRefresh) {
+    const result = await refresh(secretRow.id);
+    switch (result) {
+      case 'refreshed': {
+        // Re-read so we decode the freshly-persisted blob.
+        secretRow = await querySecret();
+        if (!secretRow) return null;
+        break;
+      }
+      case 'skipped':
+        // Header/none auth: no OAuth refresh possible — use the existing token.
+        break;
+      case 'locked':
+        // Another caller holds the refresh lock. Only reuse the current token if
+        // it is still valid by the real clock; otherwise fail closed.
+        if (expiresAtMs === null || expiresAtMs <= now) return null;
+        break;
+      case 'expired':
+      case 'no_credential':
+      case 'error':
+      default:
+        return null;
+    }
+  }
+
+  const encrypted = secretRow.encryptedValue;
+  if (!encrypted) return null;
+
+  let decrypted: string;
+  try {
+    decrypted = decryptValue(encrypted);
+  } catch {
+    return null;
+  }
 
   try {
-    const blob = JSON.parse(raw) as Record<string, unknown>;
+    const blob = JSON.parse(decrypted) as Record<string, unknown>;
     return (blob.access_token as string) ?? null;
   } catch {
-    // Header-mode: raw value is the token itself
-    return raw;
+    // Header-mode: the decrypted value is the token itself.
+    return decrypted;
   }
 }
 
-async function linearGraphQL(
+export async function linearGraphQL(
   token: string,
   query: string,
   variables?: Record<string, unknown>,
@@ -69,6 +166,90 @@ async function linearGraphQL(
     if (!res.ok) return null;
     const data = await res.json() as Record<string, unknown>;
     return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read-back progress for a linked Linear project or issue (Phase 2).
+ *
+ * BEST-EFFORT: returns `null` on missing token / network / GraphQL error, and
+ * nulls any individual field that's absent. Never throws — the tracking panel
+ * must never break the page.
+ *
+ * - `project`: reads `project(id)` → `name`, `progress` (Float 0..1, converted
+ *   to a rounded 0..100 percent), and `state` (a status label string).
+ * - `issue`: reads `issue(id)` → `title`/`identifier` and `state { name }`.
+ *   Issues have no progress fraction, so `percent` is always null.
+ *
+ * Dependencies (token getter + graphql fn) are injectable for testing, mirroring
+ * the DI style of {@link getConnectorAccessToken}.
+ */
+export async function fetchLinearProgress(
+  opts: {
+    connectorId: string;
+    teamId: string;
+    externalId: string;
+    kind: 'project' | 'issue';
+  },
+  deps: {
+    getToken?: typeof getConnectorAccessToken;
+    graphql?: typeof linearGraphQL;
+  } = {},
+): Promise<{ title: string | null; percent: number | null; state: string | null } | null> {
+  const getToken = deps.getToken ?? getConnectorAccessToken;
+  const graphql = deps.graphql ?? linearGraphQL;
+
+  try {
+    const token = await getToken(opts.connectorId, opts.teamId);
+    if (!token) return null;
+
+    if (opts.kind === 'project') {
+      const data = await graphql(
+        token,
+        `
+        query ProjectProgress($id: String!) {
+          project(id: $id) {
+            name
+            progress
+            state
+          }
+        }
+      `,
+        { id: opts.externalId },
+      );
+      const project = (data as any)?.data?.project;
+      if (!project) return null;
+      const rawProgress = project.progress;
+      const percent = typeof rawProgress === 'number' ? Math.round(rawProgress * 100) : null;
+      return {
+        title: project.name ?? null,
+        percent,
+        state: typeof project.state === 'string' ? project.state : null,
+      };
+    }
+
+    const data = await graphql(
+      token,
+      `
+      query IssueProgress($id: String!) {
+        issue(id: $id) {
+          identifier
+          title
+          state { name }
+        }
+      }
+    `,
+      { id: opts.externalId },
+    );
+    const issue = (data as any)?.data?.issue;
+    if (!issue) return null;
+    return {
+      title: issue.title ?? issue.identifier ?? null,
+      percent: null,
+      state: issue.state?.name ?? null,
+    };
   } catch {
     return null;
   }
@@ -237,7 +418,7 @@ export async function maybePostWorkTrackerNote(
       authorType: 'system',
       type: 'suggestion',
       title: `Connect ${providerLabel} project`,
-      body: `Link to a ${providerLabel} project? Run \`/link-linear <project-url>\` in a task to connect.`,
+      body: `Link this mission to a ${providerLabel} project so task completions post back automatically. In a task, run the buildd \`link_tracker\` action with entityType "mission", this mission's ID, and the ${providerLabel} project URL (or POST that URL to /api/missions/${missionId}/link).`,
       status: 'answered',
     }).returning();
 

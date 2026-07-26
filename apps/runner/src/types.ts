@@ -181,6 +181,7 @@ export interface LocalWorker {
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
+  sandboxMountGap?: boolean;  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -261,6 +262,25 @@ export interface ResultMeta {
   permissionDenials?: Array<{ tool: string; reason: string }>;
 }
 
+// Loop exit condition (spec §1)
+export type LoopExitCondition =
+  | { type: 'command'; command?: string }
+  | { type: 'pr_checks_green' }
+  | {
+      type: 'structured_predicate';
+      predicate?: {
+        path: string;
+        operator: 'eq' | 'neq' | 'exists' | 'gt' | 'gte' | 'lt' | 'lte';
+        value?: string | number | boolean | null;
+      };
+    };
+
+export interface LoopConfig {
+  exitCondition: LoopExitCondition;
+  maxLoops?: number;
+  backoffMinutes?: number;
+}
+
 // Task from buildd
 export interface BuilddTask {
   id: string;
@@ -293,6 +313,10 @@ export interface BuilddTask {
   claimedBy?: string | null;
   claimedAt?: string | null;
   expiresAt?: string | null;
+  // Loop-until-verified config (spec §1). null = no loop; runner skips all loop branches.
+  loopConfig?: LoopConfig | null;
+  // Current loop iteration index (0 before first run, incremented by server on each evaluation).
+  loopIteration?: number;
   // Deliverable snapshot
   result?: {
     summary?: string;

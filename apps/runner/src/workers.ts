@@ -29,6 +29,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
+import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
@@ -2771,6 +2772,49 @@ If something is missing or incomplete, describe what and fix it now.`;
           if (totalOut > 0) outputTokens = totalOut;
         }
 
+        // Loop-until-verified: run verification command and collect evidence (spec §2).
+        // Only executes for loopConfig.exitCondition.type='command'; other types need no
+        // runner work (pr_checks_green = server reads webhooks; structured_predicate =
+        // server reads the structuredOutput field already in this payload).
+        let verificationEvidence: Record<string, unknown> | undefined;
+        const loopConfig = task.loopConfig;
+        if (loopConfig?.exitCondition?.type === 'command') {
+          const resolvedCmd = resolveCommand(
+            loopConfig.exitCondition as { type: 'command'; command?: string },
+            task.context as Record<string, unknown> | undefined,
+          );
+          if (resolvedCmd) {
+            this.addMilestone(worker, { type: 'status', label: 'Running verification command…', ts: Date.now() });
+            try {
+              const evidence = await runVerificationCommand({
+                workerId: worker.id,
+                iteration: task.loopIteration ?? 0,
+                command: resolvedCmd,
+                cwd,
+              });
+              verificationEvidence = evidence as unknown as Record<string, unknown>;
+              const label = evidence.outcome === 'ok'
+                ? `Verification passed (exit ${evidence.exitCode})`
+                : `Verification ${evidence.outcome} (exit ${evidence.exitCode ?? '?'})`;
+              this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+              console.log(`[Worker ${worker.id}] Verification evidence: outcome=${evidence.outcome} exitCode=${evidence.exitCode} durationMs=${evidence.durationMs}`);
+            } catch (verifyErr) {
+              // Non-fatal: surface as exec_error evidence so server can still decide
+              console.warn(`[Worker ${worker.id}] Verification command threw unexpectedly:`, verifyErr);
+              verificationEvidence = {
+                workerId: worker.id,
+                iteration: task.loopIteration ?? 0,
+                conditionType: 'command',
+                command: resolvedCmd,
+                outcome: 'exec_error',
+                stderr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+              };
+            }
+          } else {
+            console.warn(`[Worker ${worker.id}] loopConfig.exitCondition.type=command but no command resolved — skipping verification`);
+          }
+        }
+
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
           milestones: worker.milestones,
@@ -2782,6 +2826,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(structuredOutput ? { structuredOutput } : {}),
           // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
           ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
+          // Loop verification evidence (only present for command exit condition)
+          ...(verificationEvidence ? { verificationEvidence } : {}),
         });
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -2852,7 +2898,8 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.completedAt = Date.now();
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
-          error: worker.error || 'Session aborted'
+          error: worker.error || 'Session aborted',
+          ...(worker.sandboxMountGap && { sandboxMountGap: true }),
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
         // Unexpected error
@@ -3534,6 +3581,27 @@ If something is missing or incomplete, describe what and fix it now.`;
               );
               worker.error = 'bwrap sandbox unavailable on this host (user namespace creation blocked). ' +
                 'Runner has disabled sandbox. Retry the task — it will run without sandboxing.';
+              const session = this.sessions.get(worker.id);
+              if (session) session.abortController.abort();
+            }
+
+            // sandbox_mount_gap: a path needed by npm postinstall, a config read, or a tool
+            // binary is not mounted in the bwrap sandbox. Unlike bwrap_namespace_denied, the
+            // sandbox itself is functional — only the allowlist config is missing. Do NOT flip
+            // _bwrapSupported (that would disable sandbox globally for unrelated tasks).
+            // Fast-fail so the operator can add the path via BUILDD_MOUNT_ALLOWLIST_EXTRA and
+            // retry cleanly. The server exempts this worker from the code-retry cap.
+            if (traces.some(t => t.pattern === 'sandbox_mount_gap') && !worker.sandboxMountGap) {
+              worker.sandboxMountGap = true;
+              const gapTrace = traces.find(t => t.pattern === 'sandbox_mount_gap')!;
+              const pathMatch = gapTrace.excerpt.match(/(?:\bENOENT\b|\bEACCES\b)[^'":]*['"]?([/~][\w./-]+)/i);
+              const gapPath = pathMatch?.[1] ?? gapTrace.excerpt.slice(0, 120);
+              console.warn(
+                `[runner] Sandbox mount gap for worker ${worker.id}: "${gapPath}" is not in bwrap allowlist. ` +
+                'Session aborted for clean retry. Set BUILDD_MOUNT_ALLOWLIST_EXTRA to expose the path.',
+              );
+              worker.error = `Sandbox mount gap: "${gapPath}" is not mounted in the bwrap sandbox. ` +
+                `Add BUILDD_MOUNT_ALLOWLIST_EXTRA=${gapPath}:ro to the runner environment to expose it.`;
               const session = this.sessions.get(worker.id);
               if (session) session.abortController.abort();
             }

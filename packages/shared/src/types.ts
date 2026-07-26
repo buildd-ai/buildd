@@ -461,7 +461,8 @@ export type WorkerExitCause =
   | 'budget_limited'
   | 'infra_failure'
   | 'reassigned'
-  | 'condition_unmet';
+  | 'condition_unmet'
+  | 'sandbox_mount_gap';
 
 export interface Worker {
   id: string;

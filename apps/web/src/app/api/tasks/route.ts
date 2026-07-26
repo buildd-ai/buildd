@@ -15,6 +15,7 @@ import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-r
 import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
+import { parseLoopConfig } from '@buildd/core/loop-config';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -243,10 +244,24 @@ export async function POST(req: NextRequest) {
       startAt: rawStartAt,
       startIn: rawStartIn,
       startAfter: rawStartAfter,
+      loopConfig: rawLoopConfig,
     } = body;
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    const verificationCommand = typeof incomingContext?.verificationCommand === 'string'
+      ? incomingContext.verificationCommand
+      : undefined;
+    let loopConfig;
+    try {
+      loopConfig = parseLoopConfig(rawLoopConfig, verificationCommand);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Invalid loopConfig' },
+        { status: 400 },
+      );
     }
 
     // Resolve workspace: explicit param → auto-resolve for API accounts
@@ -568,6 +583,7 @@ export async function POST(req: NextRequest) {
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
         ...(resolvedStartAt ? { startAt: resolvedStartAt } : {}),
+        ...(loopConfig ? { loopConfig } : {}),
         // Creator tracking (from service)
         ...creatorContext,
         ...(deferredStart.resolution ? {
