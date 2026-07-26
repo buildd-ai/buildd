@@ -9,6 +9,9 @@ export function isNavActive(pathname: string, href: string): boolean {
   if (href === '/app/missions') {
     return pathname.startsWith('/app/missions');
   }
+  if (href === '/app/initiatives') {
+    return pathname.startsWith('/app/initiatives');
+  }
   if (href === '/app/tasks') {
     return pathname.startsWith('/app/tasks');
   }

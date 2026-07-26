@@ -1,25 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { initiatives, workspaces } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
-import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
-
-/**
- * Roll a loaded initiative (with its child missions + their tasks) up into a
- * progress summary. Pure — no DB access; callers pass the loaded relation.
- */
-export function rollupInitiative(initiative: {
-  missions?: Array<{ status: string; tasks?: any[] }>;
-}) {
-  const children: ChildMissionProgress[] = (initiative.missions || []).map((m) => {
-    const { totalTasks, completedTasks } = computeMissionProgress(m.tasks || []);
-    return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
-  });
-  return computeInitiativeProgress(children);
-}
+import { loadInitiativeList } from '@/lib/initiative-list';
 
 // GET /api/initiatives — list initiatives for the user's team(s), with rolled-up progress
 export async function GET(req: NextRequest) {
@@ -54,35 +40,10 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
-    let where = inArray(initiatives.teamId, scopedTeamIds);
-    if (statusFilter) {
-      where = and(where, eq(initiatives.status, statusFilter as any))!;
-    }
-    if (workspaceIdFilter) {
-      where = and(where, eq(initiatives.workspaceId, workspaceIdFilter))!;
-    }
-
-    const results = await db.query.initiatives.findMany({
-      where,
-      orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
-      with: {
-        workspace: { columns: { id: true, name: true } },
-        missions: {
-          columns: { id: true, title: true, status: true },
-          with: {
-            tasks: {
-              columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
-            },
-          },
-        },
-      },
-    });
-
-    const initiativesWithProgress = results.map((initiative) => {
-      const progress = rollupInitiative(initiative);
-      // Strip the heavy task arrays from the list payload; keep a light mission index.
-      const missions = (initiative.missions || []).map((m) => ({ id: m.id, title: m.title, status: m.status }));
-      return { ...initiative, missions, progress };
+    const initiativesWithProgress = await loadInitiativeList({
+      teamIds: scopedTeamIds,
+      statusFilter,
+      workspaceIdFilter,
     });
 
     return NextResponse.json({ initiatives: initiativesWithProgress });
