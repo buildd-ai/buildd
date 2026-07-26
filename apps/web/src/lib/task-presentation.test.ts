@@ -8,6 +8,7 @@ import {
   deriveChainPosition,
   deriveIntensity,
   deriveDisplayStatus,
+  deriveTaskPhase,
   isStaleWorker,
 } from './task-presentation';
 
@@ -305,5 +306,53 @@ describe('existing exports still work after move to task-presentation', () => {
 
   it('isStaleWorker: running worker with old timestamp is stale', () => {
     expect(isStaleWorker('running', new Date(0).toISOString())).toBe(true);
+  });
+});
+
+// ─── deriveTaskPhase ───────────────────────────────────────────────────────────
+
+describe('deriveTaskPhase', () => {
+  it('terminal completed (execution) → completed, even with a stale waiting worker', () => {
+    expect(deriveTaskPhase({ taskStatus: 'completed', workerWaitingFor: { prompt: 'x' } })).toBe('completed');
+  });
+
+  it('completed planning task → plan_review', () => {
+    expect(deriveTaskPhase({ taskStatus: 'completed', taskMode: 'planning' })).toBe('plan_review');
+  });
+
+  it('failed task → failed, even with a live-ish worker status', () => {
+    expect(deriveTaskPhase({ taskStatus: 'failed', workerStatus: 'running' })).toBe('failed');
+  });
+
+  it('unanswered question outranks running → waiting_input', () => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned', workerStatus: 'running', workerWaitingFor: { prompt: 'q' } })).toBe('waiting_input');
+  });
+
+  it('worker waiting_input status → waiting_input', () => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned', workerStatus: 'waiting_input' })).toBe('waiting_input');
+  });
+
+  it.each(['running', 'starting', 'idle'])('live worker status %s → running', (s) => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned', workerStatus: s })).toBe('running');
+  });
+
+  it('assigned with no live worker → assigned', () => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned' })).toBe('assigned');
+  });
+
+  it('pending + blocked → blocked (blocked outranks budget)', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', isBlocked: true, isBudgetPaused: true })).toBe('blocked');
+  });
+
+  it('pending + budget paused → budget_paused', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', isBudgetPaused: true })).toBe('budget_paused');
+  });
+
+  it('plain pending → pending', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending' })).toBe('pending');
+  });
+
+  it('does not treat a dead worker (status=error) with no question as running', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', workerStatus: 'error' })).toBe('pending');
   });
 });

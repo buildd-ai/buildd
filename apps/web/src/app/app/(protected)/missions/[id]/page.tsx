@@ -842,7 +842,7 @@ export default async function MissionDetailPage({
                                             <span className="text-[10px] text-status-success/70">(confidence {confidence})</span>
                                           )}
                                         </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</p>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
                                         <p className="text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
                                       </div>
                                     </div>
@@ -864,7 +864,7 @@ export default async function MissionDetailPage({
                                             <span className="text-[10px] text-[#D97706]/70">(iteration {iteration})</span>
                                           )}
                                         </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed">{reviewNote.body ?? reviewNote.title}</p>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
                                         {latestWorker?.branch && (
                                           <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({latestWorker.branch})</p>
                                         )}
@@ -889,7 +889,7 @@ export default async function MissionDetailPage({
                                             <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
                                           )}
                                         </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed mb-2">{reviewNote.body ?? reviewNote.title}</p>
+                                        <p className="text-[11px] text-text-secondary leading-relaxed mb-2 line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
                                         <div className="flex items-center gap-2 flex-wrap">
                                           {prWorker?.prUrl && (
                                             <ExternalLink href={prWorker.prUrl} className="text-[11px] text-accent-text hover:underline">

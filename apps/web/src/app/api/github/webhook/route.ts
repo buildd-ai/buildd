@@ -17,6 +17,7 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
@@ -1060,7 +1061,7 @@ async function maybeDispatchReviewer(
       // we know from the params rather than re-querying the DB.
       const reviewerTaskFull = {
         id: reviewerTask.id,
-        title: `[reviewer] PR #${pr.number}: ${task.title}`,
+        title: reviewerTitle(pr.number, task.title),
         description: null as null,
         workspaceId: openWorker.workspaceId,
         missionId: task.missionId ?? null,

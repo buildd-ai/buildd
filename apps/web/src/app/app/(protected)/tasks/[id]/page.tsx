@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
 import { deriveDisplayStatus } from '@/lib/task-timestamps';
+import { deriveTaskPhase } from '@/lib/task-presentation';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -67,7 +68,10 @@ export default async function TaskDetailPage({
     with: {
       workspace: true,
       account: true,
-      mission: { columns: { id: true, title: true, status: true } },
+      mission: {
+        columns: { id: true, title: true, status: true },
+        with: { initiative: { columns: { id: true, title: true } } },
+      },
       parentTask: { columns: { id: true, title: true, status: true } },
       subTasks: { columns: { id: true, title: true, status: true } },
     },
@@ -211,6 +215,8 @@ export default async function TaskDetailPage({
     ? task.status
     : deriveDisplayStatus(task.status, activeWorker?.status);
 
+  const initiative = task.mission?.initiative ?? null;
+
 
   // Parse attachments from context — resolve R2 storage keys to presigned URLs
   const rawAttachments = (task.context as any)?.attachments as Array<{
@@ -249,6 +255,28 @@ export default async function TaskDetailPage({
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
+
+  // Canonical lifecycle phase — the single spine the whole page (and the mission
+  // drawer, via the same fn) keys off to decide what to foreground.
+  const phase = deriveTaskPhase({
+    taskStatus: task.status,
+    taskMode: task.mode,
+    workerStatus: activeWorker?.status,
+    workerWaitingFor: activeWorker?.waitingFor,
+    isBlocked,
+    isBudgetPaused,
+  });
+  // Triage metadata (priority / runner / backend) only earns top-level space in
+  // the pending family; everywhere else it demotes into the Details disclosure.
+  const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned';
+
+  // The next step in the execution plan — "what happens after this?" — surfaced as
+  // a CTA when this task is done. The chain is the durable thread across workers.
+  const currentChainIdx = planChain.findIndex(t => t.id === id);
+  const nextChainTask =
+    currentChainIdx >= 0 && currentChainIdx < planChain.length - 1
+      ? planChain[currentChainIdx + 1]
+      : null;
 
   // --- Helpers ---
 
@@ -293,6 +321,14 @@ export default async function TaskDetailPage({
         <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
           {task.mission ? (
             <>
+              {initiative && (
+                <span className="hidden md:inline">
+                  <Link href={`/app/initiatives/${initiative.id}`} className="hover:text-text-primary">
+                    {initiative.title}
+                  </Link>
+                  <span className="mx-2">/</span>
+                </span>
+              )}
               <Link href={`/app/missions/${task.mission.id}`} className="hover:text-text-primary inline-flex items-center gap-1">
                 <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                 {task.mission.title}
@@ -358,17 +394,6 @@ export default async function TaskDetailPage({
                   {task.project}
                 </span>
               )}
-              {task.mission && (
-                <Link
-                  href={`/app/missions/${task.mission.id}`}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  {task.mission.title}
-                </Link>
-              )}
             </div>
             <p className="text-[14px] text-text-secondary">
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
@@ -406,34 +431,23 @@ export default async function TaskDetailPage({
         </div>
 
         <div className="flex flex-col">
-        {/* Stat Cards — placed first in the DOM so they appear right after the active worker on mobile */}
-        <div className="md:hidden mb-4 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
-          <span>P{task.priority}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>{task.runnerPreference}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>claimed by {task.account?.name || '-'}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span>{taskWorkers.length} worker{taskWorkers.length !== 1 ? 's' : ''}</span>
-        </div>
-        <div className="hidden md:grid md:grid-cols-4 gap-3 mb-8">
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Priority</div>
-            <div className="text-2xl font-semibold">{task.priority}</div>
+        {/* Triage metadata — only foregrounded in the pending family, where priority /
+            runner / backend actually drive the "should this run, and how?" decision.
+            In every other phase this demotes into the Details disclosure below, so a
+            running or finished task isn't dominated by numbers no one acts on. */}
+        {isPendingFamily && (
+          <div className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
+            <span>P{task.priority}</span>
+            <span className="text-text-muted">&middot;</span>
+            <span>{task.runnerPreference}</span>
+            {task.backend && (
+              <>
+                <span className="text-text-muted">&middot;</span>
+                <span className="capitalize">{task.backend}</span>
+              </>
+            )}
           </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Runner</div>
-            <div className="text-2xl font-semibold">{task.runnerPreference}</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Claimed By</div>
-            <div className="text-2xl font-semibold truncate">{task.account?.name || '-'}</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default rounded-[10px] p-4">
-            <div className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted mb-1.5">Workers</div>
-            <div className="text-2xl font-semibold">{taskWorkers.length}</div>
-          </div>
-        </div>
+        )}
 
         {/* Blocked Banner — shown when task has unresolved dependencies */}
         {isBlocked && (() => {
@@ -515,16 +529,6 @@ export default async function TaskDetailPage({
           />
         )}
 
-        {/* Description */}
-        {task.description && (
-          <div className="mb-6">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Description
-            </div>
-            <CollapsibleDescription content={task.description} />
-          </div>
-        )}
-
         {/* Agent error traces */}
         {errorTraces.length > 0 && (
           <div className="mb-6" id="agent-error-traces">
@@ -556,18 +560,6 @@ export default async function TaskDetailPage({
                 ))}
               </div>
             </details>
-          </div>
-        )}
-
-        {/* Output Schema */}
-        {(task.outputSchema as any) && (
-          <div className="mb-6">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Output Schema
-            </div>
-            <pre className="card p-4 overflow-x-auto text-sm font-mono text-text-primary">
-              {JSON.stringify(task.outputSchema, null, 2)}
-            </pre>
           </div>
         )}
 
@@ -619,6 +611,17 @@ export default async function TaskDetailPage({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Description — for machine-generated tasks (reviewer/builder) this is a
+            templated prompt, i.e. reference material, so it sits below the plan. */}
+        {task.description && (
+          <div className="mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Description
+            </div>
+            <CollapsibleDescription content={task.description} />
           </div>
         )}
 
@@ -777,6 +780,22 @@ export default async function TaskDetailPage({
         )}
 
         </div>{/* end flex container */}
+
+        {/* Next step — where the plan goes after this task. Shown on completion so the
+            operator can follow the thread forward instead of hunting the chain. */}
+        {phase === 'completed' && nextChainTask && (
+          <Link
+            href={`/app/tasks/${nextChainTask.id}`}
+            className="group mb-8 flex items-center gap-3 p-4 rounded-[10px] border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
+          >
+            <span className="font-mono text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
+            <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
+            <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
+              {nextChainTask.status}
+            </span>
+            <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
+          </Link>
+        )}
 
         {/* Deliverables */}
         {(task.result as any) && (
@@ -1003,6 +1022,26 @@ export default async function TaskDetailPage({
             </div>
           </div>
         )}
+
+        {/* Details — the triage/metadata that used to dominate the header as stat
+            cards. Kept one tap away for when it's actually needed (billing, routing,
+            debugging) without letting it crowd out the phase-relevant content. */}
+        <details className="mt-8 group">
+          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-secondary select-none">
+            Details
+          </summary>
+          <dl className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-[13px]">
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
+            {task.backend && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
+            <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary">{new Date(task.createdAt).toLocaleDateString()}</dd></div>
+            {task.category && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
+            {task.project && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
+            <div className="col-span-2 md:col-span-3"><dt className="text-text-muted text-[11px] uppercase tracking-wider">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
+          </dl>
+        </details>
 
         {/* Empty state */}
         {taskWorkers.length === 0 && task.status === 'pending' && (

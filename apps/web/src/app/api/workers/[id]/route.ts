@@ -28,6 +28,7 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { reviewerRetryTitle } from '@/lib/task-title';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -1888,15 +1889,11 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
-      const retryTitle = originalTask.title
-        .replace(/^\[reviewer retry #?\d*\]\s*/i, '')
-        .trim();
-
       const [retryTask] = await db
         .insert(tasks)
         .values({
           workspaceId,
-          title: `[reviewer retry #${currentIteration + 1}] ${retryTitle}`,
+          title: reviewerRetryTitle(currentIteration + 1, originalTask.title),
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
