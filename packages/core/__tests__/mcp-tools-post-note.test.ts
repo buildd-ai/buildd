@@ -10,28 +10,42 @@ function context(): ActionContext {
 }
 
 describe('post_note', () => {
-  it('enumerates missing fields and accepted note types', async () => {
+  it('enumerates missing fields, accepted note types, and full schema', async () => {
     const api = mock(async () => ({ id: 'note-1' }));
 
-    await expect(
-      handleBuilddAction(api as unknown as ApiFn, 'post_note', {}, context()),
-    ).rejects.toThrow(
-      'post_note missing required parameters: type, title. type must be one of: decision, question, warning, suggestion, update',
-    );
+    let error: Error | undefined;
+    try {
+      await handleBuilddAction(api as unknown as ApiFn, 'post_note', {}, context());
+    } catch (e) {
+      error = e as Error;
+    }
+
+    expect(error?.message).toContain('post_note missing required parameters: type, title');
+    expect(error?.message).toContain('type must be one of: decision, question, warning, suggestion, update');
+    expect(error?.message).toContain('Full schema:');
     expect(api).not.toHaveBeenCalled();
   });
 
-  it('reports only the required field that is missing', async () => {
+  it('reports only the required field that is missing, without misleading type hint', async () => {
     const api = mock(async () => ({ id: 'note-1' }));
 
-    await expect(
-      handleBuilddAction(
+    let error: Error | undefined;
+    try {
+      await handleBuilddAction(
         api as unknown as ApiFn,
         'post_note',
         { type: 'decision' },
         context(),
-      ),
-    ).rejects.toThrow('post_note missing required parameter: title');
+      );
+    } catch (e) {
+      error = e as Error;
+    }
+
+    expect(error?.message).toContain('post_note missing required parameter: title');
+    // Must NOT mislead the agent with a type hint when type is already valid
+    expect(error?.message).not.toContain('type must be one of');
+    // Must include the full schema so agents can self-correct in one shot
+    expect(error?.message).toContain('Full schema:');
     expect(api).not.toHaveBeenCalled();
   });
 

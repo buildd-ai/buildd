@@ -1924,10 +1924,12 @@ export async function handleBuilddAction(
       const missing = ['type', 'title'].filter(field => !params[field]);
       if (missing.length > 0) {
         const parameterLabel = missing.length === 1 ? 'parameter' : 'parameters';
-        throw new Error(
-          `post_note missing required ${parameterLabel}: ${missing.join(', ')}. ` +
-          `type must be one of: ${NOTE_TYPES.join(', ')}`,
-        );
+        const parts = [`post_note missing required ${parameterLabel}: ${missing.join(', ')}.`];
+        if (missing.includes('type')) {
+          parts.push(`type must be one of: ${NOTE_TYPES.join(', ')}.`);
+        }
+        parts.push(`Full schema: { type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice?, workerId?, missionId? }`);
+        throw new Error(parts.join(' '));
       }
 
       if (!NOTE_TYPES.includes(params.type as typeof NOTE_TYPES[number])) {
