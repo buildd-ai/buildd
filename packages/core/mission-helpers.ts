@@ -154,3 +154,18 @@ export function computeInitiativeProgress(children: ChildMissionProgress[]): Ini
 
   return { totalMissions, completedMissions, totalTasks, completedTasks, progress, status };
 }
+
+/**
+ * Flatten child missions' progress bars into one aggregate segment run for an
+ * initiative-level SegmentStrip. Segments are concatenated in child order; each
+ * segment keeps its own task's `taskId` (globally unique), so the strip has
+ * stable keys and no per-surface renderer is introduced — the initiative bar is
+ * the same primitive as the mission bar, just longer. Missions with no countable
+ * tasks contribute nothing (empty initiative → empty array → SegmentStrip renders
+ * null).
+ */
+export function computeInitiativeSegments(
+  children: Array<{ segments?: MissionSegment[] }>,
+): MissionSegment[] {
+  return children.flatMap((c) => c.segments ?? []);
+}
