@@ -1041,6 +1041,22 @@ export interface LoopHistoryEntry {
   evidence?: Record<string, unknown>;
 }
 
+// Subject anchor — normalized external identity for what a task acts on.
+// Stored as JSONB in tasks.subject_anchor; relational columns are write-through
+// projections for indexed lookup. See docs/design/task-subject-anchors.md §1.
+export interface TaskSubjectAnchor {
+  version: 1;
+  kind: 'pull_request' | 'error' | 'mission' | 'branch';
+  prNumber?: number;
+  headSha?: string;
+  branch?: string;
+  errorSignature?: string;
+  failingCheckNames?: string[];
+  subjectMissionId?: string;
+  source: 'context' | 'url' | 'text' | 'system' | 'backfill';
+  confidence: 'exact' | 'derived';
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
