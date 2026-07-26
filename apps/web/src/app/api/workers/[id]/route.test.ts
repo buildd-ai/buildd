@@ -563,6 +563,29 @@ describe('PATCH /api/workers/[id]', () => {
     expect(data.abort).toBe(true);
   });
 
+  it('rejects a running update after a human interrupted the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'failed',
+      error: 'Interrupted — human takeover',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Late agent write' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.abort).toBe(true);
+  });
+
   it('updates worker status successfully', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

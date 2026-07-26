@@ -16,13 +16,20 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Require a non-simple request so another origin cannot trigger takeover
+  // through a plain HTML form. Browser cross-origin JSON fetches are preflighted.
+  if (!req.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+    return NextResponse.json({ error: 'Content-Type must be application/json' }, { status: 415 });
+  }
+
   const { id } = await params;
 
   const user = await getCurrentUser();
@@ -82,6 +89,7 @@ export async function POST(
     .update(tasks)
     .set({ status: 'failed', updatedAt: new Date() })
     .where(eq(tasks.id, worker.taskId));
+  await resolveCompletedTask(worker.taskId, worker.workspaceId);
 
   // Post a reviewer_escalated note on the original task so the PR surfaces in
   // the human queue with a clear reason ("Agent review interrupted").

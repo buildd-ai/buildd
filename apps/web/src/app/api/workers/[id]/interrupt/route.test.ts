@@ -9,6 +9,7 @@ const mockInsert = mock();
 const mockWorkersFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockResolveCompletedTask = mock(() => Promise.resolve());
 
 // Set up the update chain mock
 function makeUpdateChain() {
@@ -50,6 +51,10 @@ mock.module('@/lib/pusher', () => ({
   events: { WORKER_FAILED: 'worker:failed' },
 }));
 
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+}));
+
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers_table',
   tasks: 'tasks_table',
@@ -65,7 +70,11 @@ mock.module('drizzle-orm', () => ({
 import { POST } from './route';
 
 function makeRequest(workerId = 'w-reviewer-1') {
-  return new NextRequest(`http://localhost/api/workers/${workerId}/interrupt`, { method: 'POST' });
+  return new NextRequest(`http://localhost/api/workers/${workerId}/interrupt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
 }
 
 describe('POST /api/workers/[id]/interrupt', () => {
@@ -75,6 +84,8 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockWorkersFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
     mockTriggerEvent.mockReset();
+    mockResolveCompletedTask.mockReset();
+    mockResolveCompletedTask.mockResolvedValue(undefined);
     workersUpdateChain = makeUpdateChain();
     tasksUpdateChain = makeUpdateChain();
   });
@@ -83,6 +94,19 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
     expect(res.status).toBe(401);
+  });
+
+  it('rejects form posts that can be submitted cross-site', async () => {
+    const request = new NextRequest('http://localhost/api/workers/w-reviewer-1/interrupt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: '',
+    });
+
+    const res = await POST(request, { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+
+    expect(res.status).toBe(415);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
   });
 
   it('returns 404 when worker not found', async () => {
@@ -154,5 +178,6 @@ describe('POST /api/workers/[id]/interrupt', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-rev-1', 'ws-1');
   });
 });

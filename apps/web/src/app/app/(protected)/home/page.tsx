@@ -18,6 +18,7 @@ import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { InterruptReviewButton } from './InterruptReviewButton';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -1186,14 +1187,7 @@ export default async function HomePage({
                             )}
                           </div>
                         </div>
-                        <form method="POST" action={`/api/workers/${item.reviewerWorkerId}/interrupt`}>
-                          <button
-                            type="submit"
-                            className="shrink-0 text-[11px] text-text-muted border border-border-default rounded-[6px] px-2.5 py-1.5 hover:border-status-error hover:text-status-error transition-colors bg-transparent whitespace-nowrap"
-                          >
-                            Interrupt & take over
-                          </button>
-                        </form>
+                        <InterruptReviewButton workerId={item.reviewerWorkerId} />
                       </div>
                     </div>
                   ))}

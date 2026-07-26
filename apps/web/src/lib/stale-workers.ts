@@ -71,6 +71,20 @@ async function resolveStaleTask(
         console.error('[stale-workers] Failed to post reviewer timeout note:', err);
       }
     }
+
+    // Expiry terminates the review lease. Reviewer tasks are one-shot checks:
+    // retrying an infra failure would immediately reacquire the lease and hide
+    // the promoted PR from the human queue again.
+    await db
+      .update(tasks)
+      .set({
+        status: 'failed',
+        result: { error: 'agent review timed out' } as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, taskId));
+    await resolveCompletedTask(taskId, workspaceId);
+    return;
   }
 
   // Check if the stale worker produced deliverables

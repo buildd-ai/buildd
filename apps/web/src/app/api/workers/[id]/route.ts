@@ -181,11 +181,12 @@ export async function PATCH(
   // Allow reactivation with 'running' status for follow-up messages from runner,
   // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
-    const isCleanupExpiry = worker.error?.includes('expired') ||
+    const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
+      worker.error?.includes('expired') ||
       worker.error?.includes('timed out') ||
       worker.error?.includes('went offline') ||
       worker.error?.includes('runner restarted');
-    if (body.status !== 'running' || isCleanupExpiry) {
+    if (body.status !== 'running' || isNonReactivatableTermination) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
       const artifactCount = await getWorkerArtifactCount(id);
