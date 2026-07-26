@@ -649,7 +649,7 @@ export default async function HomePage({
                     inArray(missionNotes.taskId, openTaskIds),
                     inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
                   ),
-                  columns: { taskId: true, type: true, body: true, title: true, status: true },
+                  columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
                 })
               : [];
             const {
