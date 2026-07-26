@@ -14,6 +14,10 @@ import { notify } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import {
+  prepareSubjectFiling,
+  recordSubjectMatchObserved,
+} from '@/lib/subject-anchor-observer';
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
@@ -406,6 +410,21 @@ ${checkList}
 Investigate, fix, and push. Ping if the failure is flaky or out of scope for this PR.`;
 
   const taskId = randomUUID();
+  const subjectObservation = await prepareSubjectFiling({
+    workspaceId: project.workspaceId,
+    workspaceRepo: project.repo,
+    gitConfig: workspace.gitConfig,
+    title: `CI failing on #${pr.number}: ${pr.title}`.slice(0, 200),
+    description,
+    context: { pr: pr.number, headSha: pr.headSha },
+    systemContext: {
+      origin: 'watcher',
+      prNumber: pr.number,
+      headSha: pr.headSha,
+      failingCheckNames: failing.map(check => check.name),
+    },
+    origin: 'watcher',
+  });
   let inserted: { id: string } | undefined;
   try {
     const rows = await db
@@ -428,9 +447,19 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
           watchedProjectId: project.id,
           watcherKind: 'failing_release_pr',
         },
+        ...subjectObservation.taskValues,
       })
       .returning({ id: tasks.id });
     inserted = rows[0];
+    if (inserted && subjectObservation.anchor && subjectObservation.match) {
+      await recordSubjectMatchObserved({
+        workspaceId: project.workspaceId,
+        origin: 'watcher',
+        reportingTaskId: inserted.id,
+        anchor: subjectObservation.anchor,
+        match: subjectObservation.match,
+      });
+    }
   } catch (err) {
     // Likely a dedupe race (another tick fired); fall through and record event below.
     console.error(`[health-watcher] task insert failed for ${dedupeKey}:`, err);

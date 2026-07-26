@@ -17,10 +17,15 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
 import { buildWorkflowRunOutcome } from '@/lib/release/workflow-run';
+import {
+  prepareSubjectFiling,
+  recordSubjectMatchObserved,
+} from '@/lib/subject-anchor-observer';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -800,6 +805,26 @@ async function handleCheckSuiteFailure(
         continue;
       }
 
+      const subjectObservation = await prepareSubjectFiling({
+        workspaceId: retryTask.workspaceId,
+        workspaceRepo: repository.full_name,
+        gitConfig: workspace.gitConfig,
+        title: retryTask.title,
+        description: retryTask.description,
+        context: {
+          ...retryTask.context,
+          ciRetryPrNumber: pr.number,
+          ciRetryHeadSha: checkSuite.head_sha,
+        },
+        systemContext: {
+          origin: 'retry',
+          prNumber: pr.number,
+          headSha: checkSuite.head_sha,
+          branch: worker.branch,
+        },
+        origin: 'webhook',
+      });
+
       const [newTask] = await db
         .insert(tasks)
         .values({
@@ -814,11 +839,21 @@ async function handleCheckSuiteFailure(
           creationSource: retryTask.creationSource,
           status: 'pending',
           priority: 7, // CI fix is urgent
+          ...subjectObservation.taskValues,
         })
         .onConflictDoNothing()
         .returning();
 
       if (newTask) {
+        if (subjectObservation.anchor && subjectObservation.match) {
+          await recordSubjectMatchObserved({
+            workspaceId: retryTask.workspaceId,
+            origin: 'webhook',
+            reportingTaskId: newTask.id,
+            anchor: subjectObservation.anchor,
+            match: subjectObservation.match,
+          });
+        }
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
       } else {
@@ -1026,7 +1061,7 @@ async function maybeDispatchReviewer(
       // we know from the params rather than re-querying the DB.
       const reviewerTaskFull = {
         id: reviewerTask.id,
-        title: `[reviewer] PR #${pr.number}: ${task.title}`,
+        title: reviewerTitle(pr.number, task.title),
         description: null as null,
         workspaceId: openWorker.workspaceId,
         missionId: task.missionId ?? null,

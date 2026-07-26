@@ -5,8 +5,10 @@ import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
-import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
+import { MissionProgress } from '@/components/MissionProgress';
+import { SegmentStrip } from '@/components/SegmentStrip';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +47,14 @@ export default async function InitiativeDetailPage({
       missions: {
         columns: { id: true, title: true, status: true, priority: true },
         orderBy: [desc(missions.priority), desc(missions.createdAt)],
-        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true } } },
+        with: {
+          tasks: {
+            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
+            // Latest worker per task drives ghost (in-flight) / half (PR-open) segment states,
+            // matching GET /api/initiatives/[id]. Without it segments collapse to status-only.
+            with: { workers: { columns: { status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          },
+        },
       },
     },
   });
@@ -65,11 +74,14 @@ export default async function InitiativeDetailPage({
 
   const children: ChildMissionProgress[] = [];
   const missionRows = (initiative.missions || []).map((m: any) => {
-    const { totalTasks, completedTasks, progress } = computeMissionProgress(m.tasks || []);
+    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(m.tasks || []);
     children.push({ status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks });
-    return { id: m.id, title: m.title, status: m.status, progress, totalTasks, completedTasks };
+    return { id: m.id, title: m.title, status: m.status, progress, totalTasks, completedTasks, segments };
   });
   const rollup = computeInitiativeProgress(children);
+  // Aggregate every child's task segments into one run for the rollup bar — the
+  // same SegmentStrip primitive the mission surfaces use, never a parallel renderer.
+  const aggregateSegments = computeInitiativeSegments(missionRows);
 
   const initiativeArtifacts = await db.query.artifacts.findMany({
     where: eq(artifacts.initiativeId, id),
@@ -126,12 +138,24 @@ export default async function InitiativeDetailPage({
             {rollup.completedMissions}/{rollup.totalMissions} missions · {rollup.completedTasks}/{rollup.totalTasks} tasks
           </span>
         </div>
-        <div className="h-1.5 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden max-w-md">
-          <div
-            className={`h-full ${ROLLUP_ACCENT[rollup.status] ?? 'bg-text-muted'} transition-all`}
-            style={{ width: `${rollup.progress}%` }}
-          />
-        </div>
+        {aggregateSegments.length > 0 ? (
+          <div className="flex max-w-md">
+            <SegmentStrip
+              segments={aggregateSegments}
+              continuous
+              label={`${rollup.completedTasks} of ${rollup.totalTasks} tasks complete across ${rollup.totalMissions} missions`}
+            />
+          </div>
+        ) : (
+          // Task-less initiative (mission-weighted progress) — no segments to draw, so
+          // fall back to a proportional status-colored bar.
+          <div className="h-1.5 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden max-w-md">
+            <div
+              className={`h-full ${ROLLUP_ACCENT[rollup.status] ?? 'bg-text-muted'} transition-all`}
+              style={{ width: `${rollup.progress}%` }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Linear Phase 2 — read-back tracking (only when a child mission is linked) */}
@@ -164,17 +188,30 @@ export default async function InitiativeDetailPage({
         ) : (
           <div className="flex flex-col gap-1.5">
             {missionRows.map((m) => (
-              <Link
-                key={m.id}
-                href={`/app/missions/${m.id}`}
-                className="card p-3 hover:border-border-hover transition-colors flex items-center gap-3"
-              >
-                <span className={`h-2 w-2 rounded-full shrink-0 ${MISSION_STATUS_DOT[m.status] ?? 'bg-text-muted'}`} />
-                <span className="text-sm text-text-primary truncate flex-1">{m.title}</span>
-                <span className="text-[11px] text-text-muted shrink-0">
-                  {m.completedTasks}/{m.totalTasks} · {m.progress}%
-                </span>
-              </Link>
+              // Card is a div (not a wrapping Link) so MissionProgress's in-flight task
+              // link never nests inside another anchor. Title carries the mission link.
+              <div key={m.id} className="card p-3 hover:border-border-hover transition-colors">
+                <div className="flex items-center gap-3">
+                  <span className={`h-2 w-2 rounded-full shrink-0 ${MISSION_STATUS_DOT[m.status] ?? 'bg-text-muted'}`} />
+                  <Link
+                    href={`/app/missions/${m.id}`}
+                    className="text-sm text-text-primary truncate flex-1 hover:text-accent-text transition-colors"
+                  >
+                    {m.title}
+                  </Link>
+                  <span className="text-[11px] text-text-muted shrink-0 tabular-nums">{m.progress}%</span>
+                </div>
+                {m.totalTasks > 0 && (
+                  <div className="mt-2 pl-5">
+                    <MissionProgress
+                      missionId={m.id}
+                      segments={m.segments}
+                      completedTasks={m.completedTasks}
+                      totalTasks={m.totalTasks}
+                    />
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}

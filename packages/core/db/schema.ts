@@ -19,7 +19,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -160,6 +160,7 @@ export interface WorkspaceGitConfig {
   requiresPR: boolean;
   targetBranch?: string;              // Where PRs should target
   autoCreatePR: boolean;
+  subjectPolicy?: import('../subject-anchor-observe').SubjectPolicy;
 
   // Agent instructions (prepended to prompt)
   agentInstructions?: string;         // Free-form, admin-defined
@@ -664,6 +665,19 @@ export const initiatives = pgTable('initiatives', {
   statusIdx: index('initiatives_status_idx').on(t.status),
 }));
 
+// Per-user snapshot of the last initiative-rollup progress a user saw, so the
+// Home arc headline can detect a milestone CROSSING ("crossed 75%") since their
+// last visit. Purely a UI memory — no execution semantics. Refreshed to current
+// on every Home render; a first view seeds the baseline without a headline.
+export const initiativeProgressSeen = pgTable('initiative_progress_seen', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  initiativeId: uuid('initiative_id').references(() => initiatives.id, { onDelete: 'cascade' }).notNull(),
+  lastProgress: integer('last_progress').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.initiativeId] }),
+}));
+
 
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -744,6 +758,21 @@ export const tasks = pgTable('tasks', {
   loopConfig: jsonb('loop_config').$type<LoopConfig | null>(),
   loopIteration: integer('loop_iteration').default(0).notNull(),
   loopState: text('loop_state').$type<LoopState | null>(),
+  // Subject anchor — normalized external identity for what this task acts on.
+  // See docs/design/task-subject-anchors.md §1.
+  subjectAnchor: jsonb('subject_anchor').$type<TaskSubjectAnchor | null>(),
+  // Write-through relational projections of subjectAnchor for indexed lookup.
+  // These are kept in sync with subjectAnchor by the write path; never written independently.
+  subjectKind: text('subject_kind').$type<'pull_request' | 'error' | 'mission' | 'branch'>(),
+  subjectPrNumber: integer('subject_pr_number'),
+  subjectHeadSha: text('subject_head_sha'),
+  subjectBranch: text('subject_branch'),
+  subjectErrorSignature: text('subject_error_signature'),
+  subjectMissionId: uuid('subject_mission_id'),
+  // 'active' = participates in dedupe; 'retry_chain' = lineage-only; 'none' = explicit file-anyway.
+  subjectDedupeScope: text('subject_dedupe_scope').$type<'active' | 'retry_chain' | 'none'>(),
+  subjectSupersededByTaskId: uuid('subject_superseded_by_task_id'),
+  subjectResolution: text('subject_resolution').$type<'attached' | 'superseded' | 'filed_anyway' | 'reconciled'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -767,6 +796,71 @@ export const tasks = pgTable('tasks', {
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
     sql`${t.mode} = 'planning' AND ${t.status} IN ('pending', 'assigned', 'in_progress')`
   ),
+  // Subject anchor lookup indexes — hot paths for dedupe, liveness, and recall queries.
+  subjectKindIdx: index('tasks_subject_kind_idx').on(t.workspaceId, t.subjectKind),
+  subjectPrIdx: index('tasks_subject_pr_idx').on(t.workspaceId, t.subjectPrNumber),
+  subjectHeadShaIdx: index('tasks_subject_head_sha_idx').on(t.workspaceId, t.subjectHeadSha),
+  subjectErrorIdx: index('tasks_subject_error_idx').on(t.workspaceId, t.subjectErrorSignature),
+  subjectMissionIdx: index('tasks_subject_mission_idx').on(t.workspaceId, t.subjectMissionId),
+  subjectDedupeScopeIdx: index('tasks_subject_dedupe_scope_idx').on(t.workspaceId, t.subjectDedupeScope),
+}));
+
+// Reports attached to a task's subject anchor — one row per observation/filing.
+// Created when a second filer hits an existing subject claim instead of inserting
+// a duplicate task. Also used for enrichment, conflict notes, and escalation records.
+// See docs/design/task-subject-anchors.md §1.
+export const taskSubjectReports = pgTable('task_subject_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // The canonical task this report is attached to.
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The task that triggered this report (when an agent/worker filed the duplicate).
+  reportingTaskId: uuid('reporting_task_id'),
+  // Who/what filed this report: 'webhook' | 'watcher' | 'api' | 'mcp' | 'organizer' | 'system'
+  origin: text('origin').notNull(),
+  // Account that filed the duplicate (nullable — system origins may not have one).
+  reporterId: uuid('reporter_id').references(() => accounts.id, { onDelete: 'set null' }),
+  note: text('note'),
+  // Snapshot of the subject anchor at the time of filing (immutable audit trail).
+  anchorSnapshot: jsonb('anchor_snapshot').$type<TaskSubjectAnchor | null>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: index('task_subject_reports_task_idx').on(t.taskId),
+  reportingTaskIdx: index('task_subject_reports_reporting_task_idx').on(t.reportingTaskId),
+  createdAtIdx: index('task_subject_reports_created_at_idx').on(t.taskId, t.createdAt),
+}));
+
+// Atomic dedupe ledger — one active row per (workspace, key_type, key_hash).
+// The UNIQUE partial index (WHERE state = 'active') is the authoritative guard
+// against concurrent duplicate task creation. Read-then-write is explicitly
+// insufficient; the INSERT ... ON CONFLICT pattern is required.
+// See docs/design/task-subject-anchors.md §4.
+export const taskSubjectClaims = pgTable('task_subject_claims', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Taxonomy of the dedupe key: 'pr_generation' | 'error' | 'mission_intent' | 'branch'
+  keyType: text('key_type').notNull(),
+  // SHA-256 hex of the canonical key fields (e.g. prNumber+fullHeadSha for pr_generation).
+  keyHash: text('key_hash').notNull(),
+  // The one canonical task that owns this subject generation.
+  // Null while a short-lived reservation owns the key but has not inserted its task yet.
+  canonicalTaskId: uuid('canonical_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  reservationToken: uuid('reservation_token'),
+  reservationExpiresAt: timestamp('reservation_expires_at', { withTimezone: true }),
+  // Monotonic counter bumped on each supersession (new head SHA = new generation).
+  generation: integer('generation').default(1).notNull(),
+  // 'active' = claim is live; 'released' = subject resolved (merged, closed, superseded).
+  state: text('state').notNull().default('active').$type<'active' | 'released'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+}, (t) => ({
+  workspaceIdx: index('task_subject_claims_workspace_idx').on(t.workspaceId),
+  canonicalTaskIdx: index('task_subject_claims_canonical_task_idx').on(t.canonicalTaskId),
+  // THE critical constraint: exactly one active claim per (workspace, key_type, key_hash).
+  // Concurrent inserts for the same key collide here; the loser reads canonical_task_id
+  // and attaches a report instead of creating a second task.
+  activeClaimIdx: uniqueIndex('task_subject_claims_active_unique')
+    .on(t.workspaceId, t.keyType, t.keyHash)
+    .where(sql`${t.state} = 'active'`),
 }));
 
 export const workers = pgTable('workers', {
@@ -888,6 +982,10 @@ export const artifacts = pgTable('artifacts', {
   content: text('content'),
   storageKey: text('storage_key'),
   shareToken: text('share_token'),
+  // Access control: 'private' = only logged-in workspace members (default);
+  // 'public' = anyone with the shareToken link. Set to 'public' only via an
+  // explicit Share action, which also (re)generates the shareToken.
+  visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1468,6 +1566,18 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   creatorWorker: one(workers, { fields: [tasks.createdByWorkerId], references: [workers.id], relationName: 'workerCreatedTasks' }),
   parentTask: one(tasks, { fields: [tasks.parentTaskId], references: [tasks.id], relationName: 'subTasks' }),
   subTasks: many(tasks, { relationName: 'subTasks' }),
+  subjectReports: many(taskSubjectReports),
+  subjectClaims: many(taskSubjectClaims),
+}));
+
+export const taskSubjectReportsRelations = relations(taskSubjectReports, ({ one }) => ({
+  task: one(tasks, { fields: [taskSubjectReports.taskId], references: [tasks.id] }),
+  reporter: one(accounts, { fields: [taskSubjectReports.reporterId], references: [accounts.id] }),
+}));
+
+export const taskSubjectClaimsRelations = relations(taskSubjectClaims, ({ one }) => ({
+  workspace: one(workspaces, { fields: [taskSubjectClaims.workspaceId], references: [workspaces.id] }),
+  canonicalTask: one(tasks, { fields: [taskSubjectClaims.canonicalTaskId], references: [tasks.id] }),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
@@ -1874,5 +1984,10 @@ export type NewExternalLink = typeof externalLinks.$inferInsert;
 
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;
+
+export type TaskSubjectReport = typeof taskSubjectReports.$inferSelect;
+export type NewTaskSubjectReport = typeof taskSubjectReports.$inferInsert;
+export type TaskSubjectClaim = typeof taskSubjectClaims.$inferSelect;
+export type NewTaskSubjectClaim = typeof taskSubjectClaims.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725

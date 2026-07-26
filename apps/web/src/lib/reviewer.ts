@@ -14,6 +14,7 @@ import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema'
 import { eq, and } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
+import { reviewerTitle } from './task-title';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -167,7 +168,7 @@ export async function createReviewerTask(
     repoFullName,
   });
 
-  const title = `[reviewer] PR #${prNumber}: ${originalTask.title}`;
+  const title = reviewerTitle(prNumber, originalTask.title);
 
   const [reviewerTask] = await db
     .insert(tasks)

@@ -28,6 +28,7 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { reviewerRetryTitle } from '@/lib/task-title';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -507,6 +508,7 @@ export async function PATCH(
   // Held = task goes back to pending and is NOT treated as a real failure
   // (no failure notification, no task-status overwrite below).
   let isBudgetReset = false;
+  let isAuthFailover = false;
 
   if (isCodexDeferral && worker.taskId) {
     // Guard: a cancelled task must not be re-queued even by a deferral report from
@@ -699,6 +701,96 @@ export async function PATCH(
     }
     // sandboxGapMissionExhausted=true: fall through so the failure notification fires and
     // the mount-gap error is visible. Task resumes when the mission budget is raised.
+  }
+
+  // Auth failover: if a code_failure was caused by an OAuth/auth error and Codex
+  // credentials are available, flip the task to Codex instead of permanently failing.
+  // Uses the existing auth-error classifier — no new classifier needed.
+  // Guard: context.authFailoverApplied prevents flip→fail→flip ping-pong (max 1 flip per chain).
+  if (status === 'failed' && !isBudgetReset && !isCodexDeferral && worker.taskId) {
+    const isCodeFailure = !isBudgetError && !isSandboxMountGap;
+    if (isCodeFailure) {
+      // Primary check: classify the body error using the existing auth-error classifier.
+      // Fallback: scan error traces if the body error is absent (runner may have
+      // classified the auth error only in appendErrorTraces, not in the top-level error field).
+      let authSeverity = classifyAuthErrorSeverity(error ?? '');
+      if (authSeverity === 'none') {
+        try {
+          const traces = await db.query.workerErrorTraces.findMany({
+            where: eq(workerErrorTraces.workerId, worker.id),
+            columns: { pattern: true, excerpt: true },
+          });
+          for (const trace of traces) {
+            const sev = classifyAuthErrorSeverity(trace.excerpt || trace.pattern || '');
+            if (sev !== 'none') { authSeverity = sev; break; }
+          }
+        } catch {
+          // Non-fatal: fall through to normal failure if traces unavailable
+        }
+      }
+
+      if (authSeverity !== 'none') {
+        const authTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+          columns: { backend: true, workspaceId: true, context: true, status: true },
+          with: { workspace: { columns: { teamId: true } } },
+        });
+        const authTaskCtx = (authTask?.context || {}) as Record<string, unknown>;
+        const alreadyFlipped = authTaskCtx.authFailoverApplied === true;
+        const currentBackend = authTask?.backend;
+        const authTeamId = (authTask?.workspace as any)?.teamId as string | undefined;
+
+        if (
+          !alreadyFlipped &&
+          currentBackend !== 'codex' &&
+          authTeamId &&
+          authTask?.workspaceId &&
+          authTask?.status !== 'cancelled'
+        ) {
+          try {
+            const codexAvailable = await hasCodexCredential({
+              teamId: authTeamId,
+              accountId: account.id,
+              workspaceId: authTask.workspaceId,
+            });
+            if (codexAvailable) {
+              await db
+                .update(tasks)
+                .set({
+                  status: 'pending',
+                  backend: 'codex',
+                  claimedBy: null,
+                  claimedAt: null,
+                  expiresAt: null,
+                  updatedAt: new Date(),
+                  context: {
+                    ...authTaskCtx,
+                    authFailoverApplied: true,
+                    failedOverFrom: currentBackend || 'claude',
+                    failoverReason: 'auth_failure',
+                    previousWorkerId: id,
+                  },
+                })
+                .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+
+              isAuthFailover = true;
+              isBudgetReset = true; // gates normal task-update block + skips fail notifications
+              console.log(`[workers PATCH] Task ${worker.taskId} failed over to Codex after auth failure (${authSeverity})`);
+              notify({
+                app: 'alerts',
+                title: '🔑 Auth failure — failing over to Codex',
+                message: `Task re-queued on Codex after ${currentBackend || 'claude'} auth failure.\n${(error || '').slice(0, 150)}`,
+                url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/tasks/${worker.taskId}`,
+                urlTitle: 'View task',
+                priority: 0,
+              });
+            }
+          } catch (err) {
+            console.warn(`[workers PATCH] Auth failover check failed for task ${worker.taskId}:`, err);
+          }
+        }
+      }
+    }
   }
 
   let shouldAutoRetry = false;
@@ -1468,10 +1560,14 @@ export async function PATCH(
   // burst observed in the 2026-06-25 session-limit storm. The task is already
   // pending and the runner's next poll picks it up when the budget resets.
   if (isBudgetReset && worker.taskId) {
+    // Auth failover: signal backend change, not a budget pause
+    const taskResetPayload = isAuthFailover
+      ? { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', backend: 'codex' } }
+      : { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } };
     await triggerEvent(
       channels.workspace(worker.workspaceId),
       events.TASK_UPDATED,
-      { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending', budgetExhausted: true } }
+      taskResetPayload,
     );
   }
 
@@ -1793,15 +1889,11 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
-      const retryTitle = originalTask.title
-        .replace(/^\[reviewer retry #?\d*\]\s*/i, '')
-        .trim();
-
       const [retryTask] = await db
         .insert(tasks)
         .values({
           workspaceId,
-          title: `[reviewer retry #${currentIteration + 1}] ${retryTitle}`,
+          title: reviewerRetryTitle(currentIteration + 1, originalTask.title),
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,

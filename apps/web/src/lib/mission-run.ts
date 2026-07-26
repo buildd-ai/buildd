@@ -8,6 +8,34 @@ import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exh
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
+import {
+  prepareSubjectFiling,
+  recordSubjectMatchObserved,
+} from '@/lib/subject-anchor-observer';
+
+async function recordOrganizerDuplicate(
+  task: typeof tasks.$inferSelect,
+  subjectMissionId: string,
+  recordMatch: typeof recordSubjectMatchObserved,
+) {
+  await recordMatch({
+    workspaceId: task.workspaceId,
+    origin: 'organizer',
+    anchor: {
+      version: 1,
+      kind: 'mission',
+      subjectMissionId,
+      source: 'system',
+      confidence: 'exact',
+    },
+    match: {
+      taskId: task.id,
+      matchedOrigin: task.creationSource ?? 'orchestrator',
+      outcome: 'attach',
+      keyType: 'mission',
+    },
+  });
+}
 
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect | null;
@@ -43,6 +71,8 @@ export interface RunMissionDeps {
   getOrCreateCoordinationWorkspace?: typeof _getOrCreateCoordinationWorkspace;
   getMissionSpendUsd?: (missionId: string) => Promise<number>;
   exhaustMissionBudget?: (missionId: string, title: string, spendUsd: number, budgetUsd: number) => Promise<void>;
+  prepareSubjectFiling?: typeof prepareSubjectFiling;
+  recordSubjectMatchObserved?: typeof recordSubjectMatchObserved;
 }
 
 /**
@@ -62,6 +92,8 @@ export async function runMission(
   const getOrCreateCoordinationWorkspace = deps?.getOrCreateCoordinationWorkspace ?? _getOrCreateCoordinationWorkspace;
   const getMissionSpendUsd = deps?.getMissionSpendUsd ?? _getMissionSpendUsd;
   const exhaustMissionBudget = deps?.exhaustMissionBudget ?? _exhaustMissionBudget;
+  const prepareSubject = deps?.prepareSubjectFiling ?? prepareSubjectFiling;
+  const recordSubjectMatch = deps?.recordSubjectMatchObserved ?? recordSubjectMatchObserved;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -113,6 +145,7 @@ export async function runMission(
     orderBy: (t, { desc }) => [desc(t.createdAt)],
   });
   if (inFlight) {
+    await recordOrganizerDuplicate(inFlight, mission.id, recordSubjectMatch);
     return { task: inFlight, deduped: true };
   }
 
@@ -130,6 +163,7 @@ export async function runMission(
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
     if (cronInFlight) {
+      await recordOrganizerDuplicate(cronInFlight, mission.id, recordSubjectMatch);
       return { task: cronInFlight, deduped: true };
     }
   }
@@ -254,6 +288,22 @@ export async function runMission(
 
   // Get template config for mode/priority from schedule if available
   const template = (mission.schedule as any)?.taskTemplate;
+  const subjectObservation = await prepareSubject({
+    workspaceId,
+    workspaceRepo: workspace?.repo
+      ?.replace(/^https?:\/\/github\.com\//, '')
+      .replace(/\.git$/, ''),
+    gitConfig: workspace?.gitConfig,
+    title: taskTitle,
+    description: taskDescription ?? undefined,
+    context: taskContext,
+    systemContext: {
+      origin: 'organizer',
+      subjectMissionId: mission.id,
+      branch: workingBranch ?? undefined,
+    },
+    origin: 'organizer',
+  });
 
   // Derive heartbeat role from mission's dominant child task role
   // (first heartbeat with no tasks yet falls back to organizer)
@@ -294,6 +344,7 @@ export async function runMission(
       context: taskContext,
       creationSource: 'orchestrator',
       missionId: mission.id,
+      ...subjectObservation.taskValues,
       // Run the planning task on the mission's chosen backend so the whole
       // mission (including the organizer) stays on one agent backend.
       ...(mission.defaultBackend ? { backend: mission.defaultBackend } : {}),
@@ -311,7 +362,18 @@ export async function runMission(
       ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
+    if (inFlight) await recordOrganizerDuplicate(inFlight, mission.id, recordSubjectMatch);
     return { task: inFlight ?? null, deduped: true };
+  }
+
+  if (subjectObservation.anchor && subjectObservation.match) {
+    await recordSubjectMatch({
+      workspaceId,
+      origin: 'organizer',
+      reportingTaskId: task.id,
+      anchor: subjectObservation.anchor,
+      match: subjectObservation.match,
+    });
   }
 
   if (workspace) {

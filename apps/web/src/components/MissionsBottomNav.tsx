@@ -15,7 +15,7 @@ export default function MissionsBottomNav() {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-center justify-around h-14">
-        {NAV_ITEMS.map((tab) => {
+        {NAV_ITEMS.filter((tab) => !tab.desktopOnly).map((tab) => {
           const active = isNavActive(pathname, tab.href);
           const showBadge = (tab.href === '/app/tasks' && needsInputCount > 0) || (tab.href === '/app/home' && escalationCount > 0);
           const badgeCount = tab.href === '/app/home' ? escalationCount : needsInputCount;

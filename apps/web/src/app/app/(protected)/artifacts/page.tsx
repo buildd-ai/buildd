@@ -88,6 +88,7 @@ export default async function ArtifactsPage() {
       title: a.title,
       content: a.content,
       shareToken: a.shareToken,
+      visibility: (a.visibility as 'private' | 'public') ?? 'private',
       metadata: (a.metadata || {}) as Record<string, unknown>,
       createdAt: a.createdAt.toISOString(),
       taskTitle: task?.title || null,

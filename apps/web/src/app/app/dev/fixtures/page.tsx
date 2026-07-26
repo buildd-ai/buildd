@@ -1,175 +1,19 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
+import { mockWorkers, type FixtureState } from './fixtures-data';
 
-// Mock worker data for different states
-const mockWorkers = {
-    'waiting-input': {
-        id: 'fixture-worker-waiting-input',
-        taskId: 'fixture-task-1',
-        workspaceId: 'fixture-workspace',
-        accountId: 'fixture-account',
-        name: 'fixture-worker-abc123',
-        branch: 'buildd/fixture-task',
-        status: 'waiting_input' as const,
-        waitingFor: {
-            type: 'question',
-            prompt: 'Which authentication method should we use for the new API endpoints?',
-            options: ['JWT with refresh tokens', 'Session cookies', 'OAuth2 + PKCE'],
-        },
-        costUsd: '0.05',
-        inputTokens: 5000,
-        outputTokens: 2000,
-        turns: 12,
-        startedAt: new Date(Date.now() - 3600000),
-        completedAt: null,
-        error: null,
-        localUiUrl: null,
-        currentAction: 'Auth method',
-        milestones: [
-            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 3600000 },
-            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 3000000 },
-            { label: 'Project setup', timestamp: Date.now() - 3000000 },
-            { label: 'Database schema', timestamp: Date.now() - 2000000 },
-        ],
-        prUrl: null,
-        prNumber: null,
-        lastCommitSha: 'abc123',
-        commitCount: 3,
-        filesChanged: 8,
-        linesAdded: 150,
-        linesRemoved: 20,
-        pendingInstructions: null,
-        instructionHistory: [],
-        createdAt: new Date(Date.now() - 3600000),
-        updatedAt: new Date(),
-    },
-    running: {
-        id: 'fixture-worker-running',
-        taskId: 'fixture-task-2',
-        workspaceId: 'fixture-workspace',
-        accountId: 'fixture-account',
-        name: 'fixture-worker-def456',
-        branch: 'buildd/fixture-task-2',
-        status: 'running' as const,
-        waitingFor: null,
-        costUsd: '0.12',
-        inputTokens: 12000,
-        outputTokens: 5000,
-        turns: 25,
-        startedAt: new Date(Date.now() - 7200000),
-        completedAt: null,
-        error: null,
-        localUiUrl: 'http://localhost:8766',
-        currentAction: 'Implementing API endpoints',
-        milestones: [
-            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 7200000 },
-            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 6000000 },
-            { type: 'checkpoint', event: 'first_edit', label: 'First file edit', timestamp: Date.now() - 4000000 },
-            { label: 'Project analysis', timestamp: Date.now() - 6000000 },
-            { label: 'Schema design', timestamp: Date.now() - 4000000 },
-            { label: 'API scaffolding', timestamp: Date.now() - 2000000 },
-        ],
-        prUrl: null,
-        prNumber: null,
-        lastCommitSha: 'def456',
-        commitCount: 7,
-        filesChanged: 15,
-        linesAdded: 420,
-        linesRemoved: 85,
-        pendingInstructions: null,
-        instructionHistory: [],
-        createdAt: new Date(Date.now() - 7200000),
-        updatedAt: new Date(),
-    },
-    completed: {
-        id: 'fixture-worker-completed',
-        taskId: 'fixture-task-3',
-        workspaceId: 'fixture-workspace',
-        accountId: 'fixture-account',
-        name: 'fixture-worker-ghi789',
-        branch: 'buildd/fixture-task-3',
-        status: 'completed' as const,
-        waitingFor: null,
-        costUsd: '0.25',
-        inputTokens: 25000,
-        outputTokens: 10000,
-        turns: 50,
-        startedAt: new Date(Date.now() - 14400000),
-        completedAt: new Date(Date.now() - 3600000),
-        error: null,
-        localUiUrl: null,
-        currentAction: null,
-        milestones: [
-            { type: 'checkpoint', event: 'session_started', label: 'Session started', timestamp: Date.now() - 14400000 },
-            { type: 'checkpoint', event: 'first_read', label: 'First file read', timestamp: Date.now() - 13000000 },
-            { type: 'checkpoint', event: 'first_edit', label: 'First file edit', timestamp: Date.now() - 10000000 },
-            { type: 'checkpoint', event: 'first_commit', label: 'First commit', timestamp: Date.now() - 7000000 },
-            { type: 'checkpoint', event: 'task_completed', label: 'Task completed', timestamp: Date.now() - 3600000 },
-            { label: 'Analysis complete', timestamp: Date.now() - 12000000 },
-            { label: 'Implementation done', timestamp: Date.now() - 8000000 },
-            { label: 'Tests passing', timestamp: Date.now() - 5000000 },
-            { label: 'PR created', timestamp: Date.now() - 3600000 },
-        ],
-        prUrl: 'https://github.com/example/repo/pull/123',
-        prNumber: 123,
-        lastCommitSha: 'ghi789',
-        commitCount: 15,
-        filesChanged: 25,
-        linesAdded: 800,
-        linesRemoved: 150,
-        pendingInstructions: null,
-        instructionHistory: [],
-        createdAt: new Date(Date.now() - 14400000),
-        updatedAt: new Date(),
-    },
-    failed: {
-        id: 'fixture-worker-failed',
-        taskId: 'fixture-task-4',
-        workspaceId: 'fixture-workspace',
-        accountId: 'fixture-account',
-        name: 'fixture-worker-jkl012',
-        branch: 'buildd/fixture-task-4',
-        status: 'failed' as const,
-        waitingFor: null,
-        costUsd: '0.08',
-        inputTokens: 8000,
-        outputTokens: 3000,
-        turns: 15,
-        startedAt: new Date(Date.now() - 5400000),
-        completedAt: new Date(Date.now() - 1800000),
-        error: 'Build failed: TypeScript compilation error in src/api/routes.ts',
-        localUiUrl: null,
-        currentAction: null,
-        milestones: [
-            { label: 'Started', timestamp: Date.now() - 5000000 },
-        ],
-        prUrl: null,
-        prNumber: null,
-        lastCommitSha: 'jkl012',
-        commitCount: 2,
-        filesChanged: 5,
-        linesAdded: 100,
-        linesRemoved: 10,
-        pendingInstructions: null,
-        instructionHistory: [],
-        createdAt: new Date(Date.now() - 5400000),
-        updatedAt: new Date(),
-    },
-};
+export default function DevFixturesPage() {
+    // Read the selected state from the URL after mount. Doing this during render
+    // (typeof window checks) diverges between the server and client and causes a
+    // hydration mismatch, so start from the default and sync on the client.
+    const [state, setState] = useState<FixtureState>('waiting-input');
 
-type FixtureState = keyof typeof mockWorkers;
-
-export default function DevFixturesPage({
-    searchParams,
-}: {
-    searchParams: Promise<{ state?: string }>;
-}) {
-    // This is a client component, so we need to handle searchParams differently
-    // For simplicity, we'll use a default or URL hash
-    const state = (typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('state')
-        : 'waiting-input') as FixtureState || 'waiting-input';
+    useEffect(() => {
+        const param = new URLSearchParams(window.location.search).get('state');
+        if (param && param in mockWorkers) setState(param as FixtureState);
+    }, []);
 
     const worker = mockWorkers[state] || mockWorkers['waiting-input'];
 

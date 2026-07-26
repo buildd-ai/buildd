@@ -4,10 +4,11 @@ import { resolve } from 'path';
 import { NAV_ITEMS, mobilePageTitle } from './nav-config';
 
 describe('NAV_ITEMS', () => {
-  it('defines the five primary surfaces in spec order (unified-app-ia §D.2)', () => {
+  it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
     expect(NAV_ITEMS.map((i) => i.href)).toEqual([
       '/app/home',
       '/app/missions',
+      '/app/initiatives',
       '/app/tasks',
       '/app/team',
       '/app/health',
@@ -15,10 +16,15 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((i) => i.label)).toEqual([
       'Home',
       'Missions',
+      'Initiatives',
       'Activity',
       'Team',
       'Health',
     ]);
+  });
+
+  it('marks only Initiatives desktop-only (kept off the mobile bottom bar)', () => {
+    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual(['/app/initiatives']);
   });
 
   it('provides an icon for every item', () => {
@@ -58,6 +64,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/home')).toBe('Home');
     expect(mobilePageTitle('/app/dashboard')).toBe('Home');
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
+    expect(mobilePageTitle('/app/initiatives')).toBe('Initiatives');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
     expect(mobilePageTitle('/app/health')).toBe('Health');
@@ -70,6 +77,7 @@ describe('mobilePageTitle', () => {
 
   it('returns null on detail pages so they render their own headers', () => {
     expect(mobilePageTitle('/app/missions/abc-123')).toBeNull();
+    expect(mobilePageTitle('/app/initiatives/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/tasks/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/workspaces/abc-123/config')).toBeNull();
   });

@@ -347,6 +347,14 @@ export interface WorkspaceGitConfig {
   requiresPR: boolean;
   targetBranch?: string;
   autoCreatePR: boolean;
+  subjectPolicy?: {
+    mode?: 'observe' | 'propose' | 'enforce';
+    dedupe?: 'suggest' | 'attach-system' | 'attach-all';
+    proposalGraceHours?: number;
+    conflictDeadDays?: number;
+    autoCloseBuilddSupersededPrs?: boolean;
+    priorWorkInjection?: boolean;
+  };
 
   // Agent instructions
   agentInstructions?: string;

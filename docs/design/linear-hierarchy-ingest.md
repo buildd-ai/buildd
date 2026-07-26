@@ -1,6 +1,6 @@
 # Native Initiatives Tier + Optional Linear Sync
 
-**Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 Shipped (link layer + token refresh, PR #1459; plan archived at `docs/plans/archive/linear-phase-1.md`). Phases 2-4 (Linear) Proposed.
+**Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 Shipped (link layer + token refresh, PR #1459; plan archived at `docs/plans/archive/linear-phase-1.md`). Phase 2 Shipped (read-back tracking panel, PR #1470). Phase 3 split into **3a** (inbound Linear webhook — in progress, `docs/plans/linear-phase-3.md`) and **3b** (graph import + GitHub inbound + echo suppression — Proposed). Phase 4 Proposed.
 **Correction:** `external_links` was listed under Phase 0 below but was **not** built there (shipped Phase 0 = initiatives tier only). It is owned by **Phase 1** — see the Phase 1 plan.
 **Related:**
 - `docs/specs/work-tracker-integration.md` — the shipped/partial work-tracker contract; §3 inbound webhook is a Phase-3 prerequisite here
@@ -123,13 +123,19 @@ action (retire the dead `/link-linear` advertisement) writing to `external_links
 (`tokenExpiresAt` null + `lastVerificationError`) surfaces as a reconnect banner
 distinct from a transient error.
 
-**Phase 2 — Read-back tracking panel.** `fetchProgress` on the Linear provider;
-panel on `missions/[id]` (and initiative view) renders **only** when an
-`external_link` exists → no-op for everyone else; best-effort, never breaks the
-page.
+**Phase 2 — Read-back tracking panel. ✅ SHIPPED (PR #1470).** `fetchLinearProgress`
++ two `tracker-progress` routes; `TrackerProgressPanel` on `missions/[id]` and the
+initiative view renders **only** when an `external_link` exists (cheap server-side
+gate) → no-op for everyone else; client-fetched so Linear latency never blocks the
+page; best-effort, never breaks the page.
 
-**Phase 3 — Inbound webhook + idempotent import.** Build the specced §3
-`POST /api/webhooks/linear` (label→task, close→cancel) first. Import walks the
+**Phase 3a — Inbound Linear webhook. ⟶ plan `docs/plans/linear-phase-3.md`.**
+The specced §3 `POST /api/webhooks/linear/[workspaceId]` (label→task, close→cancel):
+per-workspace HMAC signing secret (`secrets` purpose `webhook_token`, label
+`linear`), idempotent on the Linear issue UUID via `external_links`, atomic guarded
+cancel. No graph import.
+
+**Phase 3b — Graph import + GitHub inbound + echo suppression.** Import walks the
 Linear graph (paginated, backoff on 429) into the native tier; imported
 project-missions default `orchestrationMode = 'manual'` so the heartbeat can't
 spawn workers until a human runs them. Idempotent via `external_links` `ON

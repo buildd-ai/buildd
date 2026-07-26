@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -10,14 +10,19 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
-import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
+import { buildActionQueue } from '@/lib/action-queue';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import InitiativeRail from '@/components/InitiativeRail';
+import InitiativeFilterChips from '@/components/InitiativeFilterChips';
+import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
+import { sortInitiatives } from '@/lib/initiative-presentation';
+import { crossedMilestone } from '@buildd/core/mission-helpers';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -66,9 +71,9 @@ function formatTime(date: Date | string): string {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams?: Promise<{ workspace?: string }>;
+  searchParams?: Promise<{ workspace?: string; initiative?: string }>;
 }) {
-  const { workspace: wsFilter } = (await searchParams) ?? {};
+  const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
   const user = await getCurrentUser();
 
   const isDev = process.env.NODE_ENV === 'development';
@@ -154,6 +159,14 @@ export default async function HomePage({
 
   let teamWorkspaces: { id: string; name: string }[] = [];
 
+  // Durable-arc rail — additive, above the ephemeral feed. Empty ⇒ collapses.
+  let railInitiatives: InitiativeListItem[] = [];
+  const RAIL_LIMIT = 6;
+  // Initiatives present among the Waiting-on-you items — drives the scoping chips.
+  let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
+  // Arc headline: an initiative that crossed a milestone since this user's last visit.
+  let arcHeadline: string | null = null;
+
   let waitingOnYou: Array<{
     kind: 'merge' | 'approve' | 'answer';
     prUrl?: string;
@@ -181,6 +194,8 @@ export default async function HomePage({
     escalationReason: string | null;
     waitingMinutes: number | null;
   }[] = [];
+
+  let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
 
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -224,6 +239,53 @@ export default async function HomePage({
       } else {
         // No valid team cookie → show all user workspaces cross-team
         wsIds = await getUserWorkspaceIds(user.id);
+      }
+
+      // Initiative rail — team-scoped (matching the cookie/team logic above),
+      // optionally narrowed by the active workspace filter. Independent of the
+      // task/worker wsIds queries below so it survives an empty workspace set.
+      const initiativeTeamIds = activeTeamId ? [activeTeamId] : await getUserTeamIds(user.id);
+      const sortedInitiatives = sortInitiatives(
+        await loadInitiativeList({
+          teamIds: initiativeTeamIds,
+          workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
+        }),
+      );
+      railInitiatives = sortedInitiatives.slice(0, RAIL_LIMIT);
+      // Map every child mission → its initiative, for the queue scoping chips.
+      const missionToInitiative = new Map<string, { id: string; title: string }>();
+      for (const ini of sortedInitiatives) {
+        for (const m of ini.missions) missionToInitiative.set(m.id, { id: ini.id, title: ini.title });
+      }
+
+      // Arc headline — detect a milestone crossing since this user's last visit,
+      // then refresh the per-user snapshot to current. A first-ever view seeds the
+      // baseline silently (no snapshot ⇒ no headline).
+      if (sortedInitiatives.length > 0) {
+        const seenRows = await db
+          .select({ initiativeId: initiativeProgressSeen.initiativeId, lastProgress: initiativeProgressSeen.lastProgress })
+          .from(initiativeProgressSeen)
+          .where(and(
+            eq(initiativeProgressSeen.userId, user.id),
+            inArray(initiativeProgressSeen.initiativeId, sortedInitiatives.map((i) => i.id)),
+          ));
+        const seenMap = new Map(seenRows.map((r) => [r.initiativeId, r.lastProgress]));
+        let best: { title: string; milestone: number } | null = null;
+        for (const ini of sortedInitiatives) {
+          const prev = seenMap.get(ini.id);
+          if (prev === undefined) continue; // first view → baseline only
+          const m = crossedMilestone(prev, ini.progress.progress);
+          if (m !== null && (!best || m > best.milestone)) best = { title: ini.title, milestone: m };
+        }
+        if (best) arcHeadline = `${best.title} crossed ${best.milestone}%`;
+
+        await db
+          .insert(initiativeProgressSeen)
+          .values(sortedInitiatives.map((i) => ({ userId: user.id, initiativeId: i.id, lastProgress: i.progress.progress })))
+          .onConflictDoUpdate({
+            target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
+            set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
+          });
       }
 
       if (wsIds.length > 0) {
@@ -801,6 +863,22 @@ export default async function HomePage({
           }
         }
 
+        // Merge waitingOnYou + escalationInbox into one deduplicated action queue
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
+
+        // Tag each item with its mission's initiative and collect the distinct
+        // initiatives present (sorted, blocked-first) for the scoping chips.
+        actionQueue = actionQueue.map((item) => {
+          const ini = item.missionId ? missionToInitiative.get(item.missionId) : undefined;
+          return ini ? { ...item, initiativeId: ini.id, initiativeTitle: ini.title } : item;
+        });
+        const presentInitiativeIds = new Set(
+          actionQueue.map((i) => i.initiativeId).filter(Boolean) as string[],
+        );
+        actionQueueInitiatives = sortedInitiatives
+          .filter((i) => presentInitiativeIds.has(i.id))
+          .map((i) => ({ id: i.id, title: i.title }));
+
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
@@ -847,9 +925,21 @@ export default async function HomePage({
   // Server runs UTC; assume EST (UTC-5) for time-aware copy
   const hour = (new Date().getUTCHours() - 5 + 24) % 24;
   const timePeriod = hour < 12 ? 'overnight' : 'today';
-  const subheading = completedLast12h > 0
-    ? `Your agents shipped ${completedLast12h} thing${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
-    : 'Your agents are standing by';
+  // Arc-aware subheading: overnight throughput + the actionable "waiting on you"
+  // count (the milestone, when one crossed, leads as the headline above).
+  const shipClause = completedLast12h > 0
+    ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
+    : null;
+  const waitClause = actionQueue.length > 0 ? `${actionQueue.length} waiting on you` : null;
+  const subParts = [shipClause, waitClause].filter(Boolean) as string[];
+  const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
+
+  // Chips SCOPE the Waiting-on-you queue (never group it). The section still
+  // gates on the unfiltered queue so a filter that empties it doesn't hide the
+  // chips (leaving the user unable to clear the filter).
+  const filteredActionQueue = initFilter
+    ? actionQueue.filter((i) => i.initiativeId === initFilter)
+    : actionQueue;
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
@@ -864,67 +954,164 @@ export default async function HomePage({
         <div className="md:flex md:gap-0">
           {/* Left column: Greeting + Right Now */}
           <div className="md:w-[60%] md:pr-8">
-            {/* Greeting */}
+            {/* Greeting — replaced by an arc headline when an initiative crossed
+                a milestone since the user's last visit. */}
             <div className="mb-8 md:mb-10">
-              <Greeting firstName={firstName} />
+              {arcHeadline ? (
+                <h1 className="text-[28px] font-semibold text-text-primary leading-tight uppercase tracking-tight">
+                  {arcHeadline}
+                </h1>
+              ) : (
+                <Greeting firstName={firstName} />
+              )}
               <p className="text-[15px] text-text-secondary font-light mt-1.5">
                 {subheading}
               </p>
             </div>
 
-            {/* Waiting on You — action queue: merge PRs, approve plans, answer questions */}
-            {waitingOnYou.length > 0 && (
+            {/* Durable-arc rail — above the ephemeral feed; collapses when empty. */}
+            <InitiativeRail initiatives={railInitiatives} />
+
+            {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE) */}
+            {actionQueue.length > 0 && (
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Waiting on You</div>
                   <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                    {waitingOnYou.length}
+                    {filteredActionQueue.length}
                   </span>
                 </div>
+                {/* Initiative scoping chips — SCOPE the queue, never group it. */}
+                <InitiativeFilterChips
+                  initiatives={actionQueueInitiatives}
+                  selectedId={initFilter ?? null}
+                  workspaceFilter={wsFilter ?? null}
+                />
+                {filteredActionQueue.length === 0 && (
+                  <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
+                )}
                 <div className="space-y-2">
-                  {waitingOnYou.map((item, i) => {
-                    if (item.kind === 'merge') {
+                  {filteredActionQueue.map((item) => {
+                    if (item.chip === 'MERGE') {
                       return (
-                        <div key={`merge-${item.upstreamTaskId}`} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
+                        <div key={item.subjectKey} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                 <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
                                   Merge
                                 </span>
-                                <span className="text-[12px] text-text-secondary">
-                                  {item.upstreamTaskTitle}
-                                </span>
-                              </div>
-                              <div className="text-[13px] font-medium text-text-primary">
-                                PR #{item.prNumber} → unblocks {item.unblockCount} task{(item.unblockCount ?? 0) !== 1 ? 's' : ''}
-                                {item.missionTitle && (
-                                  <span className="text-text-secondary font-normal"> in {item.missionTitle}</span>
+                                {(item.upstreamTaskTitle ?? item.taskTitle) && (
+                                  <span className="text-[12px] text-text-secondary truncate">
+                                    {item.upstreamTaskTitle ?? item.taskTitle}
+                                  </span>
+                                )}
+                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                  <span className="text-[10px] text-text-muted">
+                                    {item.waitingMinutes < 60
+                                      ? `${item.waitingMinutes}m`
+                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                  </span>
                                 )}
                               </div>
+                              <div className="text-[13px] font-medium text-text-primary">
+                                {item.prUrl ? (
+                                  <a
+                                    href={item.prUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="hover:underline"
+                                  >
+                                    PR #{item.prNumber}
+                                  </a>
+                                ) : item.taskId ? (
+                                  <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                    {item.taskTitle}
+                                  </Link>
+                                ) : null}
+                                {item.unblockCount != null && item.unblockCount > 0 && (
+                                  <span className="text-text-secondary font-normal">
+                                    {' '}→ unblocks {item.unblockCount} task{item.unblockCount !== 1 ? 's' : ''}
+                                    {item.missionTitle && ` in ${item.missionTitle}`}
+                                  </span>
+                                )}
+                              </div>
+                              {item.escalationReason && (
+                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+                                  {item.escalationReason}
+                                </p>
+                              )}
+                              {item.workspaceName && (
+                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                              )}
                             </div>
-                            <a
-                              href={item.prUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-shrink-0 px-3 py-1.5 text-[12px] font-medium border border-primary text-primary rounded-[6px] hover:bg-primary hover:text-white transition-colors"
-                            >
-                              Open PR ↗
-                            </a>
+                            {item.prNumber != null && (
+                              <MergeConfirmButton
+                                prNumber={item.prNumber}
+                                prUrl={item.prUrl ?? ''}
+                                queuedTaskCount={item.unblockCount}
+                              />
+                            )}
                           </div>
                         </div>
                       );
                     }
-                    if (item.kind === 'answer') {
+                    if (item.chip === 'REVIEW') {
+                      return (
+                        <div key={item.subjectKey} className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                  Review
+                                </span>
+                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                  <span className="text-[10px] text-text-muted">
+                                    {item.waitingMinutes < 60
+                                      ? `${item.waitingMinutes}m`
+                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                  </span>
+                                )}
+                              </div>
+                              {item.taskId ? (
+                                <Link
+                                  href={`/app/tasks/${item.taskId}`}
+                                  className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                                >
+                                  {item.taskTitle}
+                                </Link>
+                              ) : (
+                                <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
+                              )}
+                              {item.workspaceName && (
+                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                              )}
+                              {item.escalationReason && (
+                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+                                  {item.escalationReason}
+                                </p>
+                              )}
+                            </div>
+                            {item.prNumber != null && (
+                              <MergeConfirmButton
+                                prNumber={item.prNumber}
+                                prUrl={item.prUrl ?? ''}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.chip === 'QUESTION') {
                       return (
                         <Link
-                          key={`answer-${item.workerId}`}
+                          key={item.subjectKey}
                           href={`/app/tasks/${item.taskId}`}
                           className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
-                              Answer
+                              Question
                             </span>
                             {item.missionTitle && (
                               <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
@@ -937,10 +1124,10 @@ export default async function HomePage({
                         </Link>
                       );
                     }
-                    if (item.kind === 'approve') {
+                    if (item.chip === 'APPROVE') {
                       return (
                         <Link
-                          key={`approve-${item.taskId}`}
+                          key={item.subjectKey}
                           href={`/app/tasks/${item.taskId}`}
                           className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
                         >
@@ -963,7 +1150,7 @@ export default async function HomePage({
                 </div>
               </div>
             )}
-            {waitingOnYou.length === 0 && activeItems.length > 0 && (
+            {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
                 <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
@@ -1080,79 +1267,6 @@ export default async function HomePage({
                 </div>
               )}
             </div>
-
-            {/* Escalation Inbox (BT-15) — PRs requiring human action */}
-            {escalationInbox.length > 0 && (
-              <div className="mb-8">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="section-label">Needs Your Review</div>
-                  <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-status-error text-white">
-                    {escalationInbox.length}
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {escalationInbox.map((item) => {
-                    const tierLabel =
-                      item.policyTier === 'human' ? 'Human Gate'
-                      : item.policyTier === 'agent-review' ? 'Agent Review'
-                      : 'Auto';
-                    return (
-                      <div
-                        key={item.workerId}
-                        className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
-                      >
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                              <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
-                                {tierLabel}
-                              </span>
-                              {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                <span className="text-[10px] text-text-muted">
-                                  Waiting {item.waitingMinutes < 60
-                                    ? `${item.waitingMinutes}m`
-                                    : `${Math.floor(item.waitingMinutes / 60)}h`}
-                                </span>
-                              )}
-                            </div>
-                            <Link
-                              href={`/app/tasks/${item.taskId}`}
-                              className="text-[13px] font-medium text-text-primary truncate hover:underline block"
-                            >
-                              {item.taskTitle}
-                            </Link>
-                            {item.workspaceName && (
-                              <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                            )}
-                          </div>
-                        </div>
-                        {item.escalationReason && (
-                          <p className="text-[12px] text-text-secondary line-clamp-2 mb-2">
-                            {item.escalationReason}
-                          </p>
-                        )}
-                        <div className="flex items-center gap-2 flex-wrap mt-2">
-                          {item.prUrl && (
-                            <ExternalLink
-                              href={item.prUrl}
-                              className="text-[12px] text-accent-text hover:underline"
-                            >
-                              PR #{item.prNumber} ↗
-                            </ExternalLink>
-                          )}
-                          {item.prNumber && (
-                            <MergeConfirmButton
-                              prNumber={item.prNumber}
-                              prUrl={item.prUrl ?? ''}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (

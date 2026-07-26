@@ -41,6 +41,72 @@ export function deriveDisplayStatus(taskStatus: string, workerStatus?: string | 
   return taskStatus;
 }
 
+// ─── Task phase ───────────────────────────────────────────────────────────────
+
+/**
+ * The lifecycle phase that drives the task detail page's focus zone.
+ * A superset of the display status: it folds pending substates (blocked,
+ * budget-paused) and planning review into distinct phases so the UI can pick
+ * a single "what does the human need right now?" panel per phase.
+ *
+ * Precedence mirrors deriveDisplayStatus: a terminal task status (completed /
+ * failed) wins over any lingering worker state, then live worker state, then
+ * the pending family.
+ */
+export type TaskPhase =
+  | 'blocked'        // pending, waiting on unresolved dependencies
+  | 'budget_paused'  // pending, reset to pending by budget/rate-limit exhaustion
+  | 'pending'        // ready to start
+  | 'assigned'       // claimed but no live worker yet (spinning up)
+  | 'running'        // a worker is actively executing
+  | 'waiting_input'  // a worker asked a question — answering spawns a new worker
+  | 'plan_review'    // a completed planning task whose plan awaits human review
+  | 'completed'      // terminal success
+  | 'failed';        // terminal failure
+
+export interface TaskPhaseInput {
+  taskStatus: string;
+  /** task.mode — 'planning' tasks land in plan_review once completed. */
+  taskMode?: string | null;
+  workerStatus?: string | null;
+  /** Truthy when the active worker has an unanswered question. */
+  workerWaitingFor?: unknown;
+  /** pending + unresolved dependencies. */
+  isBlocked?: boolean;
+  /** pending + budgetExhausted flag in context. */
+  isBudgetPaused?: boolean;
+}
+
+/**
+ * Canonical task phase from task + active-worker state. Single source of truth —
+ * UI surfaces must not fork this logic.
+ */
+export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
+  // Terminal task status wins over any lingering/stale worker row.
+  if (i.taskStatus === 'completed') {
+    return i.taskMode === 'planning' ? 'plan_review' : 'completed';
+  }
+  if (i.taskStatus === 'failed') return 'failed';
+
+  // Live worker-derived phases. A pending question outranks "running" because
+  // the runner aborts the session when it asks (inputAsRetry), so the worker is
+  // effectively parked until a human answers.
+  if (i.workerWaitingFor || i.workerStatus === 'waiting_input') return 'waiting_input';
+  if (
+    i.workerStatus === 'running' ||
+    i.workerStatus === 'starting' ||
+    i.workerStatus === 'idle'
+  ) {
+    return 'running';
+  }
+
+  // Pending family (no live worker).
+  if (i.taskStatus === 'assigned') return 'assigned';
+  if (i.isBlocked) return 'blocked';
+  if (i.isBudgetPaused) return 'budget_paused';
+  return 'pending';
+}
+
 // ─── Stale worker ─────────────────────────────────────────────────────────────
 
 /**

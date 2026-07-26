@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { trackEvent } from '@/lib/axiom';
 
 // GET /api/share/[token] - Public artifact access via share token
@@ -16,7 +16,7 @@ export async function GET(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.shareToken, token),
+    where: and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public')),
     with: {
       worker: {
         with: {
