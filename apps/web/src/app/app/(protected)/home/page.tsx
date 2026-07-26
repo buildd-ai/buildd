@@ -10,8 +10,8 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
-import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
+import { buildActionQueue } from '@/lib/action-queue';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
@@ -181,6 +181,8 @@ export default async function HomePage({
     escalationReason: string | null;
     waitingMinutes: number | null;
   }[] = [];
+
+  let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
 
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -801,6 +803,9 @@ export default async function HomePage({
           }
         }
 
+        // Merge waitingOnYou + escalationInbox into one deduplicated action queue
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
+
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
           where: and(
@@ -872,59 +877,137 @@ export default async function HomePage({
               </p>
             </div>
 
-            {/* Waiting on You — action queue: merge PRs, approve plans, answer questions */}
-            {waitingOnYou.length > 0 && (
+            {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE) */}
+            {actionQueue.length > 0 && (
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Waiting on You</div>
                   <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                    {waitingOnYou.length}
+                    {actionQueue.length}
                   </span>
                 </div>
                 <div className="space-y-2">
-                  {waitingOnYou.map((item, i) => {
-                    if (item.kind === 'merge') {
+                  {actionQueue.map((item) => {
+                    if (item.chip === 'MERGE') {
                       return (
-                        <div key={`merge-${item.upstreamTaskId}`} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
+                        <div key={item.subjectKey} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                 <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
                                   Merge
                                 </span>
-                                <span className="text-[12px] text-text-secondary">
-                                  {item.upstreamTaskTitle}
-                                </span>
-                              </div>
-                              <div className="text-[13px] font-medium text-text-primary">
-                                PR #{item.prNumber} → unblocks {item.unblockCount} task{(item.unblockCount ?? 0) !== 1 ? 's' : ''}
-                                {item.missionTitle && (
-                                  <span className="text-text-secondary font-normal"> in {item.missionTitle}</span>
+                                {(item.upstreamTaskTitle ?? item.taskTitle) && (
+                                  <span className="text-[12px] text-text-secondary truncate">
+                                    {item.upstreamTaskTitle ?? item.taskTitle}
+                                  </span>
+                                )}
+                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                  <span className="text-[10px] text-text-muted">
+                                    {item.waitingMinutes < 60
+                                      ? `${item.waitingMinutes}m`
+                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                  </span>
                                 )}
                               </div>
+                              <div className="text-[13px] font-medium text-text-primary">
+                                {item.prUrl ? (
+                                  <a
+                                    href={item.prUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="hover:underline"
+                                  >
+                                    PR #{item.prNumber}
+                                  </a>
+                                ) : item.taskId ? (
+                                  <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                    {item.taskTitle}
+                                  </Link>
+                                ) : null}
+                                {item.unblockCount != null && item.unblockCount > 0 && (
+                                  <span className="text-text-secondary font-normal">
+                                    {' '}→ unblocks {item.unblockCount} task{item.unblockCount !== 1 ? 's' : ''}
+                                    {item.missionTitle && ` in ${item.missionTitle}`}
+                                  </span>
+                                )}
+                              </div>
+                              {item.escalationReason && (
+                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+                                  {item.escalationReason}
+                                </p>
+                              )}
+                              {item.workspaceName && (
+                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                              )}
                             </div>
-                            <a
-                              href={item.prUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-shrink-0 px-3 py-1.5 text-[12px] font-medium border border-primary text-primary rounded-[6px] hover:bg-primary hover:text-white transition-colors"
-                            >
-                              Open PR ↗
-                            </a>
+                            {item.prNumber != null && (
+                              <MergeConfirmButton
+                                prNumber={item.prNumber}
+                                prUrl={item.prUrl ?? ''}
+                                queuedTaskCount={item.unblockCount}
+                              />
+                            )}
                           </div>
                         </div>
                       );
                     }
-                    if (item.kind === 'answer') {
+                    if (item.chip === 'REVIEW') {
+                      return (
+                        <div key={item.subjectKey} className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                  Review
+                                </span>
+                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                  <span className="text-[10px] text-text-muted">
+                                    {item.waitingMinutes < 60
+                                      ? `${item.waitingMinutes}m`
+                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                  </span>
+                                )}
+                              </div>
+                              {item.taskId ? (
+                                <Link
+                                  href={`/app/tasks/${item.taskId}`}
+                                  className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                                >
+                                  {item.taskTitle}
+                                </Link>
+                              ) : (
+                                <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
+                              )}
+                              {item.workspaceName && (
+                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                              )}
+                              {item.escalationReason && (
+                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+                                  {item.escalationReason}
+                                </p>
+                              )}
+                            </div>
+                            {item.prNumber != null && (
+                              <MergeConfirmButton
+                                prNumber={item.prNumber}
+                                prUrl={item.prUrl ?? ''}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.chip === 'QUESTION') {
                       return (
                         <Link
-                          key={`answer-${item.workerId}`}
+                          key={item.subjectKey}
                           href={`/app/tasks/${item.taskId}`}
                           className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
-                              Answer
+                              Question
                             </span>
                             {item.missionTitle && (
                               <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
@@ -937,10 +1020,10 @@ export default async function HomePage({
                         </Link>
                       );
                     }
-                    if (item.kind === 'approve') {
+                    if (item.chip === 'APPROVE') {
                       return (
                         <Link
-                          key={`approve-${item.taskId}`}
+                          key={item.subjectKey}
                           href={`/app/tasks/${item.taskId}`}
                           className="block border-l-2 border-accent bg-accent/5 rounded-r-[10px] px-4 py-3 hover:bg-accent/10 transition-colors"
                         >
@@ -963,7 +1046,7 @@ export default async function HomePage({
                 </div>
               </div>
             )}
-            {waitingOnYou.length === 0 && activeItems.length > 0 && (
+            {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
                 <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
@@ -1080,79 +1163,6 @@ export default async function HomePage({
                 </div>
               )}
             </div>
-
-            {/* Escalation Inbox (BT-15) — PRs requiring human action */}
-            {escalationInbox.length > 0 && (
-              <div className="mb-8">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="section-label">Needs Your Review</div>
-                  <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-status-error text-white">
-                    {escalationInbox.length}
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {escalationInbox.map((item) => {
-                    const tierLabel =
-                      item.policyTier === 'human' ? 'Human Gate'
-                      : item.policyTier === 'agent-review' ? 'Agent Review'
-                      : 'Auto';
-                    return (
-                      <div
-                        key={item.workerId}
-                        className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
-                      >
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                              <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
-                                {tierLabel}
-                              </span>
-                              {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                <span className="text-[10px] text-text-muted">
-                                  Waiting {item.waitingMinutes < 60
-                                    ? `${item.waitingMinutes}m`
-                                    : `${Math.floor(item.waitingMinutes / 60)}h`}
-                                </span>
-                              )}
-                            </div>
-                            <Link
-                              href={`/app/tasks/${item.taskId}`}
-                              className="text-[13px] font-medium text-text-primary truncate hover:underline block"
-                            >
-                              {item.taskTitle}
-                            </Link>
-                            {item.workspaceName && (
-                              <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                            )}
-                          </div>
-                        </div>
-                        {item.escalationReason && (
-                          <p className="text-[12px] text-text-secondary line-clamp-2 mb-2">
-                            {item.escalationReason}
-                          </p>
-                        )}
-                        <div className="flex items-center gap-2 flex-wrap mt-2">
-                          {item.prUrl && (
-                            <ExternalLink
-                              href={item.prUrl}
-                              className="text-[12px] text-accent-text hover:underline"
-                            >
-                              PR #{item.prNumber} ↗
-                            </ExternalLink>
-                          )}
-                          {item.prNumber && (
-                            <MergeConfirmButton
-                              prNumber={item.prNumber}
-                              prUrl={item.prUrl ?? ''}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (
