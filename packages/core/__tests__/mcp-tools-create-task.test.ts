@@ -302,3 +302,39 @@ describe('create_task — parentTaskId support', () => {
     expect(mockApi).not.toHaveBeenCalled();
   });
 });
+
+describe('create_task — fileAnywayReason support', () => {
+  it('passes a trimmed explicit escape-hatch reason to task intake', async () => {
+    let body: any;
+    const api = async (_path: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return { id: 'task-new', title: 'Independent audit', priority: 0 };
+    };
+    await handleBuilddAction(
+      api as ApiFn,
+      'create_task',
+      {
+        title: 'Independent audit',
+        description: 'Audit the same structured subject independently',
+        workspaceId: MOCK_WORKSPACE_ID,
+        fileAnywayReason: '  separate security review  ',
+      },
+      createMockContext(),
+    );
+    expect(body.fileAnywayReason).toBe('separate security review');
+  });
+
+  it('rejects a blank escape-hatch reason', async () => {
+    await expect(handleBuilddAction(
+      (async () => ({})) as ApiFn,
+      'create_task',
+      {
+        title: 'Independent audit',
+        description: 'Audit',
+        workspaceId: MOCK_WORKSPACE_ID,
+        fileAnywayReason: ' ',
+      },
+      createMockContext(),
+    )).rejects.toThrow('fileAnywayReason must be a non-blank string');
+  });
+});
