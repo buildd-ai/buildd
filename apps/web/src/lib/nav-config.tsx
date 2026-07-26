@@ -9,6 +9,9 @@ export interface NavItem {
   label: string;
   href: string;
   icon: ReactNode;
+  /** Shown in the desktop sidebar only; filtered out of the mobile bottom tab bar
+   * (which is kept to a small tab count — Initiatives is reached via the Home rail). */
+  desktopOnly?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -30,6 +33,18 @@ export const NAV_ITEMS: NavItem[] = [
         <line x1="4" y1="6" x2="20" y2="6" />
         <line x1="4" y1="12" x2="16" y2="12" />
         <line x1="4" y1="18" x2="12" y2="18" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Initiatives',
+    href: '/app/initiatives',
+    desktopOnly: true,
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="12" cy="12" r="9" />
+        <circle cx="12" cy="12" r="5" />
+        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
       </svg>
     ),
   },
@@ -74,6 +89,7 @@ export const NAV_ITEMS: NavItem[] = [
 export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/missions') return 'Missions';
+  if (pathname === '/app/initiatives') return 'Initiatives';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';

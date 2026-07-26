@@ -6,6 +6,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockInitiativesFindMany = mock(() => [] as any[]);
+const mockLinearLinkRows = mock(() => [] as Array<{ entityId: string }>);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1', teamId: 'team-1' }) as any);
 let insertedInitiativeValues: any = null;
 const mockInitiativesInsert = mock(() => ({
@@ -32,6 +33,8 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: () => mockInitiativesInsert(),
+    // Batched Linear-link existence query (db.select(...).from(...).where(...)).
+    select: () => ({ from: () => ({ where: () => Promise.resolve(mockLinearLinkRows()) }) }),
   },
 }));
 mock.module('drizzle-orm', () => ({
@@ -43,6 +46,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   initiatives: { teamId: 'teamId', workspaceId: 'workspaceId', status: 'status', priority: 'priority', createdAt: 'createdAt' },
   workspaces: { id: 'id', teamId: 'teamId' },
+  externalLinks: { provider: 'provider', builddEntityType: 'builddEntityType', builddEntityId: 'builddEntityId' },
 }));
 
 import { GET, POST } from './route';
@@ -150,11 +154,13 @@ describe('GET /api/initiatives', () => {
     mockAuthenticateApiKey.mockReset();
     mockResolveAccountTeamIds.mockReset();
     mockInitiativesFindMany.mockReset();
+    mockLinearLinkRows.mockReset();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockInitiativesFindMany.mockResolvedValue([]);
+    mockLinearLinkRows.mockReturnValue([]);
   });
 
   it('rolls up child mission progress (task-weighted) into the initiative', async () => {
@@ -183,6 +189,39 @@ describe('GET /api/initiatives', () => {
     // Heavy task arrays stripped; light mission index retained
     expect(init.missions).toHaveLength(2);
     expect(init.missions[0].tasks).toBeUndefined();
+    // Aggregate segments computed from the (already-loaded) tasks — one per task.
+    expect(init.segments).toHaveLength(4);
+    expect(init.segments.filter((s: any) => s.state === 'solid')).toHaveLength(3);
+    // No linear links and no updatedAt in the fixture → false / null.
+    expect(init.hasLinearLink).toBe(false);
+    expect(init.lastMotionAt).toBeNull();
+  });
+
+  it('sets hasLinearLink when a child mission is linked to Linear', async () => {
+    mockInitiativesFindMany.mockResolvedValue([
+      { id: 'init-1', title: 'Linked', status: 'active', missions: [{ id: 'm-1', title: 'A', status: 'active', tasks: [] }] },
+      { id: 'init-2', title: 'Unlinked', status: 'active', missions: [{ id: 'm-2', title: 'B', status: 'active', tasks: [] }] },
+    ]);
+    mockLinearLinkRows.mockReturnValue([{ entityId: 'm-1' }]);
+    const res = await GET(new NextRequest('http://localhost/api/initiatives'));
+    const body = await res.json();
+    expect(body.initiatives.find((i: any) => i.id === 'init-1').hasLinearLink).toBe(true);
+    expect(body.initiatives.find((i: any) => i.id === 'init-2').hasLinearLink).toBe(false);
+  });
+
+  it('derives lastMotionAt from the most recent child mission update', async () => {
+    mockInitiativesFindMany.mockResolvedValue([
+      {
+        id: 'init-1', title: 'Motion', status: 'active',
+        missions: [
+          { id: 'm-1', title: 'A', status: 'active', updatedAt: '2026-07-20T10:00:00.000Z', tasks: [] },
+          { id: 'm-2', title: 'B', status: 'active', updatedAt: '2026-07-26T09:30:00.000Z', tasks: [] },
+        ],
+      },
+    ]);
+    const res = await GET(new NextRequest('http://localhost/api/initiatives'));
+    const body = await res.json();
+    expect(body.initiatives[0].lastMotionAt).toBe('2026-07-26T09:30:00.000Z');
   });
 
   it('returns empty list when teamId is a foreign team (no leak)', async () => {
