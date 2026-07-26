@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { computeInitiativeProgress, type ChildMissionProgress } from '../mission-helpers';
+import {
+  computeInitiativeProgress,
+  computeInitiativeSegments,
+  type ChildMissionProgress,
+  type MissionSegment,
+} from '../mission-helpers';
 
 function child(
   status: ChildMissionProgress['status'],
@@ -86,5 +91,32 @@ describe('computeInitiativeProgress', () => {
     const r = computeInitiativeProgress([child('active', 2, 2), child('completed', 2, 2)]);
     expect(r.completedMissions).toBe(1);
     expect(r.status).toBe('active');
+  });
+});
+
+describe('computeInitiativeSegments', () => {
+  const seg = (taskId: string, state: MissionSegment['state']): MissionSegment => ({ taskId, state });
+
+  it('returns an empty run for an initiative with no missions', () => {
+    expect(computeInitiativeSegments([])).toEqual([]);
+  });
+
+  it('returns an empty run when every child has no segments', () => {
+    expect(computeInitiativeSegments([{ segments: [] }, {}])).toEqual([]);
+  });
+
+  it('concatenates child segments in child order, preserving each task key', () => {
+    const a = { segments: [seg('a1', 'solid'), seg('a2', 'ghost')] };
+    const b = { segments: [seg('b1', 'empty')] };
+    expect(computeInitiativeSegments([a, b])).toEqual([
+      seg('a1', 'solid'),
+      seg('a2', 'ghost'),
+      seg('b1', 'empty'),
+    ]);
+  });
+
+  it('tolerates a child with an undefined segments field', () => {
+    const a = { segments: [seg('a1', 'notch')] };
+    expect(computeInitiativeSegments([a, {}])).toEqual([seg('a1', 'notch')]);
   });
 });
