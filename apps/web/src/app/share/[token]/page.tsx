@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
 
@@ -12,7 +12,7 @@ export default async function SharePage({
   const { token } = await params;
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.shareToken, token),
+    where: and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public')),
     with: {
       worker: {
         with: {

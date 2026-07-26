@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, artifacts, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { randomBytes } from 'crypto';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -116,7 +115,10 @@ export async function POST(
         .where(eq(artifacts.id, existing.id))
         .returning();
 
-      const shareUrl = `${baseUrl}/share/${updated.shareToken}`;
+      // Preserve any existing token; only expose a live URL if still shared.
+      const shareUrl = updated.shareToken && updated.visibility === 'public'
+        ? `${baseUrl}/share/${updated.shareToken}`
+        : null;
 
       await triggerEvent(
         channels.worker(id),
@@ -141,8 +143,7 @@ export async function POST(
 
   // Insert new artifact
   // Sensitive: content and storageKey are always null — metadata stub only
-  const shareToken = randomBytes(24).toString('base64url');
-
+  // Artifacts are PRIVATE by default; no share token until an explicit Share action.
   const [artifact] = await db
     .insert(artifacts)
     .values({
@@ -154,12 +155,13 @@ export async function POST(
       title,
       content: isSensitive ? null : (content || null),
       storageKey: isSensitive ? null : (storageKey || null),
-      shareToken,
+      shareToken: null,
+      visibility: 'private',
       metadata: artifactMetadata,
     })
     .returning();
 
-  const shareUrl = `${baseUrl}/share/${shareToken}`;
+  const shareUrl = null;
 
   // Trigger realtime events (thin payloads — no full worker row)
   await triggerEvent(

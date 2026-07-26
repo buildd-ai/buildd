@@ -16,6 +16,15 @@ import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import {
+  prepareSubjectFiling,
+  recordSubjectMatchObserved,
+} from '@/lib/subject-anchor-observer';
+import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
+import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
+import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
+import { intakeSubject } from '@/lib/subject-intake';
+import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -245,6 +254,8 @@ export async function POST(req: NextRequest) {
       startIn: rawStartIn,
       startAfter: rawStartAfter,
       loopConfig: rawLoopConfig,
+      subjectAnchor: rawSubjectAnchor,
+      fileAnywayReason,
     } = body;
 
     if (!title) {
@@ -297,6 +308,7 @@ export async function POST(req: NextRequest) {
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
     }
+    const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 
     // Verify workspace access with actionable errors
     if (apiAccount) {
@@ -326,7 +338,7 @@ export async function POST(req: NextRequest) {
       ? incomingContext.frictionSignature
       : null;
 
-    if (title.startsWith('[friction] ') && frictionSignature) {
+    if (subjectPolicy.mode === 'observe' && title.startsWith('[friction] ') && frictionSignature) {
       const existing = await db.query.tasks.findFirst({
         where: and(
           eq(tasks.workspaceId, workspaceId),
@@ -334,7 +346,7 @@ export async function POST(req: NextRequest) {
           sql`${tasks.context}->>'frictionSignature' = ${frictionSignature}`,
           notInArray(tasks.status, ['completed', 'failed', 'cancelled']),
         ),
-        columns: { id: true, title: true, description: true },
+        columns: { id: true, title: true, description: true, creationSource: true },
       });
 
       if (existing) {
@@ -344,7 +356,26 @@ export async function POST(req: NextRequest) {
           .set({ description: sql`${tasks.description} || ${appendText}`, updatedAt: new Date() })
           .where(eq(tasks.id, existing.id));
 
-        return NextResponse.json({ ...existing, deduplicated: true }, { status: 200 });
+        const observedAnchor = extractSubjectAnchor({
+          context: incomingContext as Record<string, unknown>,
+        }).anchor;
+        if (observedAnchor) {
+          await recordSubjectMatchObserved({
+            workspaceId,
+            origin: 'friction',
+            reporterId: apiAccount?.id ?? null,
+            anchor: observedAnchor,
+            match: {
+              taskId: existing.id,
+              matchedOrigin: existing.creationSource ?? 'api',
+              outcome: 'attach',
+              keyType: 'error',
+            },
+          });
+        }
+
+        const { creationSource: _creationSource, ...existingResponse } = existing;
+        return NextResponse.json({ ...existingResponse, deduplicated: true }, { status: 200 });
       }
     }
 
@@ -411,6 +442,31 @@ export async function POST(req: NextRequest) {
       createdByWorkerId,
       parentTaskId,
       creationSource: requestedSource,
+    });
+    const creationSource = creatorContext.creationSource ?? 'api';
+    const knownSubjectOrigins = new Set<SubjectFilingOrigin>([
+      'dashboard', 'api', 'mcp', 'organizer', 'watcher', 'webhook', 'friction', 'backfill',
+    ]);
+    const subjectOrigin: SubjectFilingOrigin = title.startsWith('[friction] ')
+      ? 'friction'
+      : knownSubjectOrigins.has(creationSource as SubjectFilingOrigin)
+        ? creationSource as SubjectFilingOrigin
+        : 'api';
+    const workspaceRepo = targetWorkspace.repo
+      ?.replace(/^https?:\/\/github\.com\//, '')
+      .replace(/\.git$/, '')
+      .replace(/^\/|\/$/g, '');
+    const subjectObservation = await prepareSubjectFiling({
+      workspaceId,
+      workspaceRepo,
+      gitConfig: targetWorkspace.gitConfig,
+      title,
+      description,
+      context: typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext)
+        ? incomingContext
+        : undefined,
+      subjectAnchor: rawSubjectAnchor,
+      origin: subjectOrigin,
     });
 
     const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
@@ -551,9 +607,15 @@ export async function POST(req: NextRequest) {
     }
     const resolvedStartAt = laterStartAt(deferredStart.startAt, missionStartAt);
 
-    const [task] = await db
-      .insert(tasks)
-      .values({
+    const createTaskRow = async (subjectOverrides: {
+      id: string;
+      subjectDedupeScope: 'active' | 'none';
+      subjectResolution?: 'filed_anyway';
+    }) => {
+      const [created] = await db
+        .insert(tasks)
+        .values({
+        id: subjectOverrides.id,
         workspaceId,
         title,
         description: description || null,
@@ -584,6 +646,13 @@ export async function POST(req: NextRequest) {
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
         ...(resolvedStartAt ? { startAt: resolvedStartAt } : {}),
         ...(loopConfig ? { loopConfig } : {}),
+        ...subjectObservation.taskValues,
+        ...(subjectObservation.anchor ? {
+          subjectDedupeScope: subjectOverrides.subjectDedupeScope,
+          ...(subjectOverrides.subjectResolution
+            ? { subjectResolution: subjectOverrides.subjectResolution }
+            : {}),
+        } : {}),
         // Creator tracking (from service)
         ...creatorContext,
         ...(deferredStart.resolution ? {
@@ -595,16 +664,58 @@ export async function POST(req: NextRequest) {
             startResolution: deferredStart.resolution,
           },
         } : {}),
-      })
-      .returning();
+        })
+        .returning();
+      if (!created) throw new Error('task_insert_failed');
+      return created;
+    };
 
-    await dispatchNewTask(task, targetWorkspace, {
-      assignToLocalUiUrl,
-      runnerPreference,
+    const intake = await intakeSubject({
+      workspaceId,
+      policy: subjectPolicy,
+      anchor: subjectObservation.anchor,
+      origin: subjectOrigin,
+      reporterId: creatorContext.createdByAccountId,
+      parentTaskId: creatorContext.parentTaskId,
+      fileAnywayReason,
+      normalizedIntentId: typeof incomingContext?.normalizedIntentId === 'string'
+        ? incomingContext.normalizedIntentId
+        : null,
+      note: description || title,
+      repository: createSubjectIntakeRepository(createTaskRow),
     });
+    const task = intake.task;
 
-    return NextResponse.json(task);
+    if (
+      subjectPolicy.mode === 'observe'
+      && subjectObservation.anchor
+      && subjectObservation.match
+    ) {
+      await recordSubjectMatchObserved({
+        workspaceId,
+        origin: subjectOrigin,
+        reportingTaskId: task.id,
+        reporterId: creatorContext.createdByAccountId,
+        anchor: subjectObservation.anchor,
+        match: subjectObservation.match,
+      });
+    }
+
+    if (intake.outcome.action !== 'attached') {
+      await dispatchNewTask(task, targetWorkspace, {
+        assignToLocalUiUrl,
+        runnerPreference,
+      });
+    }
+
+    return NextResponse.json({ ...task, subjectIntakeOutcome: intake.outcome });
   } catch (error) {
+    if (error instanceof Error && error.message === 'file_anyway_reason_required') {
+      return NextResponse.json({ error: 'fileAnywayReason must be nonblank' }, { status: 400 });
+    }
+    if (error instanceof Error && error.message === 'file_anyway_not_allowed') {
+      return NextResponse.json({ error: 'fileAnywayReason is only available to explicit human or agent filings' }, { status: 400 });
+    }
     console.error('Create task error:', error);
     const detail = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: 'Failed to create task', detail }, { status: 500 });

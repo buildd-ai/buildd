@@ -3,8 +3,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
-import AiFeedback from '@/components/AiFeedback';
 import LiveWorkerActivity from './LiveWorkerActivity';
+import StatusBadge from '@/components/StatusBadge';
+import PrCard from '@/components/task/PrCard';
+import WorkerStats from '@/components/task/WorkerStats';
+import TaskSummary from '@/components/task/TaskSummary';
+import AiFeedback from '@/components/AiFeedback';
+import { deriveDisplayStatus, deriveTaskPhase } from '@/lib/task-presentation';
 
 interface TaskPanelData {
   id: string;
@@ -54,34 +59,6 @@ function timeAgo(date: string): string {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
-
-const STATUS_LABELS: Record<string, { label: string; cls: string }> = {
-  pending: { label: 'Pending', cls: 'bg-text-muted/15 text-text-muted' },
-  queued: { label: 'Queued', cls: 'bg-status-info/15 text-status-info' },
-  running: { label: 'Running', cls: 'bg-status-info/15 text-status-info' },
-  assigned: { label: 'Assigned', cls: 'bg-status-info/15 text-status-info' },
-  waiting_input: { label: 'Needs Input', cls: 'bg-status-warning/15 text-status-warning' },
-  completed: { label: 'Completed', cls: 'bg-status-success/15 text-status-success' },
-  failed: { label: 'Failed', cls: 'bg-status-error/15 text-status-error' },
-};
-
-// Mirrors the PR lifecycle pill on the mission timeline (page.tsx) so the peek
-// and the row read the same. CI state comes straight from the DB (webhook-fed),
-// so no live GitHub call is needed to show whether a PR is safe to merge.
-const PR_LIFECYCLE: Record<string, { label: string; cls: string }> = {
-  merged:     { label: 'Merged',    cls: 'bg-status-success/15 text-status-success' },
-  ci_running: { label: 'CI running', cls: 'bg-status-info/15 text-status-info' },
-  ci_failed:  { label: 'CI failing', cls: 'bg-status-error/15 text-status-error' },
-  conflict:   { label: 'Conflict',  cls: 'bg-status-warning/15 text-status-warning' },
-  closed:     { label: 'Closed',    cls: 'bg-text-muted/15 text-text-muted' },
-  pr_open:    { label: 'Open',      cls: 'bg-accent/15 text-accent-text' },
-};
-
-const ExternalIcon = () => (
-  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-  </svg>
-);
 
 export default function TaskPanel({
   taskId,
@@ -148,17 +125,23 @@ export default function TaskPanel({
     }
   }, [fetchTask]);
 
-  const status = STATUS_LABELS[data?.status || ''] || STATUS_LABELS.pending;
   const w = data?.worker;
-  const isWaiting = w?.status === 'waiting_input' && !!w?.waitingFor;
-  const isFailed = data?.status === 'failed';
-  const isRunning = w?.status === 'running';
-  const isQueued = data?.status === 'pending' || data?.status === 'queued';
+  // Canonical phase — shared with the task detail page (deriveTaskPhase), so the
+  // drawer and the full page agree on what state a task is in.
+  const phase = data
+    ? deriveTaskPhase({
+        taskStatus: data.status,
+        taskMode: data.mode,
+        workerStatus: w?.status,
+        workerWaitingFor: w?.waitingFor,
+      })
+    : 'pending';
+  const displayStatus = data ? deriveDisplayStatus(data.status, w?.status) : 'pending';
+  const isWaiting = phase === 'waiting_input';
+  const isFailed = phase === 'failed';
+  const isRunning = phase === 'running';
+  const isQueued = phase === 'pending';
   const hasPr = !!w?.prUrl;
-  const lifecycle = w?.prLifecycleStatus
-    ? PR_LIFECYCLE[w.prLifecycleStatus]
-    : hasPr ? PR_LIFECYCLE.pr_open : null;
-  const diff = w && (w.linesAdded || w.linesRemoved || w.filesChanged);
   // The backend to offer as the one-click alternative on retry.
   const otherBackend = data?.backend === 'codex' ? 'claude' : data?.backend === 'claude' ? 'codex' : null;
 
@@ -210,9 +193,7 @@ export default function TaskPanel({
           <div className="px-5 py-4 space-y-4">
             {/* Status + meta */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded ${status.cls}`}>
-                {status.label}
-              </span>
+              <StatusBadge status={displayStatus} />
               {data.backend && (
                 <span
                   className="inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded bg-surface-3 text-text-secondary capitalize"
@@ -324,36 +305,14 @@ export default function TaskPanel({
 
             {/* PR → review CI state + merge (in GitHub) without leaving to find it */}
             {hasPr && w && (
-              <div className="rounded-lg border border-border-default p-4 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold text-text-primary">Pull request</span>
-                  {lifecycle && (
-                    <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ${lifecycle.cls}`}>
-                      {lifecycle.label}
-                    </span>
-                  )}
-                </div>
-
-                {diff ? (
-                  <div className="flex items-center gap-3 text-[12px] tabular-nums">
-                    {w.linesAdded != null && <span className="text-status-success">+{w.linesAdded}</span>}
-                    {w.linesRemoved != null && <span className="text-status-error">&minus;{w.linesRemoved}</span>}
-                    {w.filesChanged != null && w.filesChanged > 0 && (
-                      <span className="text-text-muted">{w.filesChanged} file{w.filesChanged !== 1 ? 's' : ''}</span>
-                    )}
-                  </div>
-                ) : null}
-
-                <a
-                  href={w.prUrl!}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md bg-surface-3 text-text-primary hover:bg-card-hover transition-colors"
-                >
-                  {w.prLifecycleStatus === 'merged' ? 'View PR' : 'Review & merge'} #{w.prNumber} on GitHub
-                  <ExternalIcon />
-                </a>
-              </div>
+              <PrCard
+                prUrl={w.prUrl!}
+                prNumber={w.prNumber}
+                prLifecycleStatus={w.prLifecycleStatus}
+                linesAdded={w.linesAdded}
+                linesRemoved={w.linesRemoved}
+                filesChanged={w.filesChanged}
+              />
             )}
 
             {actionError && (
@@ -370,48 +329,22 @@ export default function TaskPanel({
             )}
 
             {/* Worker stats — the run's shape once it's not live (live view owns these) */}
-            {w && !isRunning && (w.turns != null || w.commitCount || w.costUsd != null || w.branch) && (
-              <div className="rounded-lg border border-border-default p-4 space-y-3">
-                <div className="grid grid-cols-2 gap-2 text-[12px]">
-                  {w.turns != null && (
-                    <div>
-                      <span className="text-text-muted">Turns:</span>{' '}
-                      <span className="text-text-primary">{w.turns}</span>
-                    </div>
-                  )}
-                  {w.commitCount != null && w.commitCount > 0 && (
-                    <div>
-                      <span className="text-text-muted">Commits:</span>{' '}
-                      <span className="text-text-primary">{w.commitCount}</span>
-                    </div>
-                  )}
-                  {w.costUsd != null && (
-                    <div>
-                      <span className="text-text-muted">Cost:</span>{' '}
-                      <span className="text-text-primary">${Number(w.costUsd).toFixed(3)}</span>
-                    </div>
-                  )}
-                </div>
-                {w.branch && (
-                  <div className="text-[12px]">
-                    <span className="text-text-muted">Branch:</span>{' '}
-                    <span className="text-text-primary font-mono text-[11px] break-all">{w.branch}</span>
-                  </div>
-                )}
-              </div>
+            {w && !isRunning && (
+              <WorkerStats
+                turns={w.turns}
+                commitCount={w.commitCount}
+                costUsd={w.costUsd}
+                branch={w.branch}
+              />
             )}
 
             {/* Result summary */}
             {data.result?.summary && (
-              <div>
-                <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Summary</span>
-                <p className="text-[13px] text-text-secondary leading-relaxed mt-1">
-                  {data.result.summary}
-                </p>
-                <div className="mt-1.5 flex justify-end">
-                  <AiFeedback entityType="summary" entityId={`task-${data.id}-summary`} compact />
-                </div>
-              </div>
+              <TaskSummary
+                summary={data.result.summary}
+                entityId={`task-${data.id}-summary`}
+                label="Summary"
+              />
             )}
 
             {/* Next suggestion */}

@@ -511,6 +511,10 @@ export function normalizeWaitingForOptions(
   );
 }
 
+/** Artifact access control. Private artifacts are visible only to logged-in
+ *  workspace members; public artifacts are viewable by anyone with the share link. */
+export type ArtifactVisibility = 'private' | 'public';
+
 export interface Artifact {
   id: string;
   workerId: string;
@@ -521,6 +525,7 @@ export interface Artifact {
   content: string | null;
   storageKey: string | null;
   shareToken: string | null;
+  visibility: ArtifactVisibility;
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
@@ -1040,6 +1045,33 @@ export interface LoopHistoryEntry {
   summary: string;
   evidence?: Record<string, unknown>;
 }
+
+// Subject anchor — normalized external identity for what a task acts on.
+// Stored as JSONB in tasks.subject_anchor; relational columns are write-through
+// projections for indexed lookup. See docs/design/task-subject-anchors.md §1.
+export interface TaskSubjectAnchor {
+  version: 1;
+  kind: 'pull_request' | 'error' | 'mission' | 'branch';
+  prNumber?: number;
+  headSha?: string;
+  branch?: string;
+  errorSignature?: string;
+  failingCheckNames?: string[];
+  subjectMissionId?: string;
+  source: 'context' | 'url' | 'text' | 'system' | 'backfill';
+  confidence: 'exact' | 'derived';
+}
+
+export type SubjectIntakeOutcome =
+  | { action: 'attached'; taskId: string; reportId: string }
+  | { action: 'superseded'; taskId: string; successorTaskId: string }
+  | {
+      action: 'filed_anyway';
+      taskId: string;
+      relatedTaskId: string;
+      reason: string;
+    }
+  | { action: 'created'; taskId: string };
 
 // ============================================================================
 // CONSTANTS

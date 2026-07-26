@@ -127,7 +127,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -1220,7 +1220,7 @@ export async function handleBuilddAction(
         'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
-        'loopConfig', 'loopUntilVerified',
+        'loopConfig', 'loopUntilVerified', 'subjectAnchor', 'fileAnywayReason', 'context',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
@@ -1235,6 +1235,18 @@ export async function handleBuilddAction(
         priority: normalizePriority(params.priority),
         creationSource: 'mcp',
       };
+      if (params.subjectAnchor && typeof params.subjectAnchor === 'object' && !Array.isArray(params.subjectAnchor)) {
+        taskBody.subjectAnchor = params.subjectAnchor;
+      }
+      if (params.fileAnywayReason !== undefined) {
+        if (typeof params.fileAnywayReason !== 'string' || params.fileAnywayReason.trim() === '') {
+          throw new Error('fileAnywayReason must be a non-blank string');
+        }
+        taskBody.fileAnywayReason = params.fileAnywayReason.trim();
+      }
+      if (params.context && typeof params.context === 'object' && !Array.isArray(params.context)) {
+        taskBody.context = { ...params.context };
+      }
       if (ctx.workerId) taskBody.createdByWorkerId = ctx.workerId;
       if (params.parentTaskId && typeof params.parentTaskId === 'string') {
         taskBody.parentTaskId = params.parentTaskId;
@@ -2024,7 +2036,10 @@ export async function handleBuilddAction(
         initiativeId: (params.initiativeId as string) ?? art.initiativeId ?? null,
       }));
 
-      return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\nShare URL: ${art.shareUrl}`);
+      const visibilityLine = art.shareUrl
+        ? `Share URL: ${art.shareUrl}`
+        : `Visibility: private (not shared)`;
+      return text(`Artifact created${upserted}: "${art.title}" (${art.type})\nID: ${art.id}\n${visibilityLine}`);
     }
 
     case 'upload_artifact': {
