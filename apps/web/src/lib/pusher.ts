@@ -110,4 +110,6 @@ export const events = {
   MISSION_NOTE_POSTED: 'mission:note_posted',
   // Connector auth expiry (mid-task 401 circuit breaker)
   WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
+  // GitHub App permission gap (mid-task 403 "Resource not accessible by integration")
+  WORKER_CONNECTOR_PERMISSION_INSUFFICIENT: 'worker:connector-permission-insufficient',
 } as const;

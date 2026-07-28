@@ -49,6 +49,7 @@ import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
+import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
@@ -3607,27 +3608,36 @@ If something is missing or incomplete, describe what and fix it now.`;
             }
           }
 
-          // 401 circuit breaker: detect auth failures from MCP connector tool results.
+          // Auth-error circuit breaker: detect 401/403 failures from MCP connector tool results.
           // For assertion-mode connectors, re-exchange runs silently via the PostToolUseFailure
-          // hook (§F.2 in assertion-grant spec); the breaker fires only when re-exchange has
+          // hook (§F.2 in assertion-grant spec); the 401 breaker fires only when re-exchange has
           // already been exhausted (assertionReAuthFailed flag set by hook-factory).
-          // For oauth/static connectors the breaker fires immediately.
+          // For oauth/static connectors the breaker fires immediately on 401.
+          // 403 "Resource not accessible by integration" is a separate class: the token is valid
+          // but the GitHub App installation lacks the required permission scope — signal
+          // connector_permission_insufficient so the workspace can surface a fix hint.
           if (
             block.is_error === true &&
             worker.mcpConnectors && worker.mcpConnectors.length > 0 &&
             source?.startsWith('mcp__')
           ) {
-            const is401 = /\b(401|unauthorized|authentication.*failed|invalid.*token|token.*expired|access.*denied)\b/i.test(text);
-            if (is401) {
-              const serverKey = source.split('__')[1];
-              const connector = worker.mcpConnectors.find((c: any) =>
-                c.name.toLowerCase().replace(/[^a-z0-9_]/g, '_') === serverKey
-              );
-              if (connector) {
-                const isAssertion = worker.assertionConnectors?.some((a: any) => a.name === connector.name);
-                const reAuthFailed = worker.assertionReAuthFailed?.has(connector.name);
-                // Skip circuit breaker for assertion connectors unless re-exchange has failed.
-                if (!isAssertion || reAuthFailed) {
+            const connector = findConnectorFor(source, worker.mcpConnectors as any[]);
+            if (connector) {
+              if (is403PermissionError(text)) {
+                console.log(`[Worker ${worker.id}] 403 permission gap from connector "${connector.name}" (${connector.id}) — signaling API`);
+                worker.error = `connector_permission_insufficient:${connector.id}`;
+                this.buildd.updateWorker(worker.id, {
+                  event: 'connector_permission_insufficient',
+                  connectorId: connector.id,
+                  connectorUrl: connector.url,
+                  status: 'waiting_input',
+                }).catch((err: unknown) => {
+                  console.warn(`[Worker ${worker.id}] connector_permission_insufficient sync failed:`, err);
+                });
+                const session = this.sessions.get(worker.id);
+                if (session) session.abortController.abort();
+              } else if (is401Error(text)) {
+                if (shouldFireCircuitBreaker(connector as any, worker.assertionConnectors ?? [], worker.assertionReAuthFailed ?? new Set())) {
                   console.log(`[Worker ${worker.id}] 401 from connector "${connector.name}" (${connector.id}) — signaling API and aborting`);
                   worker.error = `connector_auth_expired:${connector.id}`;
                   this.buildd.updateWorker(worker.id, {

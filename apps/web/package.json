@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.155.0",
+  "version": "0.156.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",

@@ -252,6 +252,26 @@ if (policy.tier === 'agent-review') {
 The reviewer agent receives these via its `CLAUDE.md` (injected at claim time via the existing
 `role-config.ts` context-building path, which already supports `mcpServers` and env injection).
 
+#### Agent-review lease lifecycle
+
+The live reviewer worker is a lease on the original task's PR. A PR with an
+active lease is mutually exclusive with the human escalation queue.
+
+| Transition | Lease state | Required behavior |
+|---|---|---|
+| Reviewer worker enters a live status | `agent_reviewing` | Acquire the lease; render under **Right Now** with reviewer identity and elapsed time. The only action is ghost **Interrupt & take over**. |
+| Live reviewer reports progress | `agent_reviewing` | Renew through the worker's existing `updatedAt` and runner-heartbeat signals. Do not introduce a separate review timeout. |
+| Reviewer approves but policy requires a human merge | `agent_approved` | Release the lease; promote to the human queue with the verdict and merge-gate outcome inline. |
+| Reviewer requests changes or escalates | `agent_flagged` | Release the lease; promote with the flag reason and gate outcome inline. |
+| Reviewer auto-merges | `auto_merged` | Release the lease; show only in Activity, never in the human queue. |
+| Either existing stale-worker tier expires the reviewer | timed out | Fail the one-shot reviewer task so it cannot immediately reacquire the lease; promote with `agent review timed out`. |
+| Human interrupts | interrupted | Terminate the live worker and reviewer task, reject subsequent runner writes, resolve task dependencies, then promote for human takeover. |
+
+The lease is derived from the reviewer task and its live worker rather than
+stored as another timeout-bearing state. This keeps acquisition and renewal
+aligned with normal worker lifecycle handling and makes stale cleanup the sole
+expiry authority.
+
 ### 3.3 Judgment criteria detail
 
 | Criterion | Pass signal | Fail signal |

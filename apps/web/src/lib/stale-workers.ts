@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
+import { workers, tasks, workerHeartbeats, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
@@ -36,9 +36,53 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { status: true, context: true },
+    columns: { status: true, context: true, category: true },
   });
   if (currentTask?.status === 'cancelled') {
+    await resolveCompletedTask(taskId, workspaceId);
+    return;
+  }
+
+  // Reviewer timeout: when a reviewer worker goes stale, post a note on the
+  // original task so the PR surfaces in the human queue with a clear reason.
+  if (currentTask?.category === 'review') {
+    const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
+    const originalTaskId = ctx.reviewerFor as string | undefined;
+    const prNumber = ctx.prNumber as number | undefined;
+    if (originalTaskId) {
+      try {
+        const originalTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, originalTaskId),
+          columns: { missionId: true },
+        });
+        if (originalTask?.missionId) {
+          await db.insert(missionNotes).values({
+            missionId: originalTask.missionId,
+            taskId: originalTaskId,
+            authorType: 'system',
+            type: 'reviewer_escalated',
+            title: `PR #${prNumber ?? '?'} — agent review timed out`,
+            body: 'The agent reviewer did not complete before the staleness timeout. Review and merge manually.',
+            status: 'open',
+          });
+        }
+      } catch (err) {
+        // Non-fatal — task still goes through normal stale resolution
+        console.error('[stale-workers] Failed to post reviewer timeout note:', err);
+      }
+    }
+
+    // Expiry terminates the review lease. Reviewer tasks are one-shot checks:
+    // retrying an infra failure would immediately reacquire the lease and hide
+    // the promoted PR from the human queue again.
+    await db
+      .update(tasks)
+      .set({
+        status: 'failed',
+        result: { error: 'agent review timed out' } as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, taskId));
     await resolveCompletedTask(taskId, workspaceId);
     return;
   }

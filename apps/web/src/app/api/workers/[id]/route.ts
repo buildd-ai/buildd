@@ -182,11 +182,12 @@ export async function PATCH(
   // Allow reactivation with 'running' status for follow-up messages from runner,
   // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
-    const isCleanupExpiry = worker.error?.includes('expired') ||
+    const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
+      worker.error?.includes('expired') ||
       worker.error?.includes('timed out') ||
       worker.error?.includes('went offline') ||
       worker.error?.includes('runner restarted');
-    if (body.status !== 'running' || isCleanupExpiry) {
+    if (body.status !== 'running' || isNonReactivatableTermination) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
       const artifactCount = await getWorkerArtifactCount(id);
@@ -223,6 +224,31 @@ export async function PATCH(
       void triggerEvent(
         channels.workspace(worker.workspaceId),
         events.WORKER_CONNECTOR_AUTH_EXPIRED,
+        { workerId: id, connectorId: body.connectorId, connectorName: connectorRow.name },
+      );
+    }
+  }
+
+  // connector_permission_insufficient: the connector token is valid but the GitHub App
+  // installation lacks a required permission scope (403 "Resource not accessible by integration").
+  // We do NOT expire the secret — the credential itself is fine. We record the permission gap
+  // and broadcast so the workspace can surface a fix hint.
+  if (body.event === 'connector_permission_insufficient' && typeof body.connectorId === 'string') {
+    const connectorRow = await db.query.connectors.findFirst({
+      where: eq(connectors.id, body.connectorId),
+      columns: { id: true, name: true },
+    });
+    if (connectorRow) {
+      await db
+        .update(secrets)
+        .set({ lastVerificationError: 'mid_task_403_permission', updatedAt: sql`NOW()` })
+        .where(and(
+          eq(secrets.label, body.connectorId),
+          eq(secrets.purpose, 'mcp_connector_credential'),
+        ));
+      void triggerEvent(
+        channels.workspace(worker.workspaceId),
+        events.WORKER_CONNECTOR_PERMISSION_INSUFFICIENT,
         { workerId: id, connectorId: body.connectorId, connectorName: connectorRow.name },
       );
     }
@@ -479,6 +505,26 @@ export async function PATCH(
         }
       }
     }
+  }
+
+  // Reserve terminal ownership before mutating the task or running completion
+  // hooks. Human interrupt uses the same status CAS, so exactly one path can
+  // terminate the lease and produce reviewer outcome side effects.
+  let terminalTransitionReserved = false;
+  if (isTerminalStatus && worker.status !== status) {
+    const [reserved] = await db
+      .update(workers)
+      .set({ status, updatedAt: new Date() })
+      .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+      .returning({ id: workers.id });
+
+    if (!reserved) {
+      return NextResponse.json(
+        { error: 'Worker state changed concurrently', abort: true },
+        { status: 409 },
+      );
+    }
+    terminalTransitionReserved = true;
   }
 
   // Budget exhaustion detection: check if this is a budget-related failure
@@ -1486,8 +1532,18 @@ export async function PATCH(
   const [updated] = await db
     .update(workers)
     .set(updates)
-    .where(eq(workers.id, id))
+    .where(and(
+      eq(workers.id, id),
+      eq(workers.status, terminalTransitionReserved ? status : worker.status),
+    ))
     .returning();
+
+  if (!updated) {
+    return NextResponse.json(
+      { error: 'Worker state changed concurrently', abort: true },
+      { status: 409 },
+    );
+  }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
   // crossed its costBudgetUsd cap. Only fires on terminal worker status so we

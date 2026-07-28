@@ -19,6 +19,7 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => [{ id: 'new-task-id' }]),
   })),
 }));
+let capturedInsertValues: any = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -31,7 +32,14 @@ mock.module('@buildd/core/db', () => ({
       if (table === 'workers') return mockWorkersUpdate();
       return mockTasksUpdate();
     },
-    insert: () => mockTasksInsert(),
+    insert: (table: any) => table === 'missionNotes'
+      ? {
+          values: mock((values: any) => {
+            capturedInsertValues = values;
+            return Promise.resolve();
+          }),
+        }
+      : mockTasksInsert(),
     // resolveCompletedTask (called internally) uses db.select().from().where()
     select: () => ({
       from: () => ({
@@ -62,6 +70,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  missionNotes: 'missionNotes',
 }));
 
 const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
@@ -450,6 +459,53 @@ describe('cleanupStaleWorkers — cancelled task protection', () => {
 
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('pending');
+  });
+});
+
+describe('cleanupStaleWorkers — reviewer lease expiry', () => {
+  beforeEach(() => {
+    capturedInsertValues = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('fails a stale reviewer task after promoting its PR to the human queue', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'review-worker', taskId: 'review-task', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'expired' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'assigned',
+        category: 'review',
+        context: { reviewerFor: 'original-task', prNumber: 42 },
+      })
+      .mockResolvedValueOnce({ missionId: 'mission-1' })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        taskUpdates.push(values);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0].status).toBe('failed');
+    expect(taskUpdates[0].result.error).toContain('agent review timed out');
+    expect(capturedInsertValues.type).toBe('reviewer_escalated');
+    expect(capturedInsertValues.title).toContain('agent review timed out');
   });
 });
 
