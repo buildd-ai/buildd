@@ -26,6 +26,7 @@ import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -548,6 +549,12 @@ async function handlePullRequestEvent(event: {
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
+
+    // Reconciliation sweep: update subject state for tasks anchored to this PR.
+    // Best-effort — sweep failure must never fail the webhook response.
+    sweepSubjectAnchoredTasks(worker.workspaceId, pr.number).catch(e =>
+      console.error(`[webhook] subject sweep failed for PR #${pr.number}:`, e),
+    );
   }
 
   if (pr.merged && worker?.task) {
