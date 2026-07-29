@@ -23,6 +23,7 @@ import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld } from './held-gate';
+import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -294,6 +295,12 @@ export async function POST(req: NextRequest) {
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
   claimableConditions.push(missionNotHeld());
+
+  // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
+  // exclude tasks whose subject PR has been reconciled (marked dead by the
+  // reconciliation sweep). Reads persisted task columns only — zero extra DB
+  // calls. Tasks with no subject anchor are unaffected (backwards compat).
+  claimableConditions.push(subjectLivenessCondition());
 
   // Exclude tasks whose dependencies haven't been satisfied yet.
   // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
@@ -817,6 +824,15 @@ export async function POST(req: NextRequest) {
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
     if (connectorMismatchTaskIds.has(task.id)) continue;
+
+    // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
+    // prefilter and per-task processing). The SQL condition above should already
+    // exclude reconciled tasks, but a concurrent reconciliation sweep might have
+    // run between the initial query and this point.
+    if (!subjectStillLive(task as any)) {
+      console.log(`[claim] task ${task.id} skipped: subject PR reconciled (dead)`);
+      continue;
+    }
 
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;

@@ -38,6 +38,7 @@ import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
+import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -1321,6 +1322,21 @@ export async function PATCH(
       // Resolve dependencies (check if parent's children all completed)
       await runStep('resolve-dependencies', async () => {
         await resolveCompletedTask(taskId, worker.workspaceId);
+      });
+
+      // Reconciliation sweep on retry completion: if this task had a subject
+      // PR anchor, sweep all tasks anchored to that PR to update their subject
+      // state now that a retry has completed. Best-effort, non-blocking.
+      await runStep('subject-anchor-sweep', async () => {
+        if (!worker.workspaceId) return;
+        const [taskForSweep] = await db
+          .select({ subjectPrNumber: tasks.subjectPrNumber })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (taskForSweep?.subjectPrNumber) {
+          await sweepSubjectAnchoredTasks(worker.workspaceId, taskForSweep.subjectPrNumber);
+        }
       });
 
       // Auto-create/upsert artifact from structured output or summary.
