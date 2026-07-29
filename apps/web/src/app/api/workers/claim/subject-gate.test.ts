@@ -1,8 +1,22 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 
-// We mock drizzle-orm and schema so that subjectLivenessCondition() is testable
-// purely as a SQL fragment builder without a real DB.
-import { subjectStillLive } from './subject-gate';
+// Mock drizzle-orm and schema so subjectLivenessCondition() is testable
+// as a SQL fragment builder without a real DB connection.
+mock.module('drizzle-orm', () => ({
+  or: (...args: any[]) => ({ args, op: 'or' }),
+  isNull: (a: any) => ({ a, op: 'isNull' }),
+  ne: (a: any, b: any) => ({ a, b, op: 'ne' }),
+  sql: (a: any) => ({ a, op: 'sql' }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  tasks: {
+    subjectKind: 'subjectKind',
+    subjectResolution: 'subjectResolution',
+  },
+}));
+
+import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 
 // ─── subjectStillLive unit tests ─────────────────────────────────────────────
 
@@ -62,5 +76,28 @@ describe('subjectStillLive', () => {
       subjectPrNumber: null,
       subjectResolution: 'reconciled',
     })).toBe(true);
+  });
+});
+
+// ─── subjectLivenessCondition smoke test ─────────────────────────────────────
+
+describe('subjectLivenessCondition', () => {
+  it('returns an OR predicate referencing subjectKind and subjectResolution columns', () => {
+    const cond = subjectLivenessCondition() as any;
+
+    expect(cond.op).toBe('or');
+    expect(Array.isArray(cond.args)).toBe(true);
+
+    // Collect every column name referenced in the predicate
+    const columns = (cond.args as any[]).flatMap((c: any) => [c.a, c.b]).filter(Boolean);
+    expect(columns).toContain('subjectKind');
+    expect(columns).toContain('subjectResolution');
+  });
+
+  it('excludes tasks with subjectResolution = reconciled via ne condition', () => {
+    const cond = subjectLivenessCondition() as any;
+    const neOps = (cond.args as any[]).filter((c: any) => c.op === 'ne');
+    const reconcileGuard = neOps.find((c: any) => c.a === 'subjectResolution' && c.b === 'reconciled');
+    expect(reconcileGuard).toBeDefined();
   });
 });

@@ -242,8 +242,9 @@ describe('sweepSubjectAnchoredTasks', () => {
 
     const result = await sweepSubjectAnchoredTasks('ws-1', 42);
 
-    // At minimum the anchored task is reconciled
-    expect(result.reconciled).toBeGreaterThan(0);
+    // Exactly the directly-anchored task (task-1) is reconciled; siblings are
+    // not in the anchored set and are not touched by the sweep.
+    expect(result.reconciled).toBe(1);
   });
 
   it('handles multiple anchored tasks, reconciling only pending/assigned ones', async () => {

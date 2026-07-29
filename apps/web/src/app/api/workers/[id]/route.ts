@@ -1326,7 +1326,7 @@ export async function PATCH(
 
       // Reconciliation sweep on retry completion: if this task had a subject
       // PR anchor, sweep all tasks anchored to that PR to update their subject
-      // state now that a retry has completed. Best-effort, non-blocking.
+      // state now that a retry has completed. Best-effort, error-isolated.
       await runStep('subject-anchor-sweep', async () => {
         if (!worker.workspaceId) return;
         const [taskForSweep] = await db
