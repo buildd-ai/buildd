@@ -39,6 +39,7 @@ import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispa
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
+import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -1337,6 +1338,37 @@ export async function PATCH(
         if (taskForSweep?.subjectPrNumber) {
           await sweepSubjectAnchoredTasks(worker.workspaceId, taskForSweep.subjectPrNumber);
         }
+      });
+
+      // Dead-PR shutdown on retry completion: if this worker's PR was merged,
+      // close any competing buildd-authored PRs for the same subject.
+      // Only fires when the workspace has autoCloseBuilddSupersededPrs=true.
+      // Best-effort, error-isolated — same guarantee as the sweep above.
+      await runStep('dead-pr-shutdown', async () => {
+        const workerPrNumber = worker.prNumber;
+        const workerMerged = worker.prLifecycleStatus === 'merged';
+        if (!worker.workspaceId || !workerPrNumber) return;
+
+        // Resolve GitHub installation for API calls
+        const wsForShutdown = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, worker.workspaceId),
+          columns: { githubRepoId: true },
+        });
+        if (!wsForShutdown?.githubRepoId) return;
+
+        const repoForShutdown = await db.query.githubRepos.findFirst({
+          where: eq(githubRepos.id, wsForShutdown.githubRepoId),
+          with: { installation: true },
+        });
+        if (!repoForShutdown?.installation) return;
+
+        await shutdownDeadBuilddPrs(
+          worker.workspaceId,
+          workerPrNumber,
+          workerMerged,
+          repoForShutdown.installation.installationId,
+          repoForShutdown.fullName,
+        );
       });
 
       // Auto-create/upsert artifact from structured output or summary.

@@ -27,6 +27,7 @@ import {
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
+import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -434,6 +435,7 @@ async function handlePullRequestEvent(event: {
     merge_commit_sha?: string | null;
     head: { ref: string; sha: string };
     html_url: string;
+    mergeable?: boolean | null;
   };
   installation?: { id: number };
   repository: { full_name: string };
@@ -450,10 +452,37 @@ async function handlePullRequestEvent(event: {
       columns: { id: true, workspaceId: true, taskId: true, branch: true },
     });
     if (openWorker) {
+      // Detect merge conflicts: when GitHub explicitly reports mergeable=false, stamp
+      // the conflict status and record the first time it was observed for conflictDeadDays.
+      const isConflicted = pr.mergeable === false;
+      const lifecycleUpdate: Record<string, unknown> = { updatedAt: new Date() };
+      if (isConflicted) {
+        lifecycleUpdate.prLifecycleStatus = 'conflict';
+        // Only set conflictDetectedAt on the FIRST conflict observation (never overwrite).
+        // Check the existing row — Drizzle doesn't support conditional SET in one shot,
+        // so we use a second update with a WHERE guard.
+        lifecycleUpdate.conflictDetectedAt = new Date(); // provisional; guarded below
+      } else {
+        lifecycleUpdate.prLifecycleStatus = 'pr_open';
+      }
+
       await db
         .update(workers)
-        .set({ prLifecycleStatus: 'pr_open', updatedAt: new Date() })
-        .where(eq(workers.id, openWorker.id));
+        .set(lifecycleUpdate)
+        .where(
+          isConflicted
+            ? and(eq(workers.id, openWorker.id), isNull(workers.conflictDetectedAt))
+            : eq(workers.id, openWorker.id),
+        );
+
+      // If conflict but conflictDetectedAt already set, still update prLifecycleStatus
+      if (isConflicted) {
+        await db
+          .update(workers)
+          .set({ prLifecycleStatus: 'conflict', updatedAt: new Date() })
+          .where(and(eq(workers.id, openWorker.id), not(isNull(workers.conflictDetectedAt))));
+      }
+
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
@@ -555,6 +584,21 @@ async function handlePullRequestEvent(event: {
     sweepSubjectAnchoredTasks(worker.workspaceId, pr.number).catch(e =>
       console.error(`[webhook] subject sweep failed for PR #${pr.number}:`, e),
     );
+
+    // Dead-PR shutdown: close buildd-authored loser PRs superseded by this one.
+    // Only fires when the workspace has autoCloseBuilddSupersededPrs=true.
+    // Best-effort — shutdown failure must never fail the webhook response.
+    if (event.installation) {
+      shutdownDeadBuilddPrs(
+        worker.workspaceId,
+        pr.number,
+        pr.merged,
+        event.installation.id,
+        repository.full_name,
+      ).catch(e =>
+        console.error(`[webhook] dead-pr-shutdown failed for PR #${pr.number}:`, e),
+      );
+    }
   }
 
   if (pr.merged && worker?.task) {
