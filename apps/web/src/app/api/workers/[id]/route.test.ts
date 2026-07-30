@@ -89,6 +89,8 @@ mock.module('@buildd/core/db', () => ({
       secrets: { findMany: mockSecretsFindMany },
       workerErrorTraces: { findMany: mockWorkerErrorTracesFindMany },
       missions: { findFirst: mockMissionsFindFirst },
+      // Lazy wrapper: this mock.module factory runs before the const below is initialised.
+      oauthBudgetEpisodes: { findFirst: (...args: any[]) => mockOauthEpisodesFindFirst(...args) },
     },
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
@@ -111,15 +113,35 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
 }));
 
 mock.module('@buildd/core/secrets', () => ({
   decrypt: mockDecrypt,
 }));
 
+// OAuth budget window measurement (sessionized window + model-weighted usage).
+const mockMeasureOauthWindow = mock(() => Promise.resolve({
+  windowStartedAt: new Date('2026-07-30T08:00:00.000Z'),
+  usage: { workerCount: 4, turns: 300, tokens: 120_000, weightedTurns: 900, weightedTokens: 360_000 },
+}));
+mock.module('@/lib/oauth-budget-window', () => ({
+  measureOauthWindow: mockMeasureOauthWindow,
+  loadOauthEpisodes: mock(() => Promise.resolve([])),
+}));
+
+const mockOauthEpisodesFindFirst = mock(() => Promise.resolve(null as any));
+// The OAuth budget flip is `update ... where budget_exhausted_at is null`
+// `.returning()`: a returned row means this request won the race and owns the
+// episode record. Default to winning; tests override to simulate a loser.
+let accountsUpdateReturning: any[] = [{ id: 'account-1' }];
 const mockAccountsUpdate = mock(() => ({
   set: mock(() => ({
-    where: mock(() => Promise.resolve()),
+    where: mock(() => {
+      const p: any = Promise.resolve();
+      p.returning = mock(() => Promise.resolve(accountsUpdateReturning));
+      return p;
+    }),
   })),
 }));
 const mockTeamsUpdate = mock(() => ({
@@ -2141,6 +2163,10 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockClear();
       mockAccountsUpdate.mockClear();
       mockTenantBudgetsInsert.mockClear();
+      mockOauthEpisodesFindFirst.mockReset();
+      mockOauthEpisodesFindFirst.mockResolvedValue(null);
+      accountsUpdateReturning = [{ id: 'account-1' }];
+      lastInsertValues = null;
 
       // Reset task update mock with tracking
       mockTasksUpdate.mockImplementation(() => ({
@@ -2218,6 +2244,69 @@ describe('PATCH /api/workers/[id]', () => {
 
       // Account should have budgetExhaustedAt set
       expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    // OAuth pacing can only learn if every exhaustion is recorded with the work
+    // the window actually held — see packages/core/oauth-budget.ts.
+    it('records an OAuth budget episode with the window usage when it flips the flag', async () => {
+      accountsUpdateReturning = [{ id: 'account-1' }]; // this request won the flip
+      mockOauthEpisodesFindFirst.mockResolvedValue({ resetsAt: null });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+
+      // The episode insert carries the measured window + the reset boundary that
+      // marks where the *next* window starts.
+      expect(lastInsertValues?.accountId).toBe('account-1');
+      expect(lastInsertValues?.exhaustedAt).toBeInstanceOf(Date);
+      expect(lastInsertValues?.resetsAt).toBeInstanceOf(Date);
+      // Window start comes from sessionized worker history, not a rolling clock.
+      expect(lastInsertValues?.windowStartedAt?.toISOString()).toBe('2026-07-30T08:00:00.000Z');
+      expect(lastInsertValues?.workerCount).toBe(4);
+      expect(lastInsertValues?.turns).toBe(300);
+      // Model-weighted totals are what the learner will use.
+      expect(lastInsertValues?.weightedTurns).toBe(900);
+      expect(lastInsertValues?.weightedTokens).toBe(360_000);
+    });
+
+    it('does not record a second episode when it lost the flip race', async () => {
+      accountsUpdateReturning = []; // another concurrent report already flipped it
+      mockOauthEpisodesFindFirst.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+      lastInsertValues = null;
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Budget limit exceeded (maxBudgetUsd)', budgetExhausted: true },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues?.exhaustedAt).toBeUndefined();
+      // Losing the race must not stop the task from being re-queued.
+      expect(mockTasksUpdate).toHaveBeenCalled();
     });
 
     it('fires a distinct budget/rate-limit alert (backend + reset) instead of "Task failed"', async () => {

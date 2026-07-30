@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, connectors, secrets, missions } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, connectors, secrets, missions } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq, and, or, desc, inArray, isNull, not, sql } from 'drizzle-orm';
+import { eq, and, or, desc, gte, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -24,6 +24,7 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
+import { measureOauthWindow } from '@/lib/oauth-budget-window';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -618,16 +619,63 @@ export async function PATCH(
         });
     } else if (account.authType === 'oauth') {
       // Account-level budget exhaustion: set flag (first-writer wins)
-      await db
+      const exhaustedAt = new Date();
+      const flipped = await db
         .update(accounts)
         .set({
-          budgetExhaustedAt: new Date(),
+          budgetExhaustedAt: exhaustedAt,
           budgetResetsAt,
         })
         .where(and(
           eq(accounts.id, account.id),
           isNull(accounts.budgetExhaustedAt),
-        ));
+        ))
+        .returning({ id: accounts.id });
+
+      // Only the request that actually flipped the flag records the episode, so
+      // N concurrent budget failures in the same window yield exactly one row.
+      // Seat auth has no cost signal, so this measured usage is the only way to
+      // learn where the wall is — see packages/core/oauth-budget.ts.
+      if (flipped.length > 0) {
+        try {
+          const prior = await db.query.oauthBudgetEpisodes.findFirst({
+            where: eq(oauthBudgetEpisodes.accountId, account.id),
+            orderBy: (t, { desc }) => [desc(t.exhaustedAt)],
+            columns: { resetsAt: true },
+          });
+          // Same measurement the claim route paces against: window start inferred
+          // by sessionizing worker history, usage weighted per model.
+          const { windowStartedAt, usage } = await measureOauthWindow({
+            accountId: account.id,
+            now: exhaustedAt,
+            lastResetsAt: prior?.resetsAt ?? null,
+          });
+
+          await db.insert(oauthBudgetEpisodes).values({
+            accountId: account.id,
+            windowStartedAt,
+            exhaustedAt,
+            resetsAt: budgetResetsAt,
+            workerCount: usage.workerCount,
+            turns: usage.turns,
+            // Raw token split is not recoverable per-direction from the window
+            // aggregate; the combined total is what the learner uses.
+            inputTokens: usage.tokens,
+            outputTokens: 0,
+            weightedTurns: usage.weightedTurns,
+            weightedTokens: usage.weightedTokens,
+          });
+          console.log(
+            `[workers PATCH] Recorded OAuth budget episode for account ${account.id}: ` +
+            `${usage.workerCount} workers / ${usage.turns} turns ` +
+            `(${usage.weightedTurns} sonnet-equivalent) since ${windowStartedAt.toISOString()}`,
+          );
+        } catch (err) {
+          // Non-fatal: losing an episode only slows learning, it must never break
+          // the budget-exhaustion path that re-queues the task.
+          console.warn(`[workers PATCH] Failed to record OAuth budget episode for account ${account.id}:`, err);
+        }
+      }
     }
 
     // Codex failover: if the workspace has a Codex credential and the task

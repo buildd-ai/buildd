@@ -865,6 +865,19 @@ export interface ClaimDiagnostics {
     budget_paused?: number;
     routing_paused?: number;
   };
+  /**
+   * Learned OAuth budget pressure for this account (seat-based auth only).
+   * pct is 0..1 of the capacity learned from past exhaustion episodes; the
+   * router downshifts tiers as it rises and pauses priority-0 work at 0.95.
+   * Absent when the account is API-billed or has too few episodes to learn from.
+   * See packages/core/oauth-budget.ts.
+   */
+  budgetPressure?: {
+    pct: number;
+    limiter: 'workers' | 'turns' | 'tokens' | null;
+    confidence: 'low' | 'good';
+    samples: number;
+  };
 }
 
 /**
