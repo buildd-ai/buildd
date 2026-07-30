@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Subject anchors 6/7 — dead-PR shutdown behind autoCloseBuilddSupersededPrs flag (#1507)
+- Subject anchors 5/7 — reconciliation sweep and pre-claim liveness gate (#1506)
 - Surface 403 GitHub App permission gap as connector_permission_insufficient (#1501)
 - Add status badge to Activity feed rows (#1377)
 - Infer pathManifest on friction tasks at creation time (#1380)
@@ -54,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Update @openai/codex-sdk to ^0.146.0 (#1505)
 - Terminate agent review leases safely (#1487)
 - Scope MCP list_tasks and openclaw fetches to active/workspace (#1386)
 - Scope GET /api/tasks by workspace and status (#1386)
