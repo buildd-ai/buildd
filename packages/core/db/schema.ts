@@ -896,6 +896,9 @@ export const workers = pgTable('workers', {
   // PR/git lifecycle state — kept live by GitHub webhook events.
   // null = no PR yet or status unknown (pre-migration workers).
   prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
+  // Set the first time prLifecycleStatus transitions to 'conflict'. Used to measure
+  // conflictDeadDays. Never cleared (even if PR later becomes mergeable).
+  conflictDetectedAt: timestamp('conflict_detected_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
