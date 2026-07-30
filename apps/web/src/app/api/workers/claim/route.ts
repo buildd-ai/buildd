@@ -33,6 +33,8 @@ import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld } from './held-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
+import { buildSubjectPriorWork } from './subject-prior-work';
+import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -1645,6 +1647,32 @@ export async function POST(req: NextRequest) {
     if (taskObj) {
       taskObj.context = taskObj.context ?? {};
       taskObj.context.resolvedContextProviders = [...(taskObj.context.resolvedContextProviders ?? []), block];
+    }
+  }
+
+  // Subject-anchor prior work injection (§7 of docs/design/task-subject-anchors.md).
+  // For tasks anchored to a subject PR, error, or mission, surface existing sibling
+  // tasks so the agent doesn't re-discover or re-implement work already in flight.
+  // Gated by priorWorkInjection in the workspace subjectPolicy (default: true).
+  // Best-effort: failures are logged and the claim still succeeds.
+  for (const cw of claimedWorkers) {
+    const task = filteredTasks.find(t => t.id === cw.taskId);
+    if (!task || !(task as any).subjectKind) continue;
+
+    const wsGitConfig = (task as any).workspace?.gitConfig;
+    const subjectPolicy = resolveSubjectPolicy(wsGitConfig?.subjectPolicy);
+
+    const priorWork = await buildSubjectPriorWork(task as any, subjectPolicy).catch(err => {
+      console.warn('[claim] subject-prior-work injection failed:', err);
+      return null;
+    });
+    if (!priorWork) continue;
+
+    (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), priorWork];
+    const taskObj = cw.task as any;
+    if (taskObj) {
+      taskObj.context = taskObj.context ?? {};
+      taskObj.context.resolvedContextProviders = [...(taskObj.context.resolvedContextProviders ?? []), priorWork];
     }
   }
 
