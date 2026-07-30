@@ -374,10 +374,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
+  // cannot exhaust the window and starve valid tasks behind it.
+  // Without this, `limit: availableSlots` means the dispatch loop only ever sees
+  // the highest-priority N tasks; if all N are permanently deferred (wrong
+  // connector, pacing, etc.) nothing else is ever examined — race_lost forever.
+  const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
   const claimableTasks = await db.query.tasks.findMany({
     where: and(...claimableConditions),
     orderBy: (tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)],
-    limit: availableSlots,
+    limit: candidateLimit,
     with: { workspace: true },
   });
 
@@ -673,6 +679,27 @@ export async function POST(req: NextRequest) {
   // which is inherently safe against concurrent claims at the SQL level.
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
 
+  // Per-reason deferral counters for the dispatch loop. Incremented at each
+  // `continue` so the final response can distinguish "all deferred" from true
+  // lock-contention (`race_lost`). Also powers the `all_candidates_deferred`
+  // diagnostic reason added by the 2026-07-30 candidate-window starvation fix.
+  const deferrals = {
+    connector_mismatch: 0,
+    subject_dead: 0,
+    path_overlap: 0,
+    mission_budget: 0,
+    mission_concurrent: 0,
+    mission_paced: 0,
+    workspace_cap: 0,
+    provider_unavailable: 0,
+    budget_paused: 0,
+    routing_paused: 0,
+  };
+  // Number of tasks that reached the atomic claim attempt (UPDATE...WHERE status='pending').
+  // If lockAttempts === 0 at the end of the loop, every candidate was deferred — no
+  // lock contention occurred and `race_lost` would be a misnomer.
+  let lockAttempts = 0;
+
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
   // still claim several same-repo tasks at once (they all passed when the count was
@@ -823,7 +850,7 @@ export async function POST(req: NextRequest) {
   for (const task of filteredTasks) {
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
-    if (connectorMismatchTaskIds.has(task.id)) continue;
+    if (connectorMismatchTaskIds.has(task.id)) { deferrals.connector_mismatch++; continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
@@ -831,6 +858,7 @@ export async function POST(req: NextRequest) {
     // run between the initial query and this point.
     if (!subjectStillLive(task as any)) {
       console.log(`[claim] task ${task.id} skipped: subject PR reconciled (dead)`);
+      deferrals.subject_dead++;
       continue;
     }
 
@@ -848,6 +876,7 @@ export async function POST(req: NextRequest) {
       const blocking = findBlockingPr(taskManifest, openPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
+        deferrals.path_overlap++;
         continue;
       }
     }
@@ -862,6 +891,7 @@ export async function POST(req: NextRequest) {
         //    Already-running workers are unaffected (they were claimed earlier).
         if (missionData.status === 'budget_exhausted') {
           console.log(`[claim] task ${task.id} skipped: mission ${taskMissionId} budget_exhausted`);
+          deferrals.mission_budget++;
           continue;
         }
 
@@ -873,6 +903,7 @@ export async function POST(req: NextRequest) {
         );
         if (concurrencyBlock) {
           console.log(`[claim] task ${task.id} deferred: mission ${taskMissionId} at concurrency cap (${concurrencyBlock.active}/${concurrencyBlock.cap})`);
+          deferrals.mission_concurrent++;
           continue;
         }
 
@@ -885,6 +916,7 @@ export async function POST(req: NextRequest) {
             `(next eligible ${pacingBlock.nextEligibleAt.toISOString()}, ` +
             `interval ${pacingBlock.intervalSec}s, elapsed ${Math.round(pacingBlock.elapsedSec)}s)`,
           );
+          deferrals.mission_paced++;
           continue;
         }
       }
@@ -897,6 +929,7 @@ export async function POST(req: NextRequest) {
     if (taskWorkspace?.repo) {
       const cap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
+        deferrals.workspace_cap++;
         continue;
       }
     }
@@ -913,7 +946,7 @@ export async function POST(req: NextRequest) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
-        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) continue;
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) { deferrals.provider_unavailable++; continue; }
         console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
       } else {
         // Codex disabled team-wide → run on Claude.
@@ -964,6 +997,7 @@ export async function POST(req: NextRequest) {
       if (codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId)) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
+        deferrals.budget_paused++;
         continue;
       }
     }
@@ -1032,6 +1066,7 @@ export async function POST(req: NextRequest) {
 
     if (routingDecision.model === 'paused') {
       // Budget-pressure pause — leave the task pending for next cycle.
+      deferrals.routing_paused++;
       continue;
     }
 
@@ -1068,6 +1103,7 @@ export async function POST(req: NextRequest) {
     };
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
+    lockAttempts++;
     const updated = await db
       .update(tasks)
       .set({
@@ -1195,12 +1231,25 @@ export async function POST(req: NextRequest) {
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
     }
+    // Distinguish true lock-contention (race_lost) from "all candidates were
+    // deferred without a single claim attempt" (all_candidates_deferred).
+    // race_lost = some tasks reached the atomic UPDATE but another worker won.
+    // all_candidates_deferred = every filtered task was skipped by a pre-claim
+    // gate (connector mismatch, pacing, workspace cap, etc.) — no race occurred.
+    // This matters for diagnostics: race_lost with pendingTasks>0 looked like
+    // normal contention but was actually a permanent stall (2026-07-30 incident).
+    const totalDeferrals = Object.values(deferrals).reduce((s, n) => s + n, 0);
+    const allDeferred = lockAttempts === 0 && filteredTasks.length > 0 && totalDeferrals > 0;
+    const nonZeroDeferrals = Object.fromEntries(
+      Object.entries(deferrals).filter(([, n]) => n > 0),
+    ) as ClaimDiagnostics['deferrals'];
     return NextResponse.json({
       workers: [],
       diagnostics: {
-        reason: 'race_lost',
+        reason: allDeferred ? 'all_candidates_deferred' : 'race_lost',
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
+        ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
       } satisfies ClaimDiagnostics,
     });
   }
