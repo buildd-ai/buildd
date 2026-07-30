@@ -832,6 +832,7 @@ export type ClaimDiagnosticReason =
   | 'no_pending_tasks'
   | 'capability_mismatch'
   | 'race_lost'
+  | 'all_candidates_deferred'
   | 'deps_blocked'
   | 'repo_busy'
   | 'budget_exhausted'
@@ -848,6 +849,22 @@ export interface ClaimDiagnostics {
   availableSlots?: number;
   /** Populated when reason=path_overlap_blocked: the PR that conflicts with this task's pathManifest */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
+  /**
+   * Populated when reason=all_candidates_deferred: per-reason breakdown of why
+   * every candidate in the window was skipped without a claim attempt.
+   */
+  deferrals?: {
+    connector_mismatch?: number;
+    subject_dead?: number;
+    path_overlap?: number;
+    mission_budget?: number;
+    mission_concurrent?: number;
+    mission_paced?: number;
+    workspace_cap?: number;
+    provider_unavailable?: number;
+    budget_paused?: number;
+    routing_paused?: number;
+  };
 }
 
 /**

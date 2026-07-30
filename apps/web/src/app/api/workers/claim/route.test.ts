@@ -3628,4 +3628,125 @@ describe('entity catalog injection at claim time', () => {
     expect(data.error).toBe('routing_mismatch');
     expect(data.detail).toBeTruthy();
   });
+
+  // --- Candidate window starvation tests ---
+  // Bug (2026-07-30): claim route fetched only `availableSlots` candidates ordered
+  // by (priority DESC, createdAt ASC). If the entire window was filled by tasks that
+  // are permanently deferred in the dispatch loop (e.g. connector-mismatch), the
+  // runner received `race_lost` forever even with valid tasks behind the prefix.
+  //
+  // Fix: over-fetch to max(availableSlots*5, 25) so a deferred prefix cannot
+  // exhaust the window. Also adds `all_candidates_deferred` diagnostic reason.
+
+  describe('candidate window starvation fix', () => {
+    it('claims a clean task even when all tasks inside availableSlots are connector-mismatched', async () => {
+      // availableSlots = 1 (maxTasks=1, 0 active workers).
+      // Before fix: limit=1, only task-1 (mismatched) returned → race_lost.
+      // After fix: limit=max(1*5,25)=25, both tasks returned, task-2 claimed.
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]); // no active workers
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+      const allTasks = [
+        // task-1: email-agent role → connector-mismatched (higher priority, fetched first)
+        {
+          id: 'task-1', workspaceId: 'ws-1', title: 'Email task',
+          roleSlug: 'email-agent', priority: 5,
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        },
+        // task-2: no role → clean (lower priority, beyond window at limit=1)
+        {
+          id: 'task-2', workspaceId: 'ws-1', title: 'Clean task',
+          roleSlug: null, priority: 4,
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        },
+      ];
+
+      // Simulate real DB behaviour: only return as many tasks as the limit allows.
+      // This makes the test fail BEFORE the over-fetch fix and pass AFTER.
+      mockTasksFindMany
+        .mockImplementationOnce((opts: any) => {
+          const lim = typeof opts?.limit === 'number' ? opts.limit : Infinity;
+          return Promise.resolve(allTasks.slice(0, lim));
+        })
+        .mockResolvedValue([]); // subsequent calls (siblings, parent, etc.)
+
+      // Pre-filter role lookup: email-agent role has connectorRefs pointing to a
+      // connector that no longer exists → dangling ref → mismatched.
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'email-agent', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-cue'] },
+        ])
+        .mockResolvedValue([]);
+      mockConnectorsFindMany.mockResolvedValueOnce([]); // conn-cue deleted
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      // task-2 passes all gates and gets claimed
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-2' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-2', task_id: 'task-2', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', maxTasks: 1 },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-2');
+    });
+
+    it('returns all_candidates_deferred diagnostic when every candidate is skipped by connector pre-filter', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+
+      // All 2 tasks require email-agent role → all connector-mismatched → none claimed.
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          {
+            id: 'task-1', workspaceId: 'ws-1', title: 'Email task 1',
+            roleSlug: 'email-agent',
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+          },
+          {
+            id: 'task-2', workspaceId: 'ws-1', title: 'Email task 2',
+            roleSlug: 'email-agent',
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+          },
+        ])
+        .mockResolvedValue([]);
+
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'email-agent', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-missing'] },
+        ])
+        .mockResolvedValue([]);
+      mockConnectorsFindMany.mockResolvedValueOnce([]); // conn-missing not found
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('all_candidates_deferred');
+      expect(data.diagnostics.deferrals.connector_mismatch).toBe(2);
+    });
+  });
 });
