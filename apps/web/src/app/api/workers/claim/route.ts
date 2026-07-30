@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -15,6 +15,15 @@ import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
 import { resolveClaudeCredential, refreshClaudeCredential, getClaudeSecretId } from '@/lib/claude-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
+import {
+  describeOauthPressure,
+  learnOauthCapacity,
+  oauthBudgetPressure,
+  readPacingConfig,
+  windowEndsAt,
+  type OauthBudgetPressure,
+} from '@buildd/core/oauth-budget';
+import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
@@ -626,9 +635,55 @@ export async function POST(req: NextRequest) {
 
   // Compute router inputs once per claim request. The router is pure; the
   // signals below feed its budget-pressure and spike-detection gates.
-  const dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
+  let dailyBudgetPct = account.authType === 'api' && account.maxCostPerDay
     ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
     : 0;
+
+  // OAuth budget pacing. Seat auth reports no cost, so the pressure signal is
+  // learned from past exhaustion episodes instead: how many workers/turns/tokens
+  // this account's 5h window has historically held (p25, conservative), versus
+  // what the current window has already consumed. Feeding it through the same
+  // `dailyBudgetPct` input means the existing router behaviour applies — tiers
+  // downshift as pressure rises, priority-0 work pauses at 95% — so we throttle
+  // approaching the wall instead of discovering it by failing a build.
+  // Inert until MIN_SAMPLES episodes exist; failures here never block claiming.
+  //
+  // Two hard exemptions, both deliberate:
+  //  • `taskId` present — this is an explicit start (dashboard Start button or a
+  //    Pusher assignment for one task). A human asking for this task now always
+  //    wins over pacing; pacing only governs autonomous background claiming.
+  //    Without this, pacing would reintroduce the silent no-op Start that
+  //    /api/tasks/[id]/start already suffers from.
+  //  • OAUTH_BUDGET_PACING=off — operational kill switch, no redeploy of logic
+  //    needed, no settings row, no UI.
+  const pacingConfig = readPacingConfig(process.env);
+  const pacingApplies = pacingConfig.enabled && !taskId;
+  let oauthPressure: OauthBudgetPressure | null = null;
+  if (account.authType === 'oauth' && pacingApplies) {
+    try {
+      const episodes = await loadOauthEpisodes(account.id);
+      const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
+
+      if (capacity.confidence !== 'none') {
+        const { windowStartedAt, usage } = await measureOauthWindow({
+          accountId: account.id,
+          now,
+          lastResetsAt: episodes[0]?.resetsAt ?? null,
+        });
+
+        oauthPressure = oauthBudgetPressure({ usage, capacity });
+        dailyBudgetPct = Math.max(dailyBudgetPct, oauthPressure.pct);
+        if (oauthPressure.pct >= 0.5) {
+          console.log(
+            `[claim] ${describeOauthPressure(oauthPressure)} ` +
+            `window opened ${windowStartedAt.toISOString()}, ends ${windowEndsAt(windowStartedAt).toISOString()}`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(`[claim] OAuth budget pacing unavailable for account ${account.id}:`, err);
+    }
+  }
 
   const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
   const recentClaims = await db
@@ -1250,6 +1305,19 @@ export async function POST(req: NextRequest) {
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
+        // Surface learned OAuth pressure so a `routing_paused` deferral is
+        // attributable ("paced at 97% of the learned window") instead of looking
+        // like an unexplained stall.
+        ...(oauthPressure && oauthPressure.confidence !== 'none'
+          ? {
+              budgetPressure: {
+                pct: oauthPressure.pct,
+                limiter: oauthPressure.limiter,
+                confidence: oauthPressure.confidence,
+                samples: oauthPressure.samples,
+              },
+            }
+          : {}),
       } satisfies ClaimDiagnostics,
     });
   }

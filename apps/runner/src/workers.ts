@@ -26,6 +26,7 @@ import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from '
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
+import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -2527,6 +2528,16 @@ export class WorkerManager {
         }
 
         if (event.type === 'turn_complete') {
+          // Accumulate per-turn usage as the last-resort token source. Assistant
+          // messages always carry usage, including on seat auth.
+          if (event.usage) {
+            const tally = worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 };
+            worker.tokenTally = {
+              inputTokens: tally.inputTokens + (event.usage.inputTokens || 0),
+              outputTokens: tally.outputTokens + (event.usage.outputTokens || 0),
+            };
+          }
+
           // Sync structured output from BackendEvent (Codex path — Claude uses onProgress)
           if (event.structuredOutput && typeof event.structuredOutput === 'object') {
             structuredOutput = event.structuredOutput as Record<string, unknown>;
@@ -2794,19 +2805,13 @@ If something is missing or incomplete, describe what and fix it now.`;
             console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
           }
         }
-        // Compute aggregate token counts from SDK result metadata
+        // Aggregate token counts: per-model breakdown → result totals → per-turn
+        // tally. The fallbacks matter on OAuth, where byModel is never populated
+        // and tokens are the only real consumption signal (cost is always 0).
         const resultMeta = worker.resultMeta || undefined;
-        let inputTokens: number | undefined;
-        let outputTokens: number | undefined;
-        if (resultMeta?.modelUsage) {
-          let totalIn = 0, totalOut = 0;
-          for (const usage of Object.values(resultMeta.modelUsage)) {
-            totalIn += usage.inputTokens + usage.cacheReadInputTokens;
-            totalOut += usage.outputTokens;
-          }
-          if (totalIn > 0) inputTokens = totalIn;
-          if (totalOut > 0) outputTokens = totalOut;
-        }
+        const totals = aggregateUsage(resultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
+        const inputTokens = totals?.inputTokens;
+        const outputTokens = totals?.outputTokens;
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
@@ -3715,6 +3720,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         durationApiMs: result.duration_api_ms ?? 0,
         numTurns: result.num_turns ?? 0,
         modelUsage: result.usage?.byModel ?? {},
+        // Seat-based (OAuth) auth reports top-level usage but no byModel map.
+        // Reading only byModel is why OAuth workers persisted 0 tokens.
+        totalUsage: extractResultUsage(result),
         ...(result.permission_denials?.length > 0 && {
           permissionDenials: result.permission_denials.map((d: any) => ({
             tool: d.tool_name || d.tool || 'unknown',

@@ -21,6 +21,7 @@
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
+    "./oauth-budget": "./oauth-budget.ts",
     "./task-classifier": "./task-classifier.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./report-ops": "./report-ops.ts",

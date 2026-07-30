@@ -39,6 +39,7 @@ const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockMissionsFindMany = mock(() => [] as any[]);
+const mockOauthEpisodesFindMany = mock(() => [] as any[]);
 
 function makeSelectChain(result: any[] = []) {
   const chain: any = {};
@@ -70,6 +71,16 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mockHasCodexCredential,
 }));
 
+const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
+const mockMeasureOauthWindow = mock(() => Promise.resolve({
+  windowStartedAt: new Date(),
+  usage: { workerCount: 0, turns: 0, tokens: 0, weightedTurns: 0, weightedTokens: 0 },
+}));
+mock.module('@/lib/oauth-budget-window', () => ({
+  loadOauthEpisodes: mockLoadOauthEpisodes,
+  measureOauthWindow: mockMeasureOauthWindow,
+}));
+
 const mockRefreshMcpConnectorCredential = mock(() => Promise.resolve('error' as string));
 mock.module('@/lib/mcp-connector-refresh', () => ({
   refreshMcpConnectorCredential: mockRefreshMcpConnectorCredential,
@@ -94,6 +105,7 @@ mock.module('@buildd/core/db', () => ({
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
       missions: { findMany: mockMissionsFindMany },
+      oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -132,13 +144,14 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { id: 'id', activeSessions: 'activeSessions' },
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
-  workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId' },
+  workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
+  oauthBudgetEpisodes: { accountId: 'accountId', exhaustedAt: 'exhaustedAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
@@ -240,6 +253,9 @@ describe('POST /api/workers/claim', () => {
     // Default: no missions
     mockMissionsFindMany.mockReset();
     mockMissionsFindMany.mockResolvedValue([]);
+    // Default: no learned OAuth budget episodes (pacing inert)
+    mockOauthEpisodesFindMany.mockReset();
+    mockOauthEpisodesFindMany.mockResolvedValue([]);
     // Default: empty select chain (role lookups, mission concurrency counts)
     mockDbSelect.mockReturnValue(makeSelectChain([]));
   });
@@ -3747,6 +3763,217 @@ describe('entity catalog injection at claim time', () => {
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics.reason).toBe('all_candidates_deferred');
       expect(data.diagnostics.deferrals.connector_mismatch).toBe(2);
+    });
+  });
+  // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
+  // cost, so pressure is learned from past exhaustion episodes and fed to the
+  // model router as dailyBudgetPct.
+  describe('oauth budget pacing', () => {
+    // Several task UPDATEs can fire per claim (claim + post-claim bookkeeping),
+    // so keep every payload and pick the one carrying the routing decision.
+    let taskSetPayloads: any[] = [];
+    const claimPayload = () => taskSetPayloads.find(p => p && 'predictedModel' in p) ?? null;
+
+    function mockClaimSuccess() {
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((payload: any) => {
+          taskSetPayloads.push(payload);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'task-1' }]),
+            })),
+          };
+        }),
+      }));
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    /** Five episodes at 600 sonnet-equivalent turns → 'good' confidence, p25 = 600. */
+    function learnedWindow() {
+      return Array.from({ length: 5 }, (_, i) => ({
+        exhaustedAt: new Date(Date.now() - (24 + i) * 60 * 60 * 1000),
+        resetsAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
+        workerCount: 10,
+        turns: 600,
+        inputTokens: 0,
+        outputTokens: 0,
+        weightedTurns: 600,
+        weightedTokens: 0,
+      }));
+    }
+
+    function windowUsage(over: Partial<Record<string, number>> = {}) {
+      return {
+        windowStartedAt: new Date(Date.now() - 60 * 60 * 1000),
+        usage: {
+          workerCount: 0, turns: 0, tokens: 0,
+          weightedTurns: 0, weightedTokens: 0,
+          ...over,
+        },
+      };
+    }
+
+    function pendingTask(over: Record<string, unknown> = {}) {
+      return {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'background work',
+        kind: 'engineering',
+        complexity: 'normal',
+        priority: 0,
+        dependsOn: [],
+        workspace: { id: 'ws-1', gitConfig: null },
+        ...over,
+      };
+    }
+
+    beforeEach(() => {
+      taskSetPayloads = [];
+      delete process.env.OAUTH_BUDGET_PACING;
+      mockLoadOauthEpisodes.mockReset();
+      mockLoadOauthEpisodes.mockResolvedValue([]);
+      mockMeasureOauthWindow.mockReset();
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage());
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
+        authType: 'oauth', maxConcurrentSessions: null,
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([pendingTask()]);
+      mockClaimSuccess();
+    });
+
+    afterEach(() => {
+      delete process.env.OAUTH_BUDGET_PACING;
+    });
+
+    it('stays inert with too few episodes — claims exactly as before', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().slice(0, 2));
+      // Usage that would be way over capacity if it were being applied.
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(claimPayload()).not.toBeNull();
+      expect(data.diagnostics?.budgetPressure).toBeUndefined();
+      // Below the sample threshold we never even measure the window.
+      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
+    });
+
+    it('pauses priority-0 background work once the learned window is full', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(claimPayload()).toBeNull();
+      expect(data.diagnostics.reason).toBe('all_candidates_deferred');
+      expect(data.diagnostics.deferrals.routing_paused).toBe(1);
+      // Readable: the deferral is attributable, not an unexplained stall.
+      expect(data.diagnostics.budgetPressure).toEqual({
+        pct: 1,
+        limiter: 'turns',
+        confidence: 'good',
+        samples: 5,
+      });
+    });
+
+    it('an opus-heavy window fills faster than a haiku-heavy one at equal turn counts', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      // 150 raw turns, but haiku-weighted to ~40 sonnet-equivalents → 7% pressure.
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 150, weightedTurns: 40 }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      // Cheap models do not throttle the queue: no downshift at 7%.
+      expect(claimPayload()?.predictedModel).toBe('sonnet');
+    });
+
+    it('downshifts rather than pausing while the window is part spent', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 5, turns: 480, weightedTurns: 480 }));
+      mockTasksFindMany.mockResolvedValue([pendingTask({ complexity: 'complex' })]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      // 80% pressure lands in the downshift band: opus baseline → sonnet.
+      expect(claimPayload()?.predictedModel).toBe('sonnet');
+    });
+
+    // The whole point of the Start button is that it does something. Pacing must
+    // never turn an explicit start into a silent no-op (the phantom-stop bug
+    // /api/tasks/[id]/start already has for other gates).
+    it('never paces an explicit single-task claim, even at 100% pressure', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', taskId: 'task-1' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(claimPayload()).not.toBeNull();
+      // Pacing was not even consulted for a targeted claim.
+      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
+    });
+
+    it('OAUTH_BUDGET_PACING=off makes it fully inert', async () => {
+      process.env.OAUTH_BUDGET_PACING = 'off';
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
+      expect(data.diagnostics?.budgetPressure).toBeUndefined();
+    });
+
+    it('does not pace API-billed accounts (they have a real cost signal)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
+        authType: 'api', maxCostPerDay: '100', totalCost: '1',
+      });
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
     });
   });
 });
