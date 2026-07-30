@@ -7,6 +7,7 @@ import { db } from '@buildd/core/db';
 import { workspaces, githubRepos } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { resolveWorkspace } from '@/lib/workspace-resolver';
 
 export interface ReleaseTarget {
   workspaceId: string;
@@ -33,7 +34,7 @@ export async function resolveReleaseTarget(params: {
     | undefined;
 
   if (params.workspaceId) {
-    workspaceRow = await db.query.workspaces.findFirst({ where: eq(workspaces.id, params.workspaceId) });
+    workspaceRow = await resolveWorkspace(params.workspaceId) ?? undefined;
     if (!workspaceRow) return { ok: false, status: 404, error: `Workspace ${params.workspaceId} not found` };
     if (!workspaceRow.githubRepoId) {
       return { ok: false, status: 400, error: 'Workspace has no linked GitHub repo' };
