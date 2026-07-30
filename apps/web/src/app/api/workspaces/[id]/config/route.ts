@@ -229,6 +229,13 @@ export async function POST(
             }
         }
 
+        // Read existing gitConfig to preserve fields not managed by this form
+        // (e.g. subjectPolicy, which is managed via PATCH gitConfig.subjectPolicy).
+        const existing = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, id),
+            columns: { gitConfig: true },
+        });
+
         const gitConfig: WorkspaceGitConfig = {
             // Branching (required)
             defaultBranch: body.defaultBranch || 'main',
@@ -326,6 +333,11 @@ export async function POST(
             // Default runner preference for new tasks
             ...(typeof body.defaultRunnerPreference === 'string' && ['any', 'user', 'service', 'action'].includes(body.defaultRunnerPreference)
                 ? { defaultRunnerPreference: body.defaultRunnerPreference }
+                : {}),
+
+            // Preserve subjectPolicy — managed via PATCH gitConfig.subjectPolicy, not this form.
+            ...(existing?.gitConfig?.subjectPolicy
+                ? { subjectPolicy: existing.gitConfig.subjectPolicy }
                 : {}),
 
         };
