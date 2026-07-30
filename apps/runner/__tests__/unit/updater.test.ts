@@ -22,7 +22,7 @@ mock.module('child_process', () => ({
 }));
 
 // Import after mocking
-const { getCurrentCommit, checkForUpdate, applyUpdate } = await import('../../src/updater');
+const { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } = await import('../../src/updater');
 
 const NODE_MODULES = join(TMP_HOME, 'node_modules');
 
@@ -155,5 +155,43 @@ describe('applyUpdate', () => {
     expect(result.error).toContain('network error');
     // Failure occurred before the rm, so node_modules is intact.
     expect(nodeFs.existsSync(NODE_MODULES)).toBe(true);
+  });
+});
+
+describe('hasTrackedChanges', () => {
+  beforeEach(() => {
+    mockExecSync.mockReset();
+  });
+
+  test('returns false for an untracked-only working tree (runtime artifacts)', () => {
+    // --untracked-files=no means untracked files (config.json, history.db, etc.)
+    // produce no output; the preflight must allow the update.
+    mockExecSync.mockReturnValue('');
+    const result = hasTrackedChanges('/some/install-dir');
+    expect(result).toBe(false);
+    expect(mockExecSync).toHaveBeenCalledWith(
+      'git status --porcelain --untracked-files=no',
+      expect.objectContaining({ cwd: '/some/install-dir' }),
+    );
+  });
+
+  test('returns true for a modified tracked file', () => {
+    mockExecSync.mockReturnValue(' M apps/runner/src/index.ts\n');
+    expect(hasTrackedChanges('/some/install-dir')).toBe(true);
+  });
+
+  test('returns true for a staged (index) change', () => {
+    mockExecSync.mockReturnValue('M  apps/runner/src/updater.ts\n');
+    expect(hasTrackedChanges('/some/install-dir')).toBe(true);
+  });
+
+  test('returns false for a fully clean working tree', () => {
+    mockExecSync.mockReturnValue('');
+    expect(hasTrackedChanges('/some/install-dir')).toBe(false);
+  });
+
+  test('returns false when git command fails (update attempt will fail at git step)', () => {
+    mockExecSync.mockImplementation(() => { throw new Error('not a git repository'); });
+    expect(hasTrackedChanges('/some/install-dir')).toBe(false);
   });
 });
