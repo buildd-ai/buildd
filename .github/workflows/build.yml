@@ -99,7 +99,7 @@ jobs:
         run: bash scripts/lint-model-ids.sh
 
       - name: Type check
-        run: cd apps/web && bunx tsc --noEmit
+        run: bun run type-check
 
       - name: Detect affected tests
         id: affected
