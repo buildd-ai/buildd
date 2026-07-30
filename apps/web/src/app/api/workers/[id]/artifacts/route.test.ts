@@ -19,6 +19,11 @@ const mockArtifactsUpdate = mock(() => ({
     })),
   })),
 }));
+const mockWorkersUpdate = mock(() => ({
+  set: mock(() => ({
+    where: mock(() => Promise.resolve()),
+  })),
+}));
 const mockTriggerEvent = mock(() => Promise.resolve());
 
 mock.module('@/lib/api-auth', () => ({
@@ -45,7 +50,9 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
     insert: () => mockArtifactsInsert(),
-    update: () => mockArtifactsUpdate(),
+    update: (table: string) => table === 'workers'
+      ? mockWorkersUpdate()
+      : mockArtifactsUpdate(),
   },
 }));
 
@@ -173,6 +180,7 @@ describe('POST /api/workers/[id]/artifacts', () => {
     mockArtifactsFindFirst.mockReset();
     mockArtifactsInsert.mockReset();
     mockArtifactsUpdate.mockReset();
+    mockWorkersUpdate.mockReset();
     mockTriggerEvent.mockReset();
     mockArtifactsFindFirst.mockResolvedValue(null);
     mockTasksFindFirst.mockResolvedValue(null);
@@ -180,6 +188,11 @@ describe('POST /api/workers/[id]/artifacts', () => {
     mockArtifactsInsert.mockReturnValue({
       values: mock((vals: any) => ({
         returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', type: 'content', title: 'Test', ...vals }]),
+      })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
       })),
     });
   });
@@ -288,6 +301,34 @@ describe('POST /api/workers/[id]/artifacts', () => {
     const data = await res.json();
     expect(data.artifact).toBeDefined();
     expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  it('refreshes the worker lease after creating an artifact', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      status: 'running',
+    });
+
+    let workerUpdate: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        workerUpdate = values;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockPostRequest(
+      { type: 'summary', title: 'Delivery summary', content: 'Finished work' },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(workerUpdate?.updatedAt).toBeInstanceOf(Date);
   });
 
   it('creates artifact PRIVATE by default with no share token', async () => {
