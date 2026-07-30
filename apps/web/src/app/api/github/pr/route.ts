@@ -48,6 +48,10 @@ export async function POST(req: NextRequest) {
     // (e.g. the PR was created via gh CLI in a different repo).
     if (existingPrUrl) {
       if (worker.prUrl && worker.prNumber) {
+        await db
+          .update(workers)
+          .set({ updatedAt: new Date() })
+          .where(eq(workers.id, workerId));
         return NextResponse.json({
           ok: true,
           pr: { number: worker.prNumber, url: worker.prUrl, state: 'open', title },
@@ -125,6 +129,10 @@ export async function POST(req: NextRequest) {
 
     // Dedup: if worker already has a PR, return the existing one
     if (worker.prUrl && worker.prNumber) {
+      await db
+        .update(workers)
+        .set({ updatedAt: new Date() })
+        .where(eq(workers.id, workerId));
       return NextResponse.json({
         ok: true,
         pr: {
