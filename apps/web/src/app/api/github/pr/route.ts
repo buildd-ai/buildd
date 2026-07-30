@@ -249,6 +249,80 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// PATCH /api/github/pr - Close a pull request
+export async function PATCH(req: NextRequest) {
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  const account = await authenticateApiKey(apiKey);
+  if (!account) {
+    return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { workerId, prNumber } = body;
+
+    if (!workerId) {
+      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
+    }
+    if (!prNumber || typeof prNumber !== 'number') {
+      return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
+    }
+
+    const worker = await db.query.workers.findFirst({
+      where: eq(workers.id, workerId),
+      with: { workspace: true },
+    });
+
+    if (!worker) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+
+    if (worker.accountId !== account.id) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+
+    const workspace = worker.workspace;
+    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
+      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
+    }
+
+    const repo = await db.query.githubRepos.findFirst({
+      where: eq(githubRepos.id, workspace.githubRepoId),
+      with: { installation: true },
+    });
+
+    if (!repo || !repo.installation) {
+      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    }
+
+    const prData = await githubApi(
+      repo.installation.installationId,
+      `/repos/${repo.fullName}/pulls/${prNumber}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'closed' }),
+      }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      pr: {
+        number: prData.number,
+        url: prData.html_url,
+        state: prData.state,
+        title: prData.title,
+      },
+    });
+  } catch (error) {
+    console.error('Close PR error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to close PR';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
 async function persistMissionPrIfFirst(
   missionId: string | null | undefined,
   prNumber: number,
