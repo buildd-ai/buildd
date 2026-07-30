@@ -26,41 +26,84 @@ type TestResult = {
   output: string;
 };
 
-async function runTestFile(file: string): Promise<TestResult> {
-  const child = Bun.spawn(['bun', 'test', file], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: process.env,
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { file, exitCode, output: `${stdout}${stderr}` };
+const DEFAULT_CONCURRENCY = 4;
+const MAX_CONCURRENCY = 16;
+
+export function getTestConcurrency(configured: string | undefined): number {
+  if (configured === undefined || Number.isNaN(Number(configured))) {
+    return DEFAULT_CONCURRENCY;
+  }
+  return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(Number(configured))));
+}
+
+export async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  run: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      await run(items[next++]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+}
+
+type SpawnTestProcess = (
+  command: string[],
+  options: Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>,
+) => {
+  exited: Promise<number>;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+};
+
+export async function runTestFile(
+  file: string,
+  spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
+): Promise<TestResult> {
+  try {
+    const child = spawn([process.execPath, 'test', file], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: process.env,
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { file, exitCode, output: `${stdout}${stderr}` };
+  } catch (error) {
+    const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+    return {
+      file,
+      exitCode: 1,
+      output: `Failed to launch Bun for ${file}:\n${detail}`,
+    };
+  }
 }
 
 async function main(): Promise<void> {
   const files = await discoverUnitTests();
-  const concurrency = Math.max(1, Number(process.env.BUILDD_TEST_CONCURRENCY) || 8);
+  const concurrency = getTestConcurrency(process.env.BUILDD_TEST_CONCURRENCY);
   const failures: TestResult[] = [];
-  let next = 0;
   let passed = 0;
 
-  async function worker(): Promise<void> {
-    while (next < files.length) {
-      const file = files[next++];
-      const result = await runTestFile(file);
-      if (result.exitCode === 0) {
-        passed++;
-      } else {
-        failures.push(result);
-      }
-      process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
+  await runWithConcurrency(files, concurrency, async file => {
+    const result = await runTestFile(file);
+    if (result.exitCode === 0) {
+      passed++;
+    } else {
+      failures.push(result);
     }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, () => worker()));
+    process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
+  });
   process.stdout.write('\n');
 
   for (const failure of failures) {
