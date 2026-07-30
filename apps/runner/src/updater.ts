@@ -33,6 +33,28 @@ export function checkForUpdate(current: string | null, latest: string | null): b
   return current !== latest;
 }
 
+/**
+ * Returns true when the working tree has modified or staged **tracked** files.
+ * Untracked files are intentionally excluded (`--untracked-files=no`): runtime
+ * artifacts (config.json, history.db, workers/, roles/, repos-cache.json, etc.)
+ * live alongside the tracked checkout without being committed, so any git reset
+ * --hard is safe regardless of their presence. Only real edits to tracked files
+ * should block an update.
+ */
+export function hasTrackedChanges(installDir: string = INSTALL_DIR): boolean {
+  try {
+    const status = execSync('git status --porcelain --untracked-files=no', {
+      cwd: installDir,
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+    return status.length > 0;
+  } catch {
+    // If git can't run, assume clean — the subsequent git fetch will fail too.
+    return false;
+  }
+}
+
 export interface UpdateResult {
   success: boolean;
   error?: string;

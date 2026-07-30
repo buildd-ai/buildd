@@ -7,7 +7,7 @@ import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
-import { getCurrentCommit, checkForUpdate, applyUpdate } from './updater';
+import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 
@@ -129,12 +129,11 @@ async function getChangelog(fromCommit: string, toCommit: string): Promise<strin
   } catch { return []; }
 }
 
-// Check if the working tree has uncommitted changes
-async function isWorkingTreeClean(): Promise<boolean> {
-  try {
-    const status = await gitAsync(['status', '--porcelain'], BUILDD_DIR, 5000);
-    return status.length === 0;
-  } catch { return false; }
+// Check if the working tree has uncommitted tracked-file changes.
+// Uses --untracked-files=no so runtime artifacts (config.json, history.db,
+// workers/, roles/) never block an update — only real edits to tracked files do.
+function isWorkingTreeClean(): boolean {
+  return !hasTrackedChanges(BUILDD_DIR);
 }
 
 // Detect current branch
@@ -820,8 +819,8 @@ const server = DEBUG_MODE ? Bun.serve({
         }, { status: 409, headers: corsHeaders });
       }
 
-      // Check for dirty working tree
-      const clean = await isWorkingTreeClean();
+      // Check for dirty working tree (tracked files only)
+      const clean = isWorkingTreeClean();
       if (!clean) {
         return Response.json({
           error: 'Working tree has uncommitted changes',

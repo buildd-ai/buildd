@@ -84,6 +84,22 @@ cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
 }
 PKGJSON
 
+# Register runtime-only files in the local git exclude list so they never appear
+# as untracked files in `git status` (and never block the self-update preflight).
+# .git/info/exclude is like .gitignore but per-clone and never tracked — it
+# survives `git fetch` / `git reset --hard` untouched.
+EXCLUDE_FILE="$INSTALL_DIR/.git/info/exclude"
+mkdir -p "$(dirname "$EXCLUDE_FILE")"
+for pattern in \
+  'config.json' 'config.json.bak-*' \
+  'history.db' 'history.db-shm' 'history.db-wal' \
+  'repos-cache.json' \
+  'roles/' 'workers/' 'archive/' \
+  'start-runner.sh'
+do
+  grep -qxF "$pattern" "$EXCLUDE_FILE" 2>/dev/null || echo "$pattern" >> "$EXCLUDE_FILE"
+done
+
 # Install dependencies
 cd "$INSTALL_DIR/apps/runner"
 bun install
