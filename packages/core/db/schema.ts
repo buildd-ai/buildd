@@ -896,6 +896,9 @@ export const workers = pgTable('workers', {
   // PR/git lifecycle state — kept live by GitHub webhook events.
   // null = no PR yet or status unknown (pre-migration workers).
   prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
+  // Set the first time prLifecycleStatus transitions to 'conflict'. Used to measure
+  // conflictDeadDays. Never cleared (even if PR later becomes mergeable).
+  conflictDetectedAt: timestamp('conflict_detected_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -1740,6 +1743,45 @@ export const tenantBudgets = pgTable('tenant_budgets', {
 
 export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
+}));
+
+// OAuth budget episodes — one row per observed session/budget exhaustion on a
+// seat-based (OAuth) account, recording how much work the window actually held.
+// Seat auth reports no cost, so this is the only usable signal for "how many
+// workers/turns/tokens does this account get per 5h window". The claim route
+// learns a conservative capacity from the recent rows and paces claims against
+// it (packages/core/oauth-budget.ts) instead of discovering the wall by hitting
+// it. Written by the first worker report that flips accounts.budgetExhaustedAt,
+// so concurrent budget failures produce exactly one episode.
+export const oauthBudgetEpisodes = pgTable('oauth_budget_episodes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  /** Start of the window this episode measured (previous resetsAt, or exhaustedAt - 5h). */
+  windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+  exhaustedAt: timestamp('exhausted_at', { withTimezone: true }).notNull(),
+  /** When the window was expected to reopen — also marks the next window's start. */
+  resetsAt: timestamp('resets_at', { withTimezone: true }),
+  workerCount: integer('worker_count').default(0).notNull(),
+  turns: integer('turns').default(0).notNull(),
+  inputTokens: integer('input_tokens').default(0).notNull(),
+  outputTokens: integer('output_tokens').default(0).notNull(),
+  /**
+   * Sonnet-equivalent totals (MODEL_WEIGHTS in packages/core/oauth-budget.ts).
+   * A window is consumed by cost, not raw counts — 300 opus turns eat ~5x the
+   * window that 300 haiku turns do — so capacity is learned in weighted units
+   * and stays valid when the model mix changes. Raw columns are kept alongside
+   * for auditability. 0 means "not weighted" (pre-weighting rows) and is
+   * dropped by the learner rather than treated as a real ceiling.
+   */
+  weightedTurns: integer('weighted_turns').default(0).notNull(),
+  weightedTokens: integer('weighted_tokens').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  accountExhaustedIdx: index('oauth_budget_episodes_account_exhausted_idx').on(t.accountId, t.exhaustedAt),
+}));
+
+export const oauthBudgetEpisodesRelations = relations(oauthBudgetEpisodes, ({ one }) => ({
+  account: one(accounts, { fields: [oauthBudgetEpisodes.accountId], references: [accounts.id] }),
 }));
 
 // Codex auth now lives in the unified `secrets` table (purpose='codex_credential').

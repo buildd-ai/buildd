@@ -181,6 +181,12 @@ export interface LocalWorker {
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
+  /**
+   * Running per-turn token tally, accumulated from backend turn_complete usage.
+   * Last-resort token source for the worker report: assistant messages always
+   * carry usage, whereas the SDK result's per-model map is empty on seat auth.
+   */
+  tokenTally?: { inputTokens: number; outputTokens: number };
   sandboxMountGap?: boolean;  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
@@ -259,6 +265,11 @@ export interface ResultMeta {
   durationApiMs: number;
   numTurns: number;
   modelUsage: Record<string, ModelUsage>;
+  /**
+   * Top-level usage totals from the SDK result. Populated even on seat-based
+   * (OAuth) auth, where `modelUsage` stays empty — see usage-aggregate.ts.
+   */
+  totalUsage?: { inputTokens: number; outputTokens: number } | null;
   permissionDenials?: Array<{ tool: string; reason: string }>;
 }
 

@@ -26,6 +26,7 @@ import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from '
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
+import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -64,6 +65,23 @@ export { isEphemeralTestBranch };
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
+
+/**
+ * Parse the HTTP status and server reason from a BuilddClient fetch error.
+ * Error message format: "API error: <status> - <body>"
+ * Body is usually JSON: {"error":"routing_mismatch","detail":"..."}
+ */
+function parseClaimError(err: Error): { status: number; reason: string } {
+  const match = err.message.match(/^API error: (\d+) - ([\s\S]*)$/);
+  if (!match) return { status: 0, reason: err.message };
+  const status = parseInt(match[1], 10);
+  try {
+    const body = JSON.parse(match[2]);
+    return { status, reason: body.error || body.detail || match[2] };
+  } catch {
+    return { status, reason: match[2] };
+  }
+}
 
 // RUNNER_POLL_MIN and RUNNER_HEARTBEAT_INTERVAL_MS come from @buildd/shared so
 // the server-side liveness thresholds always use the same value as the runner.
@@ -835,7 +853,16 @@ export class WorkerManager {
       // in explicitly so a multi-workspace OAuth token is allowed to claim the
       // next pending task across all accessible workspaces (server ranks/picks),
       // rather than being rejected by the ambiguous-claim guard.
-      const { workers: claimed, diagnostics, budgetResetsAt } = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
+      let claimPollResult: { workers: any[]; diagnostics?: any; budgetResetsAt?: string | null };
+      try {
+        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
+      } catch (err: any) {
+        const { status, reason } = parseClaimError(err);
+        claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
+        this.emit({ type: 'claim_rejected', status, reason });
+        throw err;
+      }
+      const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -1027,7 +1054,16 @@ export class WorkerManager {
     // fabricate a bogus 'project/unknown' directory (no origin/<branch>), so
     // worktree setup fails with "invalid reference: origin/<branch>". Resolve
     // from the full task instead — matching the polling path (claimPendingTasks).
-    const { workers: claimed, diagnostics } = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
+    let claimResult: { workers: any[]; diagnostics?: any };
+    try {
+      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, undefined, false, this.environment);
+    } catch (err: any) {
+      const { status, reason } = parseClaimError(err);
+      claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
+      this.emit({ type: 'claim_rejected', taskId: task.id, status, reason });
+      throw err;
+    }
+    const { workers: claimed, diagnostics } = claimResult;
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
@@ -2492,6 +2528,16 @@ export class WorkerManager {
         }
 
         if (event.type === 'turn_complete') {
+          // Accumulate per-turn usage as the last-resort token source. Assistant
+          // messages always carry usage, including on seat auth.
+          if (event.usage) {
+            const tally = worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 };
+            worker.tokenTally = {
+              inputTokens: tally.inputTokens + (event.usage.inputTokens || 0),
+              outputTokens: tally.outputTokens + (event.usage.outputTokens || 0),
+            };
+          }
+
           // Sync structured output from BackendEvent (Codex path — Claude uses onProgress)
           if (event.structuredOutput && typeof event.structuredOutput === 'object') {
             structuredOutput = event.structuredOutput as Record<string, unknown>;
@@ -2759,19 +2805,13 @@ If something is missing or incomplete, describe what and fix it now.`;
             console.log(`[Worker ${worker.id}] Prompt suggestions (fallback): ${worker.promptSuggestions.join('; ')}`);
           }
         }
-        // Compute aggregate token counts from SDK result metadata
+        // Aggregate token counts: per-model breakdown → result totals → per-turn
+        // tally. The fallbacks matter on OAuth, where byModel is never populated
+        // and tokens are the only real consumption signal (cost is always 0).
         const resultMeta = worker.resultMeta || undefined;
-        let inputTokens: number | undefined;
-        let outputTokens: number | undefined;
-        if (resultMeta?.modelUsage) {
-          let totalIn = 0, totalOut = 0;
-          for (const usage of Object.values(resultMeta.modelUsage)) {
-            totalIn += usage.inputTokens + usage.cacheReadInputTokens;
-            totalOut += usage.outputTokens;
-          }
-          if (totalIn > 0) inputTokens = totalIn;
-          if (totalOut > 0) outputTokens = totalOut;
-        }
+        const totals = aggregateUsage(resultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
+        const inputTokens = totals?.inputTokens;
+        const outputTokens = totals?.outputTokens;
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
@@ -3680,6 +3720,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         durationApiMs: result.duration_api_ms ?? 0,
         numTurns: result.num_turns ?? 0,
         modelUsage: result.usage?.byModel ?? {},
+        // Seat-based (OAuth) auth reports top-level usage but no byModel map.
+        // Reading only byModel is why OAuth workers persisted 0 tokens.
+        totalUsage: extractResultUsage(result),
         ...(result.permission_denials?.length > 0 && {
           permissionDenials: result.permission_denials.map((d: any) => ({
             tool: d.tool_name || d.tool || 'unknown',

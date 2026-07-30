@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.156.0",
+  "version": "0.157.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -21,6 +21,7 @@
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
+    "./oauth-budget": "./oauth-budget.ts",
     "./task-classifier": "./task-classifier.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./report-ops": "./report-ops.ts",
@@ -56,7 +57,7 @@
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.145.0",
+    "@openai/codex-sdk": "^0.146.0",
     "dotenv": "^17.0.0",
     "drizzle-orm": "^0.45.2",
     "zod": "^4.3.6"

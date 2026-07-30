@@ -55,11 +55,15 @@ import type { ClaimDiagnosticReason } from '@buildd/shared';
 
 export interface ClaimLogEntry {
   ts: number;
-  event: 'claim_attempt' | 'claim_success' | 'claim_empty';
+  event: 'claim_attempt' | 'claim_success' | 'claim_empty' | 'claim_rejected';
   slotsRequested: number;
   workersClaimed: number;
   diagnosticReason?: ClaimDiagnosticReason;
   taskId?: string;
+  /** HTTP status code on claim_rejected events */
+  status?: number;
+  /** Server-reported error/reason string on claim_rejected events */
+  reason?: string;
 }
 
 const CLAIMS_LOG = join(LOGS_DIR, 'claims.log');

@@ -832,6 +832,7 @@ export type ClaimDiagnosticReason =
   | 'no_pending_tasks'
   | 'capability_mismatch'
   | 'race_lost'
+  | 'all_candidates_deferred'
   | 'deps_blocked'
   | 'repo_busy'
   | 'budget_exhausted'
@@ -848,6 +849,35 @@ export interface ClaimDiagnostics {
   availableSlots?: number;
   /** Populated when reason=path_overlap_blocked: the PR that conflicts with this task's pathManifest */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
+  /**
+   * Populated when reason=all_candidates_deferred: per-reason breakdown of why
+   * every candidate in the window was skipped without a claim attempt.
+   */
+  deferrals?: {
+    connector_mismatch?: number;
+    subject_dead?: number;
+    path_overlap?: number;
+    mission_budget?: number;
+    mission_concurrent?: number;
+    mission_paced?: number;
+    workspace_cap?: number;
+    provider_unavailable?: number;
+    budget_paused?: number;
+    routing_paused?: number;
+  };
+  /**
+   * Learned OAuth budget pressure for this account (seat-based auth only).
+   * pct is 0..1 of the capacity learned from past exhaustion episodes; the
+   * router downshifts tiers as it rises and pauses priority-0 work at 0.95.
+   * Absent when the account is API-billed or has too few episodes to learn from.
+   * See packages/core/oauth-budget.ts.
+   */
+  budgetPressure?: {
+    pct: number;
+    limiter: 'workers' | 'turns' | 'tokens' | null;
+    confidence: 'low' | 'good';
+    samples: number;
+  };
 }
 
 /**
