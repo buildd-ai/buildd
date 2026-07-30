@@ -7,6 +7,7 @@
  */
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
+import type { MissionControlCapability } from './mission-control-capabilities';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,45 @@ function normalizePriority(val: unknown, fallback = 5): number {
   const parsed = Number(s);
   if (!isNaN(parsed)) return Math.max(0, Math.min(10, Math.round(parsed)));
   return PRIORITY_NAMES[s] ?? fallback;
+}
+
+async function assertMissionControlCapabilities(
+  api: ApiFn,
+  required: MissionControlCapability[],
+): Promise<void> {
+  if (required.length === 0) return;
+
+  let data: { capabilities?: unknown };
+  try {
+    data = await api('/api/missions/capabilities');
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Mission control capability check failed; refusing to apply ${required.join(', ')}${detail}`,
+    );
+  }
+
+  const advertised = Array.isArray(data.capabilities)
+    ? new Set(data.capabilities.filter((value): value is string => typeof value === 'string'))
+    : new Set<string>();
+  const unsupported = required.filter((capability) => !advertised.has(capability));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `Target API does not support required mission controls: ${unsupported.join(', ')}. `
+      + 'No mission changes were made.',
+    );
+  }
+}
+
+function requestedMissionControlCapabilities(
+  params: Record<string, unknown>,
+): MissionControlCapability[] {
+  const required: MissionControlCapability[] = [];
+  if (params.startMode !== undefined) required.push('startMode');
+  if (params.pacingMode !== undefined || params.pacingMaxPerHour !== undefined) {
+    required.push('pacing');
+  }
+  return required;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -2398,6 +2438,7 @@ export async function handleBuilddAction(
         }
         case 'create': {
           if (!params.title) throw new Error('title is required');
+          await assertMissionControlCapabilities(api, requestedMissionControlCapabilities(params));
           const body: Record<string, unknown> = { title: params.title };
           if (params.description) body.description = params.description;
           if (params.workspaceId) {
@@ -2465,6 +2506,7 @@ export async function handleBuilddAction(
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
+          await assertMissionControlCapabilities(api, requestedMissionControlCapabilities(params));
           const body: Record<string, unknown> = {};
           if (params.title !== undefined) body.title = params.title;
           if (params.description !== undefined) body.description = params.description;
@@ -2505,6 +2547,7 @@ export async function handleBuilddAction(
         }
         case 'arm': {
           if (!params.missionId) throw new Error('missionId is required');
+          await assertMissionControlCapabilities(api, ['startMode']);
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify({ arm: true }),
