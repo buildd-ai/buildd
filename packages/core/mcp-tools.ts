@@ -2938,12 +2938,27 @@ export async function handleBuilddAction(
       if (params.inputs !== undefined) body.inputs = params.inputs;
       if (params.force !== undefined) body.force = params.force;
 
-      const data = await api('/api/releases/trigger', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      if (!data.ok) {
-        return errorResult(`Release trigger failed: ${data.error}`);
+      let data: Record<string, unknown>;
+      try {
+        data = await api('/api/releases/trigger', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        // api() throws on non-2xx: "API error: NNN - <body>". Unwrap the inner
+        // error field so the caller sees the GitHub/route error, not the wrapper.
+        const raw = err instanceof Error ? err.message : String(err);
+        const match = raw.match(/^API error: \d+ - ([\s\S]*)$/);
+        if (match) {
+          try {
+            const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+            const detail = (parsed.error ?? parsed.message ?? match[1]) as string;
+            return errorResult(`Release trigger failed: ${detail}`);
+          } catch {
+            return errorResult(`Release trigger failed: ${match[1] || raw}`);
+          }
+        }
+        return errorResult(`Release trigger failed: ${raw}`);
       }
       const runLine = data.runUrl
         ? `\nRun: ${data.runUrl} (status: ${data.runStatus ?? 'unknown'}${data.runConclusion ? `, ${data.runConclusion}` : ''})`
