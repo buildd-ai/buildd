@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "bun --filter @buildd/web dev",
     "build": "bun run --filter @buildd/web build",
+    "type-check": "cd apps/web && bunx tsc --noEmit",
     "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
     "test:all": "bun test",
