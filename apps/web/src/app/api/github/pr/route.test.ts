@@ -676,6 +676,14 @@ describe('POST /api/github/pr', () => {
       installation: { installationId: 12345 },
     });
 
+    let capturedSetData: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((data: any) => {
+        capturedSetData = data;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
@@ -688,6 +696,7 @@ describe('POST /api/github/pr', () => {
     expect(data.deduplicated).toBe(true);
     expect(data.pr.number).toBe(99);
     expect(data.pr.url).toBe('https://github.com/owner/repo/pull/99');
+    expect(capturedSetData?.updatedAt).toBeInstanceOf(Date);
     // Should NOT have called githubApi to create a new PR
     expect(mockGithubApi).not.toHaveBeenCalled();
   });

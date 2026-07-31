@@ -120,10 +120,16 @@ export async function POST(
         ? `${baseUrl}/share/${updated.shareToken}`
         : null;
 
+      const activityAt = new Date();
+      await db
+        .update(workers)
+        .set({ updatedAt: activityAt })
+        .where(eq(workers.id, id));
+
       await triggerEvent(
         channels.worker(id),
         events.WORKER_PROGRESS,
-        { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: worker.updatedAt }
+        { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: activityAt }
       );
 
       if (worker.workspaceId) {
@@ -163,11 +169,17 @@ export async function POST(
 
   const shareUrl = null;
 
+  const activityAt = new Date();
+  await db
+    .update(workers)
+    .set({ updatedAt: activityAt })
+    .where(eq(workers.id, id));
+
   // Trigger realtime events (thin payloads — no full worker row)
   await triggerEvent(
     channels.worker(id),
     events.WORKER_PROGRESS,
-    { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: worker.updatedAt }
+    { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: activityAt }
   );
 
   if (worker.workspaceId) {

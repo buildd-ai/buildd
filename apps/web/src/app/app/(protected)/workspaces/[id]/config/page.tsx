@@ -10,6 +10,7 @@ import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
 import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
+import SubjectPolicySection from './SubjectPolicySection';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 
 export default async function WorkspaceConfigPage({
@@ -104,6 +105,11 @@ export default async function WorkspaceConfigPage({
                 />
 
                 <KnowledgeHealthSection workspaceId={workspace.id} />
+
+                <SubjectPolicySection
+                    workspaceId={workspace.id}
+                    initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
+                />
             </div>
         </main>
     );
