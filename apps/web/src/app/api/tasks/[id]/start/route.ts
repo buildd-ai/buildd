@@ -6,6 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap } from '@/lib/claim-gates';
 
 /**
  * POST /api/tasks/[id]/start
@@ -124,6 +125,62 @@ export async function POST(
             prNumber: w.prNumber,
           })),
           canForce: true,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Connector routing gate ──────────────────────────────────────────────
+    // Mirrors the connectorMismatchTaskIds pre-filter in claim/route.ts.
+    // If the task's role requires connectors not visible in this workspace,
+    // no worker can ever claim it — surface the reason before broadcasting.
+    const roleSlug = (task as any).roleSlug as string | null;
+    const teamId = (task.workspace as any)?.teamId as string | null;
+    if (roleSlug && teamId) {
+      const missingConnectors = await checkConnectorRouting(roleSlug, task.workspaceId, teamId);
+      if (missingConnectors) {
+        return NextResponse.json({
+          error: `Task cannot be started: role '${roleSlug}' requires connectors not available in this workspace`,
+          gateReason: 'connector_routing_mismatch',
+          missingConnectors,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Mission held gate ───────────────────────────────────────────────────
+    // Mirrors missionNotHeld() SQL condition in claim/route.ts.
+    // Held missions block all task claims until armed. forceOverride bypasses
+    // this gate (the bypassHeldGate context key is written below).
+    const missionId = (task as any).missionId as string | null;
+    const taskCtx = task.context as Record<string, unknown> | null;
+    const isBypassHeld = taskCtx?.bypassHeldGate === true || taskCtx?.bypassHeldGate === 'true';
+    if (missionId && !isBypassHeld && !forceOverride) {
+      const isHeld = await checkMissionHeld(missionId, false);
+      if (isHeld) {
+        return NextResponse.json({
+          error: 'Task is blocked: parent mission is held. Arm the mission or use forceOverride to bypass.',
+          gateReason: 'mission_held',
+          missionId,
+          canForce: true,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Workspace concurrency cap gate ──────────────────────────────────────
+    // Mirrors the per-repo worker-count SQL condition in claim/route.ts.
+    // Only repo-backed workspaces are capped; repo-less ones (coordination
+    // workspaces) are never serialized.
+    const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
+    if (wsForCap?.repo) {
+      const capResult = await checkWorkspaceCap(
+        task.workspaceId,
+        wsForCap.maxConcurrentTasks ?? null,
+      );
+      if (capResult) {
+        return NextResponse.json({
+          error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
+          gateReason: 'workspace_cap_reached',
+          active: capResult.active,
+          cap: capResult.cap,
         }, { status: 422 });
       }
     }

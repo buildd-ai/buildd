@@ -5,6 +5,11 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockMissionsFindFirst = mock(() => null as any);
+const mockWorkspaceSkillsFindMany = mock(() => [] as any[]);
+const mockConnectorsFindMany = mock(() => [] as any[]);
+const mockConnectorSharesFindMany = mock(() => [] as any[]);
+const mockConnectorWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksUpdate = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
@@ -58,6 +63,11 @@ mock.module('@buildd/core/db', () => ({
     query: {
       tasks: { findFirst: mockTasksFindFirst },
       workers: { findMany: mockWorkersFindMany },
+      missions: { findFirst: mockMissionsFindFirst },
+      workspaceSkills: { findMany: mockWorkspaceSkillsFindMany },
+      connectors: { findMany: mockConnectorsFindMany },
+      connectorShares: { findMany: mockConnectorSharesFindMany },
+      connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
     },
     update: mock(() => mockDbUpdate),
   },
@@ -67,6 +77,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ type: 'and', args }),
+  or: (...args: any[]) => ({ type: 'or', args }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
@@ -74,8 +85,15 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', context: 'context', dependsOn: 'dependsOn', updatedAt: 'updatedAt' },
-  workers: { taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', context: 'context', dependsOn: 'dependsOn', updatedAt: 'updatedAt', missionId: 'missionId', roleSlug: 'roleSlug', startAt: 'startAt' },
+  workers: { taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', status: 'status' },
+  missions: { id: 'id', isHeld: 'isHeld' },
+  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', teamId: 'teamId', workspaceId: 'workspaceId', connectorRefs: 'connectorRefs' },
+  connectors: { id: 'id', teamId: 'teamId', name: 'name' },
+  connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
+  connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
+  accountWorkspaces: {},
+  workspaces: {},
 }));
 
 // Import handler AFTER mocks
@@ -110,14 +128,24 @@ describe('POST /api/tasks/[id]/start', () => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockConnectorsFindMany.mockReset();
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockReset();
     mockTriggerEvent.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
 
-    // Default: grant access, no blocking dep workers
+    // Default: grant access, no blocking dep workers, no connectors, no held mission, no active workers
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 when no session auth (API key not supported)', async () => {
@@ -484,5 +512,272 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.started).toBe(true);
     // Should have broadcast Pusher
     expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  // ── New gate tests ─────────────────────────────────────────────────────────
+
+  it('returns 422 connector_routing_mismatch when role requires connectors not available in workspace', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Role declares a connector ref
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+    ]);
+    // Connector is not visible in this team (not found)
+    mockConnectorsFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('connector_routing_mismatch');
+    expect(data.missingConnectors).toEqual(['connector-1']);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('returns 422 connector_routing_mismatch when connector exists but belongs to a different team and is not shared', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+    ]);
+    // Connector exists but owned by a different team
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'connector-1', teamId: 'other-team', name: 'Email' },
+    ]);
+    // Not shared to team-1
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('connector_routing_mismatch');
+    expect(data.missingConnectors).toEqual(['Email']);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('passes connector gate when connector is owned by same team', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      { slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] },
+    ]);
+    // Connector owned by same team
+    mockConnectorsFindMany.mockResolvedValue([
+      { id: 'connector-1', teamId: 'team-1', name: 'Email' },
+    ]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 422 mission_held when task belongs to a held mission', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Held Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      dependsOn: null,
+      roleSlug: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Mission is held
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1' });
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('mission_held');
+    expect(data.missionId).toBe('mission-1');
+    expect(data.canForce).toBe(true);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('force-starts a held-mission task with forceOverride=true and writes bypassHeldGate to context', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Held Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      dependsOn: null,
+      roleSlug: null,
+      context: {},
+      mode: null,
+      priority: null,
+      startAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Mission is held but forceOverride bypasses it
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1' });
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    // bypassHeldGate must be written to context
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ bypassHeldGate: true }),
+    }));
+  });
+
+  it('skips mission_held gate when context.bypassHeldGate is already set', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Held Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      dependsOn: null,
+      roleSlug: null,
+      context: { bypassHeldGate: true },
+      mode: null,
+      priority: null,
+      startAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    // Gate already bypassed — should pass straight through
+    expect(response.status).toBe(200);
+    // missions.findFirst should NOT be queried at all
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 422 workspace_cap_reached when workspace is at its concurrency limit', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'New Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // 3 active workers — at the cap
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('workspace_cap_reached');
+    expect(data.active).toBe(3);
+    expect(data.cap).toBe(3);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not apply workspace_cap gate for repo-less workspaces', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Coordination Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3, name: 'WS' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Even with "full" worker list, no cap applies without a repo
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('clean pending task returns 200 with exactly one TASK_ASSIGNED event (regression guard)', async () => {
+    const mockTask = {
+      id: 'task-clean',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Clean WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-clean');
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.started).toBe(true);
+    // Exactly one Pusher event — guards against duplicate broadcasts
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:assigned',
+      expect.objectContaining({ task: expect.objectContaining({ id: 'task-clean' }) }),
+    );
   });
 });

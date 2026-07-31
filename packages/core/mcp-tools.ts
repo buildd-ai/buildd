@@ -7,6 +7,7 @@
  */
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
+import type { MissionControlCapability } from './mission-control-capabilities';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,45 @@ function normalizePriority(val: unknown, fallback = 5): number {
   const parsed = Number(s);
   if (!isNaN(parsed)) return Math.max(0, Math.min(10, Math.round(parsed)));
   return PRIORITY_NAMES[s] ?? fallback;
+}
+
+async function assertMissionControlCapabilities(
+  api: ApiFn,
+  required: MissionControlCapability[],
+): Promise<void> {
+  if (required.length === 0) return;
+
+  let data: { capabilities?: unknown };
+  try {
+    data = await api('/api/missions/capabilities');
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(
+      `Mission control capability check failed; refusing to apply ${required.join(', ')}${detail}`,
+    );
+  }
+
+  const advertised = Array.isArray(data.capabilities)
+    ? new Set(data.capabilities.filter((value): value is string => typeof value === 'string'))
+    : new Set<string>();
+  const unsupported = required.filter((capability) => !advertised.has(capability));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `Target API does not support required mission controls: ${unsupported.join(', ')}. `
+      + 'No mission changes were made.',
+    );
+  }
+}
+
+function requestedMissionControlCapabilities(
+  params: Record<string, unknown>,
+): MissionControlCapability[] {
+  const required: MissionControlCapability[] = [];
+  if (params.startMode !== undefined) required.push('startMode');
+  if (params.pacingMode !== undefined || params.pacingMaxPerHour !== undefined) {
+    required.push('pacing');
+  }
+  return required;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -72,7 +112,7 @@ export const triggerActions = [
 
 export const workerActions = [
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'update_task', 'create_task', 'create_artifact',
+  'create_pr', 'close_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
@@ -126,6 +166,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
+    close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -1174,6 +1215,19 @@ export async function handleBuilddAction(
       } catch { /* non-fatal */ }
 
       return text(`Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
+    }
+
+    case 'close_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.prNumber) throw new Error('prNumber is required');
+
+      const data = await api('/api/github/pr', {
+        method: 'PATCH',
+        body: JSON.stringify({ workerId, prNumber: params.prNumber }),
+      });
+
+      const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
+      return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
     }
 
     case 'update_task': {
@@ -2398,6 +2452,7 @@ export async function handleBuilddAction(
         }
         case 'create': {
           if (!params.title) throw new Error('title is required');
+          await assertMissionControlCapabilities(api, requestedMissionControlCapabilities(params));
           const body: Record<string, unknown> = { title: params.title };
           if (params.description) body.description = params.description;
           if (params.workspaceId) {
@@ -2465,6 +2520,7 @@ export async function handleBuilddAction(
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
+          await assertMissionControlCapabilities(api, requestedMissionControlCapabilities(params));
           const body: Record<string, unknown> = {};
           if (params.title !== undefined) body.title = params.title;
           if (params.description !== undefined) body.description = params.description;
@@ -2505,6 +2561,7 @@ export async function handleBuilddAction(
         }
         case 'arm': {
           if (!params.missionId) throw new Error('missionId is required');
+          await assertMissionControlCapabilities(api, ['startMode']);
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify({ arm: true }),
@@ -2881,12 +2938,27 @@ export async function handleBuilddAction(
       if (params.inputs !== undefined) body.inputs = params.inputs;
       if (params.force !== undefined) body.force = params.force;
 
-      const data = await api('/api/releases/trigger', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      if (!data.ok) {
-        return errorResult(`Release trigger failed: ${data.error}`);
+      let data: Record<string, unknown>;
+      try {
+        data = await api('/api/releases/trigger', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        // api() throws on non-2xx: "API error: NNN - <body>". Unwrap the inner
+        // error field so the caller sees the GitHub/route error, not the wrapper.
+        const raw = err instanceof Error ? err.message : String(err);
+        const match = raw.match(/^API error: \d+ - ([\s\S]*)$/);
+        if (match) {
+          try {
+            const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+            const detail = (parsed.error ?? parsed.message ?? match[1]) as string;
+            return errorResult(`Release trigger failed: ${detail}`);
+          } catch {
+            return errorResult(`Release trigger failed: ${match[1] || raw}`);
+          }
+        }
+        return errorResult(`Release trigger failed: ${raw}`);
       }
       const runLine = data.runUrl
         ? `\nRun: ${data.runUrl} (status: ${data.runStatus ?? 'unknown'}${data.runConclusion ? `, ${data.runConclusion}` : ''})`

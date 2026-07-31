@@ -58,6 +58,10 @@ mock.module('@buildd/core/release-strategy', () => ({
 
 mock.module('@/lib/release/dispatch', () => ({
   releasePreflight: mockReleasePreflight,
+  // Include other dispatch exports so this mock is complete when trigger/route.test.ts
+  // runs in the same Bun worker (Bun may share module caches across test files).
+  dispatchWorkflowRelease: mock(async () => ({ dispatched: true, workflowFile: '', ref: '', inputs: {}, runsUrl: '' })),
+  classifyCheckRuns: mock(() => ({ ciState: 'unknown', failingChecks: [] })),
 }));
 
 function makeRequest(token?: string, params?: Record<string, string>): NextRequest {

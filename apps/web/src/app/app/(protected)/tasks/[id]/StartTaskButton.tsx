@@ -28,6 +28,15 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
   const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
+  const [gateData, setGateData] = useState<{
+    gateReason: string;
+    error?: string;
+    canForce?: boolean;
+    missionId?: string;
+    missingConnectors?: string[];
+    active?: number;
+    cap?: number;
+  } | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -121,14 +130,17 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
 
       if (!res.ok) {
         const data = await res.json();
-        // Dep-PR gate: show the blocking reason + "Start anyway" option
-        if (res.status === 422 && data.gateReason === 'unmerged_dep_pr') {
-          setBlockingDeps(data.blockingDeps || []);
-          setStatus('gated');
-          return;
-        }
-        if (res.status === 422 && data.gateReason === 'deferred_start') {
-          setDeferredStartAt(data.startAt);
+        if (res.status === 422 && data.gateReason) {
+          // Dep-PR gate: show blocking deps list
+          if (data.gateReason === 'unmerged_dep_pr') {
+            setBlockingDeps(data.blockingDeps || []);
+          }
+          // Deferred-start gate: show scheduled time
+          if (data.gateReason === 'deferred_start') {
+            setDeferredStartAt(data.startAt);
+          }
+          // All gate reasons (including new ones) are stored for generic rendering
+          setGateData(data);
           setStatus('gated');
           return;
         }
@@ -191,6 +203,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setSelectedLocalUi('');
     setClaimedWorker(null);
     setBlockingDeps([]);
+    setDeferredStartAt(null);
+    setGateData(null);
   };
 
   const handleViewInDashboard = () => {
@@ -202,6 +216,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setStatus('idle');
     setError('');
     setBlockingDeps([]);
+    setDeferredStartAt(null);
+    setGateData(null);
   };
 
   return (
@@ -291,50 +307,70 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     </svg>
                   </div>
                   <p className="text-text-primary font-medium mb-1">
-                    {deferredStartAt
+                    {gateData?.gateReason === 'deferred_start' && deferredStartAt
                       ? `Starts at ${new Date(deferredStartAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                      : 'Blocked: dependency PR not merged'}
+                      : gateData?.gateReason === 'unmerged_dep_pr'
+                      ? 'Blocked: dependency PR not merged'
+                      : gateData?.gateReason === 'mission_held'
+                      ? 'Blocked: parent mission is held'
+                      : gateData?.gateReason === 'connector_routing_mismatch'
+                      ? 'Blocked: required connectors not available'
+                      : gateData?.gateReason === 'workspace_cap_reached'
+                      ? `Workspace at concurrency limit (${gateData.active}/${gateData.cap})`
+                      : 'Blocked'}
                   </p>
                   <p className="text-sm text-text-secondary mb-3">
-                    {deferredStartAt
+                    {gateData?.gateReason === 'deferred_start'
                       ? 'This task is intentionally deferred. Start now anyway to override its scheduled time.'
-                      : `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`}
+                      : gateData?.gateReason === 'unmerged_dep_pr'
+                      ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
+                      : gateData?.gateReason === 'mission_held'
+                      ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
+                      : gateData?.gateReason === 'connector_routing_mismatch'
+                      ? `The role requires connectors that are not configured in this workspace: ${gateData.missingConnectors?.join(', ')}. Contact your workspace admin.`
+                      : gateData?.gateReason === 'workspace_cap_reached'
+                      ? `This workspace allows ${gateData.cap} concurrent task${gateData.cap === 1 ? '' : 's'} and all slots are taken. Wait for a running task to finish.`
+                      : gateData?.error || 'This task cannot be started right now.'}
                   </p>
-                  {!deferredStartAt && <div className="space-y-2 text-left">
-                    {blockingDeps.map((dep, i) => (
-                      <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
-                        {dep.taskTitle && (
-                          <p className="text-text-secondary text-xs mb-1 truncate">{dep.taskTitle}</p>
-                        )}
-                        {dep.prUrl ? (
-                          <a
-                            href={dep.prUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary-400 hover:underline"
-                          >
-                            PR #{dep.prNumber ?? '?'} →
-                          </a>
-                        ) : (
-                          <span className="text-text-muted">No PR URL</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>}
+                  {gateData?.gateReason === 'unmerged_dep_pr' && (
+                    <div className="space-y-2 text-left">
+                      {blockingDeps.map((dep, i) => (
+                        <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
+                          {dep.taskTitle && (
+                            <p className="text-text-secondary text-xs mb-1 truncate">{dep.taskTitle}</p>
+                          )}
+                          {dep.prUrl ? (
+                            <a
+                              href={dep.prUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary-400 hover:underline"
+                            >
+                              PR #{dep.prNumber ?? '?'} →
+                            </a>
+                          ) : (
+                            <span className="text-text-muted">No PR URL</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2">
-                  <button
-                    onClick={() => handleStart(true)}
-                    disabled={loading}
-                    className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
-                  >
-                    {deferredStartAt ? 'Start now anyway' : 'Start anyway (bypass gate)'}
-                  </button>
+                  {gateData?.canForce && (
+                    <button
+                      onClick={() => handleStart(true)}
+                      disabled={loading}
+                      className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
+                    >
+                      {gateData?.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start (bypass gate)'}
+                    </button>
+                  )}
                   <button
                     onClick={handleClose}
                     className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
                   >
-                    Cancel
+                    {gateData?.canForce ? 'Cancel' : 'Close'}
                   </button>
                 </div>
               </div>
