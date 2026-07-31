@@ -79,8 +79,17 @@ export async function PATCH(
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }
 
-  if (artifact.worker?.accountId !== account.id) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  // Allow: worker owner, OR workspace member for artifacts without an owning worker (e.g. mission-level artifacts)
+  const isOwner = artifact.worker?.accountId === account.id;
+  if (!isOwner) {
+    if (artifact.workspaceId) {
+      const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
+      if (!hasAccess) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+    } else {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
 
   const body = await req.json();

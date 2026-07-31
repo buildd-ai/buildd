@@ -36,7 +36,7 @@ mock.module('@buildd/core/db/schema', () => ({
   artifacts: 'artifacts',
 }));
 
-import { GET } from './route';
+import { GET, PATCH } from './route';
 
 function createMockGetRequest(apiKey?: string): NextRequest {
   const headers: Record<string, string> = {};
@@ -44,6 +44,16 @@ function createMockGetRequest(apiKey?: string): NextRequest {
   return new NextRequest('http://localhost:3000/api/artifacts/artifact-1', {
     method: 'GET',
     headers: new Headers(headers),
+  });
+}
+
+function createMockPatchRequest(body: object, apiKey?: string): NextRequest {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (apiKey) headers['authorization'] = `Bearer ${apiKey}`;
+  return new NextRequest('http://localhost:3000/api/artifacts/artifact-1', {
+    method: 'PATCH',
+    headers: new Headers(headers),
+    body: JSON.stringify(body),
   });
 }
 
@@ -174,5 +184,104 @@ describe('GET /api/artifacts/[artifactId]', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Forbidden');
+  });
+});
+
+describe('PATCH /api/artifacts/[artifactId]', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+  });
+
+  it('returns 401 when no API key', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    const req = createMockPatchRequest({ title: 'New Title' });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 when artifact not found', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue(null);
+    const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+
+  it('allows update when requester owns the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      type: 'summary',
+      title: 'Old Title',
+      content: 'Old content',
+      shareToken: 'tok',
+      metadata: {},
+      worker: { accountId: 'account-1' },
+    });
+    const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 403 when requester does not own the worker and has no workspace access', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      type: 'summary',
+      title: 'Old Title',
+      content: 'Old content',
+      shareToken: 'tok',
+      metadata: {},
+      worker: { accountId: 'account-1' },
+    });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
+    const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(403);
+  });
+
+  it('allows retry worker to update mission-level artifact (workerId null) via workspace membership', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: null,
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      type: 'summary',
+      title: 'Closeout',
+      content: 'Old summary',
+      shareToken: 'tok',
+      metadata: {},
+      worker: null,
+    });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    const req = createMockPatchRequest({ content: 'Corrected summary' }, 'bld_test');
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 403 when mission artifact has no workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: null,
+      workspaceId: null,
+      missionId: 'mission-1',
+      type: 'summary',
+      title: 'Closeout',
+      content: 'Old summary',
+      shareToken: 'tok',
+      metadata: {},
+      worker: null,
+    });
+    const req = createMockPatchRequest({ content: 'Corrected summary' }, 'bld_test');
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(403);
   });
 });
