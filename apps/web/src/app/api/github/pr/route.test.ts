@@ -53,7 +53,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Import handler AFTER mocks
-import { POST } from './route';
+import { POST, PATCH } from './route';
 
 // Helper to create mock NextRequest
 function createMockRequest(options: {
@@ -959,5 +959,228 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(500);
     const data = await res.json();
     expect(data.error).toBe('GitHub API rate limit exceeded');
+  });
+});
+
+function createPatchRequest(options: {
+  headers?: Record<string, string>;
+  body?: any;
+} = {}): NextRequest {
+  const { headers = {}, body } = options;
+  const init: RequestInit = {
+    method: 'PATCH',
+    headers: new Headers(headers),
+  };
+  if (body) {
+    init.body = JSON.stringify(body);
+    (init.headers as Headers).set('content-type', 'application/json');
+  }
+  return new NextRequest('http://localhost:3000/api/github/pr', init);
+}
+
+describe('PATCH /api/github/pr', () => {
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockAuthenticateApiKey.mockReset();
+    mockGithubApi.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('returns 401 when not authenticated', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    const req = createPatchRequest({ body: { workerId: 'w-1', prNumber: 42 } });
+    const res = await PATCH(req);
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toBe('Invalid API key');
+  });
+
+  it('returns 400 when workerId is missing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 42 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('workerId required');
+  });
+
+  it('returns 400 when prNumber is missing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1' },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('prNumber required');
+  });
+
+  it('returns 404 when worker not found', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue(null);
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'nonexistent', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe('Worker not found');
+  });
+
+  it('returns 403 when worker belongs to different account', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-2',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  it('returns 400 when workspace not linked to GitHub repo', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspace: { githubRepoId: null, githubInstallationId: null },
+    });
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('Workspace not linked to GitHub repo');
+  });
+
+  it('returns 404 when GitHub repo not found', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe('GitHub repo not found');
+  });
+
+  it('closes PR successfully and returns closed PR data', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'closed',
+      title: 'Old feature PR',
+    });
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(42);
+    expect(data.pr.state).toBe('closed');
+    expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
+  });
+
+  it('calls githubApi with PATCH and state: closed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockResolvedValue({
+      number: 71,
+      html_url: 'https://github.com/owner/repo/pull/71',
+      state: 'closed',
+      title: 'Superseded PR',
+    });
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 71 },
+    });
+    await PATCH(req);
+
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    const [installId, path, options] = mockGithubApi.mock.calls[0];
+    expect(installId).toBe(12345);
+    expect(path).toBe('/repos/owner/repo/pulls/71');
+    expect(options.method).toBe('PATCH');
+    const parsedBody = JSON.parse(options.body);
+    expect(parsedBody.state).toBe('closed');
+  });
+
+  it('returns 500 when githubApi throws', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 403 Resource not accessible by integration'));
+
+    const req = createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    });
+    const res = await PATCH(req);
+
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error).toContain('403');
   });
 });
