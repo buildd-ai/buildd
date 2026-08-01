@@ -101,7 +101,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
       const handleUpdate = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
         console.log('[RealTimeWorkerView] Received update:', data.status);
         // taskProgress is transient (not persisted) — consume it directly from event
-        if (data.taskProgress) {
+        if (Array.isArray(data.taskProgress)) {
           setTaskProgress(data.taskProgress);
         } else {
           setTaskProgress([]);
