@@ -55,6 +55,7 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
@@ -2254,7 +2255,16 @@ export class WorkerManager {
         const entries = buildMcpServerEntries(claimConnectors);
         for (const [name, cfg] of Object.entries(entries)) {
           if (name === 'buildd') continue; // never override the buildd coordination server
-          queryOptions.mcpServers[name] = cfg;
+          // Resolve per-worker placeholder tokens in stdio server env values.
+          // Throws on unrecognised tokens so misconfigurations surface at launch.
+          if (cfg.type === 'stdio' && cfg.env && Object.keys(cfg.env).length > 0) {
+            queryOptions.mcpServers[name] = {
+              ...cfg,
+              env: resolveMcpEnvTokens(cfg.env, { workerId: worker.id, worktreePath: sessionCwd }),
+            };
+          } else {
+            queryOptions.mcpServers[name] = cfg;
+          }
         }
 
         // Assertion-mode connectors: mint assertion → exchange at RS → mount with Bearer token.
