@@ -240,17 +240,42 @@ From the codebase-memory-mcp preprint and README:
 
 RAM: in-memory SQLite with LZ4 compression; memory released after indexing. Peak RAM is proportional to repo size.
 
-### 5.2 Buildd repo estimate
+### 5.2 Measured index performance (Coder worker environment, 2026-08-02)
 
-The buildd monorepo contains approximately 500–1,500 TypeScript/TSX source files across `apps/` and `packages/`. Based on the Django comparison (~3,000 files → 6 seconds), buildd at roughly 1/3 the file count should index in **2–10 seconds**, with RAM peak in the **100–300 MB** range.
+Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache per run. "Source files" counts TS/TSX/JS source files excluding `node_modules` and `.git`. All runs used `CBM_AUTO_WATCH=false`.
 
-**Measurement method for implementation phase:** run `codebase-memory-mcp cli index_repository <repo_path>` with `CBM_MEM_BUDGET_MB=512` on the buildd repo in the Coder environment and record wall-clock time and peak RSS.
+| Repository | Source files | Wall-clock | Peak RSS | Graph nodes | Graph edges |
+|-----------|-------------|-----------|---------|-------------|-------------|
+| dispatch | 351 | **0.69s** | **101 MB** | 2,368 | 4,254 |
+| dispatch-family | 738 | **1.76s** | **197 MB** | 9,310 | 14,540 |
+| moa-ops | 3,642 | **5.19s** | **498 MB** | 18,937 | 38,381 |
+| buildd (repo root) | 6,158 | **6.9s** (avg 2 runs) | **650 MB** (avg) | 44,297 | 66,618 |
+| buildd (git worktree) | 1,042 src + bun node_modules | **9.35s** | **800 MB** | 58,078 | 84,106 |
 
-### 5.3 Acceptable overhead and fallback
+**Worktree vs repo root:** indexing a git worktree that has its own bun `node_modules/` install produces more graph nodes (58K vs 44K) and higher RSS (800 MB vs 650 MB) than indexing the repo root. CBM excludes the `node_modules/` directory, but bun stores packages under `node_modules/.bun/<pkg>/node_modules/<pkg>/` — a sub-path that evades the top-level exclusion — and the TypeScript LSP resolves types from those packages during analysis. Expect ~800 MB for a buildd-scale worktree.
 
-**Acceptable bootstrap overhead:** ≤ 30 seconds wall-clock.
+**Budget parameter note:** `CBM_MEM_BUDGET_MB=512` is an internal memory-management hint (acknowledged in CBM logs as `mem.init budget_mb=512 source=CBM_MEM_BUDGET_MB`). It is NOT a hard RSS cap: CBM completed indexing on the buildd repo (650–800 MB) without aborting despite the 512 MB setting. Do not rely on this parameter to prevent OOM; use Coder/bwrap resource limits if a hard ceiling is required.
 
-**Fallback:** if `index_repository` does not complete within 30 seconds (runner-side timeout), the runner:
+### 5.3 Threshold and budget assessment
+
+**30-second abort threshold: CORRECT.** The worst measured case (buildd worktree) is 9.35 seconds — 3× headroom before the 30s cutoff. No adjustment needed.
+
+**`CBM_MEM_BUDGET_MB=512`: INSUFFICIENT for buildd-scale repos.** Measured peak RSS is 650–800 MB for the buildd workspace. Recommended values:
+
+| Workspace tier | Characteristic | Recommended `CBM_MEM_BUDGET_MB` |
+|---------------|---------------|--------------------------------|
+| Small (dispatch, ≤500 src files) | < 200 MB observed | 256 MB |
+| Medium (dispatch-family, ≤1K src files) | < 250 MB observed | 512 MB |
+| Large (moa-ops, ≤4K src files) | ~500 MB observed | 640 MB |
+| XLarge (buildd, ≤7K src files + worktree) | ~800 MB observed | 1024 MB |
+
+For the initial buildd pilot (§7), **set `CBM_MEM_BUDGET_MB=1024`** in the role's MCP env config. The per-repo budget table above should be revisited if repos grow beyond current scale.
+
+**No repo blows the timing budget.** All four repos indexed in under 10 seconds. The 30-second fallback is never triggered in practice at current repo sizes.
+
+### 5.4 Fallback behaviour
+
+**Fallback trigger:** if `index_repository` does not complete within 30 seconds (runner-side timeout), the runner:
 1. Terminates the CBM process
 2. Removes the partial cache dir
 3. Starts the agent session without CBM in the MCP server list
@@ -258,8 +283,6 @@ The buildd monorepo contains approximately 500–1,500 TypeScript/TSX source fil
 5. Logs the fallback in the task's progress notes so the agent is aware
 
 The fallback is silent-to-the-user (no hard failure). Workers without CBM fall back to file reads for structural questions — the same behaviour as today.
-
-**Memory cap:** set `CBM_MEM_BUDGET_MB=512` in the worker env. CBM respects this cap and will terminate indexing cleanly rather than OOMing the worker.
 
 ---
 
