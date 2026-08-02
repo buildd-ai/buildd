@@ -10,6 +10,7 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
+import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
 
 export const dynamic = 'force-dynamic';
 
@@ -190,7 +191,7 @@ export default async function InitiativeDetailPage({
               // link never nests inside another anchor. Title carries the mission link.
               <div key={m.id} className="card p-3 hover:border-border-hover transition-colors">
                 <Link
-                  href={`/app/missions/${m.id}`}
+                  href={buildMissionWithInitiativeUrl(m.id, id)}
                   className="text-sm text-text-primary truncate block hover:text-accent-text transition-colors mb-1"
                 >
                   {m.title}
