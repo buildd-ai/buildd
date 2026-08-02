@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import InitiativeCard from './InitiativeCard';
+import { initiativeStatusChip } from '@/lib/initiative-presentation';
 import type { InitiativeListItem } from '@/lib/initiative-list';
 
 /**
@@ -8,6 +8,9 @@ import type { InitiativeListItem } from '@/lib/initiative-list';
  * renders nothing when there are no initiatives (empty-collapse) and never
  * touches mission grouping, so it cannot hide an un-filed or scheduled mission.
  * Callers pass an already-sorted, already-capped list.
+ *
+ * Mobile card spec: 160pt wide; 4pt accent left border for active/blocked;
+ * initiative name (single line, truncate); rollup %; status chip.
  */
 export default function InitiativeRail({ initiatives }: { initiatives: InitiativeListItem[] }) {
   if (initiatives.length === 0) return null;
@@ -20,14 +23,34 @@ export default function InitiativeRail({ initiatives }: { initiatives: Initiativ
           {initiatives.length} arc{initiatives.length === 1 ? '' : 's'}
         </Link>
       </div>
-      {/* Horizontal scroll on mobile; on desktop the cards sit in a row and wrap
-          into the scroll only when they overflow. */}
       <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 snap-x">
-        {initiatives.map((initiative) => (
-          <div key={initiative.id} className="snap-start shrink-0 w-[300px] max-w-[85vw]">
-            <InitiativeCard initiative={initiative} />
-          </div>
-        ))}
+        {initiatives.map((initiative) => {
+          const chip = initiativeStatusChip(initiative.progress.status);
+          const showAccent =
+            initiative.progress.status === 'active' || initiative.progress.status === 'blocked';
+          return (
+            <Link
+              key={initiative.id}
+              href={`/app/initiatives/${initiative.id}`}
+              className="snap-start shrink-0 w-[160px] card flex overflow-hidden hover:border-border-hover transition-colors"
+            >
+              {showAccent && <div className="w-1 self-stretch bg-primary shrink-0" aria-hidden />}
+              <div className="flex-1 py-3 px-3 min-w-0">
+                <div className="font-mono text-[14px] font-semibold text-text-primary truncate mb-1.5 leading-snug">
+                  {initiative.title}
+                </div>
+                <div className="font-mono text-[11px] font-semibold text-accent-text mb-1.5">
+                  {initiative.progress.progress}%
+                </div>
+                <span
+                  className={`inline-block text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border ${chip.className}`}
+                >
+                  {chip.label}
+                </span>
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
