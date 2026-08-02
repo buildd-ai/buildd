@@ -15,6 +15,7 @@ import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
 import type { ResolvedEscalationItem } from '@/lib/action-queue';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
+import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
@@ -1107,6 +1108,7 @@ export default async function HomePage({
     : actionQueue;
 
   return (
+    <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
         {/* Workspace filter — narrows all sections to a single workspace */}
@@ -1158,52 +1160,68 @@ export default async function HomePage({
                 <div className="space-y-2">
                   {filteredActionQueue.map((item) => {
                     if (item.chip === 'MERGE') {
-                      return <WaitingOnYouMergeCard key={item.subjectKey} item={item} />;
+                      return (
+                        <SwipeableRow
+                          key={item.subjectKey}
+                          cardType="gate-card"
+                          taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
+                          prUrl={item.prUrl}
+                        >
+                          <WaitingOnYouMergeCard item={item} />
+                        </SwipeableRow>
+                      );
                     }
                     if (item.chip === 'REVIEW') {
                       return (
-                        <div key={item.subjectKey} className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
-                                  Review
-                                </span>
-                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                  <span className="text-[10px] text-text-muted">
-                                    {item.waitingMinutes < 60
-                                      ? `${item.waitingMinutes}m`
-                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
+                        <SwipeableRow
+                          key={item.subjectKey}
+                          cardType="gate-card"
+                          taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
+                          prUrl={item.prUrl}
+                        >
+                          <div className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                  <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                    Review
                                   </span>
+                                  {item.waitingMinutes != null && item.waitingMinutes > 0 && (
+                                    <span className="text-[10px] text-text-muted">
+                                      {item.waitingMinutes < 60
+                                        ? `${item.waitingMinutes}m`
+                                        : `${Math.floor(item.waitingMinutes / 60)}h`}
+                                    </span>
+                                  )}
+                                </div>
+                                {item.taskId ? (
+                                  <Link
+                                    href={`/app/tasks/${item.taskId}`}
+                                    className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                                  >
+                                    {item.taskTitle}
+                                  </Link>
+                                ) : (
+                                  <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
+                                )}
+                                {item.workspaceName && (
+                                  <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
+                                )}
+                                {item.escalationReason && (
+                                  <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+                                    {item.escalationReason}
+                                  </p>
                                 )}
                               </div>
-                              {item.taskId ? (
-                                <Link
-                                  href={`/app/tasks/${item.taskId}`}
-                                  className="text-[13px] font-medium text-text-primary truncate hover:underline block"
-                                >
-                                  {item.taskTitle}
-                                </Link>
-                              ) : (
-                                <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
-                              )}
-                              {item.workspaceName && (
-                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                              )}
-                              {item.escalationReason && (
-                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
-                                  {item.escalationReason}
-                                </p>
+                              {item.prNumber != null && (
+                                <MergeConfirmButton
+                                  prNumber={item.prNumber}
+                                  prUrl={item.prUrl ?? ''}
+                                />
                               )}
                             </div>
-                            {item.prNumber != null && (
-                              <MergeConfirmButton
-                                prNumber={item.prNumber}
-                                prUrl={item.prUrl ?? ''}
-                              />
-                            )}
                           </div>
-                        </div>
+                        </SwipeableRow>
                       );
                     }
                     if (item.chip === 'QUESTION') {
@@ -1683,5 +1701,6 @@ export default async function HomePage({
         </div>
       </div>
     </main>
+    </SwipeProvider>
   );
 }

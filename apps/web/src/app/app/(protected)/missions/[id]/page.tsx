@@ -37,6 +37,7 @@ import { getLinksForEntity } from '@buildd/core/external-links';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
+import { SwipeProvider } from '@/components/SwipeableRow';
 
 export const dynamic = 'force-dynamic';
 
@@ -448,6 +449,7 @@ export default async function MissionDetailPage({
   });
 
   return (
+    <SwipeProvider>
     <TaskPanelWrapper>
     <div className="px-4 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
       {/* Real-time updates via Pusher */}
@@ -760,5 +762,6 @@ export default async function MissionDetailPage({
 
     </div>
     </TaskPanelWrapper>
+    </SwipeProvider>
   );
 }
