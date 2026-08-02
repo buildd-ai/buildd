@@ -162,6 +162,29 @@ describe('buildActionQueue', () => {
     expect(result).toHaveLength(1);
     expect(result[0].prUrl).toBeUndefined();
   });
+
+  it('passes prLifecycleStatus=merged through to ActionQueueItem', () => {
+    const result = buildActionQueue([mergeItem({ prLifecycleStatus: 'merged' })], []);
+    expect(result[0].prLifecycleStatus).toBe('merged');
+  });
+
+  it('passes prLifecycleStatus=closed through to ActionQueueItem', () => {
+    const result = buildActionQueue([mergeItem({ prLifecycleStatus: 'closed' })], []);
+    expect(result[0].prLifecycleStatus).toBe('closed');
+  });
+
+  it('leaves prLifecycleStatus undefined when not set on merge item', () => {
+    const result = buildActionQueue([mergeItem()], []);
+    expect(result[0].prLifecycleStatus).toBeUndefined();
+  });
+
+  it('preserves prLifecycleStatus when merging waitingOnYou into existing escalation item', () => {
+    const result = buildActionQueue(
+      [mergeItem({ prLifecycleStatus: 'merged' })],
+      [escalationItem()],
+    );
+    expect(result[0].prLifecycleStatus).toBe('merged');
+  });
 });
 
 // ── partitionEscalations ────────────────────────────────────────────────────

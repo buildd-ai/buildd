@@ -22,6 +22,7 @@ import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { InterruptReviewButton } from './InterruptReviewButton';
+import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
@@ -177,6 +178,7 @@ export default async function HomePage({
     kind: 'merge' | 'approve' | 'answer';
     prUrl?: string;
     prNumber?: number;
+    prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
     upstreamTaskId?: string;
     upstreamTaskTitle?: string;
     unblockCount?: number;
@@ -901,9 +903,8 @@ export default async function HomePage({
                     where: and(
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
-                      sql`COALESCE(${workers.prLifecycleStatus}, '') != 'closed'`
                     ),
-                    columns: { prUrl: true, prNumber: true },
+                    columns: { prUrl: true, prNumber: true, prLifecycleStatus: true },
                     orderBy: desc(workers.createdAt),
                     limit: 1,
                   },
@@ -945,6 +946,7 @@ export default async function HomePage({
                   kind: 'merge',
                   prUrl: w.prUrl,
                   prNumber: w.prNumber,
+                  prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | null) ?? null,
                   upstreamTaskId: upstream.id,
                   upstreamTaskTitle: upstream.title,
                   unblockCount: blockedTasks.length,
@@ -1156,68 +1158,7 @@ export default async function HomePage({
                 <div className="space-y-2">
                   {filteredActionQueue.map((item) => {
                     if (item.chip === 'MERGE') {
-                      return (
-                        <div key={item.subjectKey} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
-                                  Merge
-                                </span>
-                                {(item.upstreamTaskTitle ?? item.taskTitle) && (
-                                  <span className="text-[12px] text-text-secondary truncate">
-                                    {item.upstreamTaskTitle ?? item.taskTitle}
-                                  </span>
-                                )}
-                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                  <span className="text-[10px] text-text-muted">
-                                    {item.waitingMinutes < 60
-                                      ? `${item.waitingMinutes}m`
-                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-[13px] font-medium text-text-primary">
-                                {item.prUrl ? (
-                                  <a
-                                    href={item.prUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="hover:underline"
-                                  >
-                                    PR #{item.prNumber}
-                                  </a>
-                                ) : item.taskId ? (
-                                  <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
-                                    {item.taskTitle}
-                                  </Link>
-                                ) : null}
-                                {item.unblockCount != null && item.unblockCount > 0 && (
-                                  <span className="text-text-secondary font-normal">
-                                    {' '}→ unblocks {item.unblockCount} task{item.unblockCount !== 1 ? 's' : ''}
-                                    {item.missionTitle && ` in ${item.missionTitle}`}
-                                  </span>
-                                )}
-                              </div>
-                              {item.escalationReason && (
-                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
-                                  {item.escalationReason}
-                                </p>
-                              )}
-                              {item.workspaceName && (
-                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                              )}
-                            </div>
-                            {item.prNumber != null && (
-                              <MergeConfirmButton
-                                prNumber={item.prNumber}
-                                prUrl={item.prUrl ?? ''}
-                                queuedTaskCount={item.unblockCount}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      );
+                      return <WaitingOnYouMergeCard key={item.subjectKey} item={item} />;
                     }
                     if (item.chip === 'REVIEW') {
                       return (
