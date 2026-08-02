@@ -9,6 +9,7 @@ import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { StatusChip } from '@/components/StatusChip';
 import { SegmentStrip } from '@/components/SegmentStrip';
+import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
@@ -120,10 +121,16 @@ function TaskRow({
 }) {
   const { latestWorker } = task;
   const isFailed = task.status === 'failed';
+  const isDone = task.status === 'completed';
   const waitingFor =
     latestWorker?.status === 'waiting_input' && latestWorker.waitingFor
       ? latestWorker.waitingFor
       : null;
+  const swipeCardType: SwipeCardType = isDone
+    ? 'completed-task'
+    : (task.chain?.blockedBy?.length ?? 0) > 0
+      ? 'blocked-task'
+      : 'running-task';
 
   return (
     <div className="animate-timeline-enter">
@@ -138,7 +145,14 @@ function TaskRow({
           <span className="w-2 h-px bg-border-default" />
           <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: task.roleColor }} />
         </span>
-        <div className="flex-1 min-w-0">
+        <SwipeableRow
+          cardType={swipeCardType}
+          taskTitle={task.title}
+          taskId={task.id}
+          prUrl={latestWorker?.prUrl ?? null}
+          className="flex-1 min-w-0"
+        >
+        <div>
           <TaskCard
             density="inline"
             id={task.id}
@@ -170,6 +184,7 @@ function TaskRow({
               />
             )}
         </div>
+        </SwipeableRow>
       </div>
 
       {/* Failed task retry */}
