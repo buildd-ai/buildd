@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, isNotNull, isNull } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -40,16 +40,20 @@ import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
+import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 
 export const dynamic = 'force-dynamic';
 
 
 export default async function MissionDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string }>;
 }) {
   const { id } = await params;
+  const { from, initiativeId } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -395,6 +399,21 @@ export default async function MissionDetailPage({
 
   const missionTaskIds = allTasks.map((t) => t.id);
 
+  // I-5: resolve breadcrumb — fetch initiative name only when the param is present
+  const initiativeName = (from === 'initiative' && initiativeId)
+    ? (await db.query.initiatives.findFirst({
+        where: eq(initiatives.id, initiativeId),
+        columns: { title: true },
+      }))?.title
+    : undefined;
+
+  const breadcrumb = resolveMissionBreadcrumb({
+    from,
+    initiativeId,
+    initiativeName,
+    missionTitle: mission.title,
+  });
+
   return (
     <TaskPanelWrapper>
     <div className="px-4 md:px-10 pt-5 md:pt-8 pb-12 max-w-3xl">
@@ -409,11 +428,16 @@ export default async function MissionDetailPage({
 
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        <Link href="/app/missions" className="hover:text-text-secondary transition-colors">
-          Missions
-        </Link>
+        {breadcrumb.links.map((link, i) => (
+          <span key={link.href} className="flex items-center gap-2">
+            {i > 0 && <span>/</span>}
+            <Link href={link.href} className="hover:text-text-secondary transition-colors">
+              {link.label}
+            </Link>
+          </span>
+        ))}
         <span>/</span>
-        <span className="text-text-secondary truncate">{mission.title}</span>
+        <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
       </div>
 
       {/* ── Status Block ── */}
