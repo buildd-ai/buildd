@@ -64,3 +64,55 @@ describe('groupMissionsByInitiative', () => {
     expect(ungrouped).toHaveLength(0);
   });
 });
+
+describe('count conservation — rendered mission count === fetched mission count', () => {
+  function totalCount<T>(result: { byInitiative: Map<string, T[]>; ungrouped: T[] }): number {
+    return [...result.byInitiative.values()].flat().length + result.ungrouped.length;
+  }
+
+  it('zero initiatives: all missions land in ungrouped', () => {
+    const missions = [m('m1', null), m('m2', null)];
+    const result = groupMissionsByInitiative(missions, []);
+    expect(totalCount(result)).toBe(missions.length);
+    expect(result.ungrouped).toHaveLength(2);
+    expect(result.byInitiative.size).toBe(0);
+  });
+
+  it('all-ungrouped (no matching initiativeId): no mission disappears', () => {
+    const missions = [m('m1', null), m('m2', null), m('m3', null)];
+    const result = groupMissionsByInitiative(missions, ['i1']);
+    expect(totalCount(result)).toBe(missions.length);
+    expect(result.ungrouped).toHaveLength(3);
+    expect(result.byInitiative.get('i1')).toHaveLength(0);
+  });
+
+  it('initiativeId pointing at non-existent initiative goes to Other (ungrouped)', () => {
+    const missions = [m('m1', 'ghost-archived-init'), m('m2', 'i1')];
+    const result = groupMissionsByInitiative(missions, ['i1']);
+    expect(totalCount(result)).toBe(missions.length);
+    expect(result.ungrouped.map((x) => x.id)).toEqual(['m1']);
+    expect(result.byInitiative.get('i1')?.map((x) => x.id)).toEqual(['m2']);
+  });
+
+  it('fully grouped: ungrouped is empty', () => {
+    const missions = [m('m1', 'i1'), m('m2', 'i2')];
+    const result = groupMissionsByInitiative(missions, ['i1', 'i2']);
+    expect(totalCount(result)).toBe(missions.length);
+    expect(result.ungrouped).toHaveLength(0);
+  });
+
+  it('mixed permutation: null + unknown + valid all conserved', () => {
+    const missions = [m('m1', 'i1'), m('m2', null), m('m3', 'ghost-init'), m('m4', 'i2')];
+    const result = groupMissionsByInitiative(missions, ['i1', 'i2']);
+    expect(totalCount(result)).toBe(missions.length);
+    expect(result.ungrouped.map((x) => x.id).sort()).toEqual(['m2', 'm3']);
+    expect(result.byInitiative.get('i1')?.map((x) => x.id)).toEqual(['m1']);
+    expect(result.byInitiative.get('i2')?.map((x) => x.id)).toEqual(['m4']);
+  });
+
+  it('empty mission input: total is zero regardless of initiatives', () => {
+    const result = groupMissionsByInitiative([], ['i1', 'i2', 'i3']);
+    expect(totalCount(result)).toBe(0);
+    expect(result.ungrouped).toHaveLength(0);
+  });
+});
