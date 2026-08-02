@@ -7,8 +7,9 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
-import { MissionProgress } from '@/components/MissionProgress';
+import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { SegmentStrip } from '@/components/SegmentStrip';
+import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,14 +19,6 @@ const ROLLUP_ACCENT: Record<string, string> = {
   completed: 'bg-status-success',
   paused: 'bg-text-muted',
   empty: 'bg-text-muted',
-};
-
-const MISSION_STATUS_DOT: Record<string, string> = {
-  active: 'bg-status-info',
-  paused: 'bg-text-muted',
-  completed: 'bg-status-success',
-  archived: 'bg-text-muted',
-  budget_exhausted: 'bg-status-warning',
 };
 
 export default async function InitiativeDetailPage({
@@ -45,7 +38,7 @@ export default async function InitiativeDetailPage({
     with: {
       workspace: { columns: { id: true, name: true } },
       missions: {
-        columns: { id: true, title: true, status: true, priority: true },
+        columns: { id: true, title: true, status: true, priority: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
         orderBy: [desc(missions.priority), desc(missions.createdAt)],
         with: {
           tasks: {
@@ -72,11 +65,16 @@ export default async function InitiativeDetailPage({
   }
   if (!hasAccess) notFound();
 
+  const noNextRun = formatNextRun(null, null);
   const children: ChildMissionProgress[] = [];
   const missionRows = (initiative.missions || []).map((m: any) => {
     const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(m.tasks || []);
+    const health = deriveHealth(
+      { dependsOnMissionId: m.dependsOnMissionId, dependencyMetAt: m.dependencyMetAt },
+      m.tasks || [],
+    );
     children.push({ status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks });
-    return { id: m.id, title: m.title, status: m.status, progress, totalTasks, completedTasks, segments };
+    return { id: m.id, title: m.title, status: m.status, orchestrationMode: m.orchestrationMode, progress, totalTasks, completedTasks, segments, health };
   });
   const rollup = computeInitiativeProgress(children);
   // Aggregate every child's task segments into one run for the rollup bar — the
@@ -191,18 +189,19 @@ export default async function InitiativeDetailPage({
               // Card is a div (not a wrapping Link) so MissionProgress's in-flight task
               // link never nests inside another anchor. Title carries the mission link.
               <div key={m.id} className="card p-3 hover:border-border-hover transition-colors">
-                <div className="flex items-center gap-3">
-                  <span className={`h-2 w-2 rounded-full shrink-0 ${MISSION_STATUS_DOT[m.status] ?? 'bg-text-muted'}`} />
-                  <Link
-                    href={`/app/missions/${m.id}`}
-                    className="text-sm text-text-primary truncate flex-1 hover:text-accent-text transition-colors"
-                  >
-                    {m.title}
-                  </Link>
-                  <span className="text-[11px] text-text-muted shrink-0 tabular-nums">{m.progress}%</span>
-                </div>
+                <Link
+                  href={`/app/missions/${m.id}`}
+                  className="text-sm text-text-primary truncate block hover:text-accent-text transition-colors mb-1"
+                >
+                  {m.title}
+                </Link>
+                <MissionBadges
+                  mission={{ status: m.status, orchestrationMode: m.orchestrationMode, lastDeferralReason: null, lastDeferredAt: null }}
+                  health={m.health}
+                  nextRun={noNextRun}
+                />
                 {m.totalTasks > 0 && (
-                  <div className="mt-2 pl-5">
+                  <div className="mt-1.5">
                     <MissionProgress
                       missionId={m.id}
                       segments={m.segments}
