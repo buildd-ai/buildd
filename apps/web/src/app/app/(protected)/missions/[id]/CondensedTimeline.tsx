@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import TaskCard from '@/components/TaskCard';
 import ExternalLink from '@/components/ExternalLink';
@@ -53,6 +53,45 @@ export type CondensedTimelineProps = {
   allTasksCount: number;
   missionCompleted: boolean;
 };
+
+// ─── Gate chip — I-11: animate-collapse when mergedAt is stamped ─────────────
+
+function GateChip({
+  mergedAt,
+  policyTier,
+  waitingMinutes,
+}: {
+  mergedAt: string | null;
+  policyTier: MergePolicyTier;
+  waitingMinutes: number;
+}) {
+  const [visible, setVisible] = useState(!mergedAt);
+  const [collapsing, setCollapsing] = useState(false);
+
+  useEffect(() => {
+    if (!mergedAt || !visible || collapsing) return;
+    setCollapsing(true);
+    const t = setTimeout(() => setVisible(false), 200);
+    return () => clearTimeout(t);
+  }, [mergedAt, visible, collapsing]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="overflow-hidden transition-all duration-200 ease-out"
+      style={{ maxHeight: collapsing ? '0' : '40px', opacity: collapsing ? 0 : 1 }}
+    >
+      <div className="px-2 pb-1">
+        <StatusChip
+          policyTier={policyTier}
+          waitingMinutes={waitingMinutes}
+          className="hidden sm:inline-flex"
+        />
+      </div>
+    </div>
+  );
+}
 
 // ─── Section label ────────────────────────────────────────────────────────────
 
@@ -112,24 +151,20 @@ function TaskRow({
             prLifecycleStatus={latestWorker?.prLifecycleStatus ?? null}
             currentAction={latestWorker?.currentAction ?? null}
           />
-          {/* BT-14: awaiting-merge status chip */}
+          {/* BT-14 / I-11: awaiting-merge gate chip — collapses (200ms) when mergedAt is stamped */}
           {task.status === 'completed' &&
             latestWorker?.prUrl &&
-            !latestWorker.mergedAt &&
-            latestWorker.prLifecycleStatus !== 'closed' && (() => {
-              const waitMins = latestWorker.completedAt
-                ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
-                : 0;
-              return (
-                <div className="px-2 pb-1">
-                  <StatusChip
-                    policyTier={effectivePolicyTier}
-                    waitingMinutes={waitMins}
-                    className="hidden sm:inline-flex"
-                  />
-                </div>
-              );
-            })()}
+            latestWorker.prLifecycleStatus !== 'closed' && (
+              <GateChip
+                mergedAt={latestWorker.mergedAt ?? null}
+                policyTier={effectivePolicyTier}
+                waitingMinutes={
+                  latestWorker.completedAt
+                    ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
+                    : 0
+                }
+              />
+            )}
         </div>
       </div>
 
