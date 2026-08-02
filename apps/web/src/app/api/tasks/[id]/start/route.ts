@@ -6,7 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap } from '@/lib/claim-gates';
+import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch } from '@/lib/claim-gates';
 
 /**
  * POST /api/tasks/[id]/start
@@ -154,7 +154,7 @@ export async function POST(
     const taskCtx = task.context as Record<string, unknown> | null;
     const isBypassHeld = taskCtx?.bypassHeldGate === true || taskCtx?.bypassHeldGate === 'true';
     if (missionId && !isBypassHeld && !forceOverride) {
-      const isHeld = await checkMissionHeld(missionId, false);
+      const isHeld = await checkMissionHeld(missionId);
       if (isHeld) {
         return NextResponse.json({
           error: 'Task is blocked: parent mission is held. Arm the mission or use forceOverride to bypass.',
@@ -181,6 +181,29 @@ export async function POST(
           gateReason: 'workspace_cap_reached',
           active: capResult.active,
           cap: capResult.cap,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Capability / backend gate ───────────────────────────────────────────────
+    // Mirrors the capability filter (filteredTasks) in claim/route.ts.
+    // Codex-backend tasks need server-side credentials OR a local-auth runner.
+    // We can only verify server-side credentials here; a local runner with
+    // OPENAI_API_KEY/CODEX_HOME still bypasses this gate at claim time.
+    const taskBackend = (task as any).backend as string | null;
+    if (taskBackend && teamId && !forceOverride) {
+      const missingCap = await checkCapabilityMatch({
+        backend: taskBackend,
+        workspaceId: task.workspaceId,
+        teamId,
+        accountId: accountId ?? null,
+      });
+      if (missingCap) {
+        return NextResponse.json({
+          error: `Task cannot be started: '${taskBackend}' backend is not available (no server credentials configured)`,
+          gateReason: 'capability_mismatch',
+          missingCapability: missingCap,
+          canForce: true,
         }, { status: 422 });
       }
     }
