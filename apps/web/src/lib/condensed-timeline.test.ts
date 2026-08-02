@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupTimelineTasks } from './condensed-timeline';
+import { groupTimelineTasks, gateChipCollapsed } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -267,5 +267,25 @@ describe('groupTimelineTasks', () => {
     const task = makeTask({ id: 't1', status: 'pending', dependsOn: ['unknown-dep'] });
     const { nextQueued } = groupTimelineTasks([task], new Map([['t1', task]]));
     expect(nextQueued).toHaveLength(1);
+  });
+});
+
+// ─── gateChipCollapsed — I-11 ─────────────────────────────────────────────────
+
+describe('gateChipCollapsed', () => {
+  it('chip is visible (not collapsed) when mergedAt is null', () => {
+    expect(gateChipCollapsed(null)).toBe(false);
+  });
+
+  it('chip is visible (not collapsed) when mergedAt is undefined', () => {
+    expect(gateChipCollapsed(undefined)).toBe(false);
+  });
+
+  it('chip collapses when mergedAt is a timestamp string', () => {
+    expect(gateChipCollapsed('2026-01-01T00:00:00Z')).toBe(true);
+  });
+
+  it('chip collapses when mergedAt is any non-empty string', () => {
+    expect(gateChipCollapsed('2024-08-02T12:34:56.789Z')).toBe(true);
   });
 });

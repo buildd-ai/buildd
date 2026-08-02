@@ -127,3 +127,10 @@ export function groupTimelineTasks<T extends CondensedTask>(
 
   return groups;
 }
+
+// ─── Gate chip helpers — I-11 ─────────────────────────────────────────────────
+
+/** True when the awaiting-merge gate chip should be collapsed (PR has been merged). */
+export function gateChipCollapsed(mergedAt: string | null | undefined): boolean {
+  return !!mergedAt;
+}
