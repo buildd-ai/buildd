@@ -24,6 +24,19 @@ interface TeamState {
   createdAt: number;
 }
 
+// Exported for testing. Validates the raw /api/workers/[id]/team response and
+// defaults missing arrays so downstream .length reads never throw.
+export function normalizeTeamState(raw: unknown): TeamState | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    teamName: typeof r.teamName === 'string' ? r.teamName : '',
+    createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+    members: Array.isArray(r.members) ? (r.members as TeamMember[]) : [],
+    messages: Array.isArray(r.messages) ? (r.messages as TeamMessage[]) : [],
+  };
+}
+
 interface TeamPanelProps {
   localUiUrl: string;
   viewerToken: string | null;
@@ -48,7 +61,7 @@ export default function TeamPanel({ localUiUrl, viewerToken, workerId }: TeamPan
         return;
       }
       const data = await res.json();
-      setTeam(data.team);
+      setTeam(normalizeTeamState(data.team));
       setError(false);
     } catch {
       setError(true);
