@@ -1,9 +1,43 @@
 export type ActionChip = 'MERGE' | 'REVIEW' | 'QUESTION' | 'APPROVE';
 
+export interface ResolvedEscalationItem {
+  workerId: string;
+  taskId: string;
+  taskTitle: string;
+  prNumber: number | null;
+  prUrl: string | null;
+  /** Persisted lifecycle value — never re-derived from GitHub. */
+  prLifecycleStatus: 'merged' | 'closed';
+  workspaceName: string;
+}
+
+/**
+ * Splits escalation-eligible items by lifecycle state.
+ *
+ * Resolution rule (§1.3 mobile-decision-flow): an item moves to resolved when
+ * prLifecycleStatus is 'merged' or 'closed'. Null/unknown → treat as 'keep'
+ * (item stays active). Never auto-resolve on a null lifecycle.
+ */
+export function partitionEscalations<T extends { prLifecycleStatus: string | null }>(
+  items: T[],
+): { active: T[]; resolved: T[] } {
+  const active: T[] = [];
+  const resolved: T[] = [];
+  for (const item of items) {
+    if (item.prLifecycleStatus === 'merged' || item.prLifecycleStatus === 'closed') {
+      resolved.push(item);
+    } else {
+      active.push(item);
+    }
+  }
+  return { active, resolved };
+}
+
 export interface WaitingOnYouRawItem {
   kind: 'merge' | 'approve' | 'answer';
   prUrl?: string;
   prNumber?: number;
+  prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
   upstreamTaskId?: string;
   upstreamTaskTitle?: string;
   unblockCount?: number;
@@ -37,6 +71,7 @@ export interface ActionQueueItem {
   chip: ActionChip;
   prUrl?: string;
   prNumber?: number;
+  prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
   taskId?: string;
   taskTitle?: string;
   workspaceName?: string;
@@ -99,6 +134,7 @@ export function buildActionQueue(
           unblockCount: (existing.unblockCount ?? 0) + (item.unblockCount ?? 0),
           missionId: existing.missionId ?? item.missionId,
           missionTitle: existing.missionTitle ?? item.missionTitle,
+          prLifecycleStatus: item.prLifecycleStatus ?? existing.prLifecycleStatus,
         });
       } else {
         map.set(key, {
@@ -106,6 +142,7 @@ export function buildActionQueue(
           chip: 'MERGE',
           prUrl: item.prUrl,
           prNumber: item.prNumber,
+          prLifecycleStatus: item.prLifecycleStatus ?? undefined,
           upstreamTaskTitle: item.upstreamTaskTitle,
           unblockCount: item.unblockCount,
           missionId: item.missionId,

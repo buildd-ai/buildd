@@ -7,11 +7,11 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { MissionGrid } from './MissionGrid';
+import { MissionGrid, type InitiativeGroupData } from './MissionGrid';
 import { InitiativesStrip, type InitiativeStripItem } from './InitiativesStrip';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
@@ -146,9 +146,10 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
+      initiative: { columns: { id: true, title: true } },
       tasks: {
         columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, dependsOn: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
@@ -278,8 +279,44 @@ export default async function MissionsPage({
       healthState: deriveHealth(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || []),
+      initiativeId: obj.initiativeId || null,
     };
   });
+
+  // Build initiative title index from the raw query results (O(n) lookup later).
+  const initiativeTitleIndex = new Map<string, string>();
+  for (const obj of allMissions) {
+    if (obj.initiativeId && (obj.initiative as any)?.title) {
+      initiativeTitleIndex.set(obj.initiativeId, (obj.initiative as any).title);
+    }
+  }
+
+  // Compute per-initiative rollup data for group headers.
+  // Groups missions by initiativeId; for each group computes rollup status/progress
+  // and the aggregate segment strip via computeInitiativeSegments.
+  const initiativeGroupMap = new Map<string, { title: string; missions: typeof missionsList }>();
+  for (const m of missionsList) {
+    if (!m.initiativeId) continue;
+    const title = initiativeTitleIndex.get(m.initiativeId) ?? m.initiativeId;
+    if (!initiativeGroupMap.has(m.initiativeId)) {
+      initiativeGroupMap.set(m.initiativeId, { title, missions: [] });
+    }
+    initiativeGroupMap.get(m.initiativeId)!.missions.push(m);
+  }
+
+  const STATUS_RANK: Record<string, number> = { blocked: 0, active: 1, paused: 2, completed: 3, empty: 4 };
+  const initiativeGroups: InitiativeGroupData[] = [...initiativeGroupMap.entries()]
+    .map(([id, { title, missions: gMissions }]) => {
+      const children: ChildMissionProgress[] = gMissions.map((m) => ({
+        status: m.status as ChildMissionProgress['status'],
+        totalTasks: m.totalTasks,
+        completedTasks: m.completedTasks,
+      }));
+      const rollup = computeInitiativeProgress(children);
+      const segments = computeInitiativeSegments(gMissions);
+      return { id, title, rollupStatus: rollup.status, progress: rollup.progress, segments };
+    })
+    .sort((a, b) => (STATUS_RANK[a.rollupStatus] ?? 5) - (STATUS_RANK[b.rollupStatus] ?? 5));
 
   const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
@@ -333,7 +370,7 @@ export default async function MissionsPage({
           </p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} />
+        <MissionGrid missions={missionsList} initiativeGroups={initiativeGroups} />
       )}
     </div>
   );

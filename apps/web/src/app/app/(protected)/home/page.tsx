@@ -13,6 +13,8 @@ import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
+import type { ResolvedEscalationItem } from '@/lib/action-queue';
+import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
@@ -20,6 +22,7 @@ import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { InterruptReviewButton } from './InterruptReviewButton';
+import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
@@ -118,6 +121,7 @@ export default async function HomePage({
     id: string;
     title: string;
     description: string | null;
+    initiativeId: string | null;
     totalTasks: number;
     completedTasks: number;
     progress: number;
@@ -174,6 +178,7 @@ export default async function HomePage({
     kind: 'merge' | 'approve' | 'answer';
     prUrl?: string;
     prNumber?: number;
+    prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
     upstreamTaskId?: string;
     upstreamTaskTitle?: string;
     unblockCount?: number;
@@ -199,6 +204,8 @@ export default async function HomePage({
     verdictSummary: string | null;
     waitingMinutes: number | null;
   }[] = [];
+
+  let resolvedEscalations: ResolvedEscalationItem[] = [];
 
   let agentReviewingPrs: {
     workerId: string;
@@ -511,7 +518,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, dependsOn: true },
@@ -598,6 +605,7 @@ export default async function HomePage({
               id: mission.id,
               title: mission.title,
               description: mission.description,
+              initiativeId: mission.initiativeId ?? null,
               totalTasks,
               completedTasks,
               progress,
@@ -799,6 +807,70 @@ export default async function HomePage({
               })
               .slice(0, 10);
           }
+
+          // Resolved escalations: workers whose PR has since merged or closed.
+          // §1.3 mobile-decision-flow: show as dimmed "Resolved" group, not inline.
+          // Hard constraint: read prLifecycleStatus only — never re-derive from GitHub.
+          {
+            const resolvedPrWorkers = await db.query.workers.findMany({
+              where: and(
+                inArray(workers.workspaceId, wsIds),
+                isNotNull(workers.prUrl),
+                inArray(workers.prLifecycleStatus, ['merged', 'closed']),
+                gte(workers.completedAt, activityWindowStart),
+              ),
+              columns: {
+                id: true, taskId: true, workspaceId: true, prUrl: true,
+                prNumber: true, prLifecycleStatus: true,
+              },
+              with: {
+                task: { columns: { id: true, title: true, missionId: true } },
+                workspace: { columns: { id: true, name: true, gitConfig: true } },
+              },
+              orderBy: [desc(workers.completedAt)],
+              limit: 10,
+            });
+
+            if (resolvedPrWorkers.length > 0) {
+              const resolvedTaskIds = resolvedPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
+
+              const resolvedNotes = resolvedTaskIds.length > 0
+                ? await db.query.missionNotes.findMany({
+                    where: and(
+                      inArray(missionNotes.taskId, resolvedTaskIds),
+                      inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
+                    ),
+                    columns: { taskId: true, type: true, title: true, body: true, status: true, createdAt: true },
+                  })
+                : [];
+
+              const { escalationMap: rEscMap, approvalMap: rApprMap, supersededTaskIds: rSuperseded } =
+                selectReviewerEvidence(resolvedNotes);
+
+              resolvedEscalations = resolvedPrWorkers
+                .filter(w => {
+                  const taskTitle = (w.task as any)?.title ?? '';
+                  if (taskTitle.startsWith('[smoke-test')) return false;
+                  if (w.taskId && rSuperseded.has(w.taskId)) return false;
+                  if (w.taskId && (rEscMap.has(w.taskId) || rApprMap.has(w.taskId))) return true;
+                  const ws = (w as any).workspace;
+                  if (!ws) return false;
+                  return resolvePolicy(ws).tier === 'human';
+                })
+                .map(w => {
+                  const ws = (w as any).workspace;
+                  return {
+                    workerId: w.id,
+                    taskId: w.taskId ?? '',
+                    taskTitle: (w.task as any)?.title ?? '',
+                    prNumber: w.prNumber,
+                    prUrl: w.prUrl,
+                    prLifecycleStatus: w.prLifecycleStatus as 'merged' | 'closed',
+                    workspaceName: ws?.name ?? '',
+                  };
+                });
+            }
+          }
         }
 
         // "Waiting on You" action queue
@@ -831,9 +903,8 @@ export default async function HomePage({
                     where: and(
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
-                      sql`COALESCE(${workers.prLifecycleStatus}, '') != 'closed'`
                     ),
-                    columns: { prUrl: true, prNumber: true },
+                    columns: { prUrl: true, prNumber: true, prLifecycleStatus: true },
                     orderBy: desc(workers.createdAt),
                     limit: 1,
                   },
@@ -875,6 +946,7 @@ export default async function HomePage({
                   kind: 'merge',
                   prUrl: w.prUrl,
                   prNumber: w.prNumber,
+                  prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | null) ?? null,
                   upstreamTaskId: upstream.id,
                   upstreamTaskTitle: upstream.title,
                   unblockCount: blockedTasks.length,
@@ -1086,68 +1158,7 @@ export default async function HomePage({
                 <div className="space-y-2">
                   {filteredActionQueue.map((item) => {
                     if (item.chip === 'MERGE') {
-                      return (
-                        <div key={item.subjectKey} className="border-l-2 border-primary bg-primary/5 rounded-r-[10px] px-4 py-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                <span className="text-[10px] font-mono font-medium text-primary tracking-wide uppercase">
-                                  Merge
-                                </span>
-                                {(item.upstreamTaskTitle ?? item.taskTitle) && (
-                                  <span className="text-[12px] text-text-secondary truncate">
-                                    {item.upstreamTaskTitle ?? item.taskTitle}
-                                  </span>
-                                )}
-                                {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                  <span className="text-[10px] text-text-muted">
-                                    {item.waitingMinutes < 60
-                                      ? `${item.waitingMinutes}m`
-                                      : `${Math.floor(item.waitingMinutes / 60)}h`}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-[13px] font-medium text-text-primary">
-                                {item.prUrl ? (
-                                  <a
-                                    href={item.prUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="hover:underline"
-                                  >
-                                    PR #{item.prNumber}
-                                  </a>
-                                ) : item.taskId ? (
-                                  <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
-                                    {item.taskTitle}
-                                  </Link>
-                                ) : null}
-                                {item.unblockCount != null && item.unblockCount > 0 && (
-                                  <span className="text-text-secondary font-normal">
-                                    {' '}→ unblocks {item.unblockCount} task{item.unblockCount !== 1 ? 's' : ''}
-                                    {item.missionTitle && ` in ${item.missionTitle}`}
-                                  </span>
-                                )}
-                              </div>
-                              {item.escalationReason && (
-                                <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
-                                  {item.escalationReason}
-                                </p>
-                              )}
-                              {item.workspaceName && (
-                                <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                              )}
-                            </div>
-                            {item.prNumber != null && (
-                              <MergeConfirmButton
-                                prNumber={item.prNumber}
-                                prUrl={item.prUrl ?? ''}
-                                queuedTaskCount={item.unblockCount}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      );
+                      return <WaitingOnYouMergeCard key={item.subjectKey} item={item} />;
                     }
                     if (item.chip === 'REVIEW') {
                       return (
@@ -1241,12 +1252,18 @@ export default async function HomePage({
                     return null;
                   })}
                 </div>
+                {resolvedEscalations.length > 0 && (
+                  <ResolvedEscalationsGroup items={resolvedEscalations} />
+                )}
               </div>
             )}
             {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
                 <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
+                {resolvedEscalations.length > 0 && (
+                  <ResolvedEscalationsGroup items={resolvedEscalations} />
+                )}
               </div>
             )}
 
