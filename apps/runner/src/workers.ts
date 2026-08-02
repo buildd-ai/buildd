@@ -2370,7 +2370,7 @@ export class WorkerManager {
 
           if (cbmResult.ok) {
             const durS = (cbmResult.durationMs / 1000).toFixed(1);
-            console.log(`[Worker ${worker.id}] CBM: index ready in ${cbmResult.durationMs}ms`);
+            console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
             this.addMilestone(worker, {
               type: 'status',
               label: `graph_index_success durationMs=${cbmResult.durationMs}`,
