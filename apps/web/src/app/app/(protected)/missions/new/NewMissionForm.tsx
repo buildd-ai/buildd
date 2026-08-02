@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
+import { Select } from '@/components/ui/Select';
+
+const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
 interface WorkspaceOption {
   id: string;
@@ -111,82 +114,6 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
   );
 }
 
-// ── Workspace dropdown ────────────────────────────────────────────────────────
-
-function WorkspaceDropdown({ workspaces, value, onChange }: { workspaces: WorkspaceOption[]; value: string; onChange: (id: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    if (open) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [open]);
-
-  const selected = workspaces.find(ws => ws.id === value);
-
-  return (
-    <div className="mb-4" ref={ref}>
-      <label className="block text-xs text-text-muted mb-1.5">Workspace <span className="text-text-muted/60">(optional)</span></label>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className={`w-full px-4 py-3 bg-surface-1 border rounded-sm text-sm text-left flex items-center justify-between transition-colors ${
-          open ? 'border-primary ring-2 ring-primary-ring' : 'border-border-default'
-        }`}
-        data-testid="mission-workspace-select"
-      >
-        <span className={selected ? 'text-text-primary' : 'text-text-muted'}>
-          {selected ? selected.name : 'Select a workspace'}
-        </span>
-        <svg
-          className={`w-4 h-4 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {open && (
-        <div className="mt-1 bg-surface-1 border border-border-default rounded-sm shadow-lg overflow-hidden">
-          <button
-            type="button"
-            onClick={() => { onChange(''); setOpen(false); }}
-            className={`w-full px-4 py-2.5 text-sm text-left transition-colors ${
-              !value
-                ? 'bg-primary/10 text-primary'
-                : 'text-text-muted hover:bg-surface-2'
-            }`}
-          >
-            None
-          </button>
-          {workspaces.map(ws => (
-            <button
-              key={ws.id}
-              type="button"
-              onClick={() => { onChange(ws.id); setOpen(false); }}
-              className={`w-full px-4 py-2.5 text-sm text-left transition-colors ${
-                ws.id === value
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-text-primary hover:bg-surface-2'
-              }`}
-            >
-              {ws.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Main form ─────────────────────────────────────────────────────────────────
 
 export default function NewMissionForm({
@@ -217,6 +144,22 @@ export default function NewMissionForm({
   );
   const [workspaceId, setWorkspaceId] = useState('');
   const [backend, setBackend] = useState<BackendValue>(null);
+
+  // Default to last-used workspace from localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem(LAST_WORKSPACE_KEY);
+    if (stored && workspaces.some(ws => ws.id === stored)) {
+      setWorkspaceId(stored);
+    } else if (workspaces.length === 1) {
+      setWorkspaceId(workspaces[0].id);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleWorkspaceChange(id: string) {
+    setWorkspaceId(id);
+    if (id) localStorage.setItem(LAST_WORKSPACE_KEY, id);
+  }
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -328,6 +271,9 @@ export default function NewMissionForm({
       if (created.teamId) {
         localStorage.setItem('buildd:lastTeamId', created.teamId);
       }
+      if (workspaceId) {
+        localStorage.setItem(LAST_WORKSPACE_KEY, workspaceId);
+      }
       router.push(`/app/missions/${created.id}`);
       router.refresh();
     } catch (err: unknown) {
@@ -394,6 +340,24 @@ export default function NewMissionForm({
           />
         </div>
 
+        {/* Workspace selection */}
+        {workspaces.length > 0 && (
+          <div className="mb-5" data-testid="mission-workspace-select">
+            <label className="block text-xs text-text-muted mb-1.5">
+              Workspace <span className="text-text-muted/60">(optional)</span>
+            </label>
+            <Select
+              value={workspaceId}
+              onChange={handleWorkspaceChange}
+              placeholder="No workspace"
+              options={[
+                { value: '', label: 'None' },
+                ...workspaces.map(ws => ({ value: ws.id, label: ws.name })),
+              ]}
+            />
+          </div>
+        )}
+
         {/* Backend selection — prominent in main form */}
         <div className="mb-5">
           <label className="block text-xs text-text-muted mb-1.5">Run with</label>
@@ -414,19 +378,10 @@ export default function NewMissionForm({
             onClick={() => setShowAdvanced(true)}
             className="text-xs text-text-muted hover:text-text-secondary mb-4"
           >
-            Advanced options (workspace, schedule) &rarr;
+            Advanced options (cost budget, schedule) &rarr;
           </button>
         ) : (
           <>
-            {/* Workspace picker */}
-            {workspaces.length > 0 && (
-              <WorkspaceDropdown
-                workspaces={workspaces}
-                value={workspaceId}
-                onChange={setWorkspaceId}
-              />
-            )}
-
             {/* Cost budget */}
             <div className="mb-4">
               <label className="block text-xs text-text-muted mb-1.5">
