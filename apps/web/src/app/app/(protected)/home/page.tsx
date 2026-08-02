@@ -13,6 +13,8 @@ import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
+import type { ResolvedEscalationItem } from '@/lib/action-queue';
+import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
@@ -199,6 +201,8 @@ export default async function HomePage({
     verdictSummary: string | null;
     waitingMinutes: number | null;
   }[] = [];
+
+  let resolvedEscalations: ResolvedEscalationItem[] = [];
 
   let agentReviewingPrs: {
     workerId: string;
@@ -799,6 +803,70 @@ export default async function HomePage({
               })
               .slice(0, 10);
           }
+
+          // Resolved escalations: workers whose PR has since merged or closed.
+          // §1.3 mobile-decision-flow: show as dimmed "Resolved" group, not inline.
+          // Hard constraint: read prLifecycleStatus only — never re-derive from GitHub.
+          {
+            const resolvedPrWorkers = await db.query.workers.findMany({
+              where: and(
+                inArray(workers.workspaceId, wsIds),
+                isNotNull(workers.prUrl),
+                inArray(workers.prLifecycleStatus, ['merged', 'closed']),
+                gte(workers.completedAt, activityWindowStart),
+              ),
+              columns: {
+                id: true, taskId: true, workspaceId: true, prUrl: true,
+                prNumber: true, prLifecycleStatus: true,
+              },
+              with: {
+                task: { columns: { id: true, title: true, missionId: true } },
+                workspace: { columns: { id: true, name: true, gitConfig: true } },
+              },
+              orderBy: [desc(workers.completedAt)],
+              limit: 10,
+            });
+
+            if (resolvedPrWorkers.length > 0) {
+              const resolvedTaskIds = resolvedPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
+
+              const resolvedNotes = resolvedTaskIds.length > 0
+                ? await db.query.missionNotes.findMany({
+                    where: and(
+                      inArray(missionNotes.taskId, resolvedTaskIds),
+                      inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
+                    ),
+                    columns: { taskId: true, type: true, title: true, body: true, status: true, createdAt: true },
+                  })
+                : [];
+
+              const { escalationMap: rEscMap, approvalMap: rApprMap, supersededTaskIds: rSuperseded } =
+                selectReviewerEvidence(resolvedNotes);
+
+              resolvedEscalations = resolvedPrWorkers
+                .filter(w => {
+                  const taskTitle = (w.task as any)?.title ?? '';
+                  if (taskTitle.startsWith('[smoke-test')) return false;
+                  if (w.taskId && rSuperseded.has(w.taskId)) return false;
+                  if (w.taskId && (rEscMap.has(w.taskId) || rApprMap.has(w.taskId))) return true;
+                  const ws = (w as any).workspace;
+                  if (!ws) return false;
+                  return resolvePolicy(ws).tier === 'human';
+                })
+                .map(w => {
+                  const ws = (w as any).workspace;
+                  return {
+                    workerId: w.id,
+                    taskId: w.taskId ?? '',
+                    taskTitle: (w.task as any)?.title ?? '',
+                    prNumber: w.prNumber,
+                    prUrl: w.prUrl,
+                    prLifecycleStatus: w.prLifecycleStatus as 'merged' | 'closed',
+                    workspaceName: ws?.name ?? '',
+                  };
+                });
+            }
+          }
         }
 
         // "Waiting on You" action queue
@@ -1241,12 +1309,18 @@ export default async function HomePage({
                     return null;
                   })}
                 </div>
+                {resolvedEscalations.length > 0 && (
+                  <ResolvedEscalationsGroup items={resolvedEscalations} />
+                )}
               </div>
             )}
             {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
                 <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
+                {resolvedEscalations.length > 0 && (
+                  <ResolvedEscalationsGroup items={resolvedEscalations} />
+                )}
               </div>
             )}
 
