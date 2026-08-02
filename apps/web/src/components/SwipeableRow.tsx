@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useContext, createContext, type ReactNode } from 'react';
+import { useState, useRef, useCallback, useContext, createContext, useEffect, type ReactNode } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -125,6 +125,14 @@ export function getMenuActions(
   }
 }
 
+/**
+ * Compute the next focused menu item index for keyboard navigation.
+ * Exported for unit testing.
+ */
+export function nextFocusIdx(currentIdx: number, direction: 'up' | 'down', count: number): number {
+  return direction === 'down' ? Math.min(currentIdx + 1, count - 1) : Math.max(currentIdx - 1, 0);
+}
+
 /** Returns the undo message string for a given swipe action. */
 function undoMessage(action: SwipeAction): string {
   switch (action) {
@@ -212,6 +220,8 @@ export interface SwipeableRowProps {
   taskId?: string;
   children: ReactNode;
   className?: string;
+  /** Called for menu actions that require external handling (e.g. navigation). */
+  onMenuAction?: (action: MenuActionId) => void;
 }
 
 export function SwipeableRow({
@@ -221,6 +231,7 @@ export function SwipeableRow({
   taskId,
   children,
   className = '',
+  onMenuAction,
 }: SwipeableRowProps) {
   const { registerUndo } = useContext(SwipeContext);
   const [dismissed, setDismissed] = useState(false);
@@ -228,6 +239,7 @@ export function SwipeableRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const [translateX, setTranslateX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const gestureRef = useRef<{
     active: boolean;
@@ -239,6 +251,32 @@ export function SwipeableRow({
 
   const trailingAction = getTrailingAction(cardType);
   const menuActions = getMenuActions(cardType, { prUrl, taskId });
+
+  // ── Keyboard navigation when menu sheet is open (§2.4) ──────────────────
+  useEffect(() => {
+    if (!menuOpen) return;
+    // Move focus to first menu item when sheet opens
+    const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
+    first?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMenuOpen(false);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const items = Array.from(
+          menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+        );
+        if (items.length === 0) return;
+        const idx = items.indexOf(document.activeElement as HTMLElement);
+        items[nextFocusIdx(idx, e.key === 'ArrowDown' ? 'down' : 'up', items.length)]?.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [menuOpen]);
 
   // ── Spring-back animation ────────────────────────────────────────────────
 
@@ -275,11 +313,45 @@ export function SwipeableRow({
           registerUndo('Acknowledged', () => setAcknowledged(false));
           break;
         }
+        case 'file-anyway': {
+          setDismissed(true);
+          springBack();
+          registerUndo('Filed anyway', () => setDismissed(false));
+          break;
+        }
+        case 'ignore': {
+          setDismissed(true);
+          springBack();
+          registerUndo('Ignored', () => setDismissed(false));
+          break;
+        }
+        case 'cancel-task': {
+          if (taskId) {
+            setDismissed(true);
+            fetch(`/api/tasks/${taskId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'cancelled' }),
+            }).catch(() => setDismissed(false));
+            registerUndo('Task cancelled', () => {
+              setDismissed(false);
+              fetch(`/api/tasks/${taskId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'pending' }),
+              });
+            });
+          } else {
+            onMenuAction?.('cancel-task');
+          }
+          break;
+        }
         default:
+          onMenuAction?.(action as MenuActionId);
           springBack();
       }
     },
-    [springBack, registerUndo],
+    [springBack, registerUndo, taskId, onMenuAction],
   );
 
   // ── Pointer event handlers ───────────────────────────────────────────────
@@ -459,7 +531,7 @@ export function SwipeableRow({
             </div>
 
             {/* Menu items */}
-            <div role="menu" aria-label={`More actions for ${taskTitle}`}>
+            <div ref={menuRef} role="menu" aria-label={`More actions for ${taskTitle}`}>
               {menuActions.map((item) => (
                 <button
                   key={item.action}

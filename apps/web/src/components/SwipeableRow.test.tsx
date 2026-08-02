@@ -4,6 +4,7 @@ import {
   classifyGestureAngle,
   getTrailingAction,
   getMenuActions,
+  nextFocusIdx,
   SwipeableRow,
   type SwipeCardType,
 } from './SwipeableRow';
@@ -137,6 +138,32 @@ describe('getMenuActions', () => {
     const labels = getMenuActions('needs-attention', {}).map((a) => a.label);
     expect(labels).toContain('Snooze 24 h');
     expect(labels).toContain('View blocked tasks');
+  });
+});
+
+// ─── Keyboard navigation index helper ─────────────────────────────────────────
+
+describe('nextFocusIdx', () => {
+  it('moves down within bounds', () => {
+    expect(nextFocusIdx(0, 'down', 3)).toBe(1);
+    expect(nextFocusIdx(1, 'down', 3)).toBe(2);
+  });
+
+  it('clamps at last item on down', () => {
+    expect(nextFocusIdx(2, 'down', 3)).toBe(2);
+  });
+
+  it('moves up within bounds', () => {
+    expect(nextFocusIdx(2, 'up', 3)).toBe(1);
+    expect(nextFocusIdx(1, 'up', 3)).toBe(0);
+  });
+
+  it('clamps at first item on up', () => {
+    expect(nextFocusIdx(0, 'up', 3)).toBe(0);
+  });
+
+  it('handles -1 (no current focus) going down → 0', () => {
+    expect(nextFocusIdx(-1, 'down', 3)).toBe(0);
   });
 });
 
