@@ -118,6 +118,7 @@ export default async function HomePage({
     id: string;
     title: string;
     description: string | null;
+    initiativeId: string | null;
     totalTasks: number;
     completedTasks: number;
     progress: number;
@@ -511,7 +512,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, dependsOn: true },
@@ -598,6 +599,7 @@ export default async function HomePage({
               id: mission.id,
               title: mission.title,
               description: mission.description,
+              initiativeId: mission.initiativeId ?? null,
               totalTasks,
               completedTasks,
               progress,
