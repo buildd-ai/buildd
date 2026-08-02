@@ -1,33 +1,29 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, inArray, desc } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, formatNextRun, timeAgo, computeGateChipMaxWaitMins, formatWaitDuration } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, formatNextRun } from '@/lib/mission-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
-import TaskCard from '@/components/TaskCard';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
-import WorkerRespondInput from '@/components/WorkerRespondInput';
-import ExternalLink from '@/components/ExternalLink';
-import MergeConfirmButton from '@/components/MergeConfirmButton';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
-import ExpandableText from './ExpandableText';
+import CondensedTimeline from './CondensedTimeline';
+import type { CondensedTimelineGroups, CondensedTimelineTask } from './CondensedTimeline';
+import { groupTimelineTasks } from '@/lib/condensed-timeline';
+import type { CondensedTask, CondensedTaskWorker } from '@/lib/condensed-timeline';
 import TaskPanelWrapper from './TaskPanelWrapper';
-import InlineTaskRetry from './InlineTaskRetry';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
-import AiFeedback from '@/components/AiFeedback';
-import { StatusChip } from '@/components/StatusChip';
 import PrioritySelector from './PrioritySelector';
 import MissionBackendSelector from './MissionBackendSelector';
 import ScheduleWizard from './ScheduleWizard';
@@ -346,47 +342,84 @@ export default async function MissionDetailPage({
     chainByTaskId.set(task.id, deriveChainPosition({ task: { id: task.id, status: task.status }, deps, dependents }));
   }
 
-  type TimelineCycle = {
-    evaluation: typeof allTasks[0] | null;
-    tasks: typeof allTasks;
+  // ── I-7: Condensed timeline — build groups ────────────────────────────────
+
+  // Normalise a DB worker row to CondensedTaskWorker (all strings, no Date objects)
+  function normaliseWorker(w: {
+    id: string;
+    status: string;
+    prUrl?: string | null;
+    prNumber?: number | null;
+    prLifecycleStatus?: string | null;
+    mergedAt?: Date | string | null;
+    completedAt?: Date | string | null;
+    startedAt?: Date | string | null;
+    currentAction?: string | null;
+    branch?: string | null;
+    waitingFor?: unknown;
+  }): CondensedTaskWorker {
+    return {
+      id: w.id,
+      status: w.status,
+      prUrl: w.prUrl ?? null,
+      prNumber: w.prNumber ?? null,
+      prLifecycleStatus: w.prLifecycleStatus ?? null,
+      mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+      completedAt: w.completedAt ? String(w.completedAt) : null,
+      startedAt: w.startedAt ? String(w.startedAt) : null,
+      currentAction: w.currentAction ?? null,
+      branch: w.branch ?? null,
+      waitingFor: (w.waitingFor as { type: string; prompt: string; options?: string[] } | null) ?? null,
+    };
+  }
+
+  // Build CondensedTask objects for the grouping function
+  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => ({
+    id: task.id,
+    status: task.status,
+    dependsOn: (task.dependsOn as string[] | null) ?? null,
+    workers: ((task.workers || []) as any[]).map(normaliseWorker),
+  }));
+  const condensedTaskMapForGrouping = new Map(condensedTasksForGrouping.map(t => [t.id, t]));
+
+  const rawGroups = groupTimelineTasks(condensedTasksForGrouping, condensedTaskMapForGrouping);
+
+  // Convert a raw group member to a CondensedTimelineTask with enriched display fields
+  function toTimelineTask(condensedTask: CondensedTask): CondensedTimelineTask {
+    const task = taskMap.get(condensedTask.id)!;
+    const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
+    const reviewerNote = reviewerNoteMap.get(task.id) ?? null;
+    const reviewerTaskRef = reviewerTaskMap.get(task.id);
+    return {
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      taskCreatedAt: task.createdAt.toISOString(),
+      taskUpdatedAt: task.updatedAt.toISOString(),
+      roleColor: role?.color ?? '#8A8478',
+      chain: chainByTaskId.get(task.id) ?? null,
+      latestWorker: condensedTask.workers[0] ?? null,
+      reviewerNote: reviewerNote
+        ? {
+            type: reviewerNote.type,
+            title: reviewerNote.title,
+            body: reviewerNote.body,
+            status: reviewerNote.status,
+            supersededByPrNumber: reviewerNote.supersededByPrNumber,
+          }
+        : null,
+      reviewerTaskHref: reviewerTaskRef ? `/app/tasks/${reviewerTaskRef.id}` : null,
+    };
+  }
+
+  const timelineGroups: CondensedTimelineGroups = {
+    waitingOnYou: rawGroups.waitingOnYou.map(toTimelineTask),
+    running: rawGroups.running.map(toTimelineTask),
+    nextQueued: rawGroups.nextQueued.map(toTimelineTask),
+    blocked: rawGroups.blocked.map(toTimelineTask),
+    done: rawGroups.done.map(toTimelineTask),
+    failed: rawGroups.failed.map(toTimelineTask),
   };
-
-  const cycles: TimelineCycle[] = [];
-  let currentCycle: TimelineCycle = { evaluation: null, tasks: [] };
-
-  for (const task of timelineTasks) {
-    if (task.mode === 'planning') {
-      // Start a new cycle
-      if (currentCycle.evaluation || currentCycle.tasks.length > 0) {
-        cycles.push(currentCycle);
-      }
-      currentCycle = { evaluation: task, tasks: [] };
-    } else {
-      currentCycle.tasks.push(task);
-    }
-  }
-  if (currentCycle.evaluation || currentCycle.tasks.length > 0) {
-    cycles.push(currentCycle);
-  }
-
-  // Show newest first
-  cycles.reverse();
-
-  // Filter out empty cycles (planning tasks that spawned no work and have no summary)
-  const filteredCycles = cycles.filter(cycle => {
-    if (cycle.tasks.length > 0) return true;
-    if (cycle.evaluation) {
-      const result = cycle.evaluation.result as { summary?: string } | null;
-      const isRunning = cycle.evaluation.status !== 'completed' && cycle.evaluation.status !== 'failed';
-      return !!result?.summary || isRunning;
-    }
-    return false;
-  });
-
-  // For completed missions, show only the last 3 cycles
-  const displayCycles = mission.status === 'completed'
-    ? filteredCycles.slice(0, 3)
-    : filteredCycles;
 
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
@@ -636,441 +669,17 @@ export default async function MissionDetailPage({
 
       {/* ── Timeline / Feed Tabs — PRIMARY CONTENT ── */}
       <MissionTabs
-        timelineContent={displayCycles.length > 0 ? (<>
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="section-label">Timeline</h2>
-            {mission.status === 'completed' && allTasksCount > 0 && (
-              <Link
-                href={`/app/tasks?mission=${id}`}
-                className="text-[12px] text-accent-text hover:underline"
-              >
-                View all {allTasksCount} tasks &rarr;
-              </Link>
-            )}
-          </div>
-          <div className="relative">
-            {displayCycles.map((cycle, ci) => {
-              const isLast = ci === displayCycles.length - 1;
-              const evalResult = cycle.evaluation?.result as { summary?: string; structuredOutput?: Record<string, unknown> } | null;
-              const triageOutcome = evalResult?.structuredOutput?.triageOutcome as string | undefined;
-              const evalWorker = cycle.evaluation?.workers?.[0];
-              const evalIsRunning = evalWorker?.status === 'running' || (cycle.evaluation?.status === 'running');
-              const evalElapsed = evalWorker?.startedAt
-                ? Math.round((Date.now() - new Date(evalWorker.startedAt).getTime()) / 1000)
-                : null;
-
-              return (
-                <div key={cycle.evaluation?.id || `cycle-${ci}`} className={`flex gap-0 ${ci === 0 ? 'animate-card-enter' : ''}`}>
-                  {/* Spine */}
-                  <div className="flex flex-col items-center w-8 shrink-0">
-                    {cycle.evaluation ? (
-                      <span className={`shrink-0 mt-0.5 ${
-                        evalIsRunning
-                          ? 'w-3 h-3 rounded-full bg-status-info animate-status-pulse'
-                          : isHeartbeat
-                            ? 'w-2.5 h-2.5 rounded-sm bg-[#059669]'
-                            : 'w-3 h-3 rounded-full bg-[#D97706]'
-                      }`} />
-                    ) : (
-                      <span className="w-3 h-3 rounded-full bg-text-muted shrink-0 mt-0.5" />
-                    )}
-                    {!isLast && (
-                      <div className="w-0.5 flex-1 bg-border-default min-h-[16px]" />
-                    )}
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 pb-5 min-w-0">
-                    {/* Evaluation header */}
-                    {cycle.evaluation && (
-                      <div className="mb-2">
-                        <div className="flex items-center justify-between">
-                          <span className="flex items-center gap-1.5">
-                            <span className={`text-[12px] font-semibold ${evalIsRunning ? 'text-status-info' : isHeartbeat ? 'text-[#059669]' : 'text-[#92400E]'}`}>
-                              {evalIsRunning
-                                ? (isHeartbeat ? 'Evaluating...' : 'Orchestrating...')
-                                : (isHeartbeat ? 'Evaluated' : 'Orchestrated')}
-                            </span>
-                            {evalIsRunning && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-status-pulse" />
-                            )}
-                            {!evalIsRunning && triageOutcome && (() => {
-                              const badge = {
-                                single_task: { label: 'Routed', cls: 'bg-emerald-500/10 text-emerald-600' },
-                                multi_task: { label: 'Decomposed', cls: 'bg-blue-500/10 text-blue-600' },
-                                conflict: { label: 'Conflict', cls: 'bg-amber-500/10 text-amber-600' },
-                              }[triageOutcome];
-                              if (!badge) return null;
-                              return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>;
-                            })()}
-                          </span>
-                          <span className="text-[11px] text-text-muted tabular-nums">
-                            {evalIsRunning
-                              ? evalElapsed != null
-                                ? evalElapsed < 60
-                                  ? `${evalElapsed}s`
-                                  : `${Math.floor(evalElapsed / 60)}m ${evalElapsed % 60}s`
-                                : 'Starting...'
-                              : timeAgo(cycle.evaluation.createdAt)}
-                          </span>
-                        </div>
-
-                        {/* Live orchestrator activity */}
-                        {evalIsRunning && evalWorker && (
-                          <div className="mt-1.5 flex items-start gap-2">
-                            {evalWorker.currentAction && (
-                              <p className="text-[12px] text-text-secondary leading-relaxed flex-1">
-                                {evalWorker.currentAction}
-                              </p>
-                            )}
-                            {(evalWorker.turns ?? 0) > 0 && (
-                              <span className="text-[11px] text-text-muted tabular-nums shrink-0">
-                                {evalWorker.turns} turn{evalWorker.turns !== 1 ? 's' : ''}
-                              </span>
-                            )}
-                          </div>
-                        )}
-
-                        {evalResult?.summary && (
-                          <>
-                            {triageOutcome === 'conflict'
-                              ? <p className="text-[12px] text-text-secondary mt-1.5 leading-relaxed">{evalResult.summary}</p>
-                              : <ExpandableText text={evalResult.summary} />
-                            }
-                            <div className="mt-1">
-                              <AiFeedback entityType="orchestration" entityId={`eval-${cycle.evaluation?.id}`} compact />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Task branches */}
-                    {cycle.tasks.length > 0 && (
-                      <div className="space-y-0.5">
-                        {cycle.tasks.map((task, ti) => {
-                          const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
-                          const roleColor = role?.color || '#8A8478';
-                          const taskResult = task.result as { summary?: string; nextSuggestion?: string } | null;
-                          const latestWorker = task.workers?.[0];
-                          const isRunning = latestWorker?.status === 'running';
-                          const isDone = task.status === 'completed';
-                          const isFailed = task.status === 'failed';
-                          const waitingWorker = task.workers?.find(
-                            (w) => w.status === 'waiting_input' && w.waitingFor
-                          );
-                          const waitingFor = waitingWorker?.waitingFor as {
-                            type: string;
-                            prompt: string;
-                            options?: string[];
-                          } | null;
-
-                          return (
-                            <div key={task.id} className="animate-timeline-enter" style={{ animationDelay: `${ti * 60}ms` }}>
-                              {/* Task row — branch connector + role dot + TaskCard.
-                                  data-task-id on the wrapper so TaskPanelWrapper.closest()
-                                  can intercept the click even though the Link is inside TaskCard. */}
-                              <div
-                                data-task-id={task.id}
-                                data-task-actionable={(!isDone || !!latestWorker?.prUrl) ? 'true' : 'false'}
-                                className="flex items-center gap-0"
-                              >
-                                <span className="flex items-center gap-1.5 shrink-0 w-5 pointer-events-none" aria-hidden="true">
-                                  <span className="w-2 h-px bg-border-default" />
-                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: roleColor }} />
-                                </span>
-                                <div className="flex-1 min-w-0">
-                                  <TaskCard
-                                    density="inline"
-                                    id={task.id}
-                                    title={task.title}
-                                    taskStatus={task.status}
-                                    workerStatus={latestWorker?.status ?? null}
-                                    chain={chainByTaskId.get(task.id) ?? null}
-                                    taskCreatedAt={task.createdAt.toISOString()}
-                                    taskUpdatedAt={task.updatedAt.toISOString()}
-                                    workerStartedAt={latestWorker?.startedAt ? latestWorker.startedAt.toISOString() : null}
-                                    workerUpdatedAt={null}
-                                    prUrl={latestWorker?.prUrl ?? null}
-                                    prNumber={latestWorker?.prNumber ?? null}
-                                    prLifecycleStatus={latestWorker?.prLifecycleStatus ?? null}
-                                    currentAction={latestWorker?.currentAction ?? null}
-                                  />
-                                  {/* BT-14: tier badge + wait duration on awaiting-merge rows */}
-                                  {isDone && latestWorker?.prUrl && !latestWorker?.mergedAt && latestWorker?.prLifecycleStatus !== 'closed' && (() => {
-                                    const waitMins = latestWorker.completedAt
-                                      ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
-                                      : 0;
-                                    return (
-                                      <div className="px-2 pb-1">
-                                        <StatusChip
-                                          policyTier={effectivePolicy.tier}
-                                          waitingMinutes={waitMins}
-                                          className="hidden sm:inline-flex"
-                                        />
-                                      </div>
-                                    );
-                                  })()}
-                                </div>
-                              </div>
-
-                              {/* InlineTaskRetry for failed tasks */}
-                              {isFailed && (
-                                <div className="pl-5 pb-1">
-                                  <InlineTaskRetry taskId={task.id} />
-                                </div>
-                              )}
-
-                              {waitingWorker && waitingFor && (
-                                <div className="pl-7 pb-1">
-                                  <span className="section-label text-status-warning">Needs your input</span>
-                                  <WorkerRespondInput
-                                    workerId={waitingWorker.id}
-                                    question={waitingFor.prompt}
-                                    options={waitingFor.options}
-                                  />
-                                </div>
-                              )}
-
-                              {isDone && taskResult?.nextSuggestion && (
-                                <div className="pl-7 pb-0.5">
-                                  <p className="text-[11px] text-text-muted italic leading-relaxed">
-                                    <span className="text-text-secondary">Suggested:</span>{' '}
-                                    &ldquo;{taskResult.nextSuggestion}&rdquo;
-                                  </p>
-                                </div>
-                              )}
-
-                              {/* BT-16: Agent-review verdict chips — tappable, inline on reviewed task */}
-                              {(() => {
-                                const reviewNote = reviewerNoteMap.get(task.id);
-                                if (!reviewNote) return null;
-                                const reviewerTask = reviewerTaskMap.get(task.id);
-                                const reviewerHref = reviewerTask ? `/app/tasks/${reviewerTask.id}` : null;
-                                const noteType = reviewNote.type;
-
-                                if (noteType === 'reviewer_approved') {
-                                  const confidence = reviewNote.title.match(/\(confidence ([\d.]+)\)/)?.[1];
-                                  const isMerged = !!latestWorker?.mergedAt;
-                                  return (
-                                    <div className="pl-7 pb-1 mt-1">
-                                      <div className="bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
-                                        <div className="flex items-center gap-1.5 mb-0.5">
-                                          {reviewerHref ? (
-                                            <Link href={reviewerHref} className="text-status-success text-[11px] font-semibold hover:underline">🤖 Approved</Link>
-                                          ) : (
-                                            <span className="text-status-success text-[11px] font-semibold">🤖 Approved</span>
-                                          )}
-                                          {confidence && (
-                                            <span className="text-[10px] text-status-success/70">(confidence {confidence})</span>
-                                          )}
-                                        </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
-                                        <p className="text-[10px] text-text-muted mt-0.5">{isMerged ? '→ Merged' : '→ Merging automatically…'}</p>
-                                      </div>
-                                    </div>
-                                  );
-                                }
-
-                                if (noteType === 'reviewer_request_changes') {
-                                  const iteration = reviewNote.title.match(/\(iteration (\d+\/\d+)\)/)?.[1];
-                                  return (
-                                    <div className="pl-7 pb-1 mt-1">
-                                      <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
-                                        <div className="flex items-center gap-1.5 mb-0.5">
-                                          {reviewerHref ? (
-                                            <Link href={reviewerHref} className="text-[#D97706] text-[11px] font-semibold hover:underline">🤖 Changes Requested</Link>
-                                          ) : (
-                                            <span className="text-[#D97706] text-[11px] font-semibold">🤖 Changes Requested</span>
-                                          )}
-                                          {iteration && (
-                                            <span className="text-[10px] text-[#D97706]/70">(iteration {iteration})</span>
-                                          )}
-                                        </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
-                                        {latestWorker?.branch && (
-                                          <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({latestWorker.branch})</p>
-                                        )}
-                                      </div>
-                                    </div>
-                                  );
-                                }
-
-                                if (noteType === 'reviewer_escalated') {
-                                  const prWorker = latestWorker;
-                                  const successorPrNumber = reviewNote.supersededByPrNumber;
-                                  const successorUrl = successorPrNumber && prWorker?.prUrl
-                                    ? prWorker.prUrl.replace(/\/pull\/\d+$/, `/pull/${successorPrNumber}`)
-                                    : null;
-                                  return (
-                                    <div className="pl-7 pb-1 mt-1">
-                                      <div className="bg-status-error/5 border border-status-error/20 rounded px-2.5 py-2">
-                                        <div className="flex items-center gap-1.5 mb-1">
-                                          {reviewerHref ? (
-                                            <Link href={reviewerHref} className="text-status-error text-[11px] font-semibold hover:underline">🤖 Escalated to you</Link>
-                                          ) : (
-                                            <span className="text-status-error text-[11px] font-semibold">🤖 Escalated to you</span>
-                                          )}
-                                        </div>
-                                        <p className="text-[11px] text-text-secondary leading-relaxed mb-2 line-clamp-2" title={reviewNote.body ?? reviewNote.title}>{reviewNote.body ?? reviewNote.title}</p>
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                          {prWorker?.prUrl && (
-                                            <ExternalLink href={prWorker.prUrl} className="text-[11px] text-accent-text hover:underline">
-                                              PR #{prWorker.prNumber} ↗
-                                            </ExternalLink>
-                                          )}
-                                          {prWorker?.prNumber && !prWorker?.mergedAt && prWorker?.prLifecycleStatus !== 'closed' && (
-                                            <MergeConfirmButton prNumber={prWorker.prNumber} prUrl={prWorker.prUrl ?? ''} />
-                                          )}
-                                          {prWorker?.prLifecycleStatus === 'closed' && (
-                                            <span className="text-[11px] text-text-muted">
-                                              closed
-                                              {reviewNote.status === 'superseded' && successorPrNumber && (
-                                                <>
-                                                  {' — superseded by '}
-                                                  {successorUrl ? (
-                                                    <ExternalLink href={successorUrl} className="text-accent-text hover:underline">
-                                                      #{successorPrNumber} →
-                                                    </ExternalLink>
-                                                  ) : `#${successorPrNumber} →`}
-                                                </>
-                                              )}
-                                            </span>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                }
-
-                                return null;
-                              })()}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {/* BT-18: Gate chip — PRs awaiting merge in this cycle, with policy-tier context */}
-                    {(() => {
-                      const awaitingPrs = cycle.tasks
-                        .filter(t => t.status === 'completed')
-                        .map(t => ({ task: t, worker: (t.workers as any[])?.[0] }))
-                        .filter(({ worker }) => worker?.prUrl && !worker?.mergedAt && worker?.prLifecycleStatus !== 'closed');
-                      if (awaitingPrs.length === 0) return null;
-                      const maxWaitMins = computeGateChipMaxWaitMins(
-                        awaitingPrs.map(({ worker: w }) => ({ completedAt: w?.completedAt ?? null }))
-                      );
-                      return (
-                        <div className="mt-2 mb-1 ml-7 border border-border-strong rounded-[8px] px-3 py-2.5 bg-surface-2">
-                          <div className="mb-2">
-                            <span className="text-[11px] font-semibold text-text-secondary">
-                              ⏸ {awaitingPrs.length} PR{awaitingPrs.length > 1 ? 's' : ''} awaiting merge
-                            </span>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="text-[10px] font-mono text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
-                                {policyLabel}
-                              </span>
-                              {maxWaitMins > 0 && (
-                                <span className="text-[10px] text-text-muted">
-                                  · Waiting {formatWaitDuration(maxWaitMins)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="space-y-1.5">
-                            {awaitingPrs.map(({ task: t, worker: w }) => {
-                              const reviewNote = reviewerNoteMap.get(t.id);
-                              const reviewStatus = reviewNote?.type === 'reviewer_approved'
-                                ? '✓ Approved — merging'
-                                : reviewNote?.type === 'reviewer_request_changes'
-                                  ? '↩ Changes requested'
-                                  : reviewNote?.type === 'reviewer_escalated'
-                                    ? '⚠ Escalated to you'
-                                    : effectivePolicy.tier === 'agent-review'
-                                      ? '🤖 Auto-reviewing…'
-                                      : effectivePolicy.tier === 'human'
-                                        ? 'Waiting for merge'
-                                        : null;
-                              return (
-                                <div key={t.id} className="flex items-center justify-between gap-2 text-[11px]">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    {w.prUrl && (
-                                      <ExternalLink href={w.prUrl} className="text-accent-text hover:underline shrink-0">
-                                        PR #{w.prNumber}
-                                      </ExternalLink>
-                                    )}
-                                    {reviewStatus && (
-                                      <span className="text-text-muted truncate">{reviewStatus}</span>
-                                    )}
-                                  </div>
-                                  {w.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed' && (
-                                    <MergeConfirmButton
-                                      prNumber={w.prNumber}
-                                      prUrl={w.prUrl ?? ''}
-                                      className="shrink-0"
-                                      disabled={effectivePolicy.tier === 'agent-review' && !reviewNote}
-                                      disabledReason="Awaiting agent review"
-                                    />
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* No tasks spawned */}
-                    {cycle.evaluation && cycle.tasks.length === 0 && (
-                      <p className="text-[12px] text-text-muted italic">No tasks needed</p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Next evaluation indicator — hidden for completed missions */}
-            {scheduleCron && mission.status !== 'completed' && (
-              <div className="flex gap-0 items-center">
-                <div className="flex flex-col items-center w-8 shrink-0">
-                  <span className={`w-3 h-3 rounded-full border-2 shrink-0 ${isManualMode ? 'border-amber-500/40 bg-transparent' : 'border-border-default bg-transparent'}`} />
-                </div>
-                {isManualMode ? (
-                  <span className="text-[12px] text-amber-600 italic pl-2">Disarmed · Run now to advance</span>
-                ) : mission.status === 'paused' ? (
-                  <span className="text-[12px] text-text-muted italic pl-2">Monitoring paused</span>
-                ) : scheduleOverdue ? (
-                  <span className="text-[12px] text-status-warning italic pl-2">Overdue by {scheduleOverdueMinutes}m</span>
-                ) : scheduleNextRunAt ? (
-                  <span className="text-[12px] text-text-muted italic pl-2">Next evaluation {timeAgo(scheduleNextRunAt)}</span>
-                ) : null}
-              </div>
-            )}
-          </div>
-        </div>
-
-      {/* View all tasks link — hidden for completed missions (shown in timeline header instead) */}
-      {allTasksCount > 0 && mission.status !== 'completed' && (
-        <div className="mb-6">
-          <Link
-            href={`/app/tasks?mission=${id}`}
-            className="flex items-center gap-2 px-3 py-2.5 rounded-lg hover:bg-card-hover transition-colors group text-[13px] text-text-secondary hover:text-accent-text"
-          >
-            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
-            </svg>
-            <span>View all {allTasksCount} tasks</span>
-            <svg className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-            </svg>
-          </Link>
-        </div>
-      )}
-        </>) : <p className="text-[13px] text-text-muted italic mb-6">No tasks yet</p>}
+        timelineContent={(<CondensedTimeline
+          groups={timelineGroups}
+          effectivePolicyTier={effectivePolicy.tier}
+          policyLabel={policyLabel}
+          missionId={id}
+          allTasksCount={allTasksCount}
+          missionCompleted={mission.status === 'completed'}
+        />)}
         feedContent={<MissionFeed missionId={id} />}
       />
+
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
