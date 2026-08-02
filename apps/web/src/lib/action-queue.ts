@@ -4,6 +4,7 @@ export interface WaitingOnYouRawItem {
   kind: 'merge' | 'approve' | 'answer';
   prUrl?: string;
   prNumber?: number;
+  prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
   upstreamTaskId?: string;
   upstreamTaskTitle?: string;
   unblockCount?: number;
@@ -37,6 +38,7 @@ export interface ActionQueueItem {
   chip: ActionChip;
   prUrl?: string;
   prNumber?: number;
+  prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
   taskId?: string;
   taskTitle?: string;
   workspaceName?: string;
@@ -99,6 +101,7 @@ export function buildActionQueue(
           unblockCount: (existing.unblockCount ?? 0) + (item.unblockCount ?? 0),
           missionId: existing.missionId ?? item.missionId,
           missionTitle: existing.missionTitle ?? item.missionTitle,
+          prLifecycleStatus: item.prLifecycleStatus ?? existing.prLifecycleStatus,
         });
       } else {
         map.set(key, {
@@ -106,6 +109,7 @@ export function buildActionQueue(
           chip: 'MERGE',
           prUrl: item.prUrl,
           prNumber: item.prNumber,
+          prLifecycleStatus: item.prLifecycleStatus ?? undefined,
           upstreamTaskTitle: item.upstreamTaskTitle,
           unblockCount: item.unblockCount,
           missionId: item.missionId,
