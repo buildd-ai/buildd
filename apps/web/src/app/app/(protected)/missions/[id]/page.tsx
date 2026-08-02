@@ -671,6 +671,7 @@ export default async function MissionDetailPage({
       <MissionTabs
         timelineContent={(<CondensedTimeline
           groups={timelineGroups}
+          segments={segments}
           effectivePolicyTier={effectivePolicy.tier}
           policyLabel={policyLabel}
           missionId={id}

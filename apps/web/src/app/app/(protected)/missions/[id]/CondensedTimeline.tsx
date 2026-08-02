@@ -8,9 +8,11 @@ import MergeConfirmButton from '@/components/MergeConfirmButton';
 import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { StatusChip } from '@/components/StatusChip';
+import { SegmentStrip } from '@/components/SegmentStrip';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
+import type { MissionSegment } from '@buildd/core/mission-helpers';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +49,8 @@ export type CondensedTimelineGroups = {
 
 export type CondensedTimelineProps = {
   groups: CondensedTimelineGroups;
+  /** Server-computed segments from computeMissionProgress — sliced per group for disclosure strips. */
+  segments: MissionSegment[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
   missionId: string;
@@ -346,6 +350,7 @@ function TaskList({
 
 export default function CondensedTimeline({
   groups,
+  segments,
   effectivePolicyTier,
   policyLabel,
   missionId,
@@ -357,6 +362,11 @@ export default function CondensedTimeline({
   const [blockedExpanded, setBlockedExpanded] = useState(false);
 
   const { waitingOnYou, running, nextQueued, blocked, done, failed } = groups;
+
+  // Build O(1) segment lookup — used to slice segments for each disclosure strip
+  const segmentMap = new Map(segments.map(s => [s.taskId, s]));
+  const getGroupSegments = (tasks: CondensedTimelineTask[]): MissionSegment[] =>
+    tasks.flatMap(t => { const s = segmentMap.get(t.id); return s ? [s] : []; });
 
   // Spec §3.2: ≤2 blocked → always expanded; ≥3 → collapsed disclosure
   const showBlockedInline = blocked.length <= 2;
@@ -463,6 +473,11 @@ export default function CondensedTimeline({
                     ▶
                   </span>
                   {moreQueuedExpanded ? 'Show less' : `${queuedOverflow.length} more queued`}
+                  {!moreQueuedExpanded && (
+                    <span className="ml-auto flex-shrink-0">
+                      <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments(queuedOverflow)} />
+                    </span>
+                  )}
                 </button>
               </>
             )}
@@ -505,6 +520,11 @@ export default function CondensedTimeline({
                     ▶
                   </span>
                   {blockedExpanded ? 'Hide blocked' : `${blocked.length} waiting on dependencies`}
+                  {!blockedExpanded && (
+                    <span className="ml-auto flex-shrink-0">
+                      <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments(blocked)} />
+                    </span>
+                  )}
                 </button>
               </>
             )}
@@ -559,6 +579,11 @@ export default function CondensedTimeline({
                   .filter(Boolean)
                   .join(' · ')}
               </span>
+              {!doneExpanded && (
+                <span className="ml-auto flex-shrink-0">
+                  <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments([...done, ...failed])} />
+                </span>
+              )}
             </button>
           </div>
         )}
