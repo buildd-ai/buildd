@@ -261,3 +261,78 @@ describe('partitionEscalations', () => {
     expect(resolved[0]).toEqual(item);
   });
 });
+
+// ── partitionEscalations ────────────────────────────────────────────────────
+
+function baseResolved(overrides?: Partial<ResolvedEscalationItem>): ResolvedEscalationItem {
+  return {
+    workerId: 'w-1',
+    taskId: 't-1',
+    taskTitle: 'feat: some change',
+    prNumber: 42,
+    prUrl: 'https://github.com/org/repo/pull/42',
+    prLifecycleStatus: 'merged',
+    workspaceName: 'buildd',
+    ...overrides,
+  };
+}
+
+describe('partitionEscalations', () => {
+  it('treats null lifecycle as active (keep fallback)', () => {
+    const { active, resolved } = partitionEscalations([
+      { ...baseResolved(), prLifecycleStatus: null as any },
+    ]);
+    expect(active).toHaveLength(1);
+    expect(resolved).toHaveLength(0);
+  });
+
+  it('treats merged lifecycle as resolved', () => {
+    const { active, resolved } = partitionEscalations([
+      baseResolved({ prLifecycleStatus: 'merged' }),
+    ]);
+    expect(active).toHaveLength(0);
+    expect(resolved).toHaveLength(1);
+  });
+
+  it('treats closed lifecycle as resolved', () => {
+    const { active, resolved } = partitionEscalations([
+      baseResolved({ prLifecycleStatus: 'closed' }),
+    ]);
+    expect(active).toHaveLength(0);
+    expect(resolved).toHaveLength(1);
+  });
+
+  it('treats any other lifecycle value as active', () => {
+    const { active, resolved } = partitionEscalations([
+      { ...baseResolved(), prLifecycleStatus: 'pr_open' as any },
+      { ...baseResolved({ workerId: 'w-2' }), prLifecycleStatus: 'ci_green' as any },
+    ]);
+    expect(active).toHaveLength(2);
+    expect(resolved).toHaveLength(0);
+  });
+
+  it('partitions a mixed list correctly', () => {
+    const items = [
+      baseResolved({ workerId: 'w-1', prLifecycleStatus: null as any }),
+      baseResolved({ workerId: 'w-2', prLifecycleStatus: 'merged' }),
+      baseResolved({ workerId: 'w-3', prLifecycleStatus: 'closed' }),
+      baseResolved({ workerId: 'w-4', prLifecycleStatus: 'ci_green' as any }),
+    ];
+    const { active, resolved } = partitionEscalations(items);
+    expect(active).toHaveLength(2);
+    expect(resolved).toHaveLength(2);
+    expect(resolved.map(r => r.workerId)).toEqual(['w-2', 'w-3']);
+  });
+
+  it('returns empty arrays for empty input', () => {
+    const { active, resolved } = partitionEscalations([]);
+    expect(active).toHaveLength(0);
+    expect(resolved).toHaveLength(0);
+  });
+
+  it('preserves all item fields in both partitions', () => {
+    const item = baseResolved({ workerId: 'w-x', taskTitle: 'Custom task', prNumber: 99 });
+    const { resolved } = partitionEscalations([item]);
+    expect(resolved[0]).toEqual(item);
+  });
+});
