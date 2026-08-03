@@ -1,12 +1,154 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-07-27
-**Previous scan**: 2026-07-20
+**Last updated**: 2026-08-03
+**Previous scan**: 2026-07-27
 **Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.220)
 **Python SDK**: v0.2.128 (bundled with CLI v2.1.220)
-**Claude Code CLI**: v2.1.220 (released July 25, 2026)
+**Claude Code CLI**: v2.1.220 (released July 25, 2026 — no new releases this week)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## ⚠️ URGENT: Three Deadlines Active Right Now (August 2026)
+
+### TODAY — August 5, 2026: Claude Opus 4.1 API Retirement
+
+`claude-opus-4-1-20250805` is retired from the Claude API **today**. All requests using this exact model ID string will return errors immediately.
+
+**Migration**: `claude-opus-4-1-20250805` → `claude-opus-4-8`
+
+Run `grep -r 'opus-4-1'` across the codebase. Buildd's model-alias layer in `packages/core/model-aliases.ts` should abstract this, but verify no hardcoded strings escaped.
+
+### August 17, 2026: Legacy Workbench + Experimental Prompt APIs Retired
+
+Two items retire on the same date:
+
+1. **Legacy Workbench** (`platform.claude.com/workbench`) — access ends permanently. Saved prompts, variables, and evals not migrated to the new Playground. Export data from the banner now.
+
+2. **Experimental prompt tools APIs** — three endpoints retired with no replacement:
+   - `POST /v1/experimental/generate_prompt`
+   - `POST /v1/experimental/improve_prompt`
+   - `POST /v1/experimental/templatize_prompt`
+
+   After August 17, requests to these endpoints return errors. If Buildd uses any of these (e.g., for skill/task prompt generation), migrate off them now.
+
+### August 31, 2026: Claude Sonnet 5 Introductory Pricing Ends
+
+Claude Sonnet 5 reverts from $2/$10 → $3/$15 per MTok on September 1. Update cost estimates and billing alerts for any Buildd workspaces that benchmark against Sonnet 5 pricing.
+
+---
+
+## SDK Releases (July 27 – August 3, 2026) — No New Releases
+
+No new TypeScript SDK, Python SDK, or Claude Code CLI releases this week. Latest versions remain:
+- **TypeScript SDK**: v0.3.220 (July 25)
+- **Python SDK**: v0.2.128 (July 25)
+- **Claude Code CLI**: v2.1.220 (July 25)
+
+---
+
+## Platform: `agent-memory-2026-07-22` Header Now in Effect
+
+On July 22, 2026, `managed-agents-2026-04-01` adopted the same list behavior as `agent-memory-2026-07-22`. This means:
+
+- Memory listing (`GET /v1/memory_stores/{id}/memories`) now returns a stable server-defined order
+- `order_by` and `order` params are ignored
+- `depth` accepts only `0`, `1`, or omitted (other values → 400)
+- `path_prefix` must end with `/` and matches whole path segments (not substrings)
+- Page cursors issued without the header are no longer valid with it — restart from first page when adopting
+
+**SDK versions that send the new header automatically**: Python 0.116.0, TypeScript 0.110.0, CLI 1.16.0. Sending both `managed-agents-2026-04-01` AND `agent-memory-2026-07-22` returns a 400 — don't stack them.
+
+**Buildd action**: If Buildd adds Managed Agent memory store integration, use the new header from the start. If any existing code explicitly passes `managed-agents-2026-04-01` on memory calls, replace it with `agent-memory-2026-07-22`.
+
+---
+
+## Security: Anthropic Cybersecurity Evaluation Incident Disclosure (July 30, 2026)
+
+Anthropic disclosed that three of its AI models — Opus 4.7, Mythos 5, and an internal research model — accessed real company systems during internal cyber capability evaluations. The earliest incident was April 2026.
+
+**Root cause**: A misconfiguration between Anthropic and its evaluation partner (Irregular). The models were instructed they were in simulated environments without internet, but internet access was inadvertently left enabled.
+
+**Impact**: Models exploited weak passwords and unauthenticated services (not zero-days). No lasting harm, no confirmed sensitive data exfiltration.
+
+**Anthropic framing**: "closer to a harness and operational failure than a model alignment failure" — the models behaved according to their instructions; the instructions were wrong about the environment.
+
+**Relevance for Buildd**: Workers executing code or running security-adjacent tasks in eval/test contexts must have proper sandbox isolation. The incident validates Buildd's bwrap sandboxing work (CBM-3). Ensure that eval-mode workers don't have unintended network access paths; the `sandbox.network.strictAllowlist` (added in CLI v2.1.219) is the right control here.
+
+---
+
+## Ecosystem: Agent Client Protocol (ACP) Goes Mainstream
+
+ACP is a JSON-RPC 2.0 standard created by Zed Industries (August 2025, registry co-launched with JetBrains January 2026). It solves the N×M problem: instead of each AI agent needing a plugin per editor, agents register once and work anywhere.
+
+**Current status (July 2026)**:
+- 38 registered agents (Claude Code, Gemini CLI, Codex, GitHub Copilot, Goose, Cursor, and 32+ others)
+- 12+ editor integrations (Zed + JetBrains natively; Neovim, Emacs, VS Code via community plugins)
+
+**Relationship to MCP**: Complementary, not competing. ACP = editor↔agent transport. MCP = agent↔tools. Both run simultaneously in typical setups.
+
+**Claude Agent SDK support**: Via `@agentclientprotocol/claude-agent-acp` adapter (also `@zed-industries/claude-code-acp`). No official first-party Anthropic SDK support yet — community-maintained adapter.
+
+**Relevance for Buildd**: Low urgency, medium strategic interest. If Buildd ever ships a Buildd IDE extension or wants to position workers as "any-editor" agents, ACP is the standard to implement. Worth tracking but no immediate action needed.
+
+---
+
+## Anthropic Business News (July 27–August 3, 2026)
+
+### IPO Roadshow in Progress
+Pre-roadshow investor meetings began July 15. Public S-1 filing expected August–September 2026, with pricing potentially October–November. Buildd operates at Anthropic's API tier — IPO timing may affect enterprise pricing and partnership terms.
+
+### Position on Open-Weights Models (July 27)
+Anthropic published its formal stance on open-weights AI. Summary: Anthropic continues to prioritize safety over open-weights release speed; maintains closed-weights strategy for frontier models. Strategic continuity — no change to SDK access model.
+
+### Cognizant Partnership Expansion (July 27)
+Cognizant and Anthropic expanded their enterprise partnership to bring Claude to enterprise clients. Broadens Claude Code's enterprise addressable market.
+
+---
+
+## New Ecosystem Projects (Since July 27, 2026)
+
+| Project | Stars | Description |
+|---------|-------|-------------|
+| **OpenCode** (sst/opencode) | 161K+ | Leading open-source alternative to proprietary coding agents; runs in terminal, desktop, IDE. Built by SST creators. |
+| **OpenClaw** | 188K | Open-source computer-use platform (Claude API wrapper); 565+ community skills, Google Workspace integration, persistent memory. Fastest-growing repo in the ecosystem. |
+| **Mem0** | 55.7K | Universal self-improving memory layer for AI agents — stores compressed session memories across model providers. |
+| **claude-agent-acp** | — | Community adapter: Claude Agent SDK ↔ Agent Client Protocol. Enables Claude workers in Zed, JetBrains, etc. |
+
+---
+
+## Recommendations for Buildd
+
+### This Week (August 3, 2026)
+
+**#0 — URGENT: Verify `claude-opus-4-1` is not used anywhere** (retires TODAY)
+Run `grep -r 'opus-4-1' packages/ apps/`. Check `packages/core/model-aliases.ts`, role configs, and any hardcoded model strings in mission templates. Migration: `claude-opus-4-8`. Effort: Trivial. Deadline: TODAY.
+
+**#1 — Audit use of experimental prompt APIs before August 17**
+Check for any Buildd code calling `/v1/experimental/generate_prompt`, `/v1/experimental/improve_prompt`, or `/v1/experimental/templatize_prompt`. These retire August 17 with no replacement. If used for skill generation or task template tooling, remove or replace before then. Effort: Low. Deadline: August 17.
+
+**#2 — Add Sonnet 5 pricing sunset alert to dashboard** (August 31 deadline)
+Sonnet 5 introductory rate ($2/$10/MTok) ends August 31. Buildd role cards and cost estimates that cite Sonnet 5 pricing should show a "Rate changes Sep 1" notice. New rate: $3/$15. Effort: Low. Deadline: August 31.
+
+**#3 — Update memory store integration to use `agent-memory-2026-07-22` header**
+If Buildd adds Managed Agent memory store integration, use the `agent-memory-2026-07-22` header from the start — not the legacy `managed-agents-2026-04-01`. SDK 0.110.0+ sends it automatically. Effort: Trivial (new integration only).
+
+**#4 — Use `sandbox.network.strictAllowlist` for security-critical roles**
+The Anthropic cybersecurity eval incident (July 30) reinforces that unintended network access in agentic contexts is a real risk. For high-security or cost-sensitive Buildd roles, `sandbox.network.strictAllowlist` (CLI v2.1.219) is the right posture — positive allowlist that denies all non-listed hosts without prompting. Effort: Low. Already in previous recommendations (#8 from July 27).
+
+### Still Relevant (From July 27, 2026)
+
+**#5 — Bump SDK to ^0.3.220** (#0 from last week)
+**#6 — Update model-tier config for Claude Opus 5** (#1 from last week)
+**#7 — Use `tool_result_meta` for denied/interrupted tool classification** (#2)
+**#8 — Wire `cancel_queued` to Buildd's interrupt endpoint** (#3)
+**#9 — Fix billing accuracy with `canonicalModel` + `provider`** (#4)
+**#10 — Surface `fast_mode_disabled_reason` in role/task UI** (#5)
+**#11 — Add `terminal_reason` to task completion payload** (#6)
+**#12 — Expose subagent depth/concurrency caps in role config** (#7)
+**#13 — Evaluate `codebase-memory-mcp` for token reduction** (#9)
+**#14 — Adopt mid-conversation tool changes beta for dynamic tool config** (#10)
 
 ---
 
@@ -909,6 +1051,7 @@ Managed Agents now support up to 50 seed events per session — eliminates separ
 
 | Date | SDK Versions (TS) | SDK Versions (Py) | CLI Versions | Key Changes |
 |------|-------------------|-------------------|-------------|-------------|
+| 2026-08-03 | 0.3.220 (no new) | 0.2.128 (no new) | 2.1.220 (no new) | **Opus 4.1 retires Aug 5 (TODAY)**, Workbench+experimental prompt APIs retire Aug 17, Sonnet 5 intro pricing ends Aug 31, agent-memory-2026-07-22 header in effect, Anthropic cybersecurity eval incident (Opus 4.7/Mythos 5 accessed real systems via misconfigured harness), ACP (Agent Client Protocol) reaches 38 agents/12+ editors, OpenCode 161K stars, OpenClaw 188K stars, Anthropic IPO roadshow underway |
 | 2026-07-27 | 0.3.216-0.3.220 | 0.2.124-0.2.128 | 2.1.216-2.1.220 | **Claude Opus 5** (Jul 24, $5/$25/MTok, 1M ctx, near-Fable-5 perf), tool_result_meta sidecar, cancel_queued interrupt, fast_mode_disabled_reason, DirectoryAdded hook, canonicalModel+provider on modelUsage, terminal_reason typed, subagent depth cap (default 3, env override), concurrent subagent cap (20), sandbox.network.strictAllowlist, /code-review as background subagent, mid-conversation tool changes beta, server-side fallback beta, Python stdin-closure bug fix (critical: prevented background MCP calls), codebase-memory-mcp (32K stars), grok-build (xAI competitor) |
 | 2026-07-20 | 0.3.208-0.3.215 | 0.2.121-0.2.123 | 2.1.208-2.1.215 | Fable 5 free period ended (Jul 19), /fork background sessions, subagent spawn cap (200), WebSearch cap (200), MCP >2min auto-background, elapsed-time counter on tool lines, subkind:scheduled-trigger, aborted:true on interrupted turns, subagent_type/retry on tool_progress, USAGE_LIMIT_ERROR_PREFIXES, timedOutAfterMs on Bash, screen reader mode, /verify /code-review now invoke-only, Claude for Teachers, Cowork mobile/web, Memory categorized entries |
 | 2026-07-13 | 0.3.169-0.3.207 | SessionStore parity | 2.1.169-2.1.207 | Sonnet 5 default (1M ctx), Fable 5 launch/suspension/return, background subagents non-blocking, Agent Teams simplified, Chrome GA, command_lifecycle frames, parent_agent_id (depth-2+ trees), background_tasks_changed, sessionStore (alpha), /dataviz skill, Manual default permission mode, /doctor enhancements |
