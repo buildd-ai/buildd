@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Gesture grammar — SwipeableRow primitive applied to 3 surfaces (#1536)
+- Resolve per-worker placeholder tokens in MCP server env configs (#1548)
+- Add CBM binary and cache dir to bwrap mount allowlist (#1549)
+- SegmentStrip in collapsed timeline disclosure rows (I-8) (#1546)
+- Pin codebase-memory-mcp v0.9.0 into Coder worker image (#1545)
+- Ungrouped Other bucket in Missions list (I-4) (#1542)
+- Animate gate chip collapse on worker.mergedAt (I-11) (#1544)
+- Condensed timeline default-open hierarchy (I-7) (#1540)
+- Workspace selection consistent across mission create with last-used default (#1543)
 - Subject anchors 6/7 — dead-PR shutdown behind autoCloseBuilddSupersededPrs flag (#1507)
 - Subject anchors 5/7 — reconciliation sweep and pre-claim liveness gate (#1506)
 - Surface 403 GitHub App permission gap as connector_permission_insufficient (#1501)
@@ -56,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resolve workspace names to UUIDs in release_status and trigger_release (#1529)
+- Add capability_mismatch gate and remove dead isBypassed param (#1515)
+- Guard .length reads in task detail page client components (#1530)
+- Artifact viewer body scrolls on iOS Safari and mobile Chrome (#1534)
 - Update @openai/codex-sdk to ^0.146.0 (#1505)
 - Terminate agent review leases safely (#1487)
 - Scope MCP list_tasks and openclaw fetches to active/workspace (#1386)
