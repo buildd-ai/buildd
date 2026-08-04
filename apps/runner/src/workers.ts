@@ -1271,6 +1271,9 @@ export class WorkerManager {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
     }
+    if ((claimedWorker as any).cbmDisabled) {
+      (worker as any).cbmDisabled = true;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
