@@ -62,6 +62,7 @@ import {
   isMountAllowlistEnabled,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
+import { buildCbmActivation, buildCbmMcpEntry, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2130,30 +2131,39 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
-      // Detect codebase-memory MCP server in the role or repo .mcp.json.
-      // When found, pre-create the per-worker CBM cache dir on the host so it
-      // can be bind-mounted inside the bwrap sandbox (the sandbox's /tmp is a
-      // fresh tmpfs; the bind shadows it at the specific path, giving CBM a
-      // persistent-to-host location that can be cleaned up after the task).
-      // Checks both cwd (service role dir / worktree committed .mcp.json) and
-      // repoPath (main checkout where overlayRoleFiles writes the builder role's
-      // .mcp.json) so CBM is detected regardless of role type.
+      // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
+      const cbmActivation = buildCbmActivation({
+        workerId: worker.id,
+        worktreePath: worker.worktreePath,
+        isCodexTask,
+        cbmRoleDisabled: !!(worker as any).cbmDisabled,
+      });
+      const cbmEnforced = cbmActivation.enforced;
+
       let cbmBinaryPath: string | undefined;
-      const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
-      for (const mcpJsonPath of cbmDetectPaths) {
-        if (!existsSync(mcpJsonPath)) continue;
-        try {
-          const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
-            mcpServers?: Record<string, unknown>;
-          };
-          if (mcpData.mcpServers?.['codebase-memory']) {
-            cbmBinaryPath = CBM_BINARY_PATH;
-            cbmCacheDir = `/tmp/cbm-${worker.id}`;
-            mkdirSync(cbmCacheDir, { recursive: true });
-            console.log(`[Worker ${worker.id}] CBM detected — cache dir: ${cbmCacheDir}`);
-            break;
-          }
-        } catch { /* non-fatal — proceed without CBM mounts */ }
+      if (cbmEnforced) {
+        cbmBinaryPath = cbmActivation.cbmBinaryPath;
+        cbmCacheDir = cbmActivation.cbmCacheDir;
+        mkdirSync(cbmCacheDir!, { recursive: true });
+        console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
+      } else {
+        // Legacy: detect CBM from .mcp.json for backward compat with manually-configured roles.
+        const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
+        for (const mcpJsonPath of cbmDetectPaths) {
+          if (!existsSync(mcpJsonPath)) continue;
+          try {
+            const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
+              mcpServers?: Record<string, unknown>;
+            };
+            if (mcpData.mcpServers?.['codebase-memory']) {
+              cbmBinaryPath = CBM_BINARY_PATH;
+              cbmCacheDir = `/tmp/cbm-${worker.id}`;
+              mkdirSync(cbmCacheDir, { recursive: true });
+              console.log(`[Worker ${worker.id}] CBM detected from .mcp.json — cache dir: ${cbmCacheDir}`);
+              break;
+            }
+          } catch { /* non-fatal — proceed without CBM mounts */ }
+        }
       }
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
@@ -2341,6 +2351,23 @@ export class WorkerManager {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
           }
         }
+      }
+
+      // Enforce CBM as default MCP for repo-backed tasks.
+      // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
+      if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
+        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(sessionCwd, cbmCacheDir!);
+        console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${sessionCwd})`);
+      }
+
+      // Block CBM tools that write to the repo or delete indexes — enforced for any
+      // mounted codebase-memory server regardless of how it was wired (enforcement,
+      // connector, or manual config).
+      if (queryOptions.mcpServers['codebase-memory']) {
+        (queryOptions as any).disallowedTools = [
+          ...((queryOptions as any).disallowedTools ?? []),
+          ...CBM_BLOCKED_TOOLS,
+        ];
       }
 
       // MCP pre-flight: verify all connector-required servers are mounted and
