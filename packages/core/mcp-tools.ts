@@ -2931,7 +2931,15 @@ export async function handleBuilddAction(
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const body: Record<string, unknown> = {};
-      if (params.workspaceId !== undefined) body.workspaceId = params.workspaceId;
+      if (params.workspaceId !== undefined) {
+        const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+        if (wsId) {
+          body.workspaceId = wsId;
+        } else if (!params.repo) {
+          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
+        }
+        // If wsId is null but params.repo is provided, fall through to repo param below.
+      }
       if (params.repo !== undefined) body.repo = params.repo;
       if (params.ref !== undefined) body.ref = params.ref;
       if (params.workflowFile !== undefined) body.workflowFile = params.workflowFile;
@@ -2973,7 +2981,15 @@ export async function handleBuilddAction(
       if (!params.workspaceId && !params.repo) throw new Error('workspaceId or repo is required (owner/name)');
 
       const qs = new URLSearchParams();
-      if (params.workspaceId) qs.set('workspaceId', String(params.workspaceId));
+      if (params.workspaceId) {
+        const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+        if (wsId) {
+          qs.set('workspaceId', wsId);
+        } else if (!params.repo) {
+          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
+        }
+        // If wsId is null but params.repo is provided, fall through to repo param below.
+      }
       if (params.repo) qs.set('repo', String(params.repo));
       if (params.ref) qs.set('ref', String(params.ref));
       if (params.prodBranch) qs.set('prodBranch', String(params.prodBranch));

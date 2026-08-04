@@ -101,7 +101,7 @@ function ChainNode({
         )}
 
         {/* Artifact count (non-PR) */}
-        {task.artifacts.length > 0 && !task.worker?.prNumber && (
+        {(task.artifacts || []).length > 0 && !task.worker?.prNumber && (
           <span className="bg-surface-3 text-text-muted font-mono text-[10px] rounded px-1.5">
             {task.artifacts.length} artifact{task.artifacts.length !== 1 ? 's' : ''}
           </span>

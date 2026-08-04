@@ -22,6 +22,26 @@ type MessageContent =
   | { type: 'tool_use'; name: string; input?: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content?: string };
 
+// Exported for testing. Normalizes raw message content so all text parts have
+// a string .text field — prevents ".length on undefined" when codex/SDK adapters
+// emit non-standard shapes.
+export function normalizeMessageContent(content: unknown): MessageContent[] {
+  if (!Array.isArray(content)) return [];
+  const result: MessageContent[] = [];
+  for (const c of content) {
+    if (c === null || typeof c !== 'object') continue;
+    const item = c as Record<string, unknown>;
+    if (item.type === 'text') {
+      result.push({ type: 'text', text: typeof item.text === 'string' ? item.text : '' });
+    } else if (item.type === 'tool_use') {
+      result.push({ type: 'tool_use', name: typeof item.name === 'string' ? item.name : '', input: item.input as Record<string, unknown> | undefined });
+    } else if (item.type === 'tool_result') {
+      result.push({ type: 'tool_result', tool_use_id: typeof item.tool_use_id === 'string' ? item.tool_use_id : '', content: typeof item.content === 'string' ? item.content : undefined });
+    }
+  }
+  return result;
+}
+
 interface SessionHistoryPanelProps {
   localUiUrl: string;
   viewerToken: string | null;
@@ -101,7 +121,11 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      const newMessages: SessionMessage[] = data.messages || [];
+      const newMessages: SessionMessage[] = (data.messages || []).map((m: unknown) => {
+        if (m === null || typeof m !== 'object') return m;
+        const msg = m as Record<string, unknown>;
+        return { ...msg, content: normalizeMessageContent(msg.content) };
+      });
 
       if (pageOffset === 0) {
         setMessages(newMessages);

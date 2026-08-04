@@ -290,7 +290,7 @@ export default function ArtifactViewer({
       >
         {desktopRail}
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col min-h-0">
           {/* Header */}
           <header className="flex items-start justify-between gap-3 border-b border-card-border px-4 py-3">
             <div className="min-w-0">
@@ -318,7 +318,7 @@ export default function ArtifactViewer({
           {mobileChips}
 
           {/* Body */}
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4">
             <ArtifactBody artifact={active} />
           </div>
 

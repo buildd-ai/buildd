@@ -238,6 +238,14 @@ export function MissionGrid({
         );
       })}
 
+      {/* "Other" header — only when initiative groups exist and there are ungrouped missions */}
+      {hasInitiativeGroups && ungroupedMissions.length > 0 && (
+        <div className="flex items-center gap-2 pt-2">
+          <span className="font-mono text-[14px] font-semibold text-text-muted">Other</span>
+          <span className="text-[10px] text-text-muted font-mono">{ungroupedMissions.length}</span>
+        </div>
+      )}
+
       {/* Ungrouped missions — workspace buckets (or all missions when no initiative groups) */}
       {(!hasInitiativeGroups || ungroupedMissions.length > 0) && workspaceBuckets.map((bucket) => {
         const wsKey = bucket.workspaceName ?? '__unassigned__';

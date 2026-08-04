@@ -131,4 +131,21 @@ describe('GET /api/releases/status', () => {
     const res = await GET(makeRequest('bld_adminkey'));
     expect(res.status).toBe(500);
   });
+
+  it('returns 400 (not 500) when workspaceId is a name instead of a UUID', async () => {
+    // Regression: resolveReleaseTarget validates UUID format and returns 400 instead
+    // of letting Postgres throw "invalid input syntax for type uuid" which caused a
+    // bare 500 with empty body.
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementationOnce(() => ({
+      ok: false,
+      status: 400,
+      error: 'workspaceId must be a UUID — pass the workspace UUID or use the repo param instead (got "buildd")',
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'buildd' }));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/workspaceId must be a UUID/i);
+  });
 });

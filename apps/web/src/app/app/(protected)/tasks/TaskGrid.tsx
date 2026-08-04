@@ -6,6 +6,7 @@ import { Select } from '@/components/ui/Select';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
+import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 
@@ -54,33 +55,50 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function deriveSwipeCardType(task: GridTask): SwipeCardType {
+  if (task.status === 'completed') return 'completed-task';
+  if (task.chain?.blockedBy && task.chain.blockedBy.length > 0) return 'blocked-task';
+  return 'running-task';
+}
+
 function renderTaskCard(task: GridTask) {
+  const cardType = deriveSwipeCardType(task);
+  const swipePrUrl = cardType === 'blocked-task'
+    ? (task.chain?.blockedBy?.[0]?.prUrl ?? task.prUrl)
+    : task.prUrl;
   return (
-    <TaskCard
+    <SwipeableRow
       key={task.id}
-      id={task.id}
-      title={task.title}
-      taskStatus={task.status}
-      workerStatus={task.workerStatus}
-      missionId={task.missionId}
-      missionTitle={task.missionTitle}
-      workspaceName={task.workspaceName}
-      chain={task.chain}
-      taskCreatedAt={task.createdAt}
-      taskUpdatedAt={task.updatedAt}
-      startAt={task.startAt}
-      loopIteration={task.loopIteration}
-      loopState={task.loopState}
-      loopMaxLoops={task.loopMaxLoops}
-      workerStartedAt={task.workerStartedAt}
-      workerUpdatedAt={task.workerUpdatedAt}
-      attemptCurrent={task.attemptCurrent}
-      attemptTotal={task.attemptTotal}
-      runnerName={task.runnerName}
-      prUrl={task.prUrl}
-      prNumber={task.prNumber}
-      density="row"
-    />
+      cardType={cardType}
+      taskTitle={task.title}
+      prUrl={swipePrUrl}
+      taskId={task.id}
+    >
+      <TaskCard
+        id={task.id}
+        title={task.title}
+        taskStatus={task.status}
+        workerStatus={task.workerStatus}
+        missionId={task.missionId}
+        missionTitle={task.missionTitle}
+        workspaceName={task.workspaceName}
+        chain={task.chain}
+        taskCreatedAt={task.createdAt}
+        taskUpdatedAt={task.updatedAt}
+        startAt={task.startAt}
+        loopIteration={task.loopIteration}
+        loopState={task.loopState}
+        loopMaxLoops={task.loopMaxLoops}
+        workerStartedAt={task.workerStartedAt}
+        workerUpdatedAt={task.workerUpdatedAt}
+        attemptCurrent={task.attemptCurrent}
+        attemptTotal={task.attemptTotal}
+        runnerName={task.runnerName}
+        prUrl={task.prUrl}
+        prNumber={task.prNumber}
+        density="row"
+      />
+    </SwipeableRow>
   );
 }
 
@@ -352,6 +370,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   ];
 
   return (
+    <SwipeProvider>
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
         {/* Breadcrumbs */}
@@ -596,30 +615,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">
-                {needsInputTasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    id={task.id}
-                    title={task.title}
-                    taskStatus={task.status}
-                    workerStatus={task.workerStatus}
-                    missionId={task.missionId}
-                    missionTitle={task.missionTitle}
-                    workspaceName={task.workspaceName}
-                    chain={task.chain}
-                    taskCreatedAt={task.createdAt}
-                    taskUpdatedAt={task.updatedAt}
-                    startAt={task.startAt}
-                    workerStartedAt={task.workerStartedAt}
-                    workerUpdatedAt={task.workerUpdatedAt}
-                    attemptCurrent={task.attemptCurrent}
-                    attemptTotal={task.attemptTotal}
-                    runnerName={task.runnerName}
-                    prUrl={task.prUrl}
-                    prNumber={task.prNumber}
-                    density="row"
-                  />
-                ))}
+                {needsInputTasks.map((task) => renderTaskCard(task))}
               </div>
             </div>
           )}
@@ -736,5 +732,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
         </div>
       </div>
     </div>
+    </SwipeProvider>
   );
 }

@@ -3,6 +3,7 @@ import {
   buildWorkerBwrapArgv,
   isMountAllowlistEnabled,
   parseExtraMounts,
+  CBM_BINARY_PATH,
 } from '../../src/bwrap-mount-allowlist';
 
 const warn = () => {};
@@ -68,6 +69,36 @@ describe('buildWorkerBwrapArgv', () => {
       pathExists: path => !path.endsWith('settings.json'),
       warn,
     })).toMatchSnapshot();
+  });
+
+  test('adds CBM binary ro-bind and cache dir rw-bind when provided', () => {
+    expect(buildWorkerBwrapArgv({
+      worktreePath: '/repo/.buildd-worktrees/task',
+      repoPath: '/repo',
+      homePath: '/home/runner',
+      bunInstallPath: '/home/runner/.bun',
+      claudeConfigDir: '/tmp/claude-cfg-worker',
+      isCodexTask: false,
+      cbmBinaryPath: CBM_BINARY_PATH,
+      cbmCacheDir: '/tmp/cbm-worker-123',
+      pathExists: () => true,
+      warn,
+    })).toMatchSnapshot();
+  });
+
+  test('omits CBM mounts when cbmBinaryPath and cbmCacheDir are absent', () => {
+    const argv = buildWorkerBwrapArgv({
+      worktreePath: '/repo/.buildd-worktrees/task',
+      repoPath: '/repo',
+      homePath: '/home/runner',
+      bunInstallPath: '/home/runner/.bun',
+      claudeConfigDir: '/tmp/claude-cfg-worker',
+      isCodexTask: false,
+      pathExists: () => true,
+      warn,
+    });
+    expect(argv.join(' ')).not.toContain('codebase-memory-mcp');
+    expect(argv.join(' ')).not.toContain('cbm-');
   });
 });
 

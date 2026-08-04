@@ -5,7 +5,7 @@ import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
@@ -55,10 +55,12 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
   isMountAllowlistEnabled,
+  CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -1472,6 +1474,9 @@ export class WorkerManager {
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
     let codexAgentsMd: AgentsMdWriteResult | undefined;
+    // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
+    // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
+    let cbmCacheDir: string | undefined;
 
     try {
       // Fetch workspace git config from server
@@ -2125,6 +2130,32 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
+      // Detect codebase-memory MCP server in the role or repo .mcp.json.
+      // When found, pre-create the per-worker CBM cache dir on the host so it
+      // can be bind-mounted inside the bwrap sandbox (the sandbox's /tmp is a
+      // fresh tmpfs; the bind shadows it at the specific path, giving CBM a
+      // persistent-to-host location that can be cleaned up after the task).
+      // Checks both cwd (service role dir / worktree committed .mcp.json) and
+      // repoPath (main checkout where overlayRoleFiles writes the builder role's
+      // .mcp.json) so CBM is detected regardless of role type.
+      let cbmBinaryPath: string | undefined;
+      const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
+      for (const mcpJsonPath of cbmDetectPaths) {
+        if (!existsSync(mcpJsonPath)) continue;
+        try {
+          const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
+            mcpServers?: Record<string, unknown>;
+          };
+          if (mcpData.mcpServers?.['codebase-memory']) {
+            cbmBinaryPath = CBM_BINARY_PATH;
+            cbmCacheDir = `/tmp/cbm-${worker.id}`;
+            mkdirSync(cbmCacheDir, { recursive: true });
+            console.log(`[Worker ${worker.id}] CBM detected — cache dir: ${cbmCacheDir}`);
+            break;
+          }
+        } catch { /* non-fatal — proceed without CBM mounts */ }
+      }
+
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
       // currently has no sandbox.extraMounts option, so its supported custom
@@ -2142,6 +2173,8 @@ export class WorkerManager {
             isCodexTask,
             executablePath: pathToClaudeCodeExecutable,
             extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
+            cbmBinaryPath,
+            cbmCacheDir,
           })
         : undefined;
 
@@ -2222,7 +2255,16 @@ export class WorkerManager {
         const entries = buildMcpServerEntries(claimConnectors);
         for (const [name, cfg] of Object.entries(entries)) {
           if (name === 'buildd') continue; // never override the buildd coordination server
-          queryOptions.mcpServers[name] = cfg;
+          // Resolve per-worker placeholder tokens in stdio server env values.
+          // Throws on unrecognised tokens so misconfigurations surface at launch.
+          if (cfg.type === 'stdio' && cfg.env && Object.keys(cfg.env).length > 0) {
+            queryOptions.mcpServers[name] = {
+              ...cfg,
+              env: resolveMcpEnvTokens(cfg.env, { workerId: worker.id, worktreePath: sessionCwd }),
+            };
+          } else {
+            queryOptions.mcpServers[name] = cfg;
+          }
         }
 
         // Assertion-mode connectors: mint assertion → exchange at RS → mount with Bearer token.
@@ -3011,6 +3053,16 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Clean up per-worker Claude config dir (access_token isolation).
         if (claudeConfigDir) {
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
+        }
+
+        // Clean up per-worker CBM cache dir (ephemeral per design doc §4.2).
+        if (cbmCacheDir) {
+          try {
+            rmSync(cbmCacheDir, { recursive: true, force: true });
+            console.log(`[Worker ${worker.id}] Cleaned up CBM cache dir: ${cbmCacheDir}`);
+          } catch (err) {
+            console.warn(`[Worker ${worker.id}] Failed to clean up CBM cache dir ${cbmCacheDir}:`, err instanceof Error ? err.message : err);
+          }
         }
 
         // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never

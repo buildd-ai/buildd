@@ -23,6 +23,7 @@ import {
   workers,
 } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray } from 'drizzle-orm';
+import { hasCodexCredential } from '@/lib/codex-credential';
 
 /**
  * Check whether the task's role requires connectors that are not visible in its
@@ -106,14 +107,10 @@ export async function checkConnectorRouting(
  * Check whether the task's mission is held. Returns true when the claim route
  * would reject this task via the missionNotHeld() SQL gate.
  *
- * Pass `isBypassed = true` (context.bypassHeldGate) to short-circuit the DB
- * query when the task was already force-started.
+ * The call site is responsible for checking bypassHeldGate / forceOverride
+ * before invoking this helper — it is only called when those guards are clear.
  */
-export async function checkMissionHeld(
-  missionId: string,
-  isBypassed: boolean,
-): Promise<boolean> {
-  if (isBypassed) return false;
+export async function checkMissionHeld(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
     where: and(
       eq(missions.id, missionId),
@@ -122,6 +119,32 @@ export async function checkMissionHeld(
     columns: { id: true },
   });
   return !!mission;
+}
+
+/**
+ * Check whether the task's backend is available server-side.
+ * For codex-backend tasks, verifies that at least one Codex credential exists
+ * for the team/workspace. Returns the missing capability string or null when OK.
+ *
+ * Note: runner-side requiredCapabilities cannot be verified here — the server
+ * has no registry of active runner capabilities. This gate catches the common
+ * server-verifiable case: a codex-backend task with no credentials configured.
+ * A local runner with its own OPENAI_API_KEY or CODEX_HOME can still claim the
+ * task; if one is running, forceOverride lets the user bypass this gate.
+ */
+export async function checkCapabilityMatch(opts: {
+  backend: string;
+  workspaceId: string;
+  teamId: string;
+  accountId?: string | null;
+}): Promise<string | null> {
+  if (opts.backend !== 'codex') return null;
+  const ok = await hasCodexCredential({
+    teamId: opts.teamId,
+    workspaceId: opts.workspaceId,
+    accountId: opts.accountId ?? null,
+  });
+  return ok ? null : 'backend:codex';
 }
 
 /**
