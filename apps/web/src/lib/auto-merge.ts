@@ -112,6 +112,22 @@ export async function evaluateAutoMergeSafety(
     };
   }
 
+  // Conflict detection — check GitHub's mergeable_state before attempting merge.
+  // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
+  // 'unknown' means GitHub is still computing — treat as a soft pass (do not block permanently).
+  try {
+    const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    const mergeableState = prData?.mergeable_state as string | undefined;
+    if (mergeableState === 'dirty') {
+      return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+    }
+    if (mergeableState === 'blocked') {
+      return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
+    }
+  } catch (err) {
+    console.warn(`Could not check mergeable_state for ${repoFullName}#${prNumber}:`, err);
+  }
+
   return { ok: true };
 }
 

@@ -237,6 +237,11 @@ export interface WorkspaceGitConfig {
   // Defaults to 3 if not set. Set to 0 to disable CI retries entirely.
   maxCiRetries?: number;
 
+  // When true, tasks with outputRequirement='pr_required' that do not already declare a
+  // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
+  // at task-creation time. The existing loop machinery handles re-queuing.
+  enforceGreenCI?: boolean;
+
   // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;

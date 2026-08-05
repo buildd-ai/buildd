@@ -573,6 +573,16 @@ export async function POST(req: NextRequest) {
       missionStartAt = mission?.startAt ?? null;
     }
 
+    // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace
+    // requires it and the task targets pr_required without a caller-supplied loopConfig.
+    if (
+      !loopConfig &&
+      targetWorkspace.gitConfig?.enforceGreenCI === true &&
+      outputRequirement === 'pr_required'
+    ) {
+      loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
+    }
+
     // Fall back to the role's defaultBackend hint, then the workspace default.
     if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
       const role = await db.query.workspaceSkills.findFirst({
