@@ -211,7 +211,10 @@ export function SwipeProvider({ children }: { children: ReactNode }) {
 
 const COMMIT_THRESHOLD_PX = 10; // horizontal travel before swipe is committed
 const FIRE_THRESHOLD_PX = -72;  // must swipe left ≥72 pt to trigger action
-const REVEAL_WIDTH_PX = 80;     // width of revealed trailing action slot
+export const REVEAL_WIDTH_PX = 80;   // width of revealed trailing action slot
+// Must match the ⋯ button's w-9 class (9 * 4px = 36px).
+// Trailing action is pinned right: MENU_BTN_WIDTH so it never overlaps the button.
+export const MENU_BTN_WIDTH = 36;
 
 export interface SwipeableRowProps {
   cardType: SwipeCardType;
@@ -446,14 +449,18 @@ export function SwipeableRow({
       data-card-type={cardType}
       className={`relative overflow-hidden flex items-stretch ${className}`}
     >
-      {/* Trailing action slot (revealed by left swipe, absolute) — §2.1 */}
+      {/* Trailing action slot (revealed by left swipe, absolute) — §2.1
+          Right-offset by MENU_BTN_WIDTH so it never overlaps the ⋯ button.
+          At full reveal (translateX = -REVEAL_WIDTH_PX) the card right edge
+          aligns with this panel's left edge; the ⋯ button stays to the right. */}
       {trailingAction && (
         <div
           data-trailing-action
           aria-hidden="true"
-          className="absolute right-0 top-0 bottom-0 flex items-center justify-center pointer-events-none"
+          className="absolute top-0 bottom-0 flex items-center justify-center pointer-events-none"
           style={{
             width: REVEAL_WIDTH_PX,
+            right: MENU_BTN_WIDTH,
             background: trailingAction.bgColor,
           }}
         >
