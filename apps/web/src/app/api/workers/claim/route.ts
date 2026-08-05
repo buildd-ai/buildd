@@ -1582,6 +1582,14 @@ export async function POST(req: NextRequest) {
           maxTurns: role.maxTurns ?? null,
         };
       }
+
+      // CBM escape hatch: a role opts out of CBM enforcement by setting
+      // mcpServers['codebase-memory'] = false in its skill record (DB).
+      // Checked independently of configStorageKey so opt-out works without R2.
+      const roleMcpServers = role?.mcpServers as Record<string, unknown> | null | undefined;
+      if (roleMcpServers?.['codebase-memory'] === false) {
+        (cw as any).cbmDisabled = true;
+      }
     }
   }
 
