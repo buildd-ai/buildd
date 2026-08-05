@@ -25,7 +25,7 @@ import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
-import PrioritySelector from './PrioritySelector';
+import PriorityInlineEdit from './PriorityInlineEdit';
 import MissionBackendSelector from './MissionBackendSelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
@@ -534,9 +534,9 @@ export default async function MissionDetailPage({
           }
         />
 
-        {/* Priority + default backend */}
+        {/* Priority (inline edit) + default backend */}
         <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <PrioritySelector missionId={id} initialPriority={mission.priority} />
+          <PriorityInlineEdit missionId={id} initialPriority={mission.priority} />
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
         </div>
 

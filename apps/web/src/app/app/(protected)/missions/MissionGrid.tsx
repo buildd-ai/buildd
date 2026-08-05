@@ -97,6 +97,7 @@ export interface MissionItem {
   blockedPRCount: number;
   initiativeId: string | null;
   initiativeName: string | null;
+  priority: number;
 }
 
 interface WorkspaceBucket {
@@ -632,6 +633,17 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               {mission.initiativeName.length > 24 ? `${mission.initiativeName.slice(0, 24)}…` : mission.initiativeName}
             </Link>
           )}
+          {mission.priority > 0 && (
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.5 border ${
+                mission.priority === 10
+                  ? 'text-status-error border-status-error/30'
+                  : 'text-status-warning border-status-warning/30'
+              }`}
+            >
+              {mission.priority === 10 ? 'High' : 'Medium'}
+            </span>
+          )}
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
@@ -774,6 +786,17 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             >
               {mission.initiativeName.length > 24 ? `${mission.initiativeName.slice(0, 24)}…` : mission.initiativeName}
             </Link>
+          )}
+          {mission.priority > 0 && (
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.5 border ${
+                mission.priority === 10
+                  ? 'text-status-error border-status-error/30'
+                  : 'text-status-warning border-status-warning/30'
+              }`}
+            >
+              {mission.priority === 10 ? 'High' : 'Medium'}
+            </span>
           )}
         </div>
         {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
