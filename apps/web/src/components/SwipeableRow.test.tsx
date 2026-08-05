@@ -257,6 +257,21 @@ describe('SwipeableRow rendering', () => {
   });
 });
 
+// ─── Accessibility contract ────────────────────────────────────────────────────
+
+describe('accessibility contract', () => {
+  it('⋯ button has aria-controls attribute (links button to its popup menu)', () => {
+    // §2.4: screen readers need aria-controls to associate the button with its menu.
+    // Fails until useId()-based aria-controls is wired between button and menu.
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="gate-card" taskTitle="Test card">
+        <div>card</div>
+      </SwipeableRow>,
+    );
+    expect(html).toContain('aria-controls=');
+  });
+});
+
 // ─── Layout contract ───────────────────────────────────────────────────────────
 
 describe('layout contract: right-edge zones', () => {
