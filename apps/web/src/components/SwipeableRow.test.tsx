@@ -62,8 +62,8 @@ describe('getTrailingAction', () => {
     expect(action!.action).toBe('snooze-24h');
   });
 
-  it('escalation-card → acknowledge', () => {
-    expect(getTrailingAction('escalation-card')!.action).toBe('acknowledge');
+  it('escalation-card → null (acknowledge was client-local only, removed)', () => {
+    expect(getTrailingAction('escalation-card')).toBeNull();
   });
 
   it('blocked-task → snooze-notification', () => {
@@ -128,9 +128,9 @@ describe('getMenuActions', () => {
     expect(labels).toContain('Snooze notification');
   });
 
-  it('escalation-card has Acknowledge, File anyway, Ignore', () => {
+  it('escalation-card has File anyway, Ignore (no Acknowledge — it was client-local only)', () => {
     const labels = getMenuActions('escalation-card', {}).map((a) => a.label);
-    expect(labels).toContain('Acknowledge');
+    expect(labels).not.toContain('Acknowledge');
     expect(labels).toContain('File anyway');
     expect(labels).toContain('Ignore');
   });

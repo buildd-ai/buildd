@@ -16,8 +16,6 @@ export type SwipeAction =
   | 'snooze-24h'
   | 'snooze-3d'
   | 'snooze-7d'
-  | 'acknowledge'
-  | 'dismiss'
   | 'snooze-notification';
 
 export type MenuActionId =
@@ -68,7 +66,9 @@ export function getTrailingAction(cardType: SwipeCardType): TrailingActionConfig
     case 'gate-card':
       return { action: 'snooze-24h', label: 'Snooze 24 h', bgColor: 'var(--accent)' };
     case 'escalation-card':
-      return { action: 'acknowledge', label: 'Acknowledge', bgColor: '#101216' };
+      // Acknowledge was client-local only (evaporated on reload, nothing consumed it).
+      // Use the menu actions (file-anyway, ignore) for escalation decisions.
+      return null;
     case 'blocked-task':
       return { action: 'snooze-notification', label: 'Snooze', bgColor: 'var(--surface-4)' };
     case 'needs-attention':
@@ -99,7 +99,6 @@ export function getMenuActions(
       ];
     case 'escalation-card':
       return [
-        { action: 'acknowledge', label: 'Acknowledge' },
         { action: 'file-anyway', label: 'File anyway' },
         { action: 'ignore', label: 'Ignore' },
       ];
@@ -147,18 +146,6 @@ function TrailingActionIcon({ action }: { action: SwipeAction }): JSX.Element {
           <line x1="4" y1="4" x2="18" y2="18" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
       );
-    case 'acknowledge':
-      return (
-        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-          <path d="M5 11L9 15L17 7" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      );
-    case 'dismiss':
-      return (
-        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-          <path d="M6 6L16 16M16 6L6 16" stroke="white" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      );
   }
 }
 
@@ -177,8 +164,6 @@ function undoMessage(action: SwipeAction): string {
     case 'snooze-3d': return 'Snoozed 3 d';
     case 'snooze-7d': return 'Snoozed 7 d';
     case 'snooze-notification': return 'Snoozed';
-    case 'acknowledge': return 'Acknowledged';
-    case 'dismiss': return 'Dismissed';
   }
 }
 
@@ -275,7 +260,6 @@ export function SwipeableRow({
 }: SwipeableRowProps) {
   const { registerUndo } = useContext(SwipeContext);
   const [dismissed, setDismissed] = useState(false);
-  const [acknowledged, setAcknowledged] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [translateX, setTranslateX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
@@ -339,18 +323,6 @@ export function SwipeableRow({
           setDismissed(true);
           springBack();
           registerUndo(undoMessage(action as SwipeAction), () => setDismissed(false));
-          break;
-        }
-        case 'dismiss': {
-          setDismissed(true);
-          springBack();
-          registerUndo('Dismissed', () => setDismissed(false));
-          break;
-        }
-        case 'acknowledge': {
-          setAcknowledged(true);
-          springBack();
-          registerUndo('Acknowledged', () => setAcknowledged(false));
           break;
         }
         case 'file-anyway': {
@@ -508,7 +480,7 @@ export function SwipeableRow({
 
       {/* Swiping card content (flex-1 so the ⋯ button sits as a sibling) */}
       <div
-        className={`flex-1 min-w-0 relative${acknowledged ? ' opacity-50' : ''}`}
+        className="flex-1 min-w-0 relative"
         style={{
           transform: `translateX(${translateX}px)`,
           transition: isAnimating
