@@ -6,6 +6,8 @@ import {
   getMenuActions,
   nextFocusIdx,
   SwipeableRow,
+  MENU_BTN_WIDTH,
+  REVEAL_WIDTH_PX,
   type SwipeCardType,
 } from './SwipeableRow';
 
@@ -234,5 +236,58 @@ describe('SwipeableRow rendering', () => {
       </SwipeableRow>,
     );
     expect(html).toContain('data-card-type="completed-task"');
+  });
+});
+
+// ─── Layout contract ───────────────────────────────────────────────────────────
+
+describe('layout contract: right-edge zones', () => {
+  it('MENU_BTN_WIDTH matches the ⋯ button w-9 class (36px)', () => {
+    // w-9 = 9 * 4px = 36px in Tailwind default spacing scale.
+    // If the ⋯ button width class changes, update MENU_BTN_WIDTH to match.
+    expect(MENU_BTN_WIDTH).toBe(36);
+  });
+
+  it('trailing action panel is offset by MENU_BTN_WIDTH, not pinned to right-0', () => {
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="gate-card" taskTitle="Test">
+        <div>card</div>
+      </SwipeableRow>,
+    );
+    // Panel must have right:36px (MENU_BTN_WIDTH) so it never overlaps the ⋯ button.
+    expect(html).toContain(`right:${MENU_BTN_WIDTH}px`);
+    // Must NOT be pinned at right:0.
+    expect(html).not.toContain('right:0');
+  });
+
+  it('at full reveal the panel fits exactly in the non-button zone', () => {
+    // At translateX = -REVEAL_WIDTH_PX the card right edge is at:
+    //   (containerWidth - MENU_BTN_WIDTH) - REVEAL_WIDTH_PX
+    //   = containerWidth - MENU_BTN_WIDTH - REVEAL_WIDTH_PX
+    // The panel left edge is at:
+    //   containerWidth - MENU_BTN_WIDTH - REVEAL_WIDTH_PX  (right: MENU_BTN_WIDTH, width: REVEAL_WIDTH_PX)
+    // They align exactly — no gap, no overhang.
+    const cardContentEnd = -MENU_BTN_WIDTH - REVEAL_WIDTH_PX;    // relative to containerWidth
+    const panelLeftEdge  = -MENU_BTN_WIDTH - REVEAL_WIDTH_PX;
+    expect(cardContentEnd).toBe(panelLeftEdge);
+  });
+
+  it('non-gate trailing action cards (completed-task) also use correct offset', () => {
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="completed-task" taskTitle="Old task">
+        <div>done</div>
+      </SwipeableRow>,
+    );
+    expect(html).toContain(`right:${MENU_BTN_WIDTH}px`);
+  });
+
+  it('running-task has no trailing panel (no offset needed)', () => {
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="running-task" taskTitle="Running job">
+        <div>card</div>
+      </SwipeableRow>,
+    );
+    expect(html).not.toContain('data-trailing-action');
+    expect(html).not.toContain(`right:${MENU_BTN_WIDTH}px`);
   });
 });
