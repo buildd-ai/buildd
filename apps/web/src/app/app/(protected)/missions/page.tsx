@@ -280,6 +280,7 @@ export default async function MissionsPage({
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || []),
       initiativeId: obj.initiativeId || null,
+      initiativeName: (obj.initiative as any)?.title || null,
     };
   });
 

@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { initiatives, missions, artifacts, workspaces, externalLinks } from '@buildd/core/db/schema';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, ne, or, isNull } from 'drizzle-orm';
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -11,6 +11,7 @@ import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
+import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,12 +109,37 @@ export default async function InitiativeDetailPage({
         .limit(1)
     ).length > 0;
 
+  // Assignable missions: same team, not already in THIS initiative.
+  // Includes unassigned missions (initiativeId IS NULL) and missions in other initiatives.
+  // Shown in the AssignMissionModal picker for the operator to link.
+  const assignableMissionRows = await db.query.missions.findMany({
+    where: and(
+      eq(missions.teamId, initiative.teamId),
+      or(isNull(missions.initiativeId), ne(missions.initiativeId, id)),
+    ),
+    columns: { id: true, title: true, workspaceId: true, initiativeId: true },
+    with: {
+      workspace: { columns: { id: true, name: true } },
+      initiative: { columns: { id: true, title: true } },
+    },
+    orderBy: [desc(missions.createdAt)],
+    limit: 100,
+  });
+
+  const assignableMissions: AssignableMission[] = assignableMissionRows.map((m) => ({
+    id: m.id,
+    title: m.title,
+    workspaceName: (m.workspace as any)?.name || null,
+    initiativeId: m.initiativeId || null,
+    initiativeTitle: (m.initiative as any)?.title || null,
+  }));
+
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        <Link href="/app/missions" className="hover:text-text-secondary transition-colors">
-          Missions
+        <Link href="/app/initiatives" className="hover:text-text-secondary transition-colors">
+          Initiatives
         </Link>
         <span>/</span>
         <span className="text-text-secondary truncate">{initiative.title}</span>
@@ -170,18 +196,25 @@ export default async function InitiativeDetailPage({
           <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
             Missions ({missionRows.length})
           </h2>
-          <Link
-            href={`/app/missions/new?initiative=${initiative.id}`}
-            className="px-2.5 py-1 text-[11px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
-          >
-            + New Mission
-          </Link>
+          <div className="flex items-center gap-2">
+            <AssignMissionModal
+              initiativeId={id}
+              initiativeTitle={initiative.title}
+              assignableMissions={assignableMissions}
+            />
+            <Link
+              href={`/app/missions/new?initiative=${initiative.id}`}
+              className="px-2.5 py-1 text-[11px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+            >
+              + New Mission
+            </Link>
+          </div>
         </div>
         {missionRows.length === 0 ? (
           <div className="card p-6 text-center">
             <p className="text-sm text-text-secondary mb-1">No missions under this initiative yet.</p>
             <p className="text-xs text-text-muted">
-              Create one and assign it, or link an existing mission from its page.
+              Create a new mission or add an existing one.
             </p>
           </div>
         ) : (
