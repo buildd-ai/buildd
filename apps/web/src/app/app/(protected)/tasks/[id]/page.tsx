@@ -431,14 +431,11 @@ export default async function TaskDetailPage({
         </div>
 
         <div className="flex flex-col">
-        {/* Triage metadata — only foregrounded in the pending family, where priority /
-            runner / backend actually drive the "should this run, and how?" decision.
-            In every other phase this demotes into the Details disclosure below, so a
-            running or finished task isn't dominated by numbers no one acts on. */}
+        {/* Triage metadata — only foregrounded in the pending family, where runner / backend
+            drive the "should this run, and how?" decision. Priority is omitted here — it
+            rarely drives operator decisions and is still accessible in Details below. */}
         {isPendingFamily && (
           <div className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
-            <span>P{task.priority}</span>
-            <span className="text-text-muted">&middot;</span>
             <span>{task.runnerPreference}</span>
             {task.backend && (
               <>
