@@ -195,6 +195,11 @@ export interface LocalWorker {
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
+  // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
+  cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
+  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  cbmToolCounts?: Record<string, number>;
+  cbmFileAccessCounts?: { read: number; grep: number; glob: number };
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -257,6 +262,17 @@ export interface ModelUsage {
   costUSD: number;
 }
 
+/** CBM (Codebase Memory) observability metrics captured per task. */
+export interface CbmMetrics {
+  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  toolCalls: Record<string, number>;
+  totalCbmCalls: number;
+  readCount: number;
+  grepCount: number;
+  globCount: number;
+}
+
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
@@ -271,6 +287,8 @@ export interface ResultMeta {
    */
   totalUsage?: { inputTokens: number; outputTokens: number } | null;
   permissionDenials?: Array<{ tool: string; reason: string }>;
+  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
+  cbm?: CbmMetrics;
 }
 
 // Loop exit condition (spec §1)

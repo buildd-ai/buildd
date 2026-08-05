@@ -11,6 +11,8 @@ export interface ExtraMount {
   mode: MountMode;
 }
 
+export const CBM_BINARY_PATH = '/opt/buildd/bin/codebase-memory-mcp';
+
 export interface WorkerBwrapConfig {
   worktreePath: string;
   repoPath: string;
@@ -21,6 +23,10 @@ export interface WorkerBwrapConfig {
   isCodexTask: boolean;
   executablePath?: string;
   extraMounts?: string;
+  /** ro-bind the codebase-memory-mcp binary (pre-baked in the worker image). */
+  cbmBinaryPath?: string;
+  /** rw-bind the per-worker CBM cache dir (must be pre-created by the caller). */
+  cbmCacheDir?: string;
   pathExists?: (path: string) => boolean;
   warn?: (message: string) => void;
 }
@@ -106,6 +112,8 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
     );
   }
   mounts.push(...parseExtraMounts(config.extraMounts, warn));
+  if (config.cbmBinaryPath) mounts.push({ path: resolve(config.cbmBinaryPath), mode: 'ro' });
+  if (config.cbmCacheDir) mounts.push({ path: resolve(config.cbmCacheDir), mode: 'rw' });
 
   const present = mounts.filter(mount => {
     if (pathExists(mount.path)) return true;
