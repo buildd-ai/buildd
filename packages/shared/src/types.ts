@@ -386,6 +386,43 @@ export interface TaskArtifactResult {
   };
 }
 
+/**
+ * Well-known fields stored in `task.context` JSONB.
+ * The context is an open `Record<string, unknown>` — not all fields will be present.
+ */
+export interface TaskContext {
+  /** GitHub issue link (tasks created via the GitHub webhook). */
+  github?: { issueNumber: number; issueId: number; repoFullName: string };
+  /**
+   * Task IDs whose PRs must be merged before this task's PR can auto-merge.
+   *
+   * Distinct from `dependsOn`, which gates task *claiming*:
+   * - `dependsOn`: upstream tasks must be completed+merged before this task can be claimed by a runner.
+   * - `mergeAfter`: the task runs normally, but its PR will not be auto-merged until all listed
+   *   upstream tasks have a `mergedAt` timestamp on their latest worker. Use when parallel tasks
+   *   share an ordering constraint at the merge layer (e.g. a schema migration must land first).
+   */
+  mergeAfter?: string[];
+  /** Branch to base this task's work on (Ralph loop continuity). */
+  baseBranch?: string;
+  /** Shell command to run after task completion (loop exit condition). */
+  verificationCommand?: string;
+  /** Loop iteration counter. */
+  iteration?: number;
+  maxIterations?: number;
+  /** Skills to dispatch this task to. */
+  skillSlugs?: string[];
+  /** Model override for the agent. */
+  model?: string;
+  /** Effort level override. */
+  effort?: string;
+  /** Callback URL to POST completion results to. */
+  callback?: { url: string; token?: string };
+  /** Friction report linkage — used for deduplication. */
+  frictionSignature?: string;
+  frictionExcerpt?: string;
+}
+
 export interface RetryFailureContext {
   /** Human-readable summary of the failure (CI log excerpt, reviewer feedback, error message). */
   summary: string;

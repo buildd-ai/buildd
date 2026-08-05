@@ -100,8 +100,8 @@ mock.module('@buildd/core/db', () => ({
         };
       },
     }),
-    // Used by handleReleasePrCiSuccess / handleReleasePrCiFailure (via .limit)
-    // and by the knowledge-ingest enqueue path (awaited directly).
+    // Used by handleReleasePrCiSuccess / handleReleasePrCiFailure (via .limit),
+    // the knowledge-ingest enqueue path, and the mergeAfter dep-worker lookup.
     select: (_columns?: any) => ({
       from: (table: any) => ({
         where: (_cond: any) => {
@@ -109,9 +109,13 @@ mock.module('@buildd/core/db', () => ({
           if (rows) {
             return Object.assign(Promise.resolve(rows), {
               limit: (_n: number) => Promise.resolve(rows),
+              orderBy: (..._args: any[]) => Promise.resolve(rows),
             });
           }
-          return { limit: (_n: number) => Promise.resolve([]) };
+          return {
+            limit: (_n: number) => Promise.resolve([]),
+            orderBy: (..._args: any[]) => Promise.resolve([]),
+          };
         },
       }),
     }),
@@ -123,6 +127,9 @@ mock.module('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  not: (condition: any) => ({ condition, type: 'not' }),
+  desc: (field: any) => ({ field, direction: 'desc' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
@@ -839,6 +846,92 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── mergeAfter gate (check_suite success path) ──────────────────────────────
+  describe('check_suite — mergeAfter gate', () => {
+    function withMergeAfterTask(mergeAfterIds: string[], depWorkerMergedAt: Date | null = null) {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
+      mockTasksFindFirst.mockReturnValue({
+        id: 't1',
+        requiresReview: false,
+        missionId: 'm1',
+        title: 'Fix bug',
+        mission: null,
+        context: { mergeAfter: mergeAfterIds },
+      });
+      // Configure db.select(...).from(workers).where(...).orderBy(...) result
+      selectTableResults = (table: any) =>
+        table === schemaMock.workers
+          ? mergeAfterIds.map(id => ({ taskId: id, mergedAt: depWorkerMergedAt }))
+          : null;
+    }
+
+    it('defers merge when a mergeAfter dep task PR is not yet merged', async () => {
+      withMergeAfterTask(['dep-task-1'], null); // dep has mergedAt: null
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('proceeds with merge when all mergeAfter dep PRs have merged', async () => {
+      withMergeAfterTask(['dep-task-1'], new Date()); // dep is merged
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('defers when one of multiple mergeAfter deps is unmerged', async () => {
+      // Two deps — first merged, second not
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
+      mockTasksFindFirst.mockReturnValue({
+        id: 't1', requiresReview: false, missionId: 'm1', title: 'Fix bug', mission: null,
+        context: { mergeAfter: ['dep-a', 'dep-b'] },
+      });
+      selectTableResults = (table: any) =>
+        table === schemaMock.workers
+          ? [
+              { taskId: 'dep-a', mergedAt: new Date() },
+              { taskId: 'dep-b', mergedAt: null },
+            ]
+          : null;
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('skips the gate when context.mergeAfter is absent', async () => {
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
+      mockTasksFindFirst.mockReturnValue({
+        id: 't1', requiresReview: false, missionId: 'm1', title: 'Fix bug', mission: null,
+        context: {},
+      });
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
   });
 

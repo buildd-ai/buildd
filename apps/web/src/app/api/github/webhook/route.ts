@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
+import { and, eq, sql, inArray, isNull, not, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -9,7 +9,7 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { checkDependsOnResolved } from '@/lib/task-dependencies';
+import { checkDependsOnResolved, checkMergeAfterResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { countPendingTasksForMission } from '@/lib/mission-release';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -382,13 +382,41 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
           .where(eq(workers.id, worker.id));
 
-        // requiresReview gate — hold PR for human review if task or mission requires it.
+        // requiresReview and mergeAfter gates — evaluated together to share one task query.
         if (worker.taskId) {
           const reviewTask = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
             with: { mission: { columns: { id: true, requiresReview: true } } },
-            columns: { id: true, requiresReview: true, missionId: true, title: true },
+            columns: { id: true, requiresReview: true, missionId: true, title: true, context: true },
           });
+
+          // mergeAfter gate — hold merge until all listed upstream task PRs have merged.
+          // Fires before requiresReview so deferred PRs don't notify as "awaiting_review".
+          const mergeAfterIds = (reviewTask?.context as Record<string, unknown> | null)?.mergeAfter;
+          if (Array.isArray(mergeAfterIds) && mergeAfterIds.length > 0) {
+            const depWorkers = await db
+              .select({ taskId: workers.taskId, mergedAt: workers.mergedAt })
+              .from(workers)
+              .where(inArray(workers.taskId, mergeAfterIds as string[]))
+              .orderBy(desc(workers.createdAt));
+
+            const latestMergedAt = new Map<string, Date | null>();
+            for (const w of depWorkers) {
+              if (w.taskId && !latestMergedAt.has(w.taskId)) {
+                latestMergedAt.set(w.taskId, w.mergedAt ?? null);
+              }
+            }
+
+            const anyUnmerged = (mergeAfterIds as string[]).some(id => {
+              const m = latestMergedAt.get(id);
+              return m === null || m === undefined;
+            });
+
+            if (anyUnmerged) {
+              console.log(`[mergeAfter] PR #${pr.number} on ${repository.full_name} deferred — awaiting upstream task merges`);
+              continue;
+            }
+          }
 
           const missionRequires = (reviewTask?.mission as { requiresReview?: boolean } | null)?.requiresReview;
           if (reviewTask && (reviewTask.requiresReview || missionRequires)) {
@@ -608,6 +636,12 @@ async function handlePullRequestEvent(event: {
     checkDependsOnResolved(worker.task.id).catch((e) =>
       console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
     );
+    // Re-evaluate mergeAfter-gated PRs that were waiting on this task to merge.
+    if (event.installation) {
+      checkMergeAfterResolved(worker.task.id, event.installation.id, repository.full_name).catch((e) =>
+        console.error(`[webhook] checkMergeAfterResolved failed for task ${worker.task!.id}:`, e)
+      );
+    }
   }
 
   if (pr.merged && worker?.task && worker.task.status !== 'completed') {

@@ -1,10 +1,12 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core/db/schema';
-import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
+import { eq, and, sql, inArray, like, lt, isNotNull, isNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { githubApi } from '@/lib/github';
+import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -502,5 +504,125 @@ async function cascadeDependencyFailure(
 
     // Recursively resolve — triggers further cascades, mission loop updates, etc.
     await resolveCompletedTask(task.id, task.workspaceId);
+  }
+}
+
+/**
+ * When a task's PR merges, re-evaluate any tasks that listed it in `context.mergeAfter`.
+ * If all their `mergeAfter` deps are now merged, attempt to auto-merge their open PRs.
+ *
+ * Called from the pull_request.closed (merged) webhook path, analogous to
+ * `checkDependsOnResolved` but operating at the merge layer, not the claim layer:
+ *   - `dependsOn`  → gates task *claiming* (upstream must complete+merge first)
+ *   - `mergeAfter` → gates PR *merging* (task runs normally; PR held until deps merge)
+ */
+export async function checkMergeAfterResolved(
+  mergedTaskId: string,
+  installationId: number,
+  repoFullName: string,
+): Promise<void> {
+  // Find tasks that list mergedTaskId in context.mergeAfter
+  const candidateTasks = await db
+    .select({ id: tasks.id, context: tasks.context, workspaceId: tasks.workspaceId })
+    .from(tasks)
+    .where(sql`${tasks.context} @> ${JSON.stringify({ mergeAfter: [mergedTaskId] })}::jsonb`);
+
+  if (candidateTasks.length === 0) return;
+
+  // Collect all unique dep task IDs so we can check their mergedAt in one query
+  const allDepTaskIds = new Set<string>();
+  for (const t of candidateTasks) {
+    const mergeAfterIds = (t.context as Record<string, unknown> | null)?.mergeAfter;
+    if (Array.isArray(mergeAfterIds)) {
+      for (const id of mergeAfterIds as string[]) {
+        allDepTaskIds.add(id);
+      }
+    }
+  }
+
+  if (allDepTaskIds.size === 0) return;
+
+  // Fetch the latest worker per dep task to check mergedAt
+  const depWorkers = await db
+    .select({ taskId: workers.taskId, mergedAt: workers.mergedAt })
+    .from(workers)
+    .where(inArray(workers.taskId, Array.from(allDepTaskIds)))
+    .orderBy(desc(workers.createdAt));
+
+  const latestMergedAt = new Map<string, Date | null>();
+  for (const w of depWorkers) {
+    if (w.taskId && !latestMergedAt.has(w.taskId)) {
+      latestMergedAt.set(w.taskId, w.mergedAt ?? null);
+    }
+  }
+
+  // Find the latest open (unmerged) worker PR per candidate task
+  const candidateTaskIds = candidateTasks.map(t => t.id);
+  const openPrWorkers = await db
+    .select({
+      id: workers.id,
+      taskId: workers.taskId,
+      workspaceId: workers.workspaceId,
+      prNumber: workers.prNumber,
+    })
+    .from(workers)
+    .where(
+      and(
+        inArray(workers.taskId, candidateTaskIds),
+        isNotNull(workers.prNumber),
+        isNull(workers.mergedAt),
+      )
+    )
+    .orderBy(desc(workers.createdAt));
+
+  const taskWorkerMap = new Map<string, (typeof openPrWorkers)[0]>();
+  for (const w of openPrWorkers) {
+    if (w.taskId && !taskWorkerMap.has(w.taskId)) {
+      taskWorkerMap.set(w.taskId, w);
+    }
+  }
+
+  for (const task of candidateTasks) {
+    const mergeAfterIds = (task.context as Record<string, unknown> | null)?.mergeAfter as string[] | undefined;
+    if (!Array.isArray(mergeAfterIds) || mergeAfterIds.length === 0) continue;
+
+    // Check all deps are merged
+    const allMerged = mergeAfterIds.every(id => {
+      const m = latestMergedAt.get(id);
+      return m !== null && m !== undefined;
+    });
+    if (!allMerged) continue;
+
+    const openWorker = taskWorkerMap.get(task.id);
+    if (!openWorker?.prNumber) continue;
+
+    console.log(`[mergeAfter] Task ${task.id} unblocked — attempting merge of PR #${openWorker.prNumber} on ${repoFullName}`);
+
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, task.workspaceId),
+      columns: { gitConfig: true },
+    });
+    if (!workspace) continue;
+
+    // Fetch current PR headSha from GitHub (needed for the merge safety check)
+    let headSha: string | undefined;
+    try {
+      const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${openWorker.prNumber}`);
+      headSha = prData?.head?.sha;
+    } catch (err) {
+      console.warn(`[mergeAfter] Could not fetch headSha for PR #${openWorker.prNumber}:`, err);
+    }
+    if (!headSha) continue;
+
+    await tryAutoMergeWorkerPr({
+      installationId,
+      repoFullName,
+      prNumber: openWorker.prNumber,
+      headSha,
+      worker: { id: openWorker.id, taskId: openWorker.taskId },
+      gitConfig: workspace.gitConfig,
+    }).catch(err =>
+      console.error(`[mergeAfter] tryAutoMergeWorkerPr failed for PR #${openWorker.prNumber}:`, err)
+    );
   }
 }

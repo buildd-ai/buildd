@@ -41,6 +41,12 @@ mock.module('@buildd/core/db', () => ({
           return Promise.resolve(missionsFindFirstResults[callIndex] ?? null);
         },
       },
+      workspaces: {
+        findFirst: (...args: any[]) => {
+          const callIndex = workspacesFindFirstCallCount++;
+          return Promise.resolve(workspacesFindFirstResults[callIndex] ?? null);
+        },
+      },
     },
     select: (...args: any[]) => {
       mockSelect(...args);
@@ -102,7 +108,15 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchUnblockedTask: mockDispatchUnblockedTask,
 }));
 
-import { resolveCompletedTask, checkDependsOnResolved } from './task-dependencies';
+const mockGithubApi = mock(() => Promise.resolve({ head: { sha: 'sha-abc' } }) as any);
+const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+mock.module('@/lib/auto-merge', () => ({ tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr }));
+
+let workspacesFindFirstResults: any[] = [];
+let workspacesFindFirstCallCount = 0;
+
+import { resolveCompletedTask, checkDependsOnResolved, checkMergeAfterResolved } from './task-dependencies';
 
 function resetMocks() {
   mockFindFirst.mockReset();
@@ -117,12 +131,16 @@ function resetMocks() {
   mockUpdateSet.mockReset();
   mockUpdateWhere.mockReset();
   mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
+  mockGithubApi.mockClear();
+  mockTryAutoMergeWorkerPr.mockClear();
   selectCallCount = 0;
   selectWhereResults = [];
   findFirstCallCount = 0;
   findFirstResults = [];
   missionsFindFirstCallCount = 0;
   missionsFindFirstResults = [];
+  workspacesFindFirstCallCount = 0;
+  workspacesFindFirstResults = [];
 }
 
 describe('task-dependencies', () => {
@@ -495,6 +513,98 @@ describe('task-dependencies aggregation', () => {
     await resolveCompletedTask('child-1', 'ws-1');
 
     expect(mockInsert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('checkMergeAfterResolved', () => {
+  beforeEach(resetMocks);
+
+  it('no-ops when no tasks reference the merged task in mergeAfter', async () => {
+    // select[0]: no candidate tasks found
+    selectWhereResults = [[]];
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+  });
+
+  it('defers when a mergeAfter dep task PR is not yet merged', async () => {
+    // select[0]: one candidate task
+    // select[1]: dep worker — not merged yet
+    // select[2]: open PR workers for candidate
+    selectWhereResults = [
+      [{ id: 'task-a', context: { mergeAfter: ['dep-task-1'] }, workspaceId: 'ws-1' }],
+      [{ taskId: 'dep-task-1', mergedAt: null }],
+      [{ id: 'w-1', taskId: 'task-a', workspaceId: 'ws-1', prNumber: 42 }],
+    ];
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+  });
+
+  it('defers when one of multiple mergeAfter deps is unmerged', async () => {
+    selectWhereResults = [
+      [{ id: 'task-a', context: { mergeAfter: ['dep-task-1', 'dep-task-2'] }, workspaceId: 'ws-1' }],
+      [
+        { taskId: 'dep-task-1', mergedAt: new Date() },
+        { taskId: 'dep-task-2', mergedAt: null },
+      ],
+      [{ id: 'w-1', taskId: 'task-a', workspaceId: 'ws-1', prNumber: 42 }],
+    ];
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+  });
+
+  it('attempts merge when all mergeAfter deps are merged and task has an open PR', async () => {
+    selectWhereResults = [
+      [{ id: 'task-a', context: { mergeAfter: ['dep-task-1'] }, workspaceId: 'ws-1' }],
+      [{ taskId: 'dep-task-1', mergedAt: new Date() }],
+      [{ id: 'w-1', taskId: 'task-a', workspaceId: 'ws-1', prNumber: 42 }],
+    ];
+    workspacesFindFirstResults[0] = { gitConfig: { mergeMethod: 'squash' } };
+    mockGithubApi.mockImplementation(() => Promise.resolve({ head: { sha: 'sha-abc' } }));
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: 123,
+        repoFullName: 'owner/repo',
+        prNumber: 42,
+        headSha: 'sha-abc',
+        worker: expect.objectContaining({ id: 'w-1', taskId: 'task-a' }),
+        gitConfig: { mergeMethod: 'squash' },
+      })
+    );
+  });
+
+  it('skips merge when candidate has all deps merged but no open PR', async () => {
+    selectWhereResults = [
+      [{ id: 'task-a', context: { mergeAfter: ['dep-task-1'] }, workspaceId: 'ws-1' }],
+      [{ taskId: 'dep-task-1', mergedAt: new Date() }],
+      [], // no open PR workers
+    ];
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+  });
+
+  it('skips merge when workspace not found', async () => {
+    selectWhereResults = [
+      [{ id: 'task-a', context: { mergeAfter: ['dep-task-1'] }, workspaceId: 'ws-1' }],
+      [{ taskId: 'dep-task-1', mergedAt: new Date() }],
+      [{ id: 'w-1', taskId: 'task-a', workspaceId: 'ws-1', prNumber: 42 }],
+    ];
+    workspacesFindFirstResults[0] = null; // workspace not found
+
+    await checkMergeAfterResolved('dep-task-1', 123, 'owner/repo');
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
   });
 });
 

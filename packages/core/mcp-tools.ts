@@ -168,7 +168,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, mergeAfter? (array of task IDs — gates PR merge, not task claiming. The task runs normally but its PR will not auto-merge until all listed tasks have mergedAt on their latest worker. Use when parallel tasks must land in order at the DB layer. Distinct from dependsOn which blocks claiming), pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -1270,11 +1270,12 @@ export async function handleBuilddAction(
       if (!params.title || !params.description) throw new Error('title and description are required');
       const allowedCreateTaskParams = new Set([
         'title', 'description', 'workspaceId', 'priority', 'category', 'outputRequirement',
-        'outputSchema', 'project', 'missionId', 'parentTaskId', 'dependsOn', 'pathManifest',
-        'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
-        'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
-        'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
-        'loopConfig', 'loopUntilVerified', 'subjectAnchor', 'fileAnywayReason', 'context',
+        'outputSchema', 'project', 'missionId', 'parentTaskId', 'dependsOn', 'mergeAfter',
+        'pathManifest', 'roleSlug', 'baseBranch', 'verificationCommand', 'iteration',
+        'maxIterations', 'failureContext', 'skillSlugs', 'tier', 'model', 'effort',
+        'callbackUrl', 'callbackToken', 'release', 'backend', 'startAt', 'startIn',
+        'startAfter', 'loopConfig', 'loopUntilVerified', 'subjectAnchor', 'fileAnywayReason',
+        'context',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
@@ -1376,6 +1377,11 @@ export async function handleBuilddAction(
       }
       if (params.effort && typeof params.effort === 'string') {
         taskContext.effort = params.effort;
+      }
+      // mergeAfter: gates PR merge (not claiming) on upstream task PRs being merged first.
+      // Distinct from dependsOn (which blocks claiming). See TaskContext.mergeAfter.
+      if (Array.isArray(params.mergeAfter) && params.mergeAfter.length > 0) {
+        taskContext.mergeAfter = params.mergeAfter;
       }
       // Ralph loop fields — branch continuity, verification, and retry metadata
       if (params.baseBranch && typeof params.baseBranch === 'string') {
