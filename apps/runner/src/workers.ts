@@ -2166,6 +2166,21 @@ export class WorkerManager {
         }
       }
 
+      // CBM observability: record activation outcome and initialize per-task counters.
+      if (cbmEnforced) {
+        worker.cbmOutcome = 'enforced';
+      } else if (cbmBinaryPath) {
+        worker.cbmOutcome = 'legacy_mcp_json';
+      } else {
+        worker.cbmOutcome = 'disabled';
+        if (isCodexTask) worker.cbmDisableReason = 'codex_task';
+        else if (!worker.worktreePath) worker.cbmDisableReason = 'no_worktree';
+        else if (!!(worker as any).cbmDisabled) worker.cbmDisableReason = 'role_opt_out';
+        else worker.cbmDisableReason = 'binary_absent';
+      }
+      worker.cbmToolCounts = {};
+      worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
+
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
       // currently has no sandbox.extraMounts option, so its supported custom
@@ -2882,6 +2897,36 @@ If something is missing or incomplete, describe what and fix it now.`;
         const inputTokens = totals?.inputTokens;
         const outputTokens = totals?.outputTokens;
 
+        // CBM observability: attach per-task metrics to resultMeta before completion.
+        if (worker.cbmOutcome !== undefined) {
+          const cbmCounts = worker.cbmToolCounts ?? {};
+          const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
+          const cbmMetrics = {
+            outcome: worker.cbmOutcome,
+            ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
+            toolCalls: cbmCounts,
+            totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
+            readCount: fileAccess.read,
+            grepCount: fileAccess.grep,
+            globCount: fileAccess.glob,
+          };
+          // Merge into resultMeta so all metrics travel together to the server.
+          if (worker.resultMeta) {
+            worker.resultMeta.cbm = cbmMetrics;
+          } else {
+            // Provision-failure path: resultMeta wasn't set by the SDK result handler.
+            // Create a minimal shell so cbm travels with the completion payload.
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              cbm: cbmMetrics,
+            };
+          }
+        }
+
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
         // runner work (pr_checks_green = server reads webhooks; structured_predicate =
@@ -3465,6 +3510,18 @@ If something is missing or incomplete, describe what and fix it now.`;
               ts: Date.now(),
               ok: true,
             });
+          }
+
+          // CBM observability: count per-tool CBM calls and file-access tool calls.
+          if (toolName.startsWith('mcp__codebase-memory__')) {
+            const cbmTool = toolName.slice('mcp__codebase-memory__'.length);
+            if (!worker.cbmToolCounts) worker.cbmToolCounts = {};
+            worker.cbmToolCounts[cbmTool] = (worker.cbmToolCounts[cbmTool] ?? 0) + 1;
+          } else {
+            if (!worker.cbmFileAccessCounts) worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
+            if (toolName === 'Read') worker.cbmFileAccessCounts.read++;
+            else if (toolName === 'Grep') worker.cbmFileAccessCounts.grep++;
+            else if (toolName === 'Glob') worker.cbmFileAccessCounts.glob++;
           }
 
           // Check for repetitive tool calls (infinite loop detection)
