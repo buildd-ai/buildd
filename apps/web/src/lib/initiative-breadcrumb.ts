@@ -27,30 +27,47 @@ const DEFAULT_CRUMB = (missionTitle: string): MissionBreadcrumb => ({
 /**
  * Resolves the breadcrumb config for a mission detail page.
  *
- * When `from=initiative`, `initiativeId`, and a non-empty `initiativeName` are
- * all present, returns the three-level initiative breadcrumb. Otherwise returns
- * the standard two-level missions breadcrumb (no regression for direct nav).
+ * Priority order:
+ * 1. URL param (from=initiative + initiativeId + initiativeName) — preserves navigation context
+ * 2. DB-stored initiative (dbInitiativeId + dbInitiativeName) — always shown even on direct nav
+ * 3. Default: "Missions / mission title"
  */
 export function resolveMissionBreadcrumb({
   from,
   initiativeId,
   initiativeName,
+  dbInitiativeId,
+  dbInitiativeName,
   missionTitle,
 }: {
   from: string | undefined;
   initiativeId: string | undefined;
   initiativeName: string | undefined;
+  dbInitiativeId: string | undefined | null;
+  dbInitiativeName: string | undefined | null;
   missionTitle: string;
 }): MissionBreadcrumb {
-  if (from !== 'initiative' || !initiativeId || !initiativeName) {
-    return DEFAULT_CRUMB(missionTitle);
+  // URL param takes priority (navigation context from clicking through an initiative page)
+  if (from === 'initiative' && initiativeId && initiativeName) {
+    return {
+      type: 'initiative',
+      links: [
+        { label: 'Initiatives', href: '/app/initiatives' },
+        { label: initiativeName, href: `/app/initiatives/${initiativeId}` },
+      ],
+      currentLabel: missionTitle,
+    };
   }
-  return {
-    type: 'initiative',
-    links: [
-      { label: 'Initiatives', href: '/app/initiatives' },
-      { label: initiativeName, href: `/app/initiatives/${initiativeId}` },
-    ],
-    currentLabel: missionTitle,
-  };
+  // DB-stored initiative — always show even on direct navigation
+  if (dbInitiativeId && dbInitiativeName) {
+    return {
+      type: 'initiative',
+      links: [
+        { label: 'Initiatives', href: '/app/initiatives' },
+        { label: dbInitiativeName, href: `/app/initiatives/${dbInitiativeId}` },
+      ],
+      currentLabel: missionTitle,
+    };
+  }
+  return DEFAULT_CRUMB(missionTitle);
 }

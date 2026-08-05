@@ -96,6 +96,7 @@ export interface MissionItem {
   inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
   blockedPRCount: number;
   initiativeId: string | null;
+  initiativeName: string | null;
 }
 
 interface WorkspaceBucket {
@@ -621,6 +622,16 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               {mission.effectivePolicyLabel}
             </Link>
           )}
+          {mission.initiativeId && mission.initiativeName && (
+            <Link
+              href={`/app/initiatives/${mission.initiativeId}`}
+              className="text-[10px] font-mono text-accent-text px-1.5 py-0.5 border border-accent-border/30 rounded-sm hover:border-accent-border/60 transition-colors"
+              title={`Initiative: ${mission.initiativeName}`}
+              onClick={e => e.stopPropagation()}
+            >
+              {mission.initiativeName.length > 24 ? `${mission.initiativeName.slice(0, 24)}…` : mission.initiativeName}
+            </Link>
+          )}
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
@@ -752,6 +763,16 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
                 <path d="M12 5v14m-7-7l7 7 7-7" />
               </svg>
               {mission.effectivePolicyLabel}
+            </Link>
+          )}
+          {mission.initiativeId && mission.initiativeName && (
+            <Link
+              href={`/app/initiatives/${mission.initiativeId}`}
+              className="text-[10px] font-mono text-accent-text px-1.5 py-0.5 border border-accent-border/30 rounded-sm hover:border-accent-border/60 transition-colors"
+              title={`Initiative: ${mission.initiativeName}`}
+              onClick={e => e.stopPropagation()}
+            >
+              {mission.initiativeName.length > 24 ? `${mission.initiativeName.slice(0, 24)}…` : mission.initiativeName}
             </Link>
           )}
         </div>

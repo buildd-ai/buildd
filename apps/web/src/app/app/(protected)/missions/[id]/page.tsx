@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -13,6 +13,7 @@ import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-h
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
+import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import CondensedTimeline from './CondensedTimeline';
@@ -60,6 +61,7 @@ export default async function MissionDetailPage({
     where: eq(missions.id, id),
     with: {
       workspace: { columns: { id: true, name: true } },
+      initiative: { columns: { id: true, title: true } },
       tasks: {
         columns: {
           id: true,
@@ -433,7 +435,8 @@ export default async function MissionDetailPage({
 
   const missionTaskIds = allTasks.map((t) => t.id);
 
-  // I-5: resolve breadcrumb — fetch initiative name only when the param is present
+  // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
+  // so users see the parent initiative even when navigating directly to the mission.
   const initiativeName = (from === 'initiative' && initiativeId)
     ? (await db.query.initiatives.findFirst({
         where: eq(initiatives.id, initiativeId),
@@ -441,12 +444,28 @@ export default async function MissionDetailPage({
       }))?.title
     : undefined;
 
+  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
+
   const breadcrumb = resolveMissionBreadcrumb({
     from,
     initiativeId,
     initiativeName,
+    dbInitiativeId: dbInitiative?.id,
+    dbInitiativeName: dbInitiative?.title,
     missionTitle: mission.title,
   });
+
+  // Fetch team's active/paused initiatives for the initiative selector
+  const isTerminal = ['completed', 'archived'].includes(mission.status);
+  const teamInitiativeOptions: InitiativeOption[] = isTerminal ? [] : await db.query.initiatives.findMany({
+    where: and(
+      inArray(initiatives.teamId, teamIds),
+      inArray(initiatives.status, ['active', 'paused']),
+    ),
+    columns: { id: true, title: true, status: true },
+    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    limit: 50,
+  }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
   return (
     <SwipeProvider>
@@ -606,6 +625,17 @@ export default async function MissionDetailPage({
               <span>Completed {new Date(mission.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
             </>
           )}
+        </div>
+
+        {/* Initiative parent — always visible */}
+        <div className="mt-2">
+          <MissionInitiativeSelector
+            missionId={id}
+            currentInitiativeId={dbInitiative?.id ?? null}
+            currentInitiativeName={dbInitiative?.title ?? null}
+            initiatives={teamInitiativeOptions}
+            readonly={isTerminal}
+          />
         </div>
 
         {/* Completion Summary — only for completed missions */}
