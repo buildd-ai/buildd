@@ -361,7 +361,7 @@ export default function MissionSettings({
             value={cronValue}
             onChange={e => setCronValue(e.target.value)}
             placeholder="e.g. 0 9 * * 1"
-            className="w-40 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono"
+            className="w-40 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 font-mono"
             autoFocus
             onKeyDown={e => {
               if (e.key === 'Enter') handleSaveCron();
@@ -400,7 +400,7 @@ export default function MissionSettings({
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Add a task to this mission..."
-                className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 transition-colors"
+                className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
               <button
                 type="submit"

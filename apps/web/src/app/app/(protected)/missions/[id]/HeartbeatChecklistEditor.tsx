@@ -98,7 +98,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
             onClick={() => setCollapsed(false)}
             className="w-full p-3 bg-card border border-card-border rounded-lg text-left hover:border-accent/30 transition-colors"
           >
-            <p className="text-[12px] text-text-muted truncate">{checklist.split('\n')[0]}</p>
+            <p className="text-[12px] text-text-secondary truncate">{checklist.split('\n')[0]}</p>
           </button>
         ) : (
           <div className="p-3 bg-card border border-card-border rounded-lg">

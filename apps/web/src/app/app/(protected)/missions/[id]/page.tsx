@@ -256,6 +256,13 @@ export default async function MissionDetailPage({
   const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
   const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
 
+  // Settings panel summary — non-default values for the collapsed header
+  const configSummaryParts: string[] = [];
+  if (configModel) configSummaryParts.push(configModel.replace(/^claude-/, '').replace(/-latest$/, ''));
+  if (mission.maxConcurrentTasks != null) configSummaryParts.push(`${mission.maxConcurrentTasks} concurrent`);
+  if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
+  const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
+
   // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
   const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
@@ -716,7 +723,7 @@ export default async function MissionDetailPage({
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
-        <MissionSecondaryPanel>
+        <MissionSecondaryPanel configSummary={configSummary}>
           {/* Evaluation Log — heartbeat missions only, secondary content */}
           {isHeartbeat && heartbeatTasks.length > 0 && (
             <HeartbeatTimeline
