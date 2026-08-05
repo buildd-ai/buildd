@@ -348,10 +348,6 @@ export function TaskCard({
             </div>
           )}
 
-          {/* T4 — runner (last in DOM) */}
-          {runnerName && (
-            <div className="font-mono text-[10px] text-text-muted mt-0.5 truncate">{runnerName}</div>
-          )}
         </div>
 
         {/* Right — health + provenance */}

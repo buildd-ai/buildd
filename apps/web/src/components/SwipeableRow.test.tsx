@@ -62,8 +62,8 @@ describe('getTrailingAction', () => {
     expect(action!.action).toBe('snooze-24h');
   });
 
-  it('escalation-card → acknowledge', () => {
-    expect(getTrailingAction('escalation-card')!.action).toBe('acknowledge');
+  it('escalation-card → null (acknowledge was client-local only, removed)', () => {
+    expect(getTrailingAction('escalation-card')).toBeNull();
   });
 
   it('blocked-task → snooze-notification', () => {
@@ -74,8 +74,8 @@ describe('getTrailingAction', () => {
     expect(getTrailingAction('needs-attention')!.action).toBe('snooze-24h');
   });
 
-  it('completed-task → dismiss', () => {
-    expect(getTrailingAction('completed-task')!.action).toBe('dismiss');
+  it('completed-task → null (dismiss was client-local only, removed)', () => {
+    expect(getTrailingAction('completed-task')).toBeNull();
   });
 
   it('running-task → null (no swipe action)', () => {
@@ -100,16 +100,15 @@ describe('getMenuActions', () => {
     expect(labels).not.toContain('Open in GitHub');
   });
 
-  it('completed-task with prUrl includes View PR', () => {
+  it('completed-task with prUrl includes only View PR (no Dismiss)', () => {
     const labels = getMenuActions('completed-task', { prUrl: 'https://github.com/x' }).map((a) => a.label);
-    expect(labels).toContain('Dismiss');
-    expect(labels).toContain('View PR');
+    expect(labels).not.toContain('Dismiss');
+    expect(labels).toContain('View PR ↗');
   });
 
-  it('completed-task without prUrl omits View PR', () => {
-    const labels = getMenuActions('completed-task', {}).map((a) => a.label);
-    expect(labels).toContain('Dismiss');
-    expect(labels).not.toContain('View PR');
+  it('completed-task without prUrl returns empty menu (no Dismiss)', () => {
+    const actions = getMenuActions('completed-task', {});
+    expect(actions).toHaveLength(0);
   });
 
   it('running-task has Cancel task action', () => {
@@ -129,9 +128,9 @@ describe('getMenuActions', () => {
     expect(labels).toContain('Snooze notification');
   });
 
-  it('escalation-card has Acknowledge, File anyway, Ignore', () => {
+  it('escalation-card has File anyway, Ignore (no Acknowledge — it was client-local only)', () => {
     const labels = getMenuActions('escalation-card', {}).map((a) => a.label);
-    expect(labels).toContain('Acknowledge');
+    expect(labels).not.toContain('Acknowledge');
     expect(labels).toContain('File anyway');
     expect(labels).toContain('Ignore');
   });
@@ -191,13 +190,31 @@ describe('SwipeableRow rendering', () => {
     expect(html).toContain('aria-haspopup="menu"');
   });
 
-  it('renders ⋯ button for running-task (⋯ is required on every swipeable card)', () => {
+  it('renders ⋯ button for running-task (cancel-task is in the menu)', () => {
     const html = renderToStaticMarkup(
       <SwipeableRow cardType="running-task" taskTitle="Background work">
         <div>card</div>
       </SwipeableRow>,
     );
     expect(html).toContain('More actions for Background work');
+  });
+
+  it('does not render ⋯ button for completed-task without prUrl (empty menu)', () => {
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="completed-task" taskTitle="Finished task">
+        <div>done</div>
+      </SwipeableRow>,
+    );
+    expect(html).not.toContain('More actions for Finished task');
+  });
+
+  it('renders ⋯ button for completed-task with prUrl (View PR menu item)', () => {
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="completed-task" taskTitle="PR task" prUrl="https://github.com/pr/1">
+        <div>done</div>
+      </SwipeableRow>,
+    );
+    expect(html).toContain('More actions for PR task');
   });
 
   it('right-swipe reserved: no leading action rendered', () => {
@@ -210,13 +227,14 @@ describe('SwipeableRow rendering', () => {
     expect(html).not.toContain('data-leading-action');
   });
 
-  it('renders trailing action slot for gate-card', () => {
+  it('renders trailing action slot for gate-card with sr-only label', () => {
     const html = renderToStaticMarkup(
       <SwipeableRow cardType="gate-card" taskTitle="Test">
         <div>card</div>
       </SwipeableRow>,
     );
     expect(html).toContain('data-trailing-action');
+    // Label is sr-only for accessibility; visual indicator is an SVG icon
     expect(html).toContain('Snooze');
   });
 
@@ -272,13 +290,14 @@ describe('layout contract: right-edge zones', () => {
     expect(cardContentEnd).toBe(panelLeftEdge);
   });
 
-  it('non-gate trailing action cards (completed-task) also use correct offset', () => {
+  it('completed-task has no trailing panel (no swipe action)', () => {
     const html = renderToStaticMarkup(
       <SwipeableRow cardType="completed-task" taskTitle="Old task">
         <div>done</div>
       </SwipeableRow>,
     );
-    expect(html).toContain(`right:${MENU_BTN_WIDTH}px`);
+    // completed-task no longer has a trailing action — dismiss was client-local
+    expect(html).not.toContain('data-trailing-action');
   });
 
   it('running-task has no trailing panel (no offset needed)', () => {
