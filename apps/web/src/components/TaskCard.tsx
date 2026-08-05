@@ -290,12 +290,6 @@ export function TaskCard({
           </span>
         )}
 
-        {/* T4 — runner (last) */}
-        {runnerName && (
-          <span className="font-mono text-[9px] text-text-muted truncate shrink-0 max-w-[80px] pointer-events-none">
-            {runnerName}
-          </span>
-        )}
       </div>
     );
   }
