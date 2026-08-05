@@ -340,6 +340,14 @@ export async function POST(
                 ? { subjectPolicy: existing.gitConfig.subjectPolicy }
                 : {}),
 
+            // enforceGreenCI — surfaced via the workspace CI policy toggle, not this form.
+            // Preserve existing value; explicit body param wins if provided.
+            ...(typeof body.enforceGreenCI === 'boolean'
+                ? { enforceGreenCI: body.enforceGreenCI }
+                : existing?.gitConfig?.enforceGreenCI !== undefined
+                  ? { enforceGreenCI: existing.gitConfig.enforceGreenCI }
+                  : {}),
+
         };
 
         await db
