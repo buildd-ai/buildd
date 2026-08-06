@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- enforceGreenCI workspace policy + mergeable_state check (#1571)
+- Priority indicator on mission cards, move detail header to inline edit (#1569)
+- Flatten mission Settings IA, fix contrast on mission config panel (#1568)
+- Initiative-mission linkage UI (#1567)
+- Add per-task CBM observability metrics (#1559)
+- Enforce codebase-memory MCP as default across all repo-backed roles (#1555, #1556)
+- Build CBM index during worker bootstrap (#1551)
 - Subject anchors 6/7 — dead-PR shutdown behind autoCloseBuilddSupersededPrs flag (#1507)
 - Subject anchors 5/7 — reconciliation sweep and pre-claim liveness gate (#1506)
 - Surface 403 GitHub App permission gap as connector_permission_insufficient (#1501)
@@ -56,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Define ack/dismiss actions in activity feed, add swipe affordance, and declutter rows (#1563)
+- Eliminate trailing-action / ⋯ menu overlap in SwipeableRow (#1558)
+- Resolve PR merge "Not Found" via githubRepos path, guard against workspace ambiguity (#1557)
 - Update @openai/codex-sdk to ^0.146.0 (#1505)
 - Terminate agent review leases safely (#1487)
 - Scope MCP list_tasks and openclaw fetches to active/workspace (#1386)
