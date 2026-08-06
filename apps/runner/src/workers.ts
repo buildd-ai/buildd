@@ -55,6 +55,7 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
@@ -2423,6 +2424,60 @@ export class WorkerManager {
         }
         console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
         this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
+      }
+
+      // CBM (codebase-memory-mcp) bootstrap — Claude tasks only.
+      // If the role's .mcp.json declares a "codebase-memory" stdio server, run
+      // index_repository BEFORE the agent loop so the graph is warm on turn one.
+      // 30-second hard timeout: on timeout or any error, log + emit fallback event
+      // and proceed WITHOUT CBM. Indexing failure must never fail the task.
+      if (!isCodexTask) {
+        // Prefer the role dir's .mcp.json (written by syncRoleToLocal) as the
+        // authoritative source; fall back to cwd for repos that commit it directly.
+        const cbmMcpJsonPaths = [
+          ...(worker.roleConfig ? [join(getRoleDir(worker.roleConfig.slug), '.mcp.json')] : []),
+          join(cwd, '.mcp.json'),
+        ];
+        let cbmServerConfig = null;
+        for (const p of cbmMcpJsonPaths) {
+          cbmServerConfig = detectCbmConfig(p);
+          if (cbmServerConfig) break;
+        }
+
+        if (cbmServerConfig) {
+          worker.currentAction = 'Indexing codebase (CBM)...';
+          this.emit({ type: 'worker_update', worker });
+
+          console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
+          const cbmResult = await runCbmBootstrap({
+            worktreePath: cwd,
+            workerId: worker.id,
+            serverConfig: cbmServerConfig,
+          });
+
+          if (cbmResult.ok) {
+            const durS = (cbmResult.durationMs / 1000).toFixed(1);
+            console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
+            this.addMilestone(worker, {
+              type: 'status',
+              label: `graph_index_success durationMs=${cbmResult.durationMs}`,
+              ts: Date.now(),
+            });
+            queryOptions.mcpServers['codebase-memory'] = buildCbmBootstrapMcpEntry(
+              cbmServerConfig,
+              cbmResult.cbmCacheDir,
+              cwd,
+            );
+            console.log(`[Worker ${worker.id}] CBM: mounted codebase-memory MCP server (cache=${cbmResult.cbmCacheDir})`);
+          } else {
+            console.warn(`[Worker ${worker.id}] CBM: index failed (${cbmResult.reason}), proceeding without CBM`);
+            this.addMilestone(worker, {
+              type: 'status',
+              label: `graph_index_fallback reason=${cbmResult.reason.slice(0, 80)}`,
+              ts: Date.now(),
+            });
+          }
+        }
       }
 
       // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
