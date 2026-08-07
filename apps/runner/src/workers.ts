@@ -55,6 +55,7 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
@@ -62,6 +63,7 @@ import {
   isMountAllowlistEnabled,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
+import { buildCbmActivation, buildCbmMcpEntry, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -1270,6 +1272,9 @@ export class WorkerManager {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
     }
+    if ((claimedWorker as any).cbmDisabled) {
+      (worker as any).cbmDisabled = true;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -2130,31 +2135,55 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
-      // Detect codebase-memory MCP server in the role or repo .mcp.json.
-      // When found, pre-create the per-worker CBM cache dir on the host so it
-      // can be bind-mounted inside the bwrap sandbox (the sandbox's /tmp is a
-      // fresh tmpfs; the bind shadows it at the specific path, giving CBM a
-      // persistent-to-host location that can be cleaned up after the task).
-      // Checks both cwd (service role dir / worktree committed .mcp.json) and
-      // repoPath (main checkout where overlayRoleFiles writes the builder role's
-      // .mcp.json) so CBM is detected regardless of role type.
+      // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
+      const cbmActivation = buildCbmActivation({
+        workerId: worker.id,
+        worktreePath: worker.worktreePath,
+        isCodexTask,
+        cbmRoleDisabled: !!(worker as any).cbmDisabled,
+      });
+      const cbmEnforced = cbmActivation.enforced;
+
       let cbmBinaryPath: string | undefined;
-      const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
-      for (const mcpJsonPath of cbmDetectPaths) {
-        if (!existsSync(mcpJsonPath)) continue;
-        try {
-          const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
-            mcpServers?: Record<string, unknown>;
-          };
-          if (mcpData.mcpServers?.['codebase-memory']) {
-            cbmBinaryPath = CBM_BINARY_PATH;
-            cbmCacheDir = `/tmp/cbm-${worker.id}`;
-            mkdirSync(cbmCacheDir, { recursive: true });
-            console.log(`[Worker ${worker.id}] CBM detected — cache dir: ${cbmCacheDir}`);
-            break;
-          }
-        } catch { /* non-fatal — proceed without CBM mounts */ }
+      if (cbmEnforced) {
+        cbmBinaryPath = cbmActivation.cbmBinaryPath;
+        cbmCacheDir = cbmActivation.cbmCacheDir;
+        mkdirSync(cbmCacheDir!, { recursive: true });
+        console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
+      } else {
+        // Legacy: detect CBM from .mcp.json for backward compat with manually-configured roles.
+        const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
+        for (const mcpJsonPath of cbmDetectPaths) {
+          if (!existsSync(mcpJsonPath)) continue;
+          try {
+            const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
+              mcpServers?: Record<string, unknown>;
+            };
+            if (mcpData.mcpServers?.['codebase-memory']) {
+              cbmBinaryPath = CBM_BINARY_PATH;
+              cbmCacheDir = `/tmp/cbm-${worker.id}`;
+              mkdirSync(cbmCacheDir, { recursive: true });
+              console.log(`[Worker ${worker.id}] CBM detected from .mcp.json — cache dir: ${cbmCacheDir}`);
+              break;
+            }
+          } catch { /* non-fatal — proceed without CBM mounts */ }
+        }
       }
+
+      // CBM observability: record activation outcome and initialize per-task counters.
+      if (cbmEnforced) {
+        worker.cbmOutcome = 'enforced';
+      } else if (cbmBinaryPath) {
+        worker.cbmOutcome = 'legacy_mcp_json';
+      } else {
+        worker.cbmOutcome = 'disabled';
+        if (isCodexTask) worker.cbmDisableReason = 'codex_task';
+        else if (!worker.worktreePath) worker.cbmDisableReason = 'no_worktree';
+        else if (!!(worker as any).cbmDisabled) worker.cbmDisableReason = 'role_opt_out';
+        else worker.cbmDisableReason = 'binary_absent';
+      }
+      worker.cbmToolCounts = {};
+      worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
@@ -2343,6 +2372,23 @@ export class WorkerManager {
         }
       }
 
+      // Enforce CBM as default MCP for repo-backed tasks.
+      // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
+      if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
+        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(sessionCwd, cbmCacheDir!);
+        console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${sessionCwd})`);
+      }
+
+      // Block CBM tools that write to the repo or delete indexes — enforced for any
+      // mounted codebase-memory server regardless of how it was wired (enforcement,
+      // connector, or manual config).
+      if (queryOptions.mcpServers['codebase-memory']) {
+        (queryOptions as any).disallowedTools = [
+          ...((queryOptions as any).disallowedTools ?? []),
+          ...CBM_BLOCKED_TOOLS,
+        ];
+      }
+
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
       // explicitly opted into via connectorRefs — their absence means the agent
@@ -2378,6 +2424,60 @@ export class WorkerManager {
         }
         console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
         this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
+      }
+
+      // CBM (codebase-memory-mcp) bootstrap — Claude tasks only.
+      // If the role's .mcp.json declares a "codebase-memory" stdio server, run
+      // index_repository BEFORE the agent loop so the graph is warm on turn one.
+      // 30-second hard timeout: on timeout or any error, log + emit fallback event
+      // and proceed WITHOUT CBM. Indexing failure must never fail the task.
+      if (!isCodexTask) {
+        // Prefer the role dir's .mcp.json (written by syncRoleToLocal) as the
+        // authoritative source; fall back to cwd for repos that commit it directly.
+        const cbmMcpJsonPaths = [
+          ...(worker.roleConfig ? [join(getRoleDir(worker.roleConfig.slug), '.mcp.json')] : []),
+          join(cwd, '.mcp.json'),
+        ];
+        let cbmServerConfig = null;
+        for (const p of cbmMcpJsonPaths) {
+          cbmServerConfig = detectCbmConfig(p);
+          if (cbmServerConfig) break;
+        }
+
+        if (cbmServerConfig) {
+          worker.currentAction = 'Indexing codebase (CBM)...';
+          this.emit({ type: 'worker_update', worker });
+
+          console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
+          const cbmResult = await runCbmBootstrap({
+            worktreePath: cwd,
+            workerId: worker.id,
+            serverConfig: cbmServerConfig,
+          });
+
+          if (cbmResult.ok) {
+            const durS = (cbmResult.durationMs / 1000).toFixed(1);
+            console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
+            this.addMilestone(worker, {
+              type: 'status',
+              label: `graph_index_success durationMs=${cbmResult.durationMs}`,
+              ts: Date.now(),
+            });
+            queryOptions.mcpServers['codebase-memory'] = buildCbmBootstrapMcpEntry(
+              cbmServerConfig,
+              cbmResult.cbmCacheDir,
+              cwd,
+            );
+            console.log(`[Worker ${worker.id}] CBM: mounted codebase-memory MCP server (cache=${cbmResult.cbmCacheDir})`);
+          } else {
+            console.warn(`[Worker ${worker.id}] CBM: index failed (${cbmResult.reason}), proceeding without CBM`);
+            this.addMilestone(worker, {
+              type: 'status',
+              label: `graph_index_fallback reason=${cbmResult.reason.slice(0, 80)}`,
+              ts: Date.now(),
+            });
+          }
+        }
       }
 
       // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
@@ -2854,6 +2954,36 @@ If something is missing or incomplete, describe what and fix it now.`;
         const totals = aggregateUsage(resultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
         const inputTokens = totals?.inputTokens;
         const outputTokens = totals?.outputTokens;
+
+        // CBM observability: attach per-task metrics to resultMeta before completion.
+        if (worker.cbmOutcome !== undefined) {
+          const cbmCounts = worker.cbmToolCounts ?? {};
+          const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
+          const cbmMetrics = {
+            outcome: worker.cbmOutcome,
+            ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
+            toolCalls: cbmCounts,
+            totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
+            readCount: fileAccess.read,
+            grepCount: fileAccess.grep,
+            globCount: fileAccess.glob,
+          };
+          // Merge into resultMeta so all metrics travel together to the server.
+          if (worker.resultMeta) {
+            worker.resultMeta.cbm = cbmMetrics;
+          } else {
+            // Provision-failure path: resultMeta wasn't set by the SDK result handler.
+            // Create a minimal shell so cbm travels with the completion payload.
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              cbm: cbmMetrics,
+            };
+          }
+        }
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
@@ -3438,6 +3568,18 @@ If something is missing or incomplete, describe what and fix it now.`;
               ts: Date.now(),
               ok: true,
             });
+          }
+
+          // CBM observability: count per-tool CBM calls and file-access tool calls.
+          if (toolName.startsWith('mcp__codebase-memory__')) {
+            const cbmTool = toolName.slice('mcp__codebase-memory__'.length);
+            if (!worker.cbmToolCounts) worker.cbmToolCounts = {};
+            worker.cbmToolCounts[cbmTool] = (worker.cbmToolCounts[cbmTool] ?? 0) + 1;
+          } else {
+            if (!worker.cbmFileAccessCounts) worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
+            if (toolName === 'Read') worker.cbmFileAccessCounts.read++;
+            else if (toolName === 'Grep') worker.cbmFileAccessCounts.grep++;
+            else if (toolName === 'Glob') worker.cbmFileAccessCounts.glob++;
           }
 
           // Check for repetitive tool calls (infinite loop detection)

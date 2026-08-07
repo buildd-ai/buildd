@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, workspaces, githubInstallations, missions } from '@buildd/core/db/schema';
+import { workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -40,8 +40,10 @@ export async function POST(
     return NextResponse.json({ error: 'No workspaces found' }, { status: 403 });
   }
 
-  // Find the worker for this PR in one of the user's workspaces (unmerged)
-  const worker = await db.query.workers.findFirst({
+  // Fetch ALL unmerged workers matching this prNumber across the user's workspaces.
+  // PR numbers are not unique across repos — findFirst would silently pick the wrong
+  // workspace's worker if two repos both happen to have an open PR with this number.
+  const matchingWorkers = await db.query.workers.findMany({
     where: and(
       inArray(workers.workspaceId, wsIds),
       eq(workers.prNumber, prNumber),
@@ -63,37 +65,76 @@ export async function POST(
     },
   });
 
-  if (!worker) {
+  if (matchingWorkers.length === 0) {
     return NextResponse.json({ error: 'PR not found or already merged' }, { status: 404 });
   }
+
+  // Guard against cross-workspace ambiguity: if the same PR number appears in
+  // multiple repos, we cannot know which one to merge without a workspaceId.
+  const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
+  if (distinctWorkspaceIds.size > 1) {
+    console.error(
+      `[pr-merge] PR #${prNumber} matched ${distinctWorkspaceIds.size} workspaces — ambiguous merge rejected`,
+    );
+    return NextResponse.json(
+      {
+        error: `PR #${prNumber} exists in multiple workspaces — use the workspace-specific view to merge`,
+      },
+      { status: 422 },
+    );
+  }
+
+  const worker = matchingWorkers[0];
 
   if (worker.prLifecycleStatus === 'closed') {
     return NextResponse.json({ error: 'PR is closed and cannot be merged' }, { status: 409 });
   }
 
-  // Load workspace to get the repo and installation
+  // Resolve repo and installation via githubRepos — the same path used by PR
+  // creation and resolveReleaseTarget(). The legacy workspaces.repo and
+  // workspaces.githubInstallationId columns can be stale or null, which causes
+  // GitHub to return 404 "Not Found" on the merge PUT.
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, worker.workspaceId),
-    columns: { id: true, repo: true, githubInstallationId: true },
+    columns: { id: true },
     with: {
-      githubInstallation: {
-        columns: { installationId: true },
+      githubRepo: {
+        columns: { fullName: true },
+        with: {
+          installation: {
+            columns: { installationId: true },
+          },
+        },
       },
     },
   });
 
-  if (!workspace?.repo || !workspace.githubInstallation?.installationId) {
+  if (!workspace?.githubRepo?.installation?.installationId) {
     return NextResponse.json({ error: 'Workspace has no GitHub installation' }, { status: 422 });
   }
 
-  const installationId = workspace.githubInstallation.installationId;
-  const repoFullName = workspace.repo;
+  const installationId = workspace.githubRepo.installation.installationId;
+  const repoFullName = workspace.githubRepo.fullName;
+
+  console.log(
+    `[pr-merge] merging PR #${prNumber} — worker=${worker.id} workspace=${worker.workspaceId} repo=${repoFullName} installation=${installationId}`,
+  );
 
   // Perform the merge
   const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
 
   if (!result.merged) {
-    return NextResponse.json({ error: result.message }, { status: 422 });
+    const rawMessage = result.message ?? '';
+    console.error(
+      `[pr-merge] GitHub rejected merge of PR #${prNumber} on ${repoFullName}: ${rawMessage}`,
+    );
+    // Map GitHub's opaque errors to actionable copy; keep raw message in server log only.
+    const userMessage = /not found/i.test(rawMessage)
+      ? 'GitHub could not find the repo or the buildd App lacks access — verify the App is installed on this repo with contents: write permission'
+      : /method not allowed|405/i.test(rawMessage)
+      ? 'PR is not in a mergeable state — check CI status and branch protection rules'
+      : `GitHub rejected the merge: ${rawMessage}`;
+    return NextResponse.json({ error: userMessage }, { status: 422 });
   }
 
   // Stamp mergedAt and update lifecycle status

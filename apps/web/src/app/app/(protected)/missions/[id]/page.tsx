@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -13,6 +13,7 @@ import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-h
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
+import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import CondensedTimeline from './CondensedTimeline';
@@ -24,7 +25,7 @@ import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
-import PrioritySelector from './PrioritySelector';
+import PriorityInlineEdit from './PriorityInlineEdit';
 import MissionBackendSelector from './MissionBackendSelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
@@ -60,6 +61,7 @@ export default async function MissionDetailPage({
     where: eq(missions.id, id),
     with: {
       workspace: { columns: { id: true, name: true } },
+      initiative: { columns: { id: true, title: true } },
       tasks: {
         columns: {
           id: true,
@@ -254,6 +256,13 @@ export default async function MissionDetailPage({
   const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
   const spendUsd = costBudgetUsd != null ? await getMissionSpendUsd(id) : null;
 
+  // Settings panel summary — non-default values for the collapsed header
+  const configSummaryParts: string[] = [];
+  if (configModel) configSummaryParts.push(configModel.replace(/^claude-/, '').replace(/-latest$/, ''));
+  if (mission.maxConcurrentTasks != null) configSummaryParts.push(`${mission.maxConcurrentTasks} concurrent`);
+  if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
+  const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
+
   // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
   const trackerLinks = await getLinksForEntity(db, 'mission', id);
 
@@ -433,7 +442,8 @@ export default async function MissionDetailPage({
 
   const missionTaskIds = allTasks.map((t) => t.id);
 
-  // I-5: resolve breadcrumb — fetch initiative name only when the param is present
+  // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
+  // so users see the parent initiative even when navigating directly to the mission.
   const initiativeName = (from === 'initiative' && initiativeId)
     ? (await db.query.initiatives.findFirst({
         where: eq(initiatives.id, initiativeId),
@@ -441,12 +451,28 @@ export default async function MissionDetailPage({
       }))?.title
     : undefined;
 
+  const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
+
   const breadcrumb = resolveMissionBreadcrumb({
     from,
     initiativeId,
     initiativeName,
+    dbInitiativeId: dbInitiative?.id,
+    dbInitiativeName: dbInitiative?.title,
     missionTitle: mission.title,
   });
+
+  // Fetch team's active/paused initiatives for the initiative selector
+  const isTerminal = ['completed', 'archived'].includes(mission.status);
+  const teamInitiativeOptions: InitiativeOption[] = isTerminal ? [] : await db.query.initiatives.findMany({
+    where: and(
+      inArray(initiatives.teamId, teamIds),
+      inArray(initiatives.status, ['active', 'paused']),
+    ),
+    columns: { id: true, title: true, status: true },
+    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    limit: 50,
+  }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
   return (
     <SwipeProvider>
@@ -508,9 +534,9 @@ export default async function MissionDetailPage({
           }
         />
 
-        {/* Priority + default backend */}
+        {/* Priority (inline edit) + default backend */}
         <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <PrioritySelector missionId={id} initialPriority={mission.priority} />
+          <PriorityInlineEdit missionId={id} initialPriority={mission.priority} />
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
         </div>
 
@@ -608,6 +634,17 @@ export default async function MissionDetailPage({
           )}
         </div>
 
+        {/* Initiative parent — always visible */}
+        <div className="mt-2">
+          <MissionInitiativeSelector
+            missionId={id}
+            currentInitiativeId={dbInitiative?.id ?? null}
+            currentInitiativeName={dbInitiative?.title ?? null}
+            initiatives={teamInitiativeOptions}
+            readonly={isTerminal}
+          />
+        </div>
+
         {/* Completion Summary — only for completed missions */}
         {mission.status === 'completed' && (() => {
           const lastPlanningTask = allTasks
@@ -686,7 +723,7 @@ export default async function MissionDetailPage({
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
-        <MissionSecondaryPanel>
+        <MissionSecondaryPanel configSummary={configSummary}>
           {/* Evaluation Log — heartbeat missions only, secondary content */}
           {isHeartbeat && heartbeatTasks.length > 0 && (
             <HeartbeatTimeline

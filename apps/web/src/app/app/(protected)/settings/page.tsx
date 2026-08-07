@@ -13,6 +13,7 @@ import AgentBackendsSection from './AgentBackendsSection';
 import NotificationsSection from './NotificationsSection';
 import ConnectorsSection from './ConnectorsSection';
 import WorkspaceMigrationSection from './WorkspaceMigrationSection';
+import WorkspaceGitFeaturesSection from './WorkspaceGitFeaturesSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,6 +81,9 @@ export default async function SettingsPage() {
           workspaces={filteredWorkspaces}
           currentTeamId={currentTeamId}
         />
+
+        {/* Workspace CI policy */}
+        <WorkspaceGitFeaturesSection workspaces={filteredWorkspaces.map((ws: any) => ({ id: ws.id, name: ws.name }))} />
 
         {/* GitHub */}
         <GitHubSection />

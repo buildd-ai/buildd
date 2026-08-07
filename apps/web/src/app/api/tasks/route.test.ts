@@ -1989,4 +1989,103 @@ describe('POST /api/tasks', () => {
     // The caller-supplied manifest is used as-is; inference is skipped
     expect(capturedValues.pathManifest).toEqual(['apps/runner/src/sandbox.ts']);
   });
+
+  // ── enforceGreenCI loopConfig injection ─────────────────────────────────────
+
+  function greenCiSetup() {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    let capturedValues: any = null;
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mock(() => [{ id: 'task-gc', workspaceId: 'ws-1', title: 'T', ...values }]) };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+    return () => capturedValues;
+  }
+
+  it('injects pr_checks_green loopConfig when workspace.enforceGreenCI is true and outputRequirement is pr_required', async () => {
+    const captured = greenCiSetup();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { enforceGreenCI: true },
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', outputRequirement: 'pr_required' },
+    }));
+
+    expect(response.status).toBe(200);
+    const vals = captured();
+    expect(vals.loopConfig).toMatchObject({
+      exitCondition: { type: 'pr_checks_green' },
+      maxLoops: 3,
+    });
+  });
+
+  it('does not inject loopConfig when caller already provides one', async () => {
+    const captured = greenCiSetup();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { enforceGreenCI: true },
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'T',
+        outputRequirement: 'pr_required',
+        loopConfig: { exitCondition: { type: 'command', command: 'bun test' }, maxLoops: 5 },
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    const vals = captured();
+    // Caller's loopConfig wins — not overwritten
+    expect(vals.loopConfig?.exitCondition?.type).toBe('command');
+  });
+
+  it('does not inject loopConfig when enforceGreenCI is false', async () => {
+    const captured = greenCiSetup();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { enforceGreenCI: false },
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', outputRequirement: 'pr_required' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured()?.loopConfig).toBeUndefined();
+  });
+
+  it('does not inject loopConfig when outputRequirement is not pr_required', async () => {
+    const captured = greenCiSetup();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { enforceGreenCI: true },
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', outputRequirement: 'artifact_required' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured()?.loopConfig).toBeUndefined();
+  });
 });

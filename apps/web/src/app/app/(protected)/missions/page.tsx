@@ -146,7 +146,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       initiative: { columns: { id: true, title: true } },
@@ -280,6 +280,8 @@ export default async function MissionsPage({
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || []),
       initiativeId: obj.initiativeId || null,
+      initiativeName: (obj.initiative as any)?.title || null,
+      priority: obj.priority ?? 0,
     };
   });
 

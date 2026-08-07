@@ -23,6 +23,64 @@ import { evaluateAutoMergeSafety } from './auto-merge';
 
 const params = [1, 'buildd-ai/buildd', 42, 'head-sha'] as const;
 
+describe('evaluateAutoMergeSafety mergeable_state check', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    // check-runs call (passes), files call (passes), then PR state call
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })           // check-runs
+      .mockResolvedValueOnce([])                            // files
+      .mockResolvedValueOnce({ mergeable_state: 'dirty' }); // PR state
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('returns ok:false when mergeable_state is dirty', async () => {
+    await expect(
+      evaluateAutoMergeSafety(...params, {}),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('returns ok:false when mergeable_state is blocked', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'blocked' });
+    await expect(
+      evaluateAutoMergeSafety(...params, {}),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('blocked'),
+    });
+  });
+
+  it('passes when mergeable_state is clean', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    await expect(
+      evaluateAutoMergeSafety(...params, {}),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('passes when mergeable_state is unknown (soft retry — do not block permanently)', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'unknown' });
+    await expect(
+      evaluateAutoMergeSafety(...params, {}),
+    ).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('evaluateAutoMergeSafety schema deny paths', () => {
   beforeEach(() => {
     mockGithubApi.mockReset();

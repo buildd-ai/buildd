@@ -86,7 +86,7 @@ export default function QuietHoursConfig({
         </button>
       </div>
 
-      <p className="text-[11px] text-text-muted mt-1">
+      <p className="text-[11px] text-text-secondary mt-1">
         When enabled, this mission pauses during these hours.
       </p>
 
@@ -121,7 +121,7 @@ export default function QuietHoursConfig({
               className="flex-1 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[11px] text-text-primary focus:outline-none focus:border-accent/40 font-mono transition-colors"
             />
           </div>
-          <p className="text-[11px] text-text-muted">
+          <p className="text-[11px] text-text-secondary">
             Paused from {formatHour(start)} to {formatHour(end)} ({timezone})
           </p>
         </div>

@@ -237,6 +237,11 @@ export interface WorkspaceGitConfig {
   // Defaults to 3 if not set. Set to 0 to disable CI retries entirely.
   maxCiRetries?: number;
 
+  // When true, tasks with outputRequirement='pr_required' that do not already declare a
+  // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
+  // at task-creation time. The existing loop machinery handles re-queuing.
+  enforceGreenCI?: boolean;
+
   // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
   // When enabled, PRs created by workers will have auto-merge enabled with squash method
   autoMergePR?: boolean;
@@ -462,6 +467,24 @@ export interface ModelUsage {
   costUSD: number;
 }
 
+/** CBM (Codebase Memory) observability metrics captured per task. */
+export interface CbmMetrics {
+  /** How CBM was activated for this task. */
+  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
+  /** Why CBM was not active (only set when outcome='disabled'). */
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
+  toolCalls: Record<string, number>;
+  /** Total CBM MCP tool calls across all CBM tools. */
+  totalCbmCalls: number;
+  /** Read tool call count for this task. */
+  readCount: number;
+  /** Grep tool call count for this task. */
+  grepCount: number;
+  /** Glob tool call count for this task. */
+  globCount: number;
+}
+
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
@@ -477,6 +500,8 @@ export interface ResultMeta {
    * policy off. See docs/design/reliable-env-provisioning.md.
    */
   provisionFailure?: { code: string; phase: string; message: string };
+  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
+  cbm?: CbmMetrics;
 }
 
 export const workspaces = pgTable('workspaces', {

@@ -141,7 +141,7 @@ export default function ScheduleWizard({
             value={cronExpression}
             onChange={e => setCronExpression(e.target.value)}
             placeholder="e.g. 0 */6 * * * (every 6 hours)"
-            className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 font-mono transition-colors"
+            className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 font-mono transition-colors"
             autoFocus
           />
         </div>
@@ -150,7 +150,7 @@ export default function ScheduleWizard({
       {/* Workspace picker */}
       {needsWorkspace && cronExpression && (
         <div className="mb-3">
-          <label className="block text-[11px] text-text-muted mb-1">Workspace (required for scheduling)</label>
+          <label className="block text-[11px] text-text-secondary mb-1">Workspace (required for scheduling)</label>
           <Select
             value={selectedWorkspaceId}
             onChange={setSelectedWorkspaceId}
@@ -179,7 +179,7 @@ export default function ScheduleWizard({
               </div>
               {preview.nextRuns && preview.nextRuns.length > 0 && (
                 <div className="space-y-1">
-                  <span className="text-[11px] text-text-muted">Next runs:</span>
+                  <span className="text-[11px] text-text-secondary">Next runs:</span>
                   {preview.nextRuns.map((run: string, i: number) => (
                     <div key={i} className="text-[11px] text-text-secondary pl-4">{run}</div>
                   ))}
@@ -198,7 +198,7 @@ export default function ScheduleWizard({
       )}
 
       {loading && (
-        <div className="mb-3 text-[11px] text-text-muted">Validating...</div>
+        <div className="mb-3 text-[11px] text-text-secondary">Validating...</div>
       )}
 
       {/* Enable button */}

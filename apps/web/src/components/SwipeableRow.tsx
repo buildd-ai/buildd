@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useContext, createContext, useEffect, type ReactNode } from 'react';
+import { useState, useRef, useCallback, useContext, createContext, useEffect, type ReactNode, type JSX } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,8 +16,6 @@ export type SwipeAction =
   | 'snooze-24h'
   | 'snooze-3d'
   | 'snooze-7d'
-  | 'acknowledge'
-  | 'dismiss'
   | 'snooze-notification';
 
 export type MenuActionId =
@@ -68,13 +66,17 @@ export function getTrailingAction(cardType: SwipeCardType): TrailingActionConfig
     case 'gate-card':
       return { action: 'snooze-24h', label: 'Snooze 24 h', bgColor: 'var(--accent)' };
     case 'escalation-card':
-      return { action: 'acknowledge', label: 'Acknowledge', bgColor: '#101216' };
+      // Acknowledge was client-local only (evaporated on reload, nothing consumed it).
+      // Use the menu actions (file-anyway, ignore) for escalation decisions.
+      return null;
     case 'blocked-task':
       return { action: 'snooze-notification', label: 'Snooze', bgColor: 'var(--surface-4)' };
     case 'needs-attention':
       return { action: 'snooze-24h', label: 'Snooze 24 h', bgColor: 'var(--surface-4)' };
     case 'completed-task':
-      return { action: 'dismiss', label: 'Dismiss', bgColor: '#101216' };
+      // Dismiss was client-local only (evaporated on reload, nothing consumed it).
+      // Completed tasks need no swipe action — use the filter to hide them.
+      return null;
     case 'running-task':
       return null; // §2.2: running/queued has no swipe action
   }
@@ -97,7 +99,6 @@ export function getMenuActions(
       ];
     case 'escalation-card':
       return [
-        { action: 'acknowledge', label: 'Acknowledge' },
         { action: 'file-anyway', label: 'File anyway' },
         { action: 'ignore', label: 'Ignore' },
       ];
@@ -117,11 +118,34 @@ export function getMenuActions(
       return [{ action: 'cancel-task', label: 'Cancel task', destructive: true }];
     case 'completed-task':
       return [
-        { action: 'dismiss', label: 'Dismiss' },
         ...(opts.prUrl
-          ? [{ action: 'view-pr' as const, label: 'View PR', href: opts.prUrl }]
+          ? [{ action: 'view-pr' as const, label: 'View PR ↗', href: opts.prUrl }]
           : []),
       ];
+  }
+}
+
+// ─── Trailing action icon ─────────────────────────────────────────────────────
+
+function TrailingActionIcon({ action }: { action: SwipeAction }): JSX.Element {
+  switch (action) {
+    case 'snooze-24h':
+    case 'snooze-3d':
+    case 'snooze-7d':
+      return (
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" stroke="white" strokeWidth="1.5" />
+          <path d="M11 7V11L13.5 13.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'snooze-notification':
+      return (
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+          <path d="M8 16c0 1.1.9 2 2 2h2c1.1 0 2-.9 2-2" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M5.5 14.5C6.3 13.5 6.75 12 6.75 10.5 6.75 8 8.65 6 11 6s4.25 2 4.25 4.5c0 1.5.45 3 1.25 4H5.5z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <line x1="4" y1="4" x2="18" y2="18" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      );
   }
 }
 
@@ -140,8 +164,6 @@ function undoMessage(action: SwipeAction): string {
     case 'snooze-3d': return 'Snoozed 3 d';
     case 'snooze-7d': return 'Snoozed 7 d';
     case 'snooze-notification': return 'Snoozed';
-    case 'acknowledge': return 'Acknowledged';
-    case 'dismiss': return 'Dismissed';
   }
 }
 
@@ -211,7 +233,10 @@ export function SwipeProvider({ children }: { children: ReactNode }) {
 
 const COMMIT_THRESHOLD_PX = 10; // horizontal travel before swipe is committed
 const FIRE_THRESHOLD_PX = -72;  // must swipe left ≥72 pt to trigger action
-const REVEAL_WIDTH_PX = 80;     // width of revealed trailing action slot
+export const REVEAL_WIDTH_PX = 80;   // width of revealed trailing action slot
+// Must match the ⋯ button's w-9 class (9 * 4px = 36px).
+// Trailing action is pinned right: MENU_BTN_WIDTH so it never overlaps the button.
+export const MENU_BTN_WIDTH = 36;
 
 export interface SwipeableRowProps {
   cardType: SwipeCardType;
@@ -235,7 +260,6 @@ export function SwipeableRow({
 }: SwipeableRowProps) {
   const { registerUndo } = useContext(SwipeContext);
   const [dismissed, setDismissed] = useState(false);
-  const [acknowledged, setAcknowledged] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [translateX, setTranslateX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
@@ -299,18 +323,6 @@ export function SwipeableRow({
           setDismissed(true);
           springBack();
           registerUndo(undoMessage(action as SwipeAction), () => setDismissed(false));
-          break;
-        }
-        case 'dismiss': {
-          setDismissed(true);
-          springBack();
-          registerUndo('Dismissed', () => setDismissed(false));
-          break;
-        }
-        case 'acknowledge': {
-          setAcknowledged(true);
-          springBack();
-          registerUndo('Acknowledged', () => setAcknowledged(false));
           break;
         }
         case 'file-anyway': {
@@ -446,26 +458,29 @@ export function SwipeableRow({
       data-card-type={cardType}
       className={`relative overflow-hidden flex items-stretch ${className}`}
     >
-      {/* Trailing action slot (revealed by left swipe, absolute) — §2.1 */}
+      {/* Trailing action slot (revealed by left swipe, absolute) — §2.1
+          Right-offset by MENU_BTN_WIDTH so it never overlaps the ⋯ button.
+          At full reveal (translateX = -REVEAL_WIDTH_PX) the card right edge
+          aligns with this panel's left edge; the ⋯ button stays to the right. */}
       {trailingAction && (
         <div
           data-trailing-action
           aria-hidden="true"
-          className="absolute right-0 top-0 bottom-0 flex items-center justify-center pointer-events-none"
+          className="absolute top-0 bottom-0 flex items-center justify-center pointer-events-none"
           style={{
             width: REVEAL_WIDTH_PX,
+            right: MENU_BTN_WIDTH,
             background: trailingAction.bgColor,
           }}
         >
-          <span className="font-mono text-[11px] font-semibold text-white text-center px-2 leading-tight">
-            {trailingAction.label}
-          </span>
+          <TrailingActionIcon action={trailingAction.action} />
+          <span className="sr-only">{trailingAction.label}</span>
         </div>
       )}
 
       {/* Swiping card content (flex-1 so the ⋯ button sits as a sibling) */}
       <div
-        className={`flex-1 min-w-0${acknowledged ? ' opacity-50' : ''}`}
+        className="flex-1 min-w-0 relative"
         style={{
           transform: `translateX(${translateX}px)`,
           transition: isAnimating
@@ -478,34 +493,47 @@ export function SwipeableRow({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
       >
+        {/* Edge hint: gradient stripe signals swipeability at rest */}
+        {trailingAction && (
+          <div
+            aria-hidden="true"
+            className="absolute top-0 right-0 bottom-0 w-8 pointer-events-none"
+            style={{
+              background: `linear-gradient(to left, ${trailingAction.bgColor}, transparent)`,
+              opacity: 0.28,
+            }}
+          />
+        )}
         {children}
       </div>
 
-      {/* ⋯ menu button — required on every swipeable card per §2.4.
+      {/* ⋯ menu button — only rendered when there are menu actions to show.
           Sibling (not absolute) so it never overlaps card content. */}
-      <button
-        type="button"
-        className="shrink-0 self-stretch z-10 flex items-center justify-center w-9 text-text-muted hover:text-text-primary transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-        style={{ touchAction: 'none' }}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); setMenuOpen(true); }}
-        aria-label={`More actions for ${taskTitle}`}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          aria-hidden="true"
-          className="pointer-events-none"
+      {menuActions.length > 0 && (
+        <button
+          type="button"
+          className="shrink-0 self-stretch z-10 flex items-center justify-center w-9 text-text-muted hover:text-text-primary transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          style={{ touchAction: 'none' }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(true); }}
+          aria-label={`More actions for ${taskTitle}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
         >
-          <circle cx="3" cy="8" r="1.5" fill="currentColor" />
-          <circle cx="8" cy="8" r="1.5" fill="currentColor" />
-          <circle cx="13" cy="8" r="1.5" fill="currentColor" />
-        </svg>
-      </button>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+            className="pointer-events-none"
+          >
+            <circle cx="3" cy="8" r="1.5" fill="currentColor" />
+            <circle cx="8" cy="8" r="1.5" fill="currentColor" />
+            <circle cx="13" cy="8" r="1.5" fill="currentColor" />
+          </svg>
+        </button>
+      )}
 
       {/* Bottom sheet menu — §2.4 accessibility fallback */}
       {menuOpen && (
