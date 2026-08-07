@@ -25,7 +25,6 @@ import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
-import PriorityInlineEdit from './PriorityInlineEdit';
 import MissionBackendSelector from './MissionBackendSelector';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
@@ -534,9 +533,8 @@ export default async function MissionDetailPage({
           }
         />
 
-        {/* Priority (inline edit) + default backend */}
-        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <PriorityInlineEdit missionId={id} initialPriority={mission.priority} />
+        {/* Backend selector — always accessible since it's actionable */}
+        <div className="mb-3">
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
         </div>
 
@@ -761,17 +759,20 @@ export default async function MissionDetailPage({
             />
           )}
 
-          {/* Configuration */}
+          {/* Configuration — flattened into Settings, one tap away */}
           {!['completed', 'archived'].includes(mission.status) && (
-            <MissionConfig
-              missionId={id}
-              workspaceId={mission.workspaceId}
-              model={configModel}
-              workspaces={teamWorkspaces}
-              maxConcurrentTasks={mission.maxConcurrentTasks}
-              activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
-              costBudgetUsd={costBudgetUsd}
-            />
+            <div className="card p-4">
+              <h2 className="section-label mb-4">Configuration</h2>
+              <MissionConfig
+                missionId={id}
+                workspaceId={mission.workspaceId}
+                model={configModel}
+                workspaces={teamWorkspaces}
+                maxConcurrentTasks={mission.maxConcurrentTasks}
+                activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
+                costBudgetUsd={costBudgetUsd}
+              />
+            </div>
           )}
 
           {/* Linear Phase 2 — read-back tracking (only when linked) */}
