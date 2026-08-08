@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      pacingMode, pacingMaxPerHour,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
 
     let deferredStart;
@@ -175,6 +175,15 @@ export async function POST(req: NextRequest) {
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
+    }
+
+    if (goalCriteria !== undefined && goalCriteria !== null) {
+      if (!Array.isArray(goalCriteria)) {
+        return NextResponse.json({ error: 'goalCriteria must be an array' }, { status: 400 });
+      }
+      if (goalCriteria.length > 20) {
+        return NextResponse.json({ error: 'goalCriteria must have at most 20 criteria' }, { status: 400 });
+      }
     }
 
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
@@ -268,6 +277,8 @@ export async function POST(req: NextRequest) {
         ...(mergePolicy != null ? { mergePolicy } : {}),
         ...(costBudgetUsd != null ? { costBudgetUsd: String(costBudgetUsd) } : {}),
         ...(pacingMode === 'paced' ? { pacingMode: 'paced', ...(pacingMaxPerHour != null ? { pacingMaxPerHour } : {}) } : {}),
+        ...(goalCriteria !== undefined ? { goalCriteria: goalCriteria ?? null } : {}),
+        ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
         ...(deferredStart.startAt ? {
           startAt: deferredStart.startAt,
           startResolution: deferredStart.resolution,

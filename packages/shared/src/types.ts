@@ -1153,4 +1153,83 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
 export const CAPABILITY_BROWSER = 'browser';
+
+// ============================================================================
+// GOAL CRITERIA & INITIATIVE KPIs
+// ============================================================================
+
+export type GoalCriterionType =
+  | 'all_prs_merged'
+  | 'command'
+  | 'no_open_tasks'
+  | 'artifact_exists'
+  | 'metric';
+
+export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED';
+
+export type GoalCriterion =
+  | {
+      type: 'all_prs_merged';
+      requireBranchDeleted?: boolean;
+      label?: string;
+    }
+  | {
+      type: 'command';
+      command: string;
+      label?: string;
+    }
+  | {
+      type: 'no_open_tasks';
+      label?: string;
+    }
+  | {
+      type: 'artifact_exists';
+      key?: string;
+      artifactType?: string;
+      label?: string;
+    }
+  | {
+      type: 'metric';
+      query: string;
+      operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
+      threshold: number;
+      unit?: string;
+      label?: string;
+    };
+
+export interface GoalCriteriaState {
+  evaluatedAt: string;
+  evaluatedBy: 'auto' | 'manual' | 'mcp';
+  overall: CriterionVerdict;
+  criteria: Array<{
+    index: number;
+    type: GoalCriterionType;
+    label?: string;
+    verdict: CriterionVerdict;
+    evidence?: string;
+    workerTaskId?: string;
+  }>;
+}
+
+export interface InitiativeKPI {
+  name: string;
+  metric: string;
+  operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
+  threshold: number;
+  unit?: string;
+  blocking?: boolean;
+}
+
+export interface InitiativeKPIState {
+  evaluatedAt: string;
+  evaluatedBy: 'auto' | 'manual' | 'mcp';
+  overall: CriterionVerdict;
+  kpis: Array<{
+    index: number;
+    name: string;
+    verdict: CriterionVerdict;
+    observedValue?: number;
+    evidence?: string;
+  }>;
+}
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';

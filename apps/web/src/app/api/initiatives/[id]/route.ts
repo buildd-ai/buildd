@@ -114,7 +114,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, status, priority, workspaceId, contextArtifactIds } = body;
+    const { title, description, status, priority, workspaceId, contextArtifactIds, kpis, autoVerify } = body;
 
     const updateData: Partial<typeof initiatives.$inferInsert> = { updatedAt: new Date() };
 
@@ -135,6 +135,16 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
     if (contextArtifactIds !== undefined) updateData.contextArtifactIds = contextArtifactIds || [];
+
+    if (kpis !== undefined) {
+      if (kpis !== null && !Array.isArray(kpis)) {
+        return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });
+      }
+      updateData.kpis = kpis ?? null;
+    }
+    if (autoVerify !== undefined) {
+      updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
+    }
 
     const [updated] = await db
       .update(initiatives)
