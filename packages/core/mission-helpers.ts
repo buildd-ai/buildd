@@ -1,3 +1,198 @@
+import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState } from '@buildd/shared';
+export type { GoalCriterion, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState };
+
+// ─── Goal criteria evaluator ──────────────────────────────────────────────────
+
+/**
+ * Evaluate a mission's goalCriteria against the provided context.
+ *
+ * This is a pure function — it does NOT write to the DB. The caller persists
+ * the returned GoalCriteriaState. All criteria are evaluated in order; any
+ * 'fail' or 'UNVERIFIED' makes the overall verdict non-pass.
+ *
+ * 'command' criteria are not executable here (they require a worker task).
+ * They return UNVERIFIED; the caller must dispatch the task separately.
+ *
+ * 'metric' criteria are not implemented yet — they return UNVERIFIED with a
+ * note (the field is reserved for a follow-on metric-query registry spec).
+ */
+export function evaluateGoalCriteria(
+  mission: {
+    id: string;
+    workingBranch?: string | null;
+  },
+  criteria: GoalCriterion[],
+  context: {
+    tasks: Array<{
+      id: string;
+      status: string;
+      kind?: string | null;
+      title?: string | null;
+      mode?: string | null;
+      creationSource?: string | null;
+      category?: string | null;
+    }>;
+    workers: Array<{
+      taskId?: string | null;
+      mergedAt?: string | Date | null;
+      prUrl?: string | null;
+      branchName?: string | null;
+      branchDeleted?: boolean | null;
+    }>;
+    artifacts: Array<{
+      key?: string | null;
+      type?: string | null;
+    }>;
+    evaluatedBy: 'auto' | 'manual' | 'mcp';
+    now?: string;
+  },
+): GoalCriteriaState {
+  const evaluatedAt = context.now ?? new Date().toISOString();
+  const results: GoalCriteriaState['criteria'] = [];
+
+  for (let i = 0; i < criteria.length; i++) {
+    const criterion = criteria[i];
+    let verdict: CriterionVerdict = 'UNVERIFIED';
+    let evidence: string | undefined;
+    let workerTaskId: string | undefined;
+
+    switch (criterion.type) {
+      case 'all_prs_merged': {
+        const requireBranchDeleted = criterion.requireBranchDeleted !== false;
+        const deliverableWorkers = context.workers.filter(w => w.prUrl);
+        if (deliverableWorkers.length === 0) {
+          verdict = 'fail';
+          evidence = 'No PR workers found for this mission';
+        } else {
+          const unmerged = deliverableWorkers.filter(w => !w.mergedAt);
+          if (unmerged.length > 0) {
+            verdict = 'fail';
+            evidence = `${unmerged.length} PR(s) not yet merged`;
+          } else if (requireBranchDeleted) {
+            // Check if branch is deleted. branchDeleted is set by the caller
+            // after querying the GitHub API. If unknown, mark UNVERIFIED.
+            const branchKnown = deliverableWorkers.some(w => w.branchDeleted !== null && w.branchDeleted !== undefined);
+            if (!branchKnown) {
+              verdict = 'UNVERIFIED';
+              evidence = 'Branch deletion status unknown — GitHub check needed';
+            } else {
+              const branchStillLive = deliverableWorkers.some(w => w.branchDeleted === false);
+              verdict = branchStillLive ? 'fail' : 'pass';
+              evidence = branchStillLive
+                ? `Working branch still exists (requireBranchDeleted=true)`
+                : 'All PRs merged and working branch deleted';
+            }
+          } else {
+            verdict = 'pass';
+            evidence = `All ${deliverableWorkers.length} PR(s) merged`;
+          }
+        }
+        break;
+      }
+
+      case 'command': {
+        // Command criteria dispatch a worker task; we can't run inline.
+        verdict = 'UNVERIFIED';
+        evidence = `Command criterion requires worker task dispatch: ${criterion.command}`;
+        break;
+      }
+
+      case 'no_open_tasks': {
+        const deliverable = context.tasks.filter(isDeliverableTask);
+        const open = deliverable.filter(t =>
+          !['completed', 'cancelled', 'failed'].includes(t.status)
+        );
+        verdict = open.length === 0 ? 'pass' : 'fail';
+        evidence = open.length === 0
+          ? `All ${deliverable.length} deliverable task(s) are closed`
+          : `${open.length} task(s) still open: ${open.map(t => t.status).join(', ')}`;
+        break;
+      }
+
+      case 'artifact_exists': {
+        const matches = context.artifacts.filter(a => {
+          if (criterion.key && a.key !== criterion.key) return false;
+          if (criterion.artifactType && a.type !== criterion.artifactType) return false;
+          return true;
+        });
+        verdict = matches.length > 0 ? 'pass' : 'fail';
+        const filterDesc = [
+          criterion.key ? `key="${criterion.key}"` : null,
+          criterion.artifactType ? `type="${criterion.artifactType}"` : null,
+        ].filter(Boolean).join(', ');
+        evidence = matches.length > 0
+          ? `Found ${matches.length} matching artifact(s) (${filterDesc || 'any'})`
+          : `No artifact matching (${filterDesc || 'any'}) found`;
+        break;
+      }
+
+      case 'metric': {
+        // Metric query registry not yet implemented — always UNVERIFIED.
+        verdict = 'UNVERIFIED';
+        evidence = 'metric query not implemented — deferred to follow-on spec';
+        break;
+      }
+    }
+
+    results.push({
+      index: i,
+      type: criterion.type,
+      ...(criterion.label ? { label: criterion.label } : {}),
+      verdict,
+      ...(evidence ? { evidence } : {}),
+      ...(workerTaskId ? { workerTaskId } : {}),
+    });
+  }
+
+  const overall: CriterionVerdict =
+    results.every(r => r.verdict === 'pass') ? 'pass'
+    : results.some(r => r.verdict === 'fail') ? 'fail'
+    : 'UNVERIFIED';
+
+  return { evaluatedAt, evaluatedBy: context.evaluatedBy, overall, criteria: results };
+}
+
+/**
+ * Evaluate an initiative's KPIs.
+ *
+ * Pure function — callers persist the result. Non-blocking KPIs (blocking: false)
+ * are evaluated and stored but do not affect the overall verdict.
+ *
+ * 'metric' queries are not implemented; all KPIs return UNVERIFIED with a note.
+ */
+export function evaluateInitiativeKPIs(
+  _initiativeId: string,
+  kpis: InitiativeKPI[],
+  opts: {
+    evaluatedBy: 'auto' | 'manual' | 'mcp';
+    now?: string;
+  },
+): InitiativeKPIState {
+  const evaluatedAt = opts.now ?? new Date().toISOString();
+  const results: InitiativeKPIState['kpis'] = [];
+
+  for (let i = 0; i < kpis.length; i++) {
+    const kpi = kpis[i];
+    // Metric query registry not yet implemented.
+    results.push({
+      index: i,
+      name: kpi.name,
+      verdict: 'UNVERIFIED',
+      evidence: 'metric query not implemented — deferred to follow-on spec',
+    });
+  }
+
+  // Overall: all blocking KPIs must pass. Non-blocking KPIs are informational.
+  const blockingResults = results.filter((_, i) => kpis[i].blocking !== false);
+  const overall: CriterionVerdict =
+    blockingResults.length === 0 ? 'pass'
+    : blockingResults.every(r => r.verdict === 'pass') ? 'pass'
+    : blockingResults.some(r => r.verdict === 'fail') ? 'fail'
+    : 'UNVERIFIED';
+
+  return { evaluatedAt, evaluatedBy: opts.evaluatedBy, overall, kpis: results };
+}
+
 // ─── Mission segment states ───────────────────────────────────────────────────
 
 /** Segment states for the mission progress bar. Vocabulary shared with task-chain strip. */

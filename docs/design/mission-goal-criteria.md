@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 assertions:
   - type: symbol
     name: goalCriteria

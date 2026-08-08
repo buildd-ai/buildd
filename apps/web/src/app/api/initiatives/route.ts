@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds } = body;
+    const { title, description, workspaceId, teamId: requestedTeamId, priority, status: requestedStatus, contextArtifactIds, kpis, autoVerify } = body;
 
     if (!title || typeof title !== 'string') {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -116,6 +116,12 @@ export async function POST(req: NextRequest) {
       teamId = ws.teamId;
     }
 
+    if (kpis !== undefined && kpis !== null) {
+      if (!Array.isArray(kpis)) {
+        return NextResponse.json({ error: 'kpis must be an array' }, { status: 400 });
+      }
+    }
+
     const [initiative] = await db
       .insert(initiatives)
       .values({
@@ -127,6 +133,8 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         contextArtifactIds: contextArtifactIds || [],
         createdByUserId: user?.id || null,
+        ...(kpis !== undefined ? { kpis: kpis ?? null } : {}),
+        ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
       })
       .returning();
 

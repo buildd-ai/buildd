@@ -190,8 +190,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate) } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
-    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
@@ -2549,6 +2549,8 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2618,6 +2620,8 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
@@ -2656,8 +2660,28 @@ export async function handleBuilddAction(
           });
           return text(`Task ${params.taskId} unlinked from mission`);
         }
+        case 'evaluate': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}/evaluate`, { method: 'POST' });
+          if (data.message) return text(data.message);
+          const state = data.goalCriteriaState;
+          const criteriaLines = (state?.criteria ?? []).map((c: any) =>
+            `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+          ).join('\n');
+          return text(`Goal criteria evaluated — Overall: **${state?.overall ?? 'unknown'}**\n${criteriaLines}`);
+        }
+        case 'get_criteria_state': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}/evaluate`);
+          if (!data.goalCriteriaState) return text('No criteria evaluation on record for this mission.');
+          const state = data.goalCriteriaState;
+          const criteriaLines = (state.criteria ?? []).map((c: any) =>
+            `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+          ).join('\n');
+          return text(`Last evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${criteriaLines}`);
+        }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task, evaluate, get_criteria_state`);
       }
     }
 
@@ -2696,6 +2720,8 @@ export async function handleBuilddAction(
           }
           if (params.status !== undefined) body.status = params.status;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.kpis !== undefined) body.kpis = params.kpis;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           const data = await api('/api/initiatives', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2740,6 +2766,8 @@ export async function handleBuilddAction(
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
           }
+          if (params.kpis !== undefined) body.kpis = params.kpis;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/initiatives/${params.initiativeId}`, {
             method: 'PATCH',
@@ -2775,8 +2803,28 @@ export async function handleBuilddAction(
           });
           return text(`Mission ${params.missionId} unlinked from its initiative`);
         }
+        case 'evaluate': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}/evaluate`, { method: 'POST' });
+          if (data.message) return text(data.message);
+          const state = data.kpiState;
+          const kpiLines = (state?.kpis ?? []).map((k: any) =>
+            `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}`
+          ).join('\n');
+          return text(`KPIs evaluated — Overall: **${state?.overall ?? 'unknown'}**\n${kpiLines}`);
+        }
+        case 'get_kpi_state': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}/evaluate`);
+          if (!data.kpiState) return text('No KPI evaluation on record for this initiative.');
+          const state = data.kpiState;
+          const kpiLines = (state.kpis ?? []).map((k: any) =>
+            `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}`
+          ).join('\n');
+          return text(`Last KPI evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${kpiLines}`);
+        }
         default:
-          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission, evaluate, get_kpi_state`);
       }
     }
 
