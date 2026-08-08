@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { timeAgo } from '@/lib/mission-helpers';
+import type { MissionDisplayState } from '@/lib/mission-helpers';
 
 interface MissionSettingsProps {
   missionId: string;
@@ -10,12 +10,10 @@ interface MissionSettingsProps {
   cronExpression: string | null;
   workspaceId: string | null;
   roles: { slug: string; name: string; color: string }[];
-  schedule: {
-    nextRunAt: string | null;
-    lastRunAt: string | null;
-  } | null;
   hasSchedule: boolean;
   orchestrationMode?: 'auto' | 'manual';
+  isHeld: boolean;
+  displayState: MissionDisplayState;
 }
 
 export default function MissionSettings({
@@ -24,14 +22,15 @@ export default function MissionSettings({
   cronExpression,
   workspaceId,
   roles,
-  schedule,
   hasSchedule,
   orchestrationMode: initialOrchestrationMode = 'auto',
+  isHeld: initialIsHeld,
+  displayState,
 }: MissionSettingsProps) {
   const router = useRouter();
-  const [status, setStatus] = useState(currentStatus);
   const [statusLoading, setStatusLoading] = useState(false);
   const [orchestrationMode, setOrchestrationMode] = useState(initialOrchestrationMode);
+  const [isHeld, setIsHeld] = useState(initialIsHeld);
   const [modeLoading, setModeLoading] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskLoading, setTaskLoading] = useState(false);
@@ -44,10 +43,6 @@ export default function MissionSettings({
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
-
-  const nextRunAtMs = schedule?.nextRunAt ? new Date(schedule.nextRunAt).getTime() : null;
-  const isNextOverdue = status === 'active' && nextRunAtMs != null && nextRunAtMs < Date.now();
-  const overdueMinutes = isNextOverdue && nextRunAtMs != null ? Math.floor((Date.now() - nextRunAtMs) / 60000) : 0;
 
   async function patchMission(body: Record<string, unknown>) {
     try {
@@ -74,11 +69,18 @@ export default function MissionSettings({
   async function handleStatusChange(newStatus: string) {
     setStatusLoading(true);
     const ok = await patchMission({ status: newStatus });
+    if (ok) router.refresh();
+    setStatusLoading(false);
+  }
+
+  async function handleArm() {
+    setModeLoading(true);
+    const ok = await patchMission({ arm: true });
     if (ok) {
-      setStatus(newStatus);
+      setIsHeld(false);
       router.refresh();
     }
-    setStatusLoading(false);
+    setModeLoading(false);
   }
 
   async function handleToggleOrchestrationMode() {
@@ -117,7 +119,6 @@ export default function MissionSettings({
     e.preventDefault();
     const title = taskTitle.trim();
     if (!title || !workspaceId) return;
-
     setTaskLoading(true);
     try {
       const res = await fetch('/api/tasks', {
@@ -163,93 +164,54 @@ export default function MissionSettings({
   }
 
   return (
-    <div className="space-y-5">
-      {/* Mission Controls Bar */}
+    <div className="space-y-4">
+      {/* ── Primary CTA — state driven ── */}
       {!isTerminal && (
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Orchestration mode badge + arm/disarm */}
-          <div className="flex items-center gap-2">
-            <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium ${
-              orchestrationMode === 'manual'
-                ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
-                : 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${orchestrationMode === 'manual' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-              {orchestrationMode === 'manual' ? 'Manual — orchestrator idle' : 'Auto'}
-            </span>
+        <>
+          {/* Held: Arm mission is the only meaningful action */}
+          {isHeld && (
             <button
-              onClick={handleToggleOrchestrationMode}
+              onClick={handleArm}
               disabled={modeLoading}
-              title={orchestrationMode === 'manual' ? 'Arm orchestrator (switch to auto)' : 'Disarm orchestrator (switch to manual)'}
-              className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+              className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
             >
-              {modeLoading ? '...' : orchestrationMode === 'manual' ? 'Arm' : 'Disarm'}
-            </button>
-          </div>
-
-          <div className="h-4 border-r border-card-border" />
-
-          {/* Monitoring toggle for missions with a schedule */}
-          {hasSchedule ? (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => handleStatusChange(status === 'active' ? 'paused' : 'active')}
-                disabled={statusLoading}
-                className="group relative flex items-center"
-                aria-label={status === 'active' ? 'Pause monitoring' : 'Resume monitoring'}
-              >
-                <span
-                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ${
-                    status === 'active' ? 'bg-status-success/60' : 'bg-surface-3'
-                  } ${statusLoading ? 'opacity-50' : ''}`}
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                      status === 'active' ? 'translate-x-4' : 'translate-x-0'
-                    }`}
-                  />
-                </span>
-              </button>
-              <span className="text-[12px] text-text-secondary">
-                {status === 'active' ? 'Monitoring active' : 'Monitoring paused'}
-              </span>
-              {status === 'active' && (
-                <span className="flex items-center gap-1.5 text-[12px] text-text-muted">
-                  {schedule?.lastRunAt && (
-                    <span>Last: {timeAgo(schedule.lastRunAt)}</span>
-                  )}
-                  {schedule?.nextRunAt && orchestrationMode !== 'manual' && (
-                    isNextOverdue
-                      ? <span className="text-status-warning">&middot; Overdue by {overdueMinutes}m</span>
-                      : <span>&middot; Next: {timeAgo(schedule.nextRunAt)}</span>
-                  )}
-                </span>
+              {modeLoading ? (
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+                </svg>
               )}
-            </div>
-          ) : (
-            /* Simple status button for missions without a schedule */
-            <button
-              onClick={() => handleStatusChange(status === 'active' ? 'paused' : 'active')}
-              disabled={statusLoading}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-            >
-              <span
-                className={`w-2 h-2 rounded-full shrink-0 ${
-                  status === 'active'
-                    ? 'bg-status-success'
-                    : status === 'paused'
-                      ? 'bg-status-warning'
-                      : 'bg-text-muted'
-                }`}
-              />
-              <span className="capitalize">{status}</span>
+              {modeLoading ? 'Arming…' : 'Arm mission'}
             </button>
           )}
 
-          <div className="h-4 border-r border-card-border" />
+          {/* Manual + not held: Run now is the primary action */}
+          {!isHeld && orchestrationMode === 'manual' && workspaceId && (
+            <button
+              onClick={handleManualRun}
+              disabled={manualRunLoading}
+              className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+            >
+              {manualRunLoading ? (
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+                </svg>
+              )}
+              {manualRunLoading ? 'Running…' : 'Run now'}
+            </button>
+          )}
 
-          {/* Run Now */}
-          {workspaceId && (
+          {/* Auto + not held: Run now is available but secondary */}
+          {!isHeld && orchestrationMode === 'auto' && workspaceId && (
             <button
               onClick={handleManualRun}
               disabled={manualRunLoading}
@@ -258,79 +220,99 @@ export default function MissionSettings({
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
               </svg>
-              {manualRunLoading ? 'Running...' : 'Run now'}
+              {manualRunLoading ? 'Running…' : 'Run now'}
             </button>
           )}
 
-          {/* Schedule editor */}
-          {!editingCron && (
-            <button
-              onClick={() => setEditingCron(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {cronExpression ? 'Edit schedule' : 'Add schedule'}
-            </button>
-          )}
-
-          {/* Complete */}
-          <button
-            onClick={() => handleStatusChange('completed')}
-            disabled={statusLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-status-success/10 border border-status-success/20 text-[12px] text-status-success hover:bg-status-success/20 transition-colors disabled:opacity-50"
-          >
-            Complete
-          </button>
-
-          {/* Delete */}
-          {!deleteConfirm ? (
-            <button
-              onClick={() => setDeleteConfirm(true)}
-              className="px-3 py-1.5 rounded-lg text-[12px] text-status-error/60 hover:text-status-error hover:bg-status-error/5 transition-colors"
-            >
-              Delete
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-text-muted">Confirm?</span>
+          {/* ── Secondary actions row ── */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Arm/Disarm toggle — text link, not prominent */}
+            {!isHeld && (
               <button
-                onClick={handleDelete}
-                disabled={deleteLoading}
-                className="px-2 py-1 rounded-lg bg-status-error/10 text-[11px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+                onClick={handleToggleOrchestrationMode}
+                disabled={modeLoading}
+                className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                title={orchestrationMode === 'manual' ? 'Switch to auto mode' : 'Switch to manual mode'}
               >
-                {deleteLoading ? 'Deleting...' : 'Yes, delete'}
+                {modeLoading ? '…' : orchestrationMode === 'manual' ? 'Auto mode' : 'Disarm'}
               </button>
+            )}
+
+            {!isHeld && <span className="h-3 border-r border-card-border" />}
+
+            {/* Schedule editor */}
+            {!editingCron && (
               <button
-                onClick={() => setDeleteConfirm(false)}
-                className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary"
+                onClick={() => setEditingCron(true)}
+                className="text-[11px] text-text-muted hover:text-text-secondary transition-colors"
               >
-                No
+                {cronExpression ? 'Edit schedule' : 'Add schedule'}
               </button>
-            </div>
-          )}
-        </div>
+            )}
+
+            <span className="h-3 border-r border-card-border" />
+
+            {/* Complete */}
+            <button
+              onClick={() => handleStatusChange('completed')}
+              disabled={statusLoading}
+              className="text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
+            >
+              Complete
+            </button>
+
+            <span className="h-3 border-r border-card-border" />
+
+            {/* Delete */}
+            {!deleteConfirm ? (
+              <button
+                onClick={() => setDeleteConfirm(true)}
+                className="text-[11px] text-status-error/50 hover:text-status-error transition-colors"
+              >
+                Delete
+              </button>
+            ) : (
+              <span className="flex items-center gap-1">
+                <span className="text-[10px] text-text-muted">Confirm?</span>
+                <button
+                  onClick={handleDelete}
+                  disabled={deleteLoading}
+                  className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+                >
+                  {deleteLoading ? '…' : 'Delete'}
+                </button>
+                <button
+                  onClick={() => setDeleteConfirm(false)}
+                  className="text-[10px] text-text-secondary hover:text-text-primary"
+                >
+                  No
+                </button>
+              </span>
+            )}
+          </div>
+        </>
       )}
 
-      {/* Archived: show archive badge + delete */}
+      {/* Archived state */}
       {currentStatus === 'archived' && (
         <div className="flex items-center gap-3">
           <span className="text-[12px] text-text-muted">Archived</span>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="px-3 py-1.5 rounded-lg text-[12px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="text-[11px] text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
-            <div className="flex items-center gap-1.5">
-              <button onClick={handleDelete} disabled={deleteLoading} className="px-2 py-1 rounded-lg bg-status-error/10 text-[11px] text-status-error disabled:opacity-50">{deleteLoading ? 'Deleting...' : 'Yes, delete'}</button>
-              <button onClick={() => setDeleteConfirm(false)} className="px-2 py-1 text-[11px] text-text-secondary">No</button>
-            </div>
+            <span className="flex items-center gap-1">
+              <button onClick={handleDelete} disabled={deleteLoading} className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+                {deleteLoading ? '…' : 'Delete'}
+              </button>
+              <button onClick={() => setDeleteConfirm(false)} className="text-[10px] text-text-secondary">No</button>
+            </span>
           )}
         </div>
       )}
 
-      {/* Completed: show archive + delete */}
+      {/* Completed state */}
       {currentStatus === 'completed' && (
         <div className="flex items-center gap-3">
           <button
@@ -341,14 +323,16 @@ export default function MissionSettings({
             Archive
           </button>
           {!deleteConfirm ? (
-            <button onClick={() => setDeleteConfirm(true)} className="px-3 py-1.5 rounded-lg text-[12px] text-status-error/60 hover:text-status-error transition-colors">
+            <button onClick={() => setDeleteConfirm(true)} className="text-[11px] text-status-error/60 hover:text-status-error transition-colors">
               Delete
             </button>
           ) : (
-            <div className="flex items-center gap-1.5">
-              <button onClick={handleDelete} disabled={deleteLoading} className="px-2 py-1 rounded-lg bg-status-error/10 text-[11px] text-status-error disabled:opacity-50">{deleteLoading ? 'Deleting...' : 'Yes, delete'}</button>
-              <button onClick={() => setDeleteConfirm(false)} className="px-2 py-1 text-[11px] text-text-secondary">No</button>
-            </div>
+            <span className="flex items-center gap-1">
+              <button onClick={handleDelete} disabled={deleteLoading} className="px-1.5 py-0.5 rounded bg-status-error/10 text-[10px] text-status-error disabled:opacity-50">
+                {deleteLoading ? '…' : 'Delete'}
+              </button>
+              <button onClick={() => setDeleteConfirm(false)} className="text-[10px] text-text-secondary">No</button>
+            </span>
           )}
         </div>
       )}
@@ -372,7 +356,7 @@ export default function MissionSettings({
             <span className="text-[11px] text-status-warning">Needs workspace</span>
           )}
           <button onClick={handleSaveCron} disabled={cronSaving} className="px-2 py-1 text-[11px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50">
-            {cronSaving ? 'Saving...' : 'Save'}
+            {cronSaving ? 'Saving…' : 'Save'}
           </button>
           <button onClick={() => { setCronValue(cronExpression || ''); setEditingCron(false); }} className="px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary">
             Cancel
@@ -399,7 +383,7 @@ export default function MissionSettings({
                 type="text"
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
-                placeholder="Add a task to this mission..."
+                placeholder="Add a task to this mission…"
                 className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
               <button
@@ -415,15 +399,11 @@ export default function MissionSettings({
                     </svg>
                     Adding
                   </span>
-                ) : (
-                  'Add'
-                )}
+                ) : 'Add'}
               </button>
             </form>
           ) : (
-            <p className="text-[12px] text-text-muted">
-              Set a workspace to add tasks.
-            </p>
+            <p className="text-[12px] text-text-muted">Set a workspace to add tasks.</p>
           )}
         </div>
       )}
