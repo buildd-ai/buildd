@@ -6,7 +6,10 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
+import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import { HealthClient } from './HealthClient';
+
+export type { BudgetForecast };
 
 export const dynamic = 'force-dynamic';
 
@@ -123,8 +126,8 @@ export default async function HealthPage({
 
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
-  // Parallel fetches: watched projects, runners, usage, schedules, recent failures, credential health
-  const [rows, runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows] = await Promise.all([
+  // Parallel fetches: watched projects, runners, usage, schedules, recent failures, credential health, budget forecast
+  const [rows, runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast] = await Promise.all([
     // Watched projects
     db
       .select()
@@ -295,6 +298,9 @@ export default async function HealthPage({
         lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
       }));
     })().catch(() => [] as CredentialHealthItem[]),
+
+    // Budget forecast
+    getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null),
   ]);
 
   // Attach recent events to watched project rows
@@ -372,6 +378,7 @@ export default async function HealthPage({
       credentialHealth={credentialHealthRows ?? []}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
+      budgetForecast={budgetForecast ?? null}
     />
   );
 }
