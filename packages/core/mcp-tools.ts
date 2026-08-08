@@ -2585,7 +2585,28 @@ export async function handleBuilddAction(
             : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
           const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+
+          // goalCriteria + autoVerify + last evaluation state
+          const criteriaArr = Array.isArray(data.goalCriteria) ? data.goalCriteria : [];
+          let criteriaInfo = '';
+          if (criteriaArr.length > 0) {
+            const autoVerifyLabel = data.autoVerify === false ? 'manual-only' : 'auto';
+            criteriaInfo = `\nGoal criteria (${criteriaArr.length}, autoVerify=${autoVerifyLabel}):`;
+            const state = data.goalCriteriaState as Record<string, any> | null | undefined;
+            if (state?.criteria && state.criteria.length > 0) {
+              criteriaInfo += ` overall=${state.overall} (as of ${state.evaluatedAt})`;
+              criteriaInfo += '\n' + (state.criteria as any[]).map((c: any) =>
+                `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+              ).join('\n');
+            } else {
+              criteriaInfo += ' (not yet evaluated — use action=evaluate or action=get_criteria_state)';
+              criteriaInfo += '\n' + criteriaArr.map((c: any) =>
+                `  • ${c.label ?? c.type}`
+              ).join('\n');
+            }
+          }
+
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2746,10 +2767,32 @@ export async function handleBuilddAction(
           const artifactList = (data.artifacts || []).map((a: any) =>
             `  - ${a.title} (${a.type}) — ${a.id}`
           ).join('\n');
+
+          // kpis + autoVerify + last KPI evaluation state
+          const kpisArr = Array.isArray(data.kpis) ? data.kpis : [];
+          let kpisInfo = '';
+          if (kpisArr.length > 0) {
+            const autoVerifyLabel = data.autoVerify === false ? 'manual-only' : 'auto';
+            kpisInfo = `\nKPIs (${kpisArr.length}, autoVerify=${autoVerifyLabel}):`;
+            const kpiState = data.kpiState as Record<string, any> | null | undefined;
+            if (kpiState?.kpis && kpiState.kpis.length > 0) {
+              kpisInfo += ` overall=${kpiState.overall} (as of ${kpiState.evaluatedAt})`;
+              kpisInfo += '\n' + (kpiState.kpis as any[]).map((k: any) =>
+                `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}${k.blocking === false ? ' [info]' : ''}`
+              ).join('\n');
+            } else {
+              kpisInfo += ' (not yet evaluated — use action=evaluate or action=get_kpi_state)';
+              kpisInfo += '\n' + kpisArr.map((k: any) =>
+                `  • ${k.name}${k.blocking === false ? ' [info]' : ' [blocking]'}`
+              ).join('\n');
+            }
+          }
+
           return text(
             `**${data.title}** [${data.status}]\nID: ${data.id}\n` +
             `Rollup: ${p.progress ?? 0}% — ${p.completedMissions ?? 0}/${p.totalMissions ?? 0} missions, ${p.completedTasks ?? 0}/${p.totalTasks ?? 0} tasks [${p.status ?? 'empty'}]\n` +
             `${data.description ? `Description: ${data.description}\n` : ''}` +
+            `${kpisInfo}` +
             `${missionList ? `\nMissions:\n${missionList}` : '\nNo missions yet.'}` +
             `${artifactList ? `\n\nInitiative artifacts:\n${artifactList}` : ''}`
           );
