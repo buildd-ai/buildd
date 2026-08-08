@@ -588,6 +588,8 @@ describe('GET /api/missions', () => {
         title: 'Deferred mission',
         status: 'active',
         tasks: [],
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         schedule: {
           cronExpression: '*/30 * * * *',
           nextRunAt: new Date('2026-04-17T11:00:00Z'),
@@ -611,7 +613,7 @@ describe('GET /api/missions', () => {
   it('scopes to a single team when teamId is a team the user belongs to', async () => {
     mockResolveAccountTeamIds.mockResolvedValue(['team-1', 'team-2']);
     mockMissionsFindMany.mockResolvedValue([
-      { id: 'm-1', title: 'A', status: 'active', tasks: [], schedule: null },
+      { id: 'm-1', title: 'A', status: 'active', tasks: [], schedule: null, createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:00.000Z') },
     ]);
 
     const req = new NextRequest('http://localhost/api/missions?teamId=team-2');
@@ -644,6 +646,8 @@ describe('GET /api/missions', () => {
         title: 'Normal mission',
         status: 'active',
         tasks: [],
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         schedule: {
           cronExpression: '*/30 * * * *',
           nextRunAt: new Date(),

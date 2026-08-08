@@ -169,6 +169,7 @@ describe('GET /api/initiatives', () => {
         id: 'init-1',
         title: 'Platform',
         status: 'active',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
         missions: [
           { id: 'm-1', title: 'A', status: 'active', tasks: [{ id: 't1', status: 'completed' }, { id: 't2', status: 'pending' }] },
           { id: 'm-2', title: 'B', status: 'completed', tasks: [{ id: 't3', status: 'completed' }, { id: 't4', status: 'completed' }] },
@@ -199,8 +200,8 @@ describe('GET /api/initiatives', () => {
 
   it('sets hasLinearLink when a child mission is linked to Linear', async () => {
     mockInitiativesFindMany.mockResolvedValue([
-      { id: 'init-1', title: 'Linked', status: 'active', missions: [{ id: 'm-1', title: 'A', status: 'active', tasks: [] }] },
-      { id: 'init-2', title: 'Unlinked', status: 'active', missions: [{ id: 'm-2', title: 'B', status: 'active', tasks: [] }] },
+      { id: 'init-1', title: 'Linked', status: 'active', createdAt: new Date('2026-01-01T00:00:00.000Z'), missions: [{ id: 'm-1', title: 'A', status: 'active', tasks: [] }] },
+      { id: 'init-2', title: 'Unlinked', status: 'active', createdAt: new Date('2026-01-01T00:00:00.000Z'), missions: [{ id: 'm-2', title: 'B', status: 'active', tasks: [] }] },
     ]);
     mockLinearLinkRows.mockReturnValue([{ entityId: 'm-1' }]);
     const res = await GET(new NextRequest('http://localhost/api/initiatives'));
@@ -212,7 +213,7 @@ describe('GET /api/initiatives', () => {
   it('derives lastMotionAt from the most recent child mission update', async () => {
     mockInitiativesFindMany.mockResolvedValue([
       {
-        id: 'init-1', title: 'Motion', status: 'active',
+        id: 'init-1', title: 'Motion', status: 'active', createdAt: new Date('2026-01-01T00:00:00.000Z'),
         missions: [
           { id: 'm-1', title: 'A', status: 'active', updatedAt: '2026-07-20T10:00:00.000Z', tasks: [] },
           { id: 'm-2', title: 'B', status: 'active', updatedAt: '2026-07-26T09:30:00.000Z', tasks: [] },
