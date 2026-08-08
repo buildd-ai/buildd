@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, formatNextRun } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionProgress } from '@/components/MissionProgress';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
@@ -26,6 +26,7 @@ import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
 import MissionBackendSelector from './MissionBackendSelector';
+import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
@@ -234,7 +235,17 @@ export default async function MissionDetailPage({
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
-  const isManualMode = orchestrationMode === 'manual';
+  const isHeld = (mission as any).isHeld === true;
+
+  // Single derived display state for the header chip and CTA
+  const displayState = deriveMissionDisplayState({
+    status: mission.status,
+    isHeld,
+    orchestrationMode,
+    activeAgents,
+    health: healthState,
+  });
+  const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
   const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
   const driveNextRun = formatNextRun(detailNextScanMins, detailNextRunAt ? String(detailNextRunAt) : null);
@@ -508,7 +519,14 @@ export default async function MissionDetailPage({
           initialDescription={mission.description}
           healthPill={
             <span className="flex items-center gap-2 flex-wrap">
-              <MissionBadges mission={{ ...mission, lastDeferralReason: (mission.schedule as any)?.lastDeferralReason, lastDeferredAt: (mission.schedule as any)?.lastDeferredAt }} health={healthState} nextRun={driveNextRun} />
+              {/* Single derived-state chip — replaces the old multi-badge soup */}
+              <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${stateChip.cls}`}>
+                {stateChip.label}
+              </span>
+              {/* Next-run detail for auto missions with a schedule */}
+              {displayState === 'active' && driveNextRun.text && (
+                <span className="text-[10px] text-text-muted font-mono normal-case tracking-normal">{driveNextRun.text}</span>
+              )}
               {isHeartbeat && (
                 <HeartbeatStatusBadge
                   lastStatus={lastHeartbeatStatus}
@@ -532,11 +550,6 @@ export default async function MissionDetailPage({
             </span>
           }
         />
-
-        {/* Backend selector — always accessible since it's actionable */}
-        <div className="mb-3">
-          <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-        </div>
 
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
@@ -695,12 +708,10 @@ export default async function MissionDetailPage({
           cronExpression={scheduleCron}
           workspaceId={mission.workspaceId}
           roles={roles}
-          schedule={mission.schedule ? {
-            nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
-            lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
-          } : null}
           hasSchedule={!!scheduleCron}
           orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+          isHeld={isHeld}
+          displayState={displayState}
         />
       </div>
 
@@ -722,6 +733,29 @@ export default async function MissionDetailPage({
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
         <MissionSecondaryPanel configSummary={configSummary}>
+          {/* Monitoring toggle — schedules only, moved from top-level chrome */}
+          {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+            <MissionMonitoringToggle
+              missionId={id}
+              initialStatus={mission.status}
+              hasSchedule={!!scheduleCron}
+              schedule={mission.schedule ? {
+                nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
+                lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
+              } : null}
+              orchestrationMode={orchestrationMode}
+            />
+          )}
+
+          {/* Backend selector — moved from top-level chrome */}
+          {!['completed', 'archived'].includes(mission.status) && (
+            <div>
+              <h2 className="section-label mb-2">Agent backend</h2>
+              <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
+              <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
+            </div>
+          )}
+
           {/* Evaluation Log — heartbeat missions only, secondary content */}
           {isHeartbeat && heartbeatTasks.length > 0 && (
             <HeartbeatTimeline
