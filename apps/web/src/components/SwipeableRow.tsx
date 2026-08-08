@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useContext, createContext, useEffect, type ReactNode, type JSX } from 'react';
+import { useState, useRef, useCallback, useContext, createContext, useEffect, useId, type ReactNode, type JSX } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -264,6 +264,8 @@ export function SwipeableRow({
   const [translateX, setTranslateX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuBtnRef = useRef<HTMLButtonElement | null>(null);
+  const menuId = useId();
 
   const gestureRef = useRef<{
     active: boolean;
@@ -287,6 +289,8 @@ export function SwipeableRow({
       if (e.key === 'Escape') {
         e.preventDefault();
         setMenuOpen(false);
+        // §2.4: focus must return to the ⋯ button that opened the sheet
+        menuBtnRef.current?.focus();
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         const items = Array.from(
@@ -376,6 +380,9 @@ export function SwipeableRow({
     g.startY = e.clientY;
     g.direction = 'none';
     g.committed = false;
+    // Capture the pointer so move/up events keep arriving even if the pointer
+    // leaves the element's bounds while the card translates during a swipe.
+    e.currentTarget.setPointerCapture(e.pointerId);
   }, [trailingAction]);
 
   const handlePointerMove = useCallback(
@@ -511,6 +518,7 @@ export function SwipeableRow({
           Sibling (not absolute) so it never overlaps card content. */}
       {menuActions.length > 0 && (
         <button
+          ref={menuBtnRef}
           type="button"
           className="shrink-0 self-stretch z-10 flex items-center justify-center w-9 text-text-muted hover:text-text-primary transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           style={{ touchAction: 'none' }}
@@ -519,6 +527,7 @@ export function SwipeableRow({
           aria-label={`More actions for ${taskTitle}`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
+          aria-controls={menuId}
         >
           <svg
             width="16"
@@ -559,7 +568,7 @@ export function SwipeableRow({
             </div>
 
             {/* Menu items */}
-            <div ref={menuRef} role="menu" aria-label={`More actions for ${taskTitle}`}>
+            <div ref={menuRef} id={menuId} role="menu" aria-label={`More actions for ${taskTitle}`}>
               {menuActions.map((item) => (
                 <button
                   key={item.action}

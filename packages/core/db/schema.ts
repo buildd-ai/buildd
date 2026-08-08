@@ -640,6 +640,15 @@ export const missions = pgTable('missions', {
   // External issue tracker link (e.g. Linear project) — set via /link-linear or API
   externalIssueId: text('external_issue_id'),
   externalIssueUrl: text('external_issue_url'),
+  // Goal criteria: declared outcome conditions that gate mission completion.
+  // null = no criteria (completion driven by task progress alone).
+  // Max 20 criteria; empty array treated as null (no gate).
+  goalCriteria: jsonb('goal_criteria').$type<import('@buildd/shared').GoalCriterion[] | null>(),
+  // Last evaluation result, persisted by evaluateGoalCriteria callers.
+  goalCriteriaState: jsonb('goal_criteria_state').$type<import('@buildd/shared').GoalCriteriaState | null>(),
+  // When false, organizer never auto-evaluates criteria; on-demand still works.
+  // null reads as true (default: auto-verify ON when criteria are set).
+  autoVerify: boolean('auto_verify'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -681,6 +690,15 @@ export const initiatives = pgTable('initiatives', {
   progressCache: jsonb('progress_cache').$type<InitiativeProgressCache | null>(),
   // Curated artifact-id pointers for context assembly (mirrors missions.contextArtifactIds).
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
+  // KPIs: outcome-oriented indicators that gate initiative completion.
+  // null = no KPIs (completion driven by child-mission rollup alone).
+  // A blocking KPI (blocking: true, the default) holds status='active' until met.
+  kpis: jsonb('kpis').$type<import('@buildd/shared').InitiativeKPI[] | null>(),
+  // Last KPI evaluation result.
+  kpiState: jsonb('kpi_state').$type<import('@buildd/shared').InitiativeKPIState | null>(),
+  // When false, organizer never auto-evaluates KPIs; on-demand still works.
+  // null reads as true (default: auto-verify ON when KPIs are set).
+  autoVerify: boolean('auto_verify'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

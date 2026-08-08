@@ -123,6 +123,41 @@ export function deriveHealth(
   return 'NOMINAL';
 }
 
+// ─── Single derived display state ─────────────────────────────────────────────
+
+/**
+ * Collapses isHeld + orchestrationMode + activeAgents + health into ONE label
+ * for the mission detail page header chip and state-driven CTA.
+ * Priority: complete > held > running > failed > manual > active.
+ */
+export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active';
+
+export function deriveMissionDisplayState(opts: {
+  status: string;
+  isHeld: boolean;
+  orchestrationMode?: string | null;
+  activeAgents: number;
+  health: Health;
+}): MissionDisplayState {
+  if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
+  if (opts.isHeld) return 'held';
+  if (opts.activeAgents > 0) return 'running';
+  if (opts.health === 'FAILING') return 'failed';
+  if (opts.orchestrationMode === 'manual') return 'manual';
+  return 'active';
+}
+
+export function getMissionStateChip(state: MissionDisplayState): { label: string; cls: string } {
+  switch (state) {
+    case 'held':    return { label: 'HELD',     cls: 'border-status-warning text-status-warning' };
+    case 'running': return { label: 'RUNNING',  cls: 'border-status-success text-status-success' };
+    case 'failed':  return { label: 'FAILED',   cls: 'border-status-error text-status-error' };
+    case 'manual':  return { label: 'MANUAL',   cls: 'border-border-default text-text-muted' };
+    case 'complete':return { label: 'COMPLETE', cls: 'border-border-default text-text-muted' };
+    case 'active':  return { label: 'AUTO',     cls: 'border-status-info text-status-info' };
+  }
+}
+
 export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'paused' | 'completed';
 export type FilterTab = 'all' | 'active' | 'scheduled' | 'completed';
 

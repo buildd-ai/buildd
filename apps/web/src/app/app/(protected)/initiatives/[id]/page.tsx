@@ -12,6 +12,7 @@ import { SegmentStrip } from '@/components/SegmentStrip';
 import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
+import InitiativeKPIPanel from './InitiativeKPIPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,7 +37,7 @@ export default async function InitiativeDetailPage({
 
   const initiative = await db.query.initiatives.findFirst({
     where: eq(initiatives.id, id),
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, kpis: true, kpiState: true, autoVerify: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       missions: {
@@ -156,12 +157,26 @@ export default async function InitiativeDetailPage({
         {initiative.description && (
           <p className="text-sm text-text-secondary mb-3 whitespace-pre-wrap">{initiative.description}</p>
         )}
-        <div className="flex items-center gap-3 mb-1.5">
+        <div className="flex items-center gap-3 mb-1.5 flex-wrap">
           <span className="text-sm font-medium text-text-primary">{rollup.progress}%</span>
           <span className="text-[12px] text-text-muted capitalize">{rollup.status}</span>
           <span className="text-[12px] text-text-muted">
             {rollup.completedMissions}/{rollup.totalMissions} missions · {rollup.completedTasks}/{rollup.totalTasks} tasks
           </span>
+          {/* KPI gate: missions all done but KPIs not met — make this legible */}
+          {(() => {
+            const kpis = (initiative.kpis as any[]) ?? [];
+            const kpiOverall = (initiative.kpiState as any)?.overall ?? null;
+            const allMissionsDone = rollup.totalMissions > 0 && rollup.completedMissions === rollup.totalMissions;
+            if (kpis.length > 0 && allMissionsDone && kpiOverall !== 'pass') {
+              return (
+                <span className="text-[11px] font-mono px-2 py-0.5 border border-status-warning/40 text-status-warning rounded-sm" title="All child missions completed but KPIs not yet verified">
+                  KPIs blocking completion
+                </span>
+              );
+            }
+            return null;
+          })()}
         </div>
         {aggregateSegments.length > 0 ? (
           <div className="flex max-w-md">
@@ -188,6 +203,16 @@ export default async function InitiativeDetailPage({
         <div className="mb-8">
           <TrackerProgressPanel entityType="initiative" entityId={id} />
         </div>
+      )}
+
+      {/* KPI panel — only renders when KPIs are set */}
+      {((initiative.kpis as any[]) ?? []).length > 0 && (
+        <InitiativeKPIPanel
+          initiativeId={id}
+          kpis={(initiative.kpis as any) ?? []}
+          kpiState={(initiative.kpiState as any) ?? null}
+          autoVerify={(initiative.autoVerify as boolean | null) ?? null}
+        />
       )}
 
       {/* Missions */}

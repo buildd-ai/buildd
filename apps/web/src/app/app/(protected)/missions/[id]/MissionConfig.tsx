@@ -97,119 +97,115 @@ export default function MissionConfig({
   ];
 
   return (
-    <div className="card p-4">
-      <h2 className="section-label mb-4">Configuration</h2>
-
-      <div className="space-y-4">
-        {/* Workspace */}
-        <div>
-          <label className="block text-[11px] text-text-secondary mb-1.5">Workspace</label>
-          <div className="max-w-xs">
-            <Select
-              value={selectedWorkspaceId}
-              onChange={handleWorkspaceChange}
-              options={workspaceOptions}
-              placeholder="No workspace"
-              size="sm"
-              disabled={disabled}
-            />
-          </div>
-          {selectedWorkspaceId !== (workspaceId || '') && (
-            <p className="text-[11px] text-status-warning mt-1">
-              Changing workspace will update where scheduled tasks run.
-            </p>
-          )}
+    <div className="space-y-4">
+      {/* Workspace */}
+      <div>
+        <label className="block text-[11px] text-text-secondary mb-1.5">Workspace</label>
+        <div className="max-w-xs">
+          <Select
+            value={selectedWorkspaceId}
+            onChange={handleWorkspaceChange}
+            options={workspaceOptions}
+            placeholder="No workspace"
+            size="sm"
+            disabled={disabled}
+          />
         </div>
-
-        {/* Max Concurrent Tasks */}
-        <div>
-          <label className="block text-[11px] text-text-secondary mb-1.5">Max concurrent tasks</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={maxConcurrent}
-              onChange={e => setMaxConcurrent(e.target.value)}
-              onBlur={handleMaxConcurrentBlur}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              placeholder="No limit"
-              disabled={disabled}
-              className="w-24 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
-            />
-            {initialMaxConcurrent != null && (
-              <>
-                <span className="text-[11px] text-text-secondary tabular-nums">
-                  {activeTasks} / {initialMaxConcurrent} active
-                </span>
-                <button
-                  type="button"
-                  onClick={() => { setMaxConcurrent(''); patchMission({ maxConcurrentTasks: null }, 'maxConcurrentTasks'); }}
-                  disabled={disabled}
-                  className="text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50"
-                >
-                  Remove limit
-                </button>
-              </>
-            )}
-          </div>
-          <p className="text-[11px] text-text-secondary mt-1">
-            Cap how many tasks this mission can run at once.
+        {selectedWorkspaceId !== (workspaceId || '') && (
+          <p className="text-[11px] text-status-warning mt-1">
+            Changing workspace will update where scheduled tasks run.
           </p>
-        </div>
+        )}
+      </div>
 
-        {/* Cost budget */}
-        <div>
-          <label className="block text-[11px] text-text-secondary mb-1.5">Cost budget (USD)</label>
-          <div className="flex items-center gap-2">
-            <span className="text-[12px] text-text-secondary">$</span>
-            <input
-              type="number"
-              min={0}
-              step={0.01}
-              value={costBudget}
-              onChange={e => setCostBudget(e.target.value)}
-              onBlur={handleCostBudgetBlur}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              placeholder="No limit"
-              disabled={disabled}
-              className="w-28 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
-            />
-            {initialCostBudgetUsd != null && (
+      {/* Max Concurrent Tasks */}
+      <div>
+        <label className="block text-[11px] text-text-secondary mb-1.5">Max concurrent tasks</label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={maxConcurrent}
+            onChange={e => setMaxConcurrent(e.target.value)}
+            onBlur={handleMaxConcurrentBlur}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+            placeholder="No limit"
+            disabled={disabled}
+            className="w-24 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
+          />
+          {initialMaxConcurrent != null && (
+            <>
+              <span className="text-[11px] text-text-secondary tabular-nums">
+                {activeTasks} / {initialMaxConcurrent} active
+              </span>
               <button
                 type="button"
-                onClick={() => { setCostBudget(''); patchMission({ costBudgetUsd: null }, 'costBudgetUsd'); }}
+                onClick={() => { setMaxConcurrent(''); patchMission({ maxConcurrentTasks: null }, 'maxConcurrentTasks'); }}
                 disabled={disabled}
                 className="text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50"
               >
                 Remove limit
               </button>
-            )}
-          </div>
-          <p className="text-[11px] text-text-secondary mt-1">
-            Mission pauses when spend reaches this limit. Empty = uncapped.
-          </p>
+            </>
+          )}
         </div>
-
-        {/* Model */}
-        <div>
-          <label className="block text-[11px] text-text-secondary mb-1.5">Model</label>
-          <div className="max-w-xs">
-            <Select
-              value={model}
-              onChange={handleModelChange}
-              options={MODEL_OPTIONS}
-              placeholder="Default"
-              size="sm"
-              disabled={disabled}
-            />
-          </div>
-        </div>
-
-        {saving && (
-          <p className="text-[11px] text-text-secondary animate-pulse">Saving {saving}...</p>
-        )}
+        <p className="text-[11px] text-text-secondary mt-1">
+          Cap how many tasks this mission can run at once.
+        </p>
       </div>
+
+      {/* Cost budget */}
+      <div>
+        <label className="block text-[11px] text-text-secondary mb-1.5">Cost budget (USD)</label>
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-text-secondary">$</span>
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            value={costBudget}
+            onChange={e => setCostBudget(e.target.value)}
+            onBlur={handleCostBudgetBlur}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+            placeholder="No limit"
+            disabled={disabled}
+            className="w-28 px-2 py-1 bg-surface-3 border border-card-border rounded-lg text-[12px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 tabular-nums disabled:opacity-50"
+          />
+          {initialCostBudgetUsd != null && (
+            <button
+              type="button"
+              onClick={() => { setCostBudget(''); patchMission({ costBudgetUsd: null }, 'costBudgetUsd'); }}
+              disabled={disabled}
+              className="text-[11px] text-status-error hover:text-status-error/80 disabled:opacity-50"
+            >
+              Remove limit
+            </button>
+          )}
+        </div>
+        <p className="text-[11px] text-text-secondary mt-1">
+          Mission pauses when spend reaches this limit. Empty = uncapped.
+        </p>
+      </div>
+
+      {/* Model */}
+      <div>
+        <label className="block text-[11px] text-text-secondary mb-1.5">Model</label>
+        <div className="max-w-xs">
+          <Select
+            value={model}
+            onChange={handleModelChange}
+            options={MODEL_OPTIONS}
+            placeholder="Default"
+            size="sm"
+            disabled={disabled}
+          />
+        </div>
+      </div>
+
+      {saving && (
+        <p className="text-[11px] text-text-secondary animate-pulse">Saving {saving}...</p>
+      )}
     </div>
   );
 }

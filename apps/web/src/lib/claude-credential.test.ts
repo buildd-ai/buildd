@@ -398,19 +398,54 @@ describe('refreshClaudeCredential', () => {
     expect(result).toBe('refreshed');
   });
 
-  it('returns error on network failure', async () => {
+  it('returns error on network failure and resets lock so the credential can retry sooner', async () => {
+    // Without lock reset: 60-min lock stamps NOW() before the HTTP call, so a
+    // transient network error silences the credential for the full 60-min window.
     const encryptedValue = makeBlob();
-    const returningMock = mock(() => Promise.resolve([{ id: 'secret-1', encryptedValue, purpose: 'claude_credential' }]));
-    mockUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({ returning: returningMock })),
-      })),
-    });
+    const sets: Array<Record<string, unknown>> = [];
+    let callCount = 0;
+    mockUpdate.mockImplementation(() => ({
+      set: mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        const returning = callCount++ === 0
+          ? mock(() => Promise.resolve([{ id: 'secret-1', encryptedValue }]))
+          : mock(() => Promise.resolve([]));
+        return { where: mock(() => ({ returning })) };
+      }),
+    }));
 
     global.fetch = mock(async () => { throw new Error('Network error'); }) as any;
 
     const result = await refreshClaudeCredential('secret-1');
     expect(result).toBe('error');
+    // Network error is transient — a second UPDATE must be issued to shorten the lock.
+    expect(sets.length).toBe(2);
+    // Recovery update should NOT mark revoked.
+    const recoveryUpdate = sets[1];
+    expect(recoveryUpdate?.healthStatus).toBeUndefined();
+  });
+
+  it('returns error on transient 5xx and resets lock', async () => {
+    const encryptedValue = makeBlob();
+    const sets: Array<Record<string, unknown>> = [];
+    let callCount = 0;
+    mockUpdate.mockImplementation(() => ({
+      set: mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        const returning = callCount++ === 0
+          ? mock(() => Promise.resolve([{ id: 'secret-1', encryptedValue }]))
+          : mock(() => Promise.resolve([]));
+        return { where: mock(() => ({ returning })) };
+      }),
+    }));
+
+    global.fetch = mock(async () => ({ ok: false, status: 503 })) as any;
+
+    const result = await refreshClaudeCredential('secret-1');
+    expect(result).toBe('error');
+    expect(sets.length).toBe(2);
+    const recoveryUpdate = sets[1];
+    expect(recoveryUpdate?.healthStatus).toBeUndefined();
   });
 
   it('sets healthStatus = revoked on 400/401 failure', async () => {

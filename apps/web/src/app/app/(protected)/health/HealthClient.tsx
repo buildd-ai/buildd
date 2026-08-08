@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure, CredentialHealthItem } from './page';
+import type { WatchedProjectRow, WorkspaceOption, UsageStats, ScheduleRow, RecentFailure, CredentialHealthItem, BudgetForecast } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -75,6 +75,7 @@ interface Props {
   credentialHealth: CredentialHealthItem[];
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
+  budgetForecast: BudgetForecast | null;
 }
 
 interface FormState {
@@ -168,6 +169,7 @@ export function HealthClient({
   credentialHealth,
   teamWorkspaces,
   wsFilter,
+  budgetForecast,
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -513,6 +515,9 @@ export function HealthClient({
           )}
         </div>
       </section>
+
+      {/* Budget Forecast */}
+      {budgetForecast && <BudgetForecastSection forecast={budgetForecast} />}
 
       {/* Usage (30d) */}
       {usageStats && usageStats.total > 0 && (
@@ -1028,5 +1033,159 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="block text-xs font-medium text-text-secondary mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+// ── Budget Forecast ───────────────────────────────────────────────────────────
+
+function confidenceClass(c: string | null): string {
+  if (c === 'high') return 'text-status-success';
+  if (c === 'low') return 'text-status-warning';
+  return 'text-text-muted';
+}
+
+function timeUntilShort(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'now';
+  const h = Math.floor(ms / (60 * 60 * 1000));
+  if (h < 1) return `${Math.ceil(ms / 60000)}m`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
+  const hasAny =
+    forecast.oauthSessions.length > 0 ||
+    forecast.monthly !== null ||
+    forecast.codex !== null ||
+    forecast.missions.length > 0;
+
+  if (!hasAny) return null;
+
+  return (
+    <section data-testid="health-section-budget-forecast" className="mb-6">
+      <h2 className="section-label mb-3">Budget Forecast</h2>
+      <div className="card divide-y divide-border-default">
+
+        {/* OAuth session rows */}
+        {forecast.oauthSessions.map((s) => (
+          <div key={s.accountId} className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-text-primary">Claude session</span>
+              {s.state === 'learning' ? (
+                <span className="text-xs text-text-muted">learning ({s.episodes} episode{s.episodes !== 1 ? 's' : ''})</span>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-text-secondary">
+                  <span className="tabular-nums font-medium text-text-primary">{s.pressurePct}% used</span>
+                  <span className="text-text-muted">·</span>
+                  <span>resets in {timeUntilShort(s.windowEndsAt)}</span>
+                  <span className="text-text-muted">·</span>
+                  <span className={confidenceClass(s.confidence)}>
+                    confidence: {s.confidence ?? 'low'}
+                  </span>
+                </div>
+              )}
+            </div>
+            {s.state === 'active' && (
+              <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    s.pressurePct >= 90 ? 'bg-status-error' :
+                    s.pressurePct >= 70 ? 'bg-status-warning' :
+                    'bg-primary'
+                  }`}
+                  style={{ width: `${Math.min(100, s.pressurePct)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Monthly dollar budget */}
+        {forecast.monthly && (
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-text-primary">Monthly budget</span>
+              <div className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className="tabular-nums font-medium text-text-primary">
+                  ${forecast.monthly.spentUsd.toFixed(2)} / ${forecast.monthly.budgetUsd.toFixed(0)}
+                </span>
+                <span className="text-text-muted">·</span>
+                <span>resets in {timeUntilShort(forecast.monthly.resetsAt)}</span>
+                {forecast.monthly.daysToDepletion !== null && (
+                  <>
+                    <span className="text-text-muted">·</span>
+                    <span>
+                      depletes in {forecast.monthly.daysToDepletion < 1
+                        ? `${Math.round(forecast.monthly.daysToDepletion * 24)}h`
+                        : `${forecast.monthly.daysToDepletion.toFixed(1)}d`
+                      }
+                    </span>
+                  </>
+                )}
+                <span className="text-text-muted">·</span>
+                <span className={confidenceClass(forecast.monthly.confidence)}>
+                  confidence: {forecast.monthly.confidence}
+                </span>
+              </div>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  forecast.monthly.pctUsed >= 90 ? 'bg-status-error' :
+                  forecast.monthly.pctUsed >= 70 ? 'bg-status-warning' :
+                  'bg-primary'
+                }`}
+                style={{ width: `${Math.min(100, forecast.monthly.pctUsed)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Codex budget (only show when exhausted — for reset-time visibility) */}
+        {forecast.codex?.isExhausted && (
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-text-primary">Codex budget</span>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-status-error font-medium">exhausted</span>
+                {forecast.codex.resetsAt && (
+                  <>
+                    <span className="text-text-muted">·</span>
+                    <span className="text-text-secondary">resets in {timeUntilShort(forecast.codex.resetsAt)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Mission budgets — top 3 nearest to exhaustion */}
+        {forecast.missions.slice(0, 3).map((m) => (
+          <div key={m.missionId} className="px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-text-secondary truncate max-w-[10rem]">{m.missionTitle}</span>
+              <div className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className={`font-medium tabular-nums ${
+                  m.pctUsed >= 90 ? 'text-status-error' :
+                  m.pctUsed >= 70 ? 'text-status-warning' :
+                  'text-text-primary'
+                }`}>
+                  ${m.spentUsd.toFixed(2)} / ${m.budgetUsd.toFixed(2)}
+                </span>
+                <span className="text-text-muted">·</span>
+                <span>{m.pctUsed}%</span>
+                {m.status === 'budget_exhausted' && (
+                  <>
+                    <span className="text-text-muted">·</span>
+                    <span className="text-status-error">exhausted</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

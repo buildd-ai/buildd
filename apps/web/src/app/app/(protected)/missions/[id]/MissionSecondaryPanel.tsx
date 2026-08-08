@@ -33,6 +33,9 @@ export default function MissionSecondaryPanel({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+      {!expanded && (
+        <p className="text-[11px] text-text-muted">Schedule, configuration & more</p>
+      )}
       {expanded && (
         <div className="mt-3 space-y-4">
           {children}

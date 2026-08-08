@@ -170,7 +170,7 @@ export async function PATCH(
     const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
-      pacingMode, pacingMaxPerHour,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm } = body;
 
@@ -316,6 +316,21 @@ export async function PATCH(
       updateData.isHeld = false;
     } else if (startMode !== undefined) {
       updateData.isHeld = startMode === 'held';
+    }
+
+    if (goalCriteria !== undefined) {
+      if (goalCriteria !== null) {
+        if (!Array.isArray(goalCriteria)) {
+          return NextResponse.json({ error: 'goalCriteria must be an array' }, { status: 400 });
+        }
+        if (goalCriteria.length > 20) {
+          return NextResponse.json({ error: 'goalCriteria must have at most 20 criteria' }, { status: 400 });
+        }
+      }
+      updateData.goalCriteria = goalCriteria ?? null;
+    }
+    if (autoVerify !== undefined) {
+      updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
     }
 
     // Handle schedule updates

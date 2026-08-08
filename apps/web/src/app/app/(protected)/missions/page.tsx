@@ -146,7 +146,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       initiative: { columns: { id: true, title: true } },
@@ -282,6 +282,8 @@ export default async function MissionsPage({
       initiativeId: obj.initiativeId || null,
       initiativeName: (obj.initiative as any)?.title || null,
       priority: obj.priority ?? 0,
+      goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
+      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | null,
     };
   });
 

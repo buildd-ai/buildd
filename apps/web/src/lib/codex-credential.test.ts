@@ -242,10 +242,38 @@ describe('resolveCodexCredential', () => {
 
   it('returns expired credential when it is the only one available', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
+      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null, healthStatus: 'unknown' },
     ]);
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
     expect(result?.accessToken).toBe('expiredAT');
+  });
+
+  it('returns null when the only credential is revoked', async () => {
+    // Revoked credential must be skipped so the claim route fails fast (or falls
+    // through to a different backend) instead of handing a dead token to the runner.
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('deadAT', 'deadRT', 'dead-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'revoked' },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    expect(result).toBeNull();
+  });
+
+  it('falls through to team-wide when workspace-scoped credential is revoked', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'unknown' },
+      { encryptedValue: blob('deadAT', 'deadRT', 'dead-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'revoked' },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    // Revoked workspace row skipped; healthy team-wide row returned.
+    expect(result?.accessToken).toBe('teamAT');
+  });
+
+  it('returns degraded credential (transient, not permanently dead)', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('degradedAT', 'degradedRT', 'acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() + 3600_000), lastRefreshedAt: null, healthStatus: 'degraded' },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    expect(result?.accessToken).toBe('degradedAT');
   });
 });
 
@@ -416,30 +444,88 @@ describe('refreshCodexCredential', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('returns error and does not persist when OpenAI returns non-ok', async () => {
-    const existingRow = { id: 's-1', encryptedValue: blob('old_access', 'old_refresh', 'acc') };
-    const where = mock(() => ({ returning: mock(() => Promise.resolve([existingRow])) }));
-    mockDbUpdate.mockReturnValue({ set: mock(() => ({ where })) });
+  it('returns revoked and marks healthStatus=revoked when OpenAI returns 401 invalid_grant', async () => {
+    // 400/401 = permanent revocation (invalid_grant). Must mark DB immediately — the
+    // cron generic string 'Codex token refresh failed' classifies as 'none' and
+    // never reaches the health state machine, causing silent 8+ failure loops.
+    const existingRow = { id: 's-1', encryptedValue: blobWithIdToken('old_access', 'old_refresh', 'acc') };
+    const sets: Array<Record<string, unknown>> = [];
+    let updateCallCount = 0;
+    mockDbUpdate.mockImplementation(() => {
+      updateCallCount++;
+      const set = mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        const returning = updateCallCount === 1
+          ? mock(() => Promise.resolve([existingRow]))
+          : mock(() => Promise.resolve([]));
+        return { where: mock(() => ({ returning })) };
+      });
+      return { set };
+    });
 
     globalThis.fetch = mock(() =>
-      Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({ error: 'invalid_grant' }) })
+      Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({ error: 'invalid_grant', error_description: 'Token has been revoked' }) })
+    ) as any;
+
+    const result = await refreshCodexCredential('s-1');
+    expect(result).toBe('revoked');
+    // Second UPDATE must mark healthStatus='revoked'
+    const revokeUpdate = sets.find((s) => s.healthStatus === 'revoked');
+    expect(revokeUpdate).toBeTruthy();
+    expect(revokeUpdate?.healthStatus).toBe('revoked');
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns error and resets lock on transient 5xx so the credential can be retried sooner', async () => {
+    // Without lock reset: 60-min lock stamps NOW() before the HTTP call, so a
+    // transient 5xx silences the credential for the full 60-min window — the next
+    // cron run may arrive too late after the token has already expired.
+    const existingRow = { id: 's-1', encryptedValue: blobWithIdToken('old_access', 'old_refresh', 'acc') };
+    const sets: Array<Record<string, unknown>> = [];
+    let updateCallCount = 0;
+    mockDbUpdate.mockImplementation(() => {
+      updateCallCount++;
+      const set = mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        const returning = updateCallCount === 1
+          ? mock(() => Promise.resolve([existingRow]))
+          : mock(() => Promise.resolve([]));
+        return { where: mock(() => ({ returning })) };
+      });
+      return { set };
+    });
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) })
     ) as any;
 
     const result = await refreshCodexCredential('s-1');
     expect(result).toBe('error');
-    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
+    // A second UPDATE must be issued to shorten the lock window.
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2);
+    // The recovery update should reset lastRefreshedAt (not contain healthStatus=revoked)
+    const recoveryUpdate = sets[1];
+    expect(recoveryUpdate).toBeTruthy();
+    expect(recoveryUpdate?.healthStatus).toBeUndefined();
   });
 
-  it('returns error when fetch throws', async () => {
-    const existingRow = { id: 's-1', encryptedValue: blob('old_access', 'old_refresh', 'acc') };
-    const where = mock(() => ({ returning: mock(() => Promise.resolve([existingRow])) }));
-    mockDbUpdate.mockReturnValue({ set: mock(() => ({ where })) });
+  it('returns error and resets lock when fetch throws (network error)', async () => {
+    const existingRow = { id: 's-1', encryptedValue: blobWithIdToken('old_access', 'old_refresh', 'acc') };
+    let updateCallCount = 0;
+    mockDbUpdate.mockImplementation(() => {
+      updateCallCount++;
+      const returning = updateCallCount === 1
+        ? mock(() => Promise.resolve([existingRow]))
+        : mock(() => Promise.resolve([]));
+      return { set: mock(() => ({ where: mock(() => ({ returning })) })) };
+    });
 
     globalThis.fetch = mock(() => Promise.reject(new Error('Network error'))) as any;
 
     const result = await refreshCodexCredential('s-1');
     expect(result).toBe('error');
-    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
+    // Network error is transient — second UPDATE resets the lock.
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2);
   });
 
   it('does not log token values', async () => {

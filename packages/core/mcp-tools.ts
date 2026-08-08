@@ -120,6 +120,7 @@ export const workerActions = [
   'post_note',
   'list_schedules', 'trace_schedule',
   'get_task', 'get_task_messages',
+  'get_budget_forecast',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -189,8 +190,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate) } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
-    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
@@ -199,6 +200,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
+    get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
@@ -235,6 +237,17 @@ export function buildMemoryDescription(actions: readonly string[]): string {
 // ── Buildd Action Handler ────────────────────────────────────────────────────
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
+
+function timeUntilFromIso(iso: string | null | undefined): string {
+  if (!iso) return 'unknown';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'now';
+  const h = Math.floor(ms / (60 * 60 * 1000));
+  if (h < 1) return `${Math.ceil(ms / 60000)}m`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
@@ -2339,6 +2352,60 @@ export async function handleBuilddAction(
       return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
     }
 
+    case 'get_budget_forecast': {
+      const wsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const endpoint = wsId
+        ? `/api/health/budget?workspaceId=${encodeURIComponent(wsId)}`
+        : '/api/health/budget';
+
+      const data = await api(endpoint);
+      const f = data?.forecast;
+      if (!f) return text('No budget forecast data available.');
+
+      const lines: string[] = [];
+
+      // OAuth session rows
+      for (const s of (f.oauthSessions ?? [])) {
+        if (s.state === 'learning') {
+          lines.push(`Claude session (${s.accountName}): learning — ${s.episodes} episode(s) recorded, need 3+ for estimates`);
+        } else {
+          const resetsIn = timeUntilFromIso(s.windowEndsAt);
+          lines.push(`Claude session (${s.accountName}): ${s.pressurePct}% used · resets in ${resetsIn} · confidence: ${s.confidence ?? 'low'}${s.limiter ? ` · binding: ${s.limiter}` : ''}`);
+        }
+      }
+
+      // Monthly dollar budget
+      if (f.monthly) {
+        const m = f.monthly;
+        const resetsIn = timeUntilFromIso(m.resetsAt);
+        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
+        if (m.daysToDepletion !== null) {
+          budgetLine += m.daysToDepletion < 1
+            ? ` · depletes in ${Math.round(m.daysToDepletion * 24)}h`
+            : ` · depletes in ${m.daysToDepletion.toFixed(1)}d`;
+        }
+        budgetLine += ` · confidence: ${m.confidence}`;
+        lines.push(budgetLine);
+      }
+
+      // Codex
+      if (f.codex?.isExhausted) {
+        const resetsIn = f.codex.resetsAt ? timeUntilFromIso(f.codex.resetsAt) : 'unknown';
+        lines.push(`Codex budget: exhausted · resets in ${resetsIn}`);
+      }
+
+      // Mission budgets
+      const missionRows: string[] = (f.missions ?? []).slice(0, 5).map((m: any) =>
+        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
+      );
+      if (missionRows.length > 0) {
+        lines.push(`Mission budgets (by % used):\n${missionRows.join('\n')}`);
+      }
+
+      if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
+      return text(lines.join('\n'));
+    }
+
     case 'suggest_schedule_update': {
       if (!params.reason) throw new Error('reason is required');
       if (params.cronExpression === undefined && params.enabled === undefined) {
@@ -2482,6 +2549,8 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2516,7 +2585,28 @@ export async function handleBuilddAction(
             : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
           const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+
+          // goalCriteria + autoVerify + last evaluation state
+          const criteriaArr = Array.isArray(data.goalCriteria) ? data.goalCriteria : [];
+          let criteriaInfo = '';
+          if (criteriaArr.length > 0) {
+            const autoVerifyLabel = data.autoVerify === false ? 'manual-only' : 'auto';
+            criteriaInfo = `\nGoal criteria (${criteriaArr.length}, autoVerify=${autoVerifyLabel}):`;
+            const state = data.goalCriteriaState as Record<string, any> | null | undefined;
+            if (state?.criteria && state.criteria.length > 0) {
+              criteriaInfo += ` overall=${state.overall} (as of ${state.evaluatedAt})`;
+              criteriaInfo += '\n' + (state.criteria as any[]).map((c: any) =>
+                `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+              ).join('\n');
+            } else {
+              criteriaInfo += ' (not yet evaluated — use action=evaluate or action=get_criteria_state)';
+              criteriaInfo += '\n' + criteriaArr.map((c: any) =>
+                `  • ${c.label ?? c.type}`
+              ).join('\n');
+            }
+          }
+
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -2551,6 +2641,8 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
@@ -2589,8 +2681,28 @@ export async function handleBuilddAction(
           });
           return text(`Task ${params.taskId} unlinked from mission`);
         }
+        case 'evaluate': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}/evaluate`, { method: 'POST' });
+          if (data.message) return text(data.message);
+          const state = data.goalCriteriaState;
+          const criteriaLines = (state?.criteria ?? []).map((c: any) =>
+            `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+          ).join('\n');
+          return text(`Goal criteria evaluated — Overall: **${state?.overall ?? 'unknown'}**\n${criteriaLines}`);
+        }
+        case 'get_criteria_state': {
+          if (!params.missionId) throw new Error('missionId is required');
+          const data = await api(`/api/missions/${params.missionId}/evaluate`);
+          if (!data.goalCriteriaState) return text('No criteria evaluation on record for this mission.');
+          const state = data.goalCriteriaState;
+          const criteriaLines = (state.criteria ?? []).map((c: any) =>
+            `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+          ).join('\n');
+          return text(`Last evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${criteriaLines}`);
+        }
         default:
-          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task`);
+          throw new Error(`Unknown missions action: ${missionAction}. Use one of: list, create, get, update, arm, delete, link_task, unlink_task, evaluate, get_criteria_state`);
       }
     }
 
@@ -2629,6 +2741,8 @@ export async function handleBuilddAction(
           }
           if (params.status !== undefined) body.status = params.status;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
+          if (params.kpis !== undefined) body.kpis = params.kpis;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           const data = await api('/api/initiatives', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -2653,10 +2767,32 @@ export async function handleBuilddAction(
           const artifactList = (data.artifacts || []).map((a: any) =>
             `  - ${a.title} (${a.type}) — ${a.id}`
           ).join('\n');
+
+          // kpis + autoVerify + last KPI evaluation state
+          const kpisArr = Array.isArray(data.kpis) ? data.kpis : [];
+          let kpisInfo = '';
+          if (kpisArr.length > 0) {
+            const autoVerifyLabel = data.autoVerify === false ? 'manual-only' : 'auto';
+            kpisInfo = `\nKPIs (${kpisArr.length}, autoVerify=${autoVerifyLabel}):`;
+            const kpiState = data.kpiState as Record<string, any> | null | undefined;
+            if (kpiState?.kpis && kpiState.kpis.length > 0) {
+              kpisInfo += ` overall=${kpiState.overall} (as of ${kpiState.evaluatedAt})`;
+              kpisInfo += '\n' + (kpiState.kpis as any[]).map((k: any) =>
+                `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}${k.blocking === false ? ' [info]' : ''}`
+              ).join('\n');
+            } else {
+              kpisInfo += ' (not yet evaluated — use action=evaluate or action=get_kpi_state)';
+              kpisInfo += '\n' + kpisArr.map((k: any) =>
+                `  • ${k.name}${k.blocking === false ? ' [info]' : ' [blocking]'}`
+              ).join('\n');
+            }
+          }
+
           return text(
             `**${data.title}** [${data.status}]\nID: ${data.id}\n` +
             `Rollup: ${p.progress ?? 0}% — ${p.completedMissions ?? 0}/${p.totalMissions ?? 0} missions, ${p.completedTasks ?? 0}/${p.totalTasks ?? 0} tasks [${p.status ?? 'empty'}]\n` +
             `${data.description ? `Description: ${data.description}\n` : ''}` +
+            `${kpisInfo}` +
             `${missionList ? `\nMissions:\n${missionList}` : '\nNo missions yet.'}` +
             `${artifactList ? `\n\nInitiative artifacts:\n${artifactList}` : ''}`
           );
@@ -2673,6 +2809,8 @@ export async function handleBuilddAction(
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
           }
+          if (params.kpis !== undefined) body.kpis = params.kpis;
+          if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           const data = await api(`/api/initiatives/${params.initiativeId}`, {
             method: 'PATCH',
@@ -2708,8 +2846,28 @@ export async function handleBuilddAction(
           });
           return text(`Mission ${params.missionId} unlinked from its initiative`);
         }
+        case 'evaluate': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}/evaluate`, { method: 'POST' });
+          if (data.message) return text(data.message);
+          const state = data.kpiState;
+          const kpiLines = (state?.kpis ?? []).map((k: any) =>
+            `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}`
+          ).join('\n');
+          return text(`KPIs evaluated — Overall: **${state?.overall ?? 'unknown'}**\n${kpiLines}`);
+        }
+        case 'get_kpi_state': {
+          if (!params.initiativeId) throw new Error('initiativeId is required');
+          const data = await api(`/api/initiatives/${params.initiativeId}/evaluate`);
+          if (!data.kpiState) return text('No KPI evaluation on record for this initiative.');
+          const state = data.kpiState;
+          const kpiLines = (state.kpis ?? []).map((k: any) =>
+            `  • [${k.verdict}] ${k.name}${k.evidence ? ': ' + k.evidence : ''}${k.observedValue != null ? ` (observed: ${k.observedValue})` : ''}`
+          ).join('\n');
+          return text(`Last KPI evaluation: ${state.evaluatedAt} (by ${state.evaluatedBy})\nOverall: **${state.overall}**\n${kpiLines}`);
+        }
         default:
-          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission`);
+          throw new Error(`Unknown initiatives action: ${initiativeAction}. Use one of: list, create, get, update, delete, link_mission, unlink_mission, evaluate, get_kpi_state`);
       }
     }
 

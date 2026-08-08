@@ -348,6 +348,13 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
           .set({ tokenExpiresAt: null, healthStatus: 'revoked', lastVerificationError: detail, updatedAt: sql`NOW()` })
           .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
         await recordCredentialAuthFailure(secretId, detail);
+      } else {
+        // Transient failure (5xx, rate-limit, etc.): shorten the lock so the cron / claim
+        // gate can retry after ~15 minutes instead of waiting the full 60-minute window.
+        await db
+          .update(secrets)
+          .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+          .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
       }
       return 'error';
     }
@@ -382,6 +389,11 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
     return 'refreshed';
   } catch (err) {
     console.warn(`[Claude] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // Transient network error: shorten the lock so the credential can be retried sooner.
+    await db
+      .update(secrets)
+      .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
     return 'error';
   }
 }

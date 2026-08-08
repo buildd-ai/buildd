@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, formatNextRun } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionProgress } from '@/components/MissionProgress';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
@@ -25,13 +25,14 @@ import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
-import PriorityInlineEdit from './PriorityInlineEdit';
 import MissionBackendSelector from './MissionBackendSelector';
+import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
+import MissionGoalCriteria from './MissionGoalCriteria';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -235,7 +236,17 @@ export default async function MissionDetailPage({
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
-  const isManualMode = orchestrationMode === 'manual';
+  const isHeld = (mission as any).isHeld === true;
+
+  // Single derived display state for the header chip and CTA
+  const displayState = deriveMissionDisplayState({
+    status: mission.status,
+    isHeld,
+    orchestrationMode,
+    activeAgents,
+    health: healthState,
+  });
+  const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
   const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
   const driveNextRun = formatNextRun(detailNextScanMins, detailNextRunAt ? String(detailNextRunAt) : null);
@@ -509,7 +520,14 @@ export default async function MissionDetailPage({
           initialDescription={mission.description}
           healthPill={
             <span className="flex items-center gap-2 flex-wrap">
-              <MissionBadges mission={{ ...mission, lastDeferralReason: (mission.schedule as any)?.lastDeferralReason, lastDeferredAt: (mission.schedule as any)?.lastDeferredAt }} health={healthState} nextRun={driveNextRun} />
+              {/* Single derived-state chip — replaces the old multi-badge soup */}
+              <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${stateChip.cls}`}>
+                {stateChip.label}
+              </span>
+              {/* Next-run detail for auto missions with a schedule */}
+              {displayState === 'active' && driveNextRun.text && (
+                <span className="text-[10px] text-text-muted font-mono normal-case tracking-normal">{driveNextRun.text}</span>
+              )}
               {isHeartbeat && (
                 <HeartbeatStatusBadge
                   lastStatus={lastHeartbeatStatus}
@@ -533,12 +551,6 @@ export default async function MissionDetailPage({
             </span>
           }
         />
-
-        {/* Priority (inline edit) + default backend */}
-        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <PriorityInlineEdit missionId={id} initialPriority={mission.priority} />
-          <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-        </div>
 
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
@@ -697,12 +709,10 @@ export default async function MissionDetailPage({
           cronExpression={scheduleCron}
           workspaceId={mission.workspaceId}
           roles={roles}
-          schedule={mission.schedule ? {
-            nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
-            lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
-          } : null}
           hasSchedule={!!scheduleCron}
           orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+          isHeld={isHeld}
+          displayState={displayState}
         />
       </div>
 
@@ -721,9 +731,53 @@ export default async function MissionDetailPage({
       />
 
 
+      {/* ── Goal Criteria — shown when criteria are set (empty = no chrome) ── */}
+      {(() => {
+        const goalCriteria = (mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null;
+        const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
+        const autoVerify = (mission as any).autoVerify as boolean | null;
+        const criteria = goalCriteria ?? [];
+        const isTerminalMission = ['completed', 'archived'].includes(mission.status);
+        if (criteria.length === 0 && isTerminalMission) return null;
+        return (
+          <div className="mb-6">
+            <MissionGoalCriteria
+              missionId={id}
+              criteria={criteria}
+              criteriaState={goalCriteriaState}
+              autoVerify={autoVerify}
+              readonly={isTerminalMission}
+            />
+          </div>
+        );
+      })()}
+
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
         <MissionSecondaryPanel configSummary={configSummary}>
+          {/* Monitoring toggle — schedules only, moved from top-level chrome */}
+          {scheduleCron && !['completed', 'archived'].includes(mission.status) && (
+            <MissionMonitoringToggle
+              missionId={id}
+              initialStatus={mission.status}
+              hasSchedule={!!scheduleCron}
+              schedule={mission.schedule ? {
+                nextRunAt: (mission.schedule as any).nextRunAt?.toISOString?.() || (mission.schedule as any).nextRunAt || null,
+                lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
+              } : null}
+              orchestrationMode={orchestrationMode}
+            />
+          )}
+
+          {/* Backend selector — moved from top-level chrome */}
+          {!['completed', 'archived'].includes(mission.status) && (
+            <div>
+              <h2 className="section-label mb-2">Agent backend</h2>
+              <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
+              <p className="text-[11px] text-text-muted mt-1.5">Default engine for tasks spawned by this mission. Auto inherits the role or workspace default.</p>
+            </div>
+          )}
+
           {/* Evaluation Log — heartbeat missions only, secondary content */}
           {isHeartbeat && heartbeatTasks.length > 0 && (
             <HeartbeatTimeline
@@ -761,17 +815,20 @@ export default async function MissionDetailPage({
             />
           )}
 
-          {/* Configuration */}
+          {/* Configuration — flattened into Settings, one tap away */}
           {!['completed', 'archived'].includes(mission.status) && (
-            <MissionConfig
-              missionId={id}
-              workspaceId={mission.workspaceId}
-              model={configModel}
-              workspaces={teamWorkspaces}
-              maxConcurrentTasks={mission.maxConcurrentTasks}
-              activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
-              costBudgetUsd={costBudgetUsd}
-            />
+            <div className="card p-4">
+              <h2 className="section-label mb-4">Configuration</h2>
+              <MissionConfig
+                missionId={id}
+                workspaceId={mission.workspaceId}
+                model={configModel}
+                workspaces={teamWorkspaces}
+                maxConcurrentTasks={mission.maxConcurrentTasks}
+                activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
+                costBudgetUsd={costBudgetUsd}
+              />
+            </div>
           )}
 
           {/* Linear Phase 2 — read-back tracking (only when linked) */}
