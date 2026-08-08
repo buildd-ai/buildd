@@ -98,6 +98,8 @@ export interface MissionItem {
   initiativeId: string | null;
   initiativeName: string | null;
   priority: number;
+  goalCriteriaCount: number;
+  goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | null;
 }
 
 interface WorkspaceBucket {
@@ -532,6 +534,31 @@ function FilterTabBar({
   );
 }
 
+/* ── Verification pill — compact indicator for goal criteria state ── */
+function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | null }) {
+  if (criteriaCount === 0) return null;
+  if (overall === 'pass') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-success/40 text-status-success font-mono text-[10px] rounded-sm" title="All goal criteria verified">
+        ✓ Verified
+      </span>
+    );
+  }
+  if (overall === 'fail') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-error/40 text-status-error font-mono text-[10px] rounded-sm" title="Goal criteria not met">
+        ✗ Not met
+      </span>
+    );
+  }
+  // null or UNVERIFIED
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-warning/40 text-status-warning font-mono text-[10px] rounded-sm" title="Goal criteria set but not yet verified">
+      ? Needs verification
+    </span>
+  );
+}
+
 /* ── Arm button — releases a held mission ── */
 function ArmButton({ missionId }: { missionId: string }) {
   const router = useRouter();
@@ -644,6 +671,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               {mission.priority === 10 ? 'High' : 'Medium'}
             </span>
           )}
+          <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
@@ -798,6 +826,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
               {mission.priority === 10 ? 'High' : 'Medium'}
             </span>
           )}
+          <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
         {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
