@@ -120,6 +120,7 @@ export const workerActions = [
   'post_note',
   'list_schedules', 'trace_schedule',
   'get_task', 'get_task_messages',
+  'get_budget_forecast',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -199,6 +200,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
+    get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
@@ -235,6 +237,17 @@ export function buildMemoryDescription(actions: readonly string[]): string {
 // ── Buildd Action Handler ────────────────────────────────────────────────────
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
+
+function timeUntilFromIso(iso: string | null | undefined): string {
+  if (!iso) return 'unknown';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'now';
+  const h = Math.floor(ms / (60 * 60 * 1000));
+  if (h < 1) return `${Math.ceil(ms / 60000)}m`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
@@ -2337,6 +2350,60 @@ export async function handleBuilddAction(
       }).join('\n');
 
       return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
+    }
+
+    case 'get_budget_forecast': {
+      const wsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const endpoint = wsId
+        ? `/api/health/budget?workspaceId=${encodeURIComponent(wsId)}`
+        : '/api/health/budget';
+
+      const data = await api(endpoint);
+      const f = data?.forecast;
+      if (!f) return text('No budget forecast data available.');
+
+      const lines: string[] = [];
+
+      // OAuth session rows
+      for (const s of (f.oauthSessions ?? [])) {
+        if (s.state === 'learning') {
+          lines.push(`Claude session (${s.accountName}): learning — ${s.episodes} episode(s) recorded, need 3+ for estimates`);
+        } else {
+          const resetsIn = timeUntilFromIso(s.windowEndsAt);
+          lines.push(`Claude session (${s.accountName}): ${s.pressurePct}% used · resets in ${resetsIn} · confidence: ${s.confidence ?? 'low'}${s.limiter ? ` · binding: ${s.limiter}` : ''}`);
+        }
+      }
+
+      // Monthly dollar budget
+      if (f.monthly) {
+        const m = f.monthly;
+        const resetsIn = timeUntilFromIso(m.resetsAt);
+        let budgetLine = `Monthly budget: $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(0)} (${m.pctUsed}%) · resets in ${resetsIn}`;
+        if (m.daysToDepletion !== null) {
+          budgetLine += m.daysToDepletion < 1
+            ? ` · depletes in ${Math.round(m.daysToDepletion * 24)}h`
+            : ` · depletes in ${m.daysToDepletion.toFixed(1)}d`;
+        }
+        budgetLine += ` · confidence: ${m.confidence}`;
+        lines.push(budgetLine);
+      }
+
+      // Codex
+      if (f.codex?.isExhausted) {
+        const resetsIn = f.codex.resetsAt ? timeUntilFromIso(f.codex.resetsAt) : 'unknown';
+        lines.push(`Codex budget: exhausted · resets in ${resetsIn}`);
+      }
+
+      // Mission budgets
+      const missionRows: string[] = (f.missions ?? []).slice(0, 5).map((m: any) =>
+        `  Mission "${m.missionTitle}": $${m.spentUsd.toFixed(2)} / $${m.budgetUsd.toFixed(2)} (${m.pctUsed}%)${m.status === 'budget_exhausted' ? ' — exhausted' : ''}`
+      );
+      if (missionRows.length > 0) {
+        lines.push(`Mission budgets (by % used):\n${missionRows.join('\n')}`);
+      }
+
+      if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
+      return text(lines.join('\n'));
     }
 
     case 'suggest_schedule_update': {
