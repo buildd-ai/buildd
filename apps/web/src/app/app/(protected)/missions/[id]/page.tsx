@@ -32,6 +32,7 @@ import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
+import MissionGoalCriteria from './MissionGoalCriteria';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -729,6 +730,27 @@ export default async function MissionDetailPage({
         feedContent={<MissionFeed missionId={id} />}
       />
 
+
+      {/* ── Goal Criteria — shown when criteria are set (empty = no chrome) ── */}
+      {(() => {
+        const goalCriteria = (mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null;
+        const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
+        const autoVerify = (mission as any).autoVerify as boolean | null;
+        const criteria = goalCriteria ?? [];
+        const isTerminalMission = ['completed', 'archived'].includes(mission.status);
+        if (criteria.length === 0 && isTerminalMission) return null;
+        return (
+          <div className="mb-6">
+            <MissionGoalCriteria
+              missionId={id}
+              criteria={criteria}
+              criteriaState={goalCriteriaState}
+              autoVerify={autoVerify}
+              readonly={isTerminalMission}
+            />
+          </div>
+        );
+      })()}
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
