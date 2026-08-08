@@ -234,16 +234,22 @@ export async function resolveCodexCredential(opts: {
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     ),
-    columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true },
+    columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
   });
   if (rows.length === 0) return null;
+
+  // Skip permanently-dead credentials — revoked credentials cannot be recovered via
+  // refresh (the refresh_token family was invalidated by the provider). Filtering here
+  // prevents the claim route from handing a dead token to the runner.
+  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked');
+  if (liveRows.length === 0) return null;
 
   // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
   // Expired credentials are still returned — the claim gate attempts refresh before use.
-  const best = rows.reduce((a, b) => (score(b) > score(a) ? b : a));
+  const best = liveRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   const blob = decodeBlob(best.encryptedValue);
   const isApiKey = typeof blob.api_key === 'string' && blob.api_key.length > 0;
@@ -333,7 +339,7 @@ export async function getCodexSecretId(scope: CodexScope): Promise<string | null
   return row?.id ?? null;
 }
 
-export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
+export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error' | 'revoked';
 
 /**
  * Refresh the Codex OAuth tokens for one secret row (identified by id).
@@ -388,7 +394,37 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     });
 
     if (!res.ok) {
-      console.warn(`[Codex] Token refresh failed for secret ${secretId}: HTTP ${res.status}`);
+      let errorBody = '';
+      try {
+        const bodyJson = await res.json() as Record<string, unknown>;
+        const code = typeof bodyJson.error === 'string' ? bodyJson.error : '';
+        const desc = typeof bodyJson.error_description === 'string' ? bodyJson.error_description : '';
+        errorBody = [code, desc].filter(Boolean).join(': ');
+      } catch { /* ignore parse failure */ }
+      const detail = errorBody || `HTTP ${res.status}`;
+      console.warn(`[Codex] Token refresh failed for secret ${secretId}: ${detail}`);
+
+      if (res.status === 400 || res.status === 401) {
+        // 400/401 = permanent revocation (invalid_grant or session terminated by OpenAI).
+        // Mark healthStatus='revoked' immediately so resolveCodexCredential skips this
+        // credential and the claim route fails fast. Reset lastRefreshedAt so the cron
+        // does not hold a 60-minute lock on a dead credential.
+        await db
+          .update(secrets)
+          .set({ tokenExpiresAt: null, healthStatus: 'revoked', lastVerificationError: detail.slice(0, 500), lastRefreshedAt: null, updatedAt: sql`NOW()` })
+          .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+        await recordCredentialAuthFailure(secretId, detail);
+        return 'revoked';
+      }
+
+      // Transient failure (5xx, rate-limit, etc.): shorten the lock so the cron / claim
+      // gate can retry after ~15 minutes instead of waiting the full 60-minute window.
+      // The lock was stamped NOW() before the HTTP call; walking it back 45 minutes means
+      // the lock reopens at NOW() + 15 minutes.
+      await db
+        .update(secrets)
+        .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+        .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
       return 'error';
     }
 
@@ -427,6 +463,11 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     return 'refreshed';
   } catch (err) {
     console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // Transient network error: shorten the lock so the credential can be retried sooner.
+    await db
+      .update(secrets)
+      .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
     return 'error';
   }
 }
