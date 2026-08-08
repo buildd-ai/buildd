@@ -18,6 +18,7 @@ import { refreshCodexCredential } from '@/lib/codex-credential';
 import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess } from '@/lib/credential-health';
+import { notifyTeam } from '@/lib/notify';
 
 export const maxDuration = 60;
 
@@ -36,13 +37,16 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Codex credentials expiring within 1 hour ────────────────────────────────
+  // Skip revoked rows — invalid_grant permanently kills the refresh_token family.
+  // Retrying wastes calls and rotates no new token.
   const expiringCodex = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'codex_credential'),
       isNotNull(secrets.tokenExpiresAt),
       lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      ne(secrets.healthStatus, 'revoked'),
     ),
-    columns: { id: true },
+    columns: { id: true, teamId: true },
   });
 
   const codexResults: Record<string, string> = {};
@@ -50,6 +54,7 @@ export async function GET(req: NextRequest) {
   let codexLocked = 0;
   let codexErrors = 0;
   let codexNoCredential = 0;
+  let codexRevoked = 0;
 
   for (const cred of expiringCodex) {
     const outcome = await refreshCodexCredential(cred.id);
@@ -61,14 +66,25 @@ export async function GET(req: NextRequest) {
       codexLocked++;
     } else if (outcome === 'error') {
       codexErrors++;
-      await recordCredentialAuthFailure(cred.id, 'Codex token refresh failed');
+    } else if (outcome === 'revoked') {
+      // Provider permanently invalidated the refresh_token family (invalid_grant).
+      // refreshCodexCredential already marked healthStatus='revoked' in the DB.
+      // Alert the team immediately — this is a user-action-required event.
+      codexRevoked++;
+      void notifyTeam(cred.teamId, 'credentialExpired', {
+        title: 'Codex credential revoked — action required',
+        message: 'Your Codex (ChatGPT) OAuth session was revoked by OpenAI. Re-authenticate in Settings → Agent Backends to resume Codex tasks.',
+        url: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/settings`,
+        urlTitle: 'Open settings',
+        priority: 1,
+      });
     } else if (outcome === 'no_credential') {
       codexNoCredential++;
     }
   }
 
   console.log(
-    `[Cron] Codex token refresh: checked=${expiringCodex.length} refreshed=${codexRefreshed} locked=${codexLocked} errors=${codexErrors}`,
+    `[Cron] Codex token refresh: checked=${expiringCodex.length} refreshed=${codexRefreshed} locked=${codexLocked} errors=${codexErrors} revoked=${codexRevoked}`,
   );
 
   // ── Claude credentials (claude_credential) expiring within 1 hour ───────────
@@ -189,6 +205,7 @@ export async function GET(req: NextRequest) {
       refreshed: codexRefreshed,
       locked: codexLocked,
       errors: codexErrors,
+      revoked: codexRevoked,
       noCredential: codexNoCredential,
       secrets: codexResults,
     },

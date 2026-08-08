@@ -2052,15 +2052,14 @@ export async function POST(req: NextRequest) {
         // Resolve the most-specific credential: workspace > account > team-wide.
         let cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
         if (cred) {
-          // D: Claim-gate refresh. If an OAuth credential is expired, attempt a
-          // server-side refresh before sending it to the runner. A fresh token means
-          // the runner starts immediately; an unrecoverable failure causes the
-          // credential to be omitted, so the runner fast-fails with a clear error
-          // instead of burning ~5 min on codex-binary retries.
+          // D: Claim-gate refresh. Refresh an OAuth credential that is expired OR
+          // within 10 minutes of expiry, preventing the runner from starting with a
+          // token that will expire mid-session. Matching the Claude credential path.
+          const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
           if (
             cred.credentialType === 'oauth' &&
             cred.tokenExpiresAt &&
-            new Date(cred.tokenExpiresAt) < new Date()
+            new Date(cred.tokenExpiresAt) < tenMinutesFromNow
           ) {
             const secretId = await getCodexSecretId({ teamId, accountId: account.id, workspaceId: wsId });
             if (secretId) {
@@ -2070,10 +2069,10 @@ export async function POST(req: NextRequest) {
                 const refreshed = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
                 if (refreshed) cred = refreshed;
                 console.log(`[claim] Codex credential refreshed at claim time for workspace ${wsId}`);
-              } else if (refreshResult === 'error') {
-                // Refresh failed (e.g. refresh_token itself expired) — omit the
-                // credential so the worker errors immediately with a clear message.
-                console.warn(`[claim] Codex credential refresh failed for workspace ${wsId} — omitting credential`);
+              } else if (refreshResult === 'error' || refreshResult === 'revoked') {
+                // Refresh failed — omit the credential so the worker errors
+                // immediately with a clear message instead of using a stale token.
+                console.warn(`[claim] Codex credential refresh ${refreshResult} for workspace ${wsId} — omitting credential`);
                 cred = null;
               }
               // 'locked' means another refresh is in progress — proceed with the
