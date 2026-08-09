@@ -86,7 +86,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
   }, [showAdvanced, modelsFetched]);
 
   const isExactPin = !KNOWN_TIERS.has(normalized);
-  const isStalePin = isExactPin && modelsFetched && !models.some(m => m.id === normalized);
+  const isStalePin = modelsFetched && detectStalePin(value, models.map(m => m.id));
 
   return (
     <div className="space-y-1.5">
@@ -136,6 +136,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
       {/* Advanced expander toggle */}
       <button
         type="button"
+        disabled={disabled}
         onClick={() => setShowAdvanced(!showAdvanced)}
         className="flex items-center gap-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
         data-testid="advanced-toggle"
