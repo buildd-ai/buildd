@@ -59,11 +59,11 @@ export async function GET(req: NextRequest) {
 
     const results = await db.query.missions.findMany({
       where,
-      orderBy: [desc(missions.priority), desc(missions.createdAt)],
+      orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, status: true, kind: true, title: true, creationSource: true },
+          columns: { id: true, status: true, kind: true, title: true, creationSource: true, updatedAt: true },
           with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
@@ -79,6 +79,16 @@ export async function GET(req: NextRequest) {
       const nextRunAt = (mission as any).schedule?.nextRunAt ?? null;
       const lastDeferralReason = (mission as any).schedule?.lastDeferralReason ?? null;
       const lastDeferredAt = (mission as any).schedule?.lastDeferredAt ?? null;
+
+      // lastActivityAt: most recent task update or lastTaskStartedAt — whichever is newer
+      const taskTimes = (mission.tasks || []).map(t => (t as any).updatedAt ? new Date((t as any).updatedAt).getTime() : 0);
+      const lastTaskStartedMs = mission.lastTaskStartedAt ? new Date(mission.lastTaskStartedAt).getTime() : 0;
+      const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
+      const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
+      // completedAt: proxy via updatedAt when status is completed/archived
+      const completedStatuses = ['completed', 'archived', 'budget_exhausted'];
+      const completedAt = completedStatuses.includes(mission.status) ? mission.updatedAt.toISOString() : null;
+
       return {
         ...mission,
         totalTasks,
@@ -91,6 +101,10 @@ export async function GET(req: NextRequest) {
         nextRunAt,
         lastDeferralReason,
         lastDeferredAt,
+        lastActivityAt,
+        completedAt,
+        createdAt: mission.createdAt.toISOString(),
+        updatedAt: mission.updatedAt.toISOString(),
       };
     });
 

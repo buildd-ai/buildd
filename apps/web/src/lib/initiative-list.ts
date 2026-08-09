@@ -28,6 +28,8 @@ export interface InitiativeListItem {
   segments: MissionSegment[];
   /** ISO string of the most recent child-mission update, or null if no missions. */
   lastMotionAt: string | null;
+  /** ISO string of when this initiative was created. */
+  createdAt: string;
   hasLinearLink: boolean;
 }
 
@@ -59,6 +61,7 @@ export async function loadInitiativeList(opts: {
   const results = await db.query.initiatives.findMany({
     where,
     orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    columns: { id: true, title: true, description: true, status: true, priority: true, workspaceId: true, createdAt: true },
     with: {
       workspace: { columns: { id: true, name: true } },
       missions: {
@@ -117,6 +120,7 @@ export async function loadInitiativeList(opts: {
       progress,
       segments,
       lastMotionAt,
+      createdAt: initiative.createdAt.toISOString(),
       hasLinearLink,
     };
   });

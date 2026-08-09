@@ -144,9 +144,9 @@ export default async function MissionsPage({
 
   const allMissions = await db.query.missions.findMany({
     where: missionsWhere,
-    orderBy: [desc(missions.priority), desc(missions.createdAt)],
+    orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       initiative: { columns: { id: true, title: true } },
@@ -241,6 +241,12 @@ export default async function MissionsPage({
       : null;
     const effectivePolicyLabel = effectivePolicy ? (POLICY_TIER_LABEL[effectivePolicy.tier] ?? effectivePolicy.tier) : null;
 
+    // lastActivityAt: most recent task update or lastTaskStartedAt
+    const taskTimes = (obj.tasks || []).map(t => t.updatedAt ? new Date(t.updatedAt as any).getTime() : 0);
+    const lastTaskStartedMs = (obj as any).lastTaskStartedAt ? new Date((obj as any).lastTaskStartedAt).getTime() : 0;
+    const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
+    const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -255,6 +261,8 @@ export default async function MissionsPage({
       nextRunAt: nextRunAt ? String(nextRunAt) : null,
       startAt: obj.startAt ? String(obj.startAt) : null,
       lastRunAt: lastRunAt ? String(lastRunAt) : null,
+      lastActivityAt,
+      createdAt: (obj as any).createdAt ? new Date((obj as any).createdAt).toISOString() : null,
       teamName: teamNameMap.get(obj.teamId) || null,
       role: null as { name: string; color: string } | null,
       lastDeferralReason,
@@ -285,6 +293,18 @@ export default async function MissionsPage({
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
       goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | null,
     };
+  });
+
+  // Sort: active/in-flight missions first by lastActivityAt desc, then completed
+  missionsList.sort((a, b) => {
+    const aGroup = healthToGroup(a.health, a.progress);
+    const bGroup = healthToGroup(b.health, b.progress);
+    const aIsCompleted = aGroup === 'completed';
+    const bIsCompleted = bGroup === 'completed';
+    if (aIsCompleted !== bIsCompleted) return aIsCompleted ? 1 : -1;
+    const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
+    const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
+    return bTime - aTime;
   });
 
   // Build initiative title index from the raw query results (O(n) lookup later).
