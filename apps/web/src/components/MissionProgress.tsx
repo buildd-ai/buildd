@@ -13,9 +13,14 @@ export function MissionBadges({ mission, health, nextRun, isReviewReady }: { mis
       </div>
     );
   }
-  const drive = getDrivePresentation(deriveDriveState(mission), nextRun as any);
+  const driveState = deriveDriveState(mission);
+  const drive = getDrivePresentation(driveState, nextRun as any);
   const driveTone = drive.tone === 'warning' ? 'border-status-warning text-status-warning' : drive.tone === 'info' ? 'border-status-info text-status-info' : 'border-border-default text-text-muted';
-  return <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"><span className={`shrink-0 border px-1.5 py-0.5 ${driveTone}`}>{drive.label}</span>{drive.detail && <span className="min-w-0 normal-case tracking-normal text-text-muted">{drive.detail}</span>}{health !== 'NOMINAL' && <span className={`shrink-0 border px-1.5 py-0.5 ${healthTone[health]}`}>{health}</span>}</div>;
+  // When the mission is COMPLETE, health issues (e.g. failed tasks) are historical
+  // noise — render a small warning icon rather than a peer badge that implies two
+  // simultaneous states ("COMPLETE" and "FAILING" side-by-side is contradictory).
+  const isComplete = driveState === 'COMPLETE';
+  return <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"><span className={`shrink-0 border px-1.5 py-0.5 ${driveTone}`}>{drive.label}</span>{drive.detail && <span className="min-w-0 normal-case tracking-normal text-text-muted">{drive.detail}</span>}{health !== 'NOMINAL' && !isComplete && <span className={`shrink-0 border px-1.5 py-0.5 ${healthTone[health]}`}>{health}</span>}{health !== 'NOMINAL' && isComplete && <span className="shrink-0 text-status-warning" title={`${health} — some tasks ended with issues`}>⚠</span>}</div>;
 }
 
 export function MissionProgress({ missionId, segments, completedTasks, totalTasks, inFlightTasks = [] }: { missionId: string; segments: MissionSegment[]; completedTasks: number; totalTasks: number; inFlightTasks?: InFlightTask[] }) {

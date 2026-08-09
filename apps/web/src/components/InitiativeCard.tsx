@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { SegmentStrip } from './SegmentStrip';
-import { initiativeStatusChip, motionLabel } from '@/lib/initiative-presentation';
+import { initiativeStatusChip, motionLabel, deriveInitiativeDisplayStatus } from '@/lib/initiative-presentation';
 import type { InitiativeListItem } from '@/lib/initiative-list';
 
 /**
@@ -16,8 +16,9 @@ const RECENCY_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default function InitiativeCard({ initiative }: { initiative: InitiativeListItem }) {
   const { progress, segments } = initiative;
-  const chip = initiativeStatusChip(progress.status);
-  const isActive = progress.status === 'active';
+  const displayStatus = deriveInitiativeDisplayStatus({ status: initiative.status, rollupStatus: progress.status });
+  const chip = initiativeStatusChip(displayStatus);
+  const isActive = displayStatus === 'active' || displayStatus === 'blocked';
   const hasProgress = progress.progress > 0;
   const showNewBadge = Date.now() - new Date(initiative.createdAt).getTime() < RECENCY_BADGE_MS;
 

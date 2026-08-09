@@ -159,7 +159,6 @@ export default async function InitiativeDetailPage({
         )}
         <div className="flex items-center gap-3 mb-1.5 flex-wrap">
           <span className="text-sm font-medium text-text-primary">{rollup.progress}%</span>
-          <span className="text-[12px] text-text-muted capitalize">{rollup.status}</span>
           <span className="text-[12px] text-text-muted">
             {rollup.completedMissions}/{rollup.totalMissions} missions · {rollup.completedTasks}/{rollup.totalTasks} tasks
           </span>
