@@ -130,7 +130,7 @@ export function deriveHealth(
  * for the mission detail page header chip and state-driven CTA.
  * Priority: complete > held > running > failed > manual > active.
  */
-export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active';
+export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review';
 
 export function deriveMissionDisplayState(opts: {
   status: string;
@@ -138,23 +138,27 @@ export function deriveMissionDisplayState(opts: {
   orchestrationMode?: string | null;
   activeAgents: number;
   health: Health;
+  /** Pass the computed 0-100 progress to unlock the 'review' state. */
+  progress?: number;
 }): MissionDisplayState {
   if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
   if (opts.isHeld) return 'held';
   if (opts.activeAgents > 0) return 'running';
   if (opts.health === 'FAILING') return 'failed';
+  if (opts.progress !== undefined && opts.progress >= 100) return 'review';
   if (opts.orchestrationMode === 'manual') return 'manual';
   return 'active';
 }
 
 export function getMissionStateChip(state: MissionDisplayState): { label: string; cls: string } {
   switch (state) {
-    case 'held':    return { label: 'HELD',     cls: 'border-status-warning text-status-warning' };
-    case 'running': return { label: 'RUNNING',  cls: 'border-status-success text-status-success' };
-    case 'failed':  return { label: 'FAILED',   cls: 'border-status-error text-status-error' };
-    case 'manual':  return { label: 'MANUAL',   cls: 'border-border-default text-text-muted' };
-    case 'complete':return { label: 'COMPLETE', cls: 'border-border-default text-text-muted' };
-    case 'active':  return { label: 'AUTO',     cls: 'border-status-info text-status-info' };
+    case 'held':    return { label: 'HELD',             cls: 'border-status-warning text-status-warning' };
+    case 'running': return { label: 'RUNNING',          cls: 'border-status-success text-status-success' };
+    case 'failed':  return { label: 'FAILED',           cls: 'border-status-error text-status-error' };
+    case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };
+    case 'manual':  return { label: 'MANUAL',           cls: 'border-border-default text-text-muted' };
+    case 'complete':return { label: 'COMPLETE',         cls: 'border-border-default text-text-muted' };
+    case 'active':  return { label: 'AUTO',             cls: 'border-status-info text-status-info' };
   }
 }
 
@@ -179,7 +183,7 @@ export const GROUP_ACCENT_CLASS: Record<MissionGroup, string> = {
   completed: 'mission-card-completed',
 };
 
-export const GROUP_ORDER: MissionGroup[] = ['running', 'attention', 'review', 'scheduled', 'paused', 'completed'];
+export const GROUP_ORDER: MissionGroup[] = ['review', 'running', 'attention', 'scheduled', 'paused', 'completed'];
 
 export const FILTER_TO_GROUPS: Record<FilterTab, MissionGroup[] | null> = {
   all: null,

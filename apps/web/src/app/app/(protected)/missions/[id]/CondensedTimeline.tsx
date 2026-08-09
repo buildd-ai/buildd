@@ -1,13 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import TaskCard from '@/components/TaskCard';
 import ExternalLink from '@/components/ExternalLink';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
-import { StatusChip } from '@/components/StatusChip';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import type { MergePolicyTier } from '@buildd/shared';
@@ -59,41 +58,59 @@ export type CondensedTimelineProps = {
   missionCompleted: boolean;
 };
 
-// ─── Gate chip — I-11: animate-collapse when mergedAt is stamped ─────────────
+// ─── PR status line — single PR reference for open-PR rows ──────────────────
+//
+// Replaces the old top-right TaskCard link AND WaitingOnYouMergeCTA.
+// Shown for: waitingOnYou tasks (with Merge CTA) + running tasks that have a PR.
+// Not shown for escalated tasks (their verdict card already carries the PR link).
 
-function GateChip({
-  mergedAt,
-  policyTier,
-  waitingMinutes,
+const PR_STATUS: Record<string, { label: string; cls: string }> = {
+  ci_running: { label: 'CI…',       cls: 'text-status-info' },
+  ci_failed:  { label: 'CI ✗',      cls: 'text-status-error' },
+  conflict:   { label: 'conflict',  cls: 'text-status-warning' },
+  pr_open:    { label: 'open',      cls: 'text-accent-text' },
+};
+
+function PrStatusLine({
+  task,
+  effectivePolicyTier,
 }: {
-  mergedAt: string | null;
-  policyTier: MergePolicyTier;
-  waitingMinutes: number;
+  task: CondensedTimelineTask;
+  effectivePolicyTier: MergePolicyTier;
 }) {
-  const [visible, setVisible] = useState(!mergedAt);
-  const [collapsing, setCollapsing] = useState(false);
+  const lw = task.latestWorker;
+  if (!lw?.prUrl || !lw.prNumber) return null;
 
-  useEffect(() => {
-    if (!mergedAt || !visible || collapsing) return;
-    setCollapsing(true);
-    const t = setTimeout(() => setVisible(false), 200);
-    return () => clearTimeout(t);
-  }, [mergedAt, visible, collapsing]);
+  const isMerged = !!lw.mergedAt || lw.prLifecycleStatus === 'merged';
+  const isClosed = lw.prLifecycleStatus === 'closed';
+  // Terminal PRs are shown inline in TaskCard; nothing to render here
+  if (isMerged || isClosed) return null;
 
-  if (!visible) return null;
+  const isWaitingMerge = task.status === 'completed';
+  const statusEntry = lw.prLifecycleStatus ? PR_STATUS[lw.prLifecycleStatus] : null;
+  const statusWord = isWaitingMerge && !statusEntry ? 'ready to merge' : (statusEntry?.label ?? 'open');
+  const statusCls  = isWaitingMerge && !statusEntry ? 'text-accent-text' : (statusEntry?.cls ?? 'text-accent-text');
 
   return (
-    <div
-      className="overflow-hidden transition-all duration-200 ease-out"
-      style={{ maxHeight: collapsing ? '0' : '40px', opacity: collapsing ? 0 : 1 }}
-    >
-      <div className="px-2 pb-1">
-        <StatusChip
-          policyTier={policyTier}
-          waitingMinutes={waitingMinutes}
-          className="hidden sm:inline-flex"
+    <div className="pl-7 pb-0.5 flex items-center gap-2 flex-wrap">
+      <a
+        href={lw.prUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-mono text-[10px] text-accent-text hover:underline"
+      >
+        #{lw.prNumber}
+      </a>
+      <span className="text-[10px] text-text-muted">·</span>
+      <span className={`text-[10px] ${statusCls}`}>{statusWord}</span>
+      {isWaitingMerge && (
+        <MergeConfirmButton
+          prNumber={lw.prNumber}
+          prUrl={lw.prUrl}
+          disabled={effectivePolicyTier === 'agent-review' && !task.reviewerNote}
+          disabledReason="Awaiting agent review"
         />
-      </div>
+      )}
     </div>
   );
 }
@@ -132,6 +149,15 @@ function TaskRow({
       ? 'blocked-task'
       : 'running-task';
 
+  // Show PrStatusLine for tasks with an open PR, except when the reviewer escalated
+  // card already carries the PR reference + Merge button.
+  const showPrLine = !!latestWorker?.prUrl &&
+    !!latestWorker.prNumber &&
+    latestWorker.prLifecycleStatus !== 'merged' &&
+    !latestWorker.mergedAt &&
+    latestWorker.prLifecycleStatus !== 'closed' &&
+    task.reviewerNote?.type !== 'reviewer_escalated';
+
   return (
     <div className="animate-timeline-enter">
       <div
@@ -152,7 +178,6 @@ function TaskRow({
           prUrl={latestWorker?.prUrl ?? null}
           className="flex-1 min-w-0"
         >
-        <div>
           <TaskCard
             density="inline"
             id={task.id}
@@ -169,23 +194,13 @@ function TaskRow({
             prLifecycleStatus={latestWorker?.prLifecycleStatus ?? null}
             currentAction={latestWorker?.currentAction ?? null}
           />
-          {/* BT-14 / I-11: awaiting-merge gate chip — collapses (200ms) when mergedAt is stamped */}
-          {task.status === 'completed' &&
-            latestWorker?.prUrl &&
-            latestWorker.prLifecycleStatus !== 'closed' && (
-              <GateChip
-                mergedAt={latestWorker.mergedAt ?? null}
-                policyTier={effectivePolicyTier}
-                waitingMinutes={
-                  latestWorker.completedAt
-                    ? Math.floor((Date.now() - new Date(latestWorker.completedAt).getTime()) / 60000)
-                    : 0
-                }
-              />
-            )}
-        </div>
         </SwipeableRow>
       </div>
+
+      {/* PR status line — single reference for open PRs (replaces GateChip + WaitingOnYouMergeCTA) */}
+      {showPrLine && (
+        <PrStatusLine task={task} effectivePolicyTier={effectivePolicyTier} />
+      )}
 
       {/* Failed task retry */}
       {isFailed && (
@@ -214,7 +229,7 @@ function TaskRow({
 
         if (note.type === 'reviewer_approved') {
           const confidence = note.title.match(/\(confidence ([\d.]+)\)/)?.[1];
-          const isMerged = !!lw?.mergedAt;
+          const isMerged = !!lw?.mergedAt || lw?.prLifecycleStatus === 'merged';
           return (
             <div className="pl-7 pb-1 mt-1">
               <div className="bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
@@ -277,8 +292,11 @@ function TaskRow({
                       PR #{lw.prNumber} ↗
                     </ExternalLink>
                   )}
-                  {lw?.prNumber && !lw.mergedAt && lw.prLifecycleStatus !== 'closed' && (
+                  {lw?.prNumber && !lw.mergedAt && lw.prLifecycleStatus !== 'closed' && lw.prLifecycleStatus !== 'merged' && (
                     <MergeConfirmButton prNumber={lw.prNumber} prUrl={lw.prUrl ?? ''} />
+                  )}
+                  {(lw?.mergedAt || lw?.prLifecycleStatus === 'merged') && (
+                    <span className="text-[11px] text-status-success">merged</span>
                   )}
                   {lw?.prLifecycleStatus === 'closed' && (
                     <span className="text-[11px] text-text-muted">
@@ -307,55 +325,21 @@ function TaskRow({
   );
 }
 
-// ─── Merge CTA for waiting-on-you tasks ───────────────────────────────────────
-
-function WaitingOnYouMergeCTA({
-  task,
-  effectivePolicyTier,
-}: {
-  task: CondensedTimelineTask;
-  effectivePolicyTier: string;
-}) {
-  const lw = task.latestWorker;
-  if (!lw?.prUrl || lw.mergedAt || lw.prLifecycleStatus === 'closed') return null;
-  return (
-    <div className="pl-5 pb-1 flex items-center gap-2">
-      <ExternalLink href={lw.prUrl} className="text-[11px] text-accent-text hover:underline">
-        PR #{lw.prNumber} ↗
-      </ExternalLink>
-      {lw.prNumber && (
-        <MergeConfirmButton
-          prNumber={lw.prNumber}
-          prUrl={lw.prUrl}
-          className="shrink-0"
-          disabled={effectivePolicyTier === 'agent-review' && !task.reviewerNote}
-          disabledReason="Awaiting agent review"
-        />
-      )}
-    </div>
-  );
-}
-
 // ─── Task list within a section ───────────────────────────────────────────────
 
 function TaskList({
   tasks,
   effectivePolicyTier,
   policyLabel,
-  showMergeCta = false,
 }: {
   tasks: CondensedTimelineTask[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
-  showMergeCta?: boolean;
 }) {
   return (
     <div className="space-y-0.5">
       {tasks.map(task => (
-        <div key={task.id}>
-          <TaskRow task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
-          {showMergeCta && <WaitingOnYouMergeCTA task={task} effectivePolicyTier={effectivePolicyTier} />}
-        </div>
+        <TaskRow key={task.id} task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
       ))}
     </div>
   );
@@ -432,7 +416,6 @@ export default function CondensedTimeline({
               tasks={waitingOnYou}
               effectivePolicyTier={effectivePolicyTier}
               policyLabel={policyLabel}
-              showMergeCta
             />
           </div>
         )}
