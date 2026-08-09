@@ -456,6 +456,8 @@ export interface TaskResult {
   nextSuggestion?: string;
   phases?: Array<{ label: string; toolCount: number }>;
   lastQuestion?: string;
+  /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
+  reaperAutoCompleted?: boolean;
 }
 
 // Per-model token usage from SDK result

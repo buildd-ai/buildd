@@ -362,6 +362,8 @@ export interface TaskResult {
   structuredOutput?: Record<string, unknown>;
   mcpServers?: string[];
   nextSuggestion?: string;
+  /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
+  reaperAutoCompleted?: boolean;
 }
 
 /**
