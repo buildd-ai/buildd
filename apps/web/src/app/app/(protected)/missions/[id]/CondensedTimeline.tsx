@@ -169,10 +169,12 @@ function TaskRow({
             prLifecycleStatus={latestWorker?.prLifecycleStatus ?? null}
             currentAction={latestWorker?.currentAction ?? null}
           />
-          {/* BT-14 / I-11: awaiting-merge gate chip — collapses (200ms) when mergedAt is stamped */}
+          {/* BT-14 / I-11: awaiting-merge gate chip — only while PR is live (not merged/closed) */}
           {task.status === 'completed' &&
             latestWorker?.prUrl &&
-            latestWorker.prLifecycleStatus !== 'closed' && (
+            !latestWorker.mergedAt &&
+            latestWorker.prLifecycleStatus !== 'closed' &&
+            latestWorker.prLifecycleStatus !== 'merged' && (
               <GateChip
                 mergedAt={latestWorker.mergedAt ?? null}
                 policyTier={effectivePolicyTier}
@@ -214,7 +216,7 @@ function TaskRow({
 
         if (note.type === 'reviewer_approved') {
           const confidence = note.title.match(/\(confidence ([\d.]+)\)/)?.[1];
-          const isMerged = !!lw?.mergedAt;
+          const isMerged = !!lw?.mergedAt || lw?.prLifecycleStatus === 'merged';
           return (
             <div className="pl-7 pb-1 mt-1">
               <div className="bg-status-success/5 border border-status-success/20 rounded px-2.5 py-1.5">
@@ -277,8 +279,11 @@ function TaskRow({
                       PR #{lw.prNumber} ↗
                     </ExternalLink>
                   )}
-                  {lw?.prNumber && !lw.mergedAt && lw.prLifecycleStatus !== 'closed' && (
+                  {lw?.prNumber && !lw.mergedAt && lw.prLifecycleStatus !== 'closed' && lw.prLifecycleStatus !== 'merged' && (
                     <MergeConfirmButton prNumber={lw.prNumber} prUrl={lw.prUrl ?? ''} />
+                  )}
+                  {(lw?.mergedAt || lw?.prLifecycleStatus === 'merged') && (
+                    <span className="text-[11px] text-status-success">merged</span>
                   )}
                   {lw?.prLifecycleStatus === 'closed' && (
                     <span className="text-[11px] text-text-muted">
@@ -317,7 +322,8 @@ function WaitingOnYouMergeCTA({
   effectivePolicyTier: string;
 }) {
   const lw = task.latestWorker;
-  if (!lw?.prUrl || lw.mergedAt || lw.prLifecycleStatus === 'closed') return null;
+  const isMerged = !!lw?.mergedAt || lw?.prLifecycleStatus === 'merged';
+  if (!lw?.prUrl || isMerged || lw.prLifecycleStatus === 'closed') return null;
   return (
     <div className="pl-5 pb-1 flex items-center gap-2">
       <ExternalLink href={lw.prUrl} className="text-[11px] text-accent-text hover:underline">
