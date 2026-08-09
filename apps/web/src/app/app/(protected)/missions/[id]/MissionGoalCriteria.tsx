@@ -18,6 +18,7 @@ const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
   artifact_exists: 'Artifact exists',
   command: 'Command',
   metric: 'Metric',
+  description: 'Description',
 };
 
 const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; icon: string }> = {
@@ -44,6 +45,7 @@ function criterionLabel(c: GoalCriterion): string {
   if (c.type === 'metric') return `${c.query} ${c.operator} ${c.threshold}${c.unit ? ' ' + c.unit : ''}`;
   if (c.type === 'command') return c.command.length > 60 ? c.command.slice(0, 60) + '…' : c.command;
   if (c.type === 'artifact_exists') return c.key ? `Artifact: ${c.key}` : `Artifact type: ${c.artifactType ?? 'any'}`;
+  if (c.type === 'description') return c.description.length > 80 ? c.description.slice(0, 80) + '…' : c.description;
   return CRITERION_TYPE_LABELS[c.type] ?? c.type;
 }
 
@@ -64,6 +66,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
   const [metricThreshold, setMetricThreshold] = useState('');
   const [metricUnit, setMetricUnit] = useState('');
   const [requireBranchDeleted, setRequireBranchDeleted] = useState(false);
+  const [description, setDescription] = useState('');
 
   function buildCriterion(): GoalCriterion | null {
     const base = label ? { label } : {};
@@ -80,6 +83,10 @@ function AddCriterionForm({ onAdd, onCancel }: {
       const t = parseFloat(metricThreshold);
       if (!metricQuery.trim() || isNaN(t)) return null;
       return { type, query: metricQuery.trim(), operator: metricOp, threshold: t, unit: metricUnit || undefined, ...base };
+    }
+    if (type === 'description') {
+      if (!description.trim()) return null;
+      return { type, description: description.trim(), ...base };
     }
     return null;
   }
@@ -104,8 +111,23 @@ function AddCriterionForm({ onAdd, onCancel }: {
           <option value="artifact_exists">Artifact exists</option>
           <option value="command">Command passes</option>
           <option value="metric">Metric threshold</option>
+          <option value="description">Description (LLM-evaluated)</option>
         </select>
       </div>
+
+      {type === 'description' && (
+        <div className="flex items-start gap-2">
+          <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
+          <textarea
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
+            rows={2}
+            className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+            required
+          />
+        </div>
+      )}
 
       {type === 'command' && (
         <div className="flex items-start gap-2">
@@ -410,6 +432,15 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                     <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
                       {cs.evidence}
                     </p>
+                  )}
+                  {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {cs.evidenceRefs.map((ref, ri) => (
+                        <span key={ri} className="text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                          {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
                 {/* Expand chevron + remove button */}
