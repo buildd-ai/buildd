@@ -189,8 +189,40 @@ export default function MissionSettings({
             </button>
           )}
 
-          {/* Manual + not held: Run now is the primary action */}
-          {!isHeld && orchestrationMode === 'manual' && workspaceId && (
+          {/* Review-ready: Complete mission is the primary action */}
+          {!isHeld && displayState === 'review' && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => handleStatusChange('completed')}
+                disabled={statusLoading}
+                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+              >
+                {statusLoading ? (
+                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                )}
+                {statusLoading ? 'Completing…' : 'Complete mission'}
+              </button>
+              {workspaceId && (
+                <button
+                  onClick={handleManualRun}
+                  disabled={manualRunLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                >
+                  {manualRunLoading ? 'Running…' : 'Send back · re-run'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Manual + not held + not review-ready: Run now is the primary action */}
+          {!isHeld && displayState !== 'review' && orchestrationMode === 'manual' && workspaceId && (
             <button
               onClick={handleManualRun}
               disabled={manualRunLoading}
@@ -210,8 +242,8 @@ export default function MissionSettings({
             </button>
           )}
 
-          {/* Auto + not held: Run now is available but secondary */}
-          {!isHeld && orchestrationMode === 'auto' && workspaceId && (
+          {/* Auto + not held + not review-ready: Run now is available but secondary */}
+          {!isHeld && displayState !== 'review' && orchestrationMode === 'auto' && workspaceId && (
             <button
               onClick={handleManualRun}
               disabled={manualRunLoading}
@@ -227,7 +259,7 @@ export default function MissionSettings({
           {/* ── Secondary actions row ── */}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Arm/Disarm toggle — text link, not prominent */}
-            {!isHeld && (
+            {!isHeld && displayState !== 'review' && (
               <button
                 onClick={handleToggleOrchestrationMode}
                 disabled={modeLoading}
@@ -238,7 +270,7 @@ export default function MissionSettings({
               </button>
             )}
 
-            {!isHeld && <span className="h-3 border-r border-card-border" />}
+            {!isHeld && displayState !== 'review' && <span className="h-3 border-r border-card-border" />}
 
             {/* Schedule editor */}
             {!editingCron && (
@@ -252,16 +284,19 @@ export default function MissionSettings({
 
             <span className="h-3 border-r border-card-border" />
 
-            {/* Complete */}
-            <button
-              onClick={() => handleStatusChange('completed')}
-              disabled={statusLoading}
-              className="text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
-            >
-              Complete
-            </button>
-
-            <span className="h-3 border-r border-card-border" />
+            {/* Complete — hidden when review-ready (it's the primary CTA there) */}
+            {displayState !== 'review' && (
+              <>
+                <button
+                  onClick={() => handleStatusChange('completed')}
+                  disabled={statusLoading}
+                  className="text-[11px] text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
+                >
+                  Complete
+                </button>
+                <span className="h-3 border-r border-card-border" />
+              </>
+            )}
 
             {/* Delete */}
             {!deleteConfirm ? (

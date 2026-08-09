@@ -8,6 +8,8 @@ import {
   selectInFlightTasks,
   computeGateChipMaxWaitMins,
   formatWaitDuration,
+  deriveMissionDisplayState,
+  getMissionStateChip,
   FILTER_TO_GROUPS,
   GROUP_ORDER,
   HEALTH_DISPLAY,
@@ -16,6 +18,7 @@ import {
   type FilterTab,
   type DriveState,
   type Health,
+  type MissionDisplayState,
 } from './mission-helpers';
 
 describe('healthToGroup — status taxonomy', () => {
@@ -424,6 +427,89 @@ describe('computeGateChipMaxWaitMins — gate chip waiting time', () => {
   it('accepts Date objects as completedAt', () => {
     const completedAt = new Date(NOW - 90 * 60 * 1000);
     expect(computeGateChipMaxWaitMins([{ completedAt }], NOW)).toBe(90);
+  });
+});
+
+describe('deriveMissionDisplayState', () => {
+  const base = {
+    status: 'active',
+    isHeld: false,
+    orchestrationMode: 'auto' as string,
+    activeAgents: 0,
+    health: 'NOMINAL' as Health,
+  };
+
+  it('complete when status is completed', () => {
+    expect(deriveMissionDisplayState({ ...base, status: 'completed' })).toBe<MissionDisplayState>('complete');
+  });
+
+  it('complete when status is archived', () => {
+    expect(deriveMissionDisplayState({ ...base, status: 'archived' })).toBe<MissionDisplayState>('complete');
+  });
+
+  it('held when isHeld (even with active agents)', () => {
+    expect(deriveMissionDisplayState({ ...base, isHeld: true, activeAgents: 2 })).toBe<MissionDisplayState>('held');
+  });
+
+  it('running when activeAgents > 0 and not held', () => {
+    expect(deriveMissionDisplayState({ ...base, activeAgents: 3 })).toBe<MissionDisplayState>('running');
+  });
+
+  it('failed when health is FAILING and no active agents', () => {
+    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health })).toBe<MissionDisplayState>('failed');
+  });
+
+  it('review when progress is 100 and no higher-priority condition applies', () => {
+    expect(deriveMissionDisplayState({ ...base, progress: 100 })).toBe<MissionDisplayState>('review');
+  });
+
+  it('review beats manual mode — 100% complete manual mission is review-ready', () => {
+    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual', progress: 100 })).toBe<MissionDisplayState>('review');
+  });
+
+  it('NOT review when progress is 99', () => {
+    expect(deriveMissionDisplayState({ ...base, progress: 99 })).not.toBe<MissionDisplayState>('review');
+  });
+
+  it('NOT review when progress is omitted (backward compat)', () => {
+    expect(deriveMissionDisplayState(base)).not.toBe<MissionDisplayState>('review');
+  });
+
+  it('failed beats review — FAILING mission at 100% is not review-ready', () => {
+    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health, progress: 100 })).toBe<MissionDisplayState>('failed');
+  });
+
+  it('manual when orchestrationMode is manual with no other conditions', () => {
+    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual' })).toBe<MissionDisplayState>('manual');
+  });
+
+  it('active as fallback', () => {
+    expect(deriveMissionDisplayState(base)).toBe<MissionDisplayState>('active');
+  });
+
+  it('priority: complete > held > running > failed > review > manual > active', () => {
+    expect(deriveMissionDisplayState({ ...base, status: 'completed', isHeld: true })).toBe('complete');
+    expect(deriveMissionDisplayState({ ...base, isHeld: true, activeAgents: 5 })).toBe('held');
+    expect(deriveMissionDisplayState({ ...base, activeAgents: 1, health: 'FAILING' as Health })).toBe('running');
+    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health, progress: 100 })).toBe('failed');
+    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual', progress: 100 })).toBe('review');
+  });
+});
+
+describe('getMissionStateChip', () => {
+  it('review state returns READY FOR REVIEW with success color', () => {
+    const chip = getMissionStateChip('review');
+    expect(chip.label).toBe('READY FOR REVIEW');
+    expect(chip.cls).toContain('status-success');
+  });
+
+  it('all states return a non-empty label and cls', () => {
+    const states: MissionDisplayState[] = ['held', 'running', 'failed', 'manual', 'complete', 'active', 'review'];
+    for (const state of states) {
+      const chip = getMissionStateChip(state);
+      expect(chip.label.length).toBeGreaterThan(0);
+      expect(chip.cls.length).toBeGreaterThan(0);
+    }
   });
 });
 
