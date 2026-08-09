@@ -2512,9 +2512,15 @@ export async function handleBuilddAction(
           const data = await api(`/api/missions?${qs}`);
           const missions = data.missions || [];
           if (missions.length === 0) return text('No missions found.');
-          const summary = missions.map((m: any) =>
-            `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}`
-          ).join('\n\n');
+          const summary = missions.map((m: any) => {
+            const activityLine = m.lastActivityAt
+              ? `\n  Last activity: ${new Date(m.lastActivityAt).toISOString()}`
+              : '';
+            const createdLine = m.createdAt
+              ? `\n  Created: ${new Date(m.createdAt).toISOString()}`
+              : '';
+            return `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
+          }).join('\n\n');
           return text(`${missions.length} mission(s):\n\n${summary}`);
         }
         case 'create': {
@@ -2725,9 +2731,15 @@ export async function handleBuilddAction(
           const data = await api(`/api/initiatives?${qs}`);
           const initiatives = data.initiatives || [];
           if (initiatives.length === 0) return text('No initiatives found.');
-          const summary = initiatives.map((i: any) =>
-            `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}`
-          ).join('\n\n');
+          const summary = initiatives.map((i: any) => {
+            const motionLine = i.lastMotionAt
+              ? `\n  Last activity: ${new Date(i.lastMotionAt).toISOString()}`
+              : '';
+            const createdLine = i.createdAt
+              ? `\n  Created: ${new Date(i.createdAt).toISOString()}`
+              : '';
+            return `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}${motionLine}${createdLine}`;
+          }).join('\n\n');
           return text(`${initiatives.length} initiative(s):\n\n${summary}`);
         }
         case 'create': {
