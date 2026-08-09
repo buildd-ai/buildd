@@ -19,6 +19,9 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => [{ id: 'new-task-id' }]),
   })),
 }));
+// Exposed so tests can override section-2 (heartbeat-expiry) behaviour.
+// Default: returns a fresh heartbeat → section 2 does NOT fire in most tests.
+const mockWorkerHeartbeatsFindFirst = mock(() => ({ id: 'hb-1' }));
 let capturedInsertValues: any = null;
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -26,7 +29,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       missions: { findFirst: mock(() => null) },
-      workerHeartbeats: { findFirst: mock(() => ({ id: 'hb-1' })) },
+      workerHeartbeats: { findFirst: mockWorkerHeartbeatsFindFirst },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -655,6 +658,178 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     await cleanupStaleWorkers('account-1');
     expect(mockCheckWorkerDeliverables).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () => {
+  // Regression: stale-worker reaper marks a finished worker as 'runner went offline'
+  // even after the worker delivered PR+artifact. The heartbeat-expiry path (section 2)
+  // calls resolveStaleTask just like section 1 — it must promote the task to completed,
+  // not reset it to pending or fail it.
+  // Incident: worker on buildd/f97… delivered PR #1591 then was killed by the reaper
+  // because the runner's heartbeat was stale (> 150 min). The task was misclassified as
+  // failed/Infra Error. See memory e1b02fc0 and 48eae69a.
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh by default
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('promotes task to completed when heartbeat-expired worker has a registered PR', async () => {
+    // Section 1 (15-min stale): no stale workers
+    // Section 2 (heartbeat): one orphaned worker that delivered a PR
+    // null → no fresh heartbeat → section 2 fires
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no 15-min stale workers
+      .mockResolvedValueOnce([    // section 2: one heartbeat-orphaned worker with a PR
+        { id: 'w-hb', taskId: 'task-hb', prUrl: 'https://github.com/org/repo/pull/1591', prNumber: 1591, commitCount: 5, branch: 'buildd/f97abc', error: null },
+      ])
+      .mockResolvedValueOnce([]); // no other active workers for the task
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]); // orphanTasks
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} }) // resolveStaleTask: current task
+      .mockResolvedValueOnce({ parentTaskId: null }); // resolveCompletedTask: dep check
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true,
+      hasAny: true, details: 'PR #1591, 5 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    // result must be populated so mission review sees a real completion
+    expect(taskUpdateSet.result).toBeDefined();
+    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/1591');
+    expect(taskUpdateSet.result.prNumber).toBe(1591);
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+  });
+
+  it('promotes task to completed when heartbeat-expired worker has artifact but no PR', async () => {
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockGetWorkerArtifactCount.mockResolvedValue(2);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no stale workers
+      .mockResolvedValueOnce([    // section 2: orphaned worker with artifacts
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/f97abc', error: null },
+      ])
+      .mockResolvedValueOnce([]); // no other active workers
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false,
+      hasAny: true, details: '2 artifacts',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result).toBeDefined();
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+  });
+
+  it('still resets to pending when heartbeat-expired worker has no deliverables', async () => {
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no stale workers
+      .mockResolvedValueOnce([    // section 2: orphaned worker with no deliverables
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // no other active workers
+      .mockResolvedValueOnce([]); // no failed workers (retry cap check)
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('promotes to completed even when getWorkerArtifactCount would throw (prUrl present)', async () => {
+    // This tests the fix: artifact count error must NOT prevent the prUrl check.
+    // If the try-catch wrapped checkWorkerDeliverables too (old bug), the throw would
+    // leave hasDeliverables=false and the task would be reset to pending.
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockGetWorkerArtifactCount.mockRejectedValue(new Error('DB timeout'));
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'w-hb', taskId: 'task-hb', prUrl: 'https://github.com/org/repo/pull/99', prNumber: 99, commitCount: 3, branch: 'buildd/abc', error: null },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    // With artifactCount=0 (fallback) + prUrl set → checkWorkerDeliverables must still return hasAny=true
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true,
+      hasAny: true, details: 'PR #99, 3 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Even with artifact query failure, prUrl being set must promote to completed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/99');
   });
 });
 
