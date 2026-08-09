@@ -21,6 +21,13 @@ export type CondensedTask = {
   status: string;
   dependsOn: string[] | null;
   workers: CondensedTaskWorker[];
+  /**
+   * Precomputed by the caller: is there a live action the human must take?
+   * Under agent-review policy: true only when reviewer_approved or reviewer_escalated.
+   * Under other policies: always true (any open PR awaits human merge).
+   * Undefined = backward-compat default (treated as true).
+   */
+  humanActionPending?: boolean;
 };
 
 export type TimelineGroups<T extends CondensedTask = CondensedTask> = {
@@ -50,8 +57,12 @@ function isWaitingOnYou(task: CondensedTask): boolean {
   if (task.status !== 'completed') return false;
   const latest = task.workers[0];
   if (!latest?.prUrl) return false;
+  // Terminal PR states — never waiting regardless of DB staleness
   if (latest.mergedAt) return false;
   if (latest.prLifecycleStatus === 'closed') return false;
+  if (latest.prLifecycleStatus === 'merged') return false;
+  // Only wait when there is a live human action (explicit false = not a human action)
+  if (task.humanActionPending === false) return false;
   return true;
 }
 

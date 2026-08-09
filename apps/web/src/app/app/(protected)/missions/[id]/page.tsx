@@ -395,12 +395,24 @@ export default async function MissionDetailPage({
   }
 
   // Build CondensedTask objects for the grouping function
-  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => ({
-    id: task.id,
-    status: task.status,
-    dependsOn: (task.dependsOn as string[] | null) ?? null,
-    workers: ((task.workers || []) as any[]).map(normaliseWorker),
-  }));
+  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => {
+    // Under agent-review policy, human action is only needed when reviewer approved/escalated.
+    // Under other policies (auto-threshold, human), any open PR awaits human merge.
+    let humanActionPending: boolean;
+    if (effectivePolicy.tier === 'agent-review') {
+      const note = reviewerNoteMap.get(task.id);
+      humanActionPending = note?.type === 'reviewer_approved' || note?.type === 'reviewer_escalated';
+    } else {
+      humanActionPending = true;
+    }
+    return {
+      id: task.id,
+      status: task.status,
+      dependsOn: (task.dependsOn as string[] | null) ?? null,
+      workers: ((task.workers || []) as any[]).map(normaliseWorker),
+      humanActionPending,
+    };
+  });
   const condensedTaskMapForGrouping = new Map(condensedTasksForGrouping.map(t => [t.id, t]));
 
   const rawGroups = groupTimelineTasks(condensedTasksForGrouping, condensedTaskMapForGrouping);

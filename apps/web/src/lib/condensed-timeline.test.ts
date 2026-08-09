@@ -270,6 +270,118 @@ describe('groupTimelineTasks', () => {
   });
 });
 
+// ─── WAITING ON YOU membership rule ──────────────────────────────────────────
+//
+// Unit test coverage for the 5 cases from the task spec:
+//   open+approved  → in  (humanActionPending: true, e.g. reviewer_approved note)
+//   open+unreviewed → out (humanActionPending: false, agent-review policy, no verdict yet)
+//   merged          → out (prLifecycleStatus: 'merged', even when mergedAt is null)
+//   closed          → out (prLifecycleStatus: 'closed')
+//   escalated       → in  (humanActionPending: true, e.g. reviewer_escalated note)
+
+describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
+  it('open+approved (humanActionPending: true) → waitingOnYou', () => {
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      humanActionPending: true,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/100',
+        prNumber: 100,
+        prLifecycleStatus: 'ci_green',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou.map(t => t.id)).toContain('t1');
+    expect(groups.done).toHaveLength(0);
+  });
+
+  it('open+unreviewed (humanActionPending: false) → done, not waitingOnYou', () => {
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      humanActionPending: false,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/101',
+        prNumber: 101,
+        prLifecycleStatus: 'pr_open',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou).toHaveLength(0);
+    expect(groups.done.map(t => t.id)).toContain('t1');
+  });
+
+  it('merged (prLifecycleStatus=merged, mergedAt=null) → done, not waitingOnYou', () => {
+    // Stale DB state: webhook set prLifecycleStatus but mergedAt was missed
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      humanActionPending: true,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/102',
+        prNumber: 102,
+        prLifecycleStatus: 'merged',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou).toHaveLength(0);
+    expect(groups.done.map(t => t.id)).toContain('t1');
+  });
+
+  it('closed (prLifecycleStatus=closed) → done, not waitingOnYou', () => {
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      humanActionPending: true,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/103',
+        prNumber: 103,
+        prLifecycleStatus: 'closed',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou).toHaveLength(0);
+    expect(groups.done.map(t => t.id)).toContain('t1');
+  });
+
+  it('escalated (humanActionPending: true) → waitingOnYou', () => {
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      humanActionPending: true,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/104',
+        prNumber: 104,
+        prLifecycleStatus: 'pr_open',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou.map(t => t.id)).toContain('t1');
+    expect(groups.done).toHaveLength(0);
+  });
+});
+
 // ─── gateChipCollapsed — I-11 ─────────────────────────────────────────────────
 
 describe('gateChipCollapsed', () => {
