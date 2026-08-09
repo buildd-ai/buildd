@@ -1513,7 +1513,7 @@ export default async function HomePage({
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      {(['running', 'attention', 'review', 'scheduled'] as const).map((groupKey) => {
+                      {(['review', 'running', 'attention', 'scheduled'] as const).map((groupKey) => {
                         const items = groupKey === 'scheduled'
                           ? soonScheduled
                           : visibleMissions.filter(m => m.group === groupKey);
@@ -1555,7 +1555,7 @@ export default async function HomePage({
                                         {mission.description}
                                       </p>
                                     )}
-                                    <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} />
+                                    <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} isReviewReady={groupKey === 'review'} />
                                     {mission.totalTasks > 0 && <div className="my-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
                                     <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
                                       {mission.workspaceName && (

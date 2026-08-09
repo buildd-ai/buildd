@@ -5,7 +5,14 @@ import { SegmentStrip } from './SegmentStrip';
 
 const healthTone = { BLOCKED: 'border-status-warning text-status-warning', FAILING: 'border-status-error text-status-error', STALLED: 'border-status-warning text-status-warning' } as const;
 
-export function MissionBadges({ mission, health, nextRun }: { mission: { status: string; orchestrationMode?: string | null; lastDeferralReason?: string | null; lastDeferredAt?: string | null }; health: Health; nextRun: { text: string; urgency: unknown } }) {
+export function MissionBadges({ mission, health, nextRun, isReviewReady }: { mission: { status: string; orchestrationMode?: string | null; lastDeferralReason?: string | null; lastDeferredAt?: string | null }; health: Health; nextRun: { text: string; urgency: unknown }; isReviewReady?: boolean }) {
+  if (isReviewReady) {
+    return (
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide">
+        <span className="shrink-0 border px-1.5 py-0.5 border-status-success text-status-success">Ready for review</span>
+      </div>
+    );
+  }
   const drive = getDrivePresentation(deriveDriveState(mission), nextRun as any);
   const driveTone = drive.tone === 'warning' ? 'border-status-warning text-status-warning' : drive.tone === 'info' ? 'border-status-info text-status-info' : 'border-border-default text-text-muted';
   return <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"><span className={`shrink-0 border px-1.5 py-0.5 ${driveTone}`}>{drive.label}</span>{drive.detail && <span className="min-w-0 normal-case tracking-normal text-text-muted">{drive.detail}</span>}{health !== 'NOMINAL' && <span className={`shrink-0 border px-1.5 py-0.5 ${healthTone[health]}`}>{health}</span>}</div>;

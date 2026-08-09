@@ -13,6 +13,7 @@ import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-h
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
+import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
@@ -245,6 +246,7 @@ export default async function MissionDetailPage({
     orchestrationMode,
     activeAgents,
     health: healthState,
+    progress,
   });
   const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
@@ -712,6 +714,29 @@ export default async function MissionDetailPage({
           </div>
         )}
       </div>
+
+      {/* Review outcome summary — shown when mission is ready for human sign-off */}
+      {displayState === 'review' && (
+        <div className="mb-2">
+          <MissionReviewSummary
+            missionId={id}
+            tasks={allTasks
+              .filter(t => t.category !== 'review' && t.status !== 'cancelled')
+              .map(t => {
+                const w = (t.workers as any[])?.[0];
+                return {
+                  id: t.id,
+                  title: t.title,
+                  status: t.status,
+                  prUrl: w?.prUrl ?? null,
+                  prNumber: w?.prNumber ?? null,
+                  prMerged: !!w?.mergedAt,
+                  prClosed: w?.prLifecycleStatus === 'closed',
+                };
+              })}
+          />
+        </div>
+      )}
 
       {/* Mission Controls & Quick Task */}
       <div className="mb-6">
