@@ -242,7 +242,19 @@ export function TaskCard({
   // ─── INLINE density — mission timeline row ────────────────────────────────
   // Tiers: 1 (identity), 2 (position), 4 (provenance).
   if (density === 'inline') {
-    const lifecycle = prLifecycleStatus ? PR_LIFECYCLE[prLifecycleStatus] : null;
+    const isCompleted = displayStatus === 'completed';
+    const isTerminalPr = prLifecycleStatus === 'merged' || prLifecycleStatus === 'closed';
+    // Chip only for genuinely non-default active states; completed/pending/assigned
+    // are conveyed by their section label and need no redundant badge.
+    const showChip = displayStatus === 'running' || displayStatus === 'waiting_input' ||
+                     displayStatus === 'failed' || displayStatus === 'cancelled';
+    // Done-group tasks (completed + terminal PR) compress to one line: title + #NNNN · status.
+    // WaitingOnYou tasks (completed + open PR) omit the inline PR — PrStatusLine in
+    // CondensedTimeline renders it alongside the Merge button.
+    const showInlinePr = isCompleted && !!prUrl && isTerminalPr;
+    const prStatusLabel = prLifecycleStatus === 'merged' ? 'merged' : 'closed';
+    const prStatusCls   = prLifecycleStatus === 'merged' ? 'text-status-success' : 'text-text-muted';
+
     return (
       <div className="relative group flex items-center gap-2 py-1.5 min-w-0">
         {/* Link overlay */}
@@ -257,7 +269,7 @@ export function TaskCard({
 
         {/* T1 — title + currentAction */}
         <span className="flex-1 min-w-0 pointer-events-none group-hover:text-accent-text transition-colors">
-          <span className={`text-[13px] truncate block ${displayStatus === 'completed' ? 'text-text-secondary' : 'text-text-primary'}`}>
+          <span className={`text-[13px] truncate block ${isCompleted ? 'text-text-secondary' : 'text-text-primary'}`}>
             {title}
           </span>
           {displayStatus === 'running' && currentAction && (
@@ -265,28 +277,27 @@ export function TaskCard({
           )}
         </span>
 
-        {/* T3 — status */}
-        <div className="pointer-events-none shrink-0">
-          <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
-        </div>
+        {/* T3 — chip only for active non-default states */}
+        {showChip && (
+          <div className="pointer-events-none shrink-0">
+            <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+          </div>
+        )}
 
-        {/* T4 — PR link + lifecycle (restores pointer events) */}
-        {prUrl && (
-          <span className="shrink-0 flex items-center gap-1">
+        {/* T4 — inline PR for done-group tasks (merged / closed): single line */}
+        {showInlinePr && (
+          <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] pointer-events-none">
             <a
-              href={prUrl}
+              href={prUrl!}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 pointer-events-auto font-mono text-[10px] text-accent-text hover:underline"
+              className="relative z-10 pointer-events-auto text-accent-text hover:underline"
             >
-              #{prNumber}↗
+              #{prNumber}
             </a>
-            {lifecycle && (
-              <span className={`text-[10px] font-medium px-1 py-0.5 rounded pointer-events-none ${lifecycle.cls}`}>
-                {lifecycle.label}
-              </span>
-            )}
+            <span className="text-text-muted">·</span>
+            <span className={prStatusCls}>{prStatusLabel}</span>
           </span>
         )}
 
