@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GET /api/models route with Anthropic model list (#1598)
+- Recency signals on missions/initiatives landing page (#1593)
 - enforceGreenCI workspace policy + mergeable_state check (#1571)
 - Priority indicator on mission cards, move detail header to inline edit (#1569)
 - Flatten mission Settings IA, fix contrast on mission config panel (#1568)
@@ -63,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initiative status uses DB lifecycle, not rollup from mission counts (#1596)
 - Define ack/dismiss actions in activity feed, add swipe affordance, and declutter rows (#1563)
 - Eliminate trailing-action / ⋯ menu overlap in SwipeableRow (#1558)
 - Resolve PR merge "Not Found" via githubRepos path, guard against workspace ambiguity (#1557)
