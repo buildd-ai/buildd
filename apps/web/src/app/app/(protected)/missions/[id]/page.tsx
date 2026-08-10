@@ -50,10 +50,10 @@ export default async function MissionDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; initiativeId?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -889,6 +889,8 @@ export default async function MissionDetailPage({
           taskTitle: a.taskTitle ?? null,
         }))}
         baseUrl={baseUrl}
+        missionId={id}
+        initialOpenArtifactId={initialOpenArtifactId}
       />
 
     </div>

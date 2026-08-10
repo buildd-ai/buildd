@@ -2,8 +2,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import MarkdownContent from '@/components/MarkdownContent';
-import { getArtifactPreview, buildCreateTaskUrl } from '@/components/artifact-helpers';
+import { buildCreateTaskUrl } from '@/components/artifact-helpers';
+import ArtifactCard from '@/components/ArtifactCard';
+import ArtifactViewer from '@/components/ArtifactViewer';
+import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
 
 interface ArtifactItem {
   id: string;
@@ -27,14 +29,6 @@ interface Props {
 
 const TYPE_FILTERS = ['all', 'content', 'report', 'data', 'link', 'summary'] as const;
 
-const TYPE_STYLES: Record<string, { bg: string; text: string }> = {
-  content: { bg: 'bg-primary/10', text: 'text-primary' },
-  report: { bg: 'bg-status-info/10', text: 'text-status-info' },
-  data: { bg: 'bg-status-warning/10', text: 'text-status-warning' },
-  link: { bg: 'bg-status-success/10', text: 'text-status-success' },
-  summary: { bg: 'bg-surface-3', text: 'text-text-secondary' },
-};
-
 export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Props) {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -44,6 +38,10 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
   const [shareOverrides, setShareOverrides] = useState<
     Record<string, { visibility: 'private' | 'public'; shareToken: string | null }>
   >({});
+
+  // ArtifactViewer state
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
 
   function shareStateFor(a: ArtifactItem): { visibility: 'private' | 'public'; shareToken: string | null } {
     const override = shareOverrides[a.id];
@@ -129,8 +127,25 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
     navigator.clipboard.writeText(url).then(() => flashCopied(artifact.id));
   }
 
-  function getPreview(artifact: ArtifactItem): string | null {
-    return getArtifactPreview(artifact);
+  // Build viewer items from the filtered list (to keep viewer index in sync with filtered)
+  const viewerItems: ArtifactViewerItem[] = filtered.map((a) => {
+    const share = shareStateFor(a);
+    return {
+      id: a.id,
+      type: a.type,
+      title: a.title,
+      content: a.content,
+      shareToken: share.shareToken,
+      visibility: share.visibility,
+      metadata: a.metadata,
+      createdAt: a.createdAt,
+      taskTitle: a.taskTitle,
+    };
+  });
+
+  function openViewer(index: number) {
+    setViewerIndex(index);
+    setViewerOpen(true);
   }
 
   if (artifacts.length === 0) {
@@ -189,155 +204,114 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
 
       {/* Card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {filtered.map((artifact) => {
-          const style = TYPE_STYLES[artifact.type] || TYPE_STYLES.summary;
-          const preview = getPreview(artifact);
+        {filtered.map((artifact, index) => {
           const isCopied = copiedId === artifact.id;
           const share = shareStateFor(artifact);
           const isPublic = share.visibility === 'public';
           const isSharing = loadingId === artifact.id;
 
-          return (
-            <Link
-              key={artifact.id}
-              href={`/app/artifacts/${artifact.id}`}
-              className="bg-surface-2 border border-border-default rounded-[10px] p-4 flex flex-col hover:border-border-hover transition-colors"
-            >
-              {/* Type badge */}
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded ${style.bg} ${style.text}`}>
-                  {artifact.type}
-                </span>
-                {showWorkspace && artifact.workspaceName && (
-                  <span className="text-[11px] text-text-muted truncate">
-                    {artifact.workspaceName}
-                  </span>
-                )}
-              </div>
+          const desktopFooterActions = (
+            <>
+              {/* Create task from this artifact */}
+              <Link
+                href={buildCreateTaskUrl(artifact)}
+                onClick={(e) => e.stopPropagation()}
+                title="Create task from this artifact"
+                data-testid="create-task-from-artifact"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Task
+              </Link>
 
-              {/* Title */}
-              <h3 className="text-sm font-medium text-text-primary mb-1.5 line-clamp-2">
-                {artifact.title || 'Untitled'}
-              </h3>
-
-              {/* Preview */}
-              {preview && (
-                <div className="flex-1 min-h-0 mb-3">
-                  {artifact.type === 'link' ? (
-                    <a
-                      href={preview}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs text-primary-400 hover:underline break-all line-clamp-2"
-                    >
-                      {preview}
-                    </a>
-                  ) : artifact.type === 'data' ? (
-                    <pre className="text-[11px] font-mono text-text-muted line-clamp-3 overflow-hidden">
-                      {preview}
-                    </pre>
-                  ) : (
-                    <div className="text-xs text-text-secondary line-clamp-4 overflow-hidden">
-                      <MarkdownContent content={preview} className="prose-xs [&_p]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_ul]:my-0.5 [&_ol]:my-0.5" />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Footer: task + date + actions */}
-              <div className="flex items-center justify-between mt-auto pt-3 border-t border-border-default/50">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  {artifact.taskId && (
-                    <Link
-                      href={`/app/tasks/${artifact.taskId}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-[11px] text-text-muted hover:text-text-secondary truncate"
-                      title={artifact.taskTitle || undefined}
-                    >
-                      {artifact.taskTitle || 'Task'}
-                    </Link>
-                  )}
-                  <span className="text-[11px] text-text-muted flex-shrink-0">
-                    {new Date(artifact.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 flex-shrink-0">
-                  {/* Create task from this artifact */}
-                  <Link
-                    href={buildCreateTaskUrl(artifact)}
-                    onClick={(e) => e.stopPropagation()}
-                    title="Create task from this artifact"
-                    data-testid="create-task-from-artifact"
+              {isPublic ? (
+                <>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); copyShareLink(artifact); }}
                     className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
                   >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                    Task
-                  </Link>
-
-                  {isPublic ? (
+                    {isCopied ? (
+                      <>
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                        </svg>
+                        Copy link
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleUnshare(artifact); }}
+                    disabled={isSharing}
+                    title="Make private"
+                    className="px-2 py-1 text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-50"
+                  >
+                    {isSharing ? '…' : 'Unshare'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleShare(artifact); }}
+                  disabled={isSharing}
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {isCopied ? (
                     <>
-                      <button
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyShareLink(artifact); }}
-                        className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors"
-                      >
-                        {isCopied ? (
-                          <>
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            Copied
-                          </>
-                        ) : (
-                          <>
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                            </svg>
-                            Copy link
-                          </>
-                        )}
-                      </button>
-                      <button
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUnshare(artifact); }}
-                        disabled={isSharing}
-                        title="Make private"
-                        className="px-2 py-1 text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-50"
-                      >
-                        {isSharing ? '…' : 'Unshare'}
-                      </button>
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Copied
                     </>
                   ) : (
-                    <button
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleShare(artifact); }}
-                      disabled={isSharing}
-                      className="flex items-center gap-1 px-2 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary transition-colors disabled:opacity-50"
-                    >
-                      {isCopied ? (
-                        <>
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                          </svg>
-                          {isSharing ? 'Sharing…' : 'Share'}
-                        </>
-                      )}
-                    </button>
+                    <>
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                      </svg>
+                      {isSharing ? 'Sharing…' : 'Share'}
+                    </>
                   )}
-                </div>
-              </div>
-            </Link>
+                </button>
+              )}
+            </>
+          );
+
+          return (
+            <div key={artifact.id}>
+              {showWorkspace && artifact.workspaceName && (
+                <p className="hidden sm:block text-[11px] text-text-muted truncate mb-1">
+                  {artifact.workspaceName}
+                </p>
+              )}
+              <ArtifactCard
+                artifact={artifact}
+                onOpen={() => openViewer(index)}
+                footerActions={desktopFooterActions}
+              />
+            </div>
           );
         })}
       </div>
+
+      {/* Artifact detail viewer */}
+      <ArtifactViewer
+        artifacts={viewerItems}
+        open={viewerOpen}
+        initialIndex={viewerIndex}
+        onClose={() => setViewerOpen(false)}
+        baseUrl={baseUrl}
+        canShare
+        onShareChange={(id, next) => {
+          setShareOverrides((prev) => ({ ...prev, [id]: next }));
+        }}
+      />
 
       {/* No results */}
       {search && filtered.length === 0 && (

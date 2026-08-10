@@ -29,10 +29,13 @@ const TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> =
 
 export default async function ArtifactDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string; taskId?: string; missionId?: string }>;
 }) {
   const { id } = await params;
+  const { from, taskId: fromTaskId, missionId: fromMissionId } = await searchParams;
   const user = await getCurrentUser();
 
   if (!user) {
@@ -83,9 +86,19 @@ export default async function ArtifactDetailPage({
     <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         {/* Breadcrumb */}
-        <Link href="/app/artifacts" className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
-          &larr; Artifacts
-        </Link>
+        {from === 'task' && fromTaskId ? (
+          <Link href={`/app/tasks/${fromTaskId}`} className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
+            &larr; Back
+          </Link>
+        ) : from === 'mission' && fromMissionId ? (
+          <Link href={`/app/missions/${fromMissionId}`} className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
+            &larr; Back
+          </Link>
+        ) : (
+          <Link href="/app/artifacts" className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
+            &larr; Artifacts
+          </Link>
+        )}
 
         {/* Header */}
         <div className="mb-6">

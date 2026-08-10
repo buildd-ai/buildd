@@ -1,17 +1,32 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ArtifactViewer, { type ArtifactViewerItem } from '@/components/ArtifactViewer';
 
 interface Props {
   artifacts: ArtifactViewerItem[];
   baseUrl: string;
+  missionId?: string;
+  /** If set, open the viewer at this artifact on mount (from ?artifact= param). */
+  initialOpenArtifactId?: string | null;
 }
 
-export default function MissionArtifacts({ artifacts, baseUrl }: Props) {
+export default function MissionArtifacts({ artifacts, baseUrl, missionId, initialOpenArtifactId }: Props) {
   const [items, setItems] = useState<ArtifactViewerItem[]>(artifacts);
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
+
+  // Open viewer on mount when ?artifact= param is present
+  useEffect(() => {
+    if (!initialOpenArtifactId) return;
+    const idx = artifacts.findIndex((a) => a.id === initialOpenArtifactId);
+    if (idx >= 0) {
+      setIndex(idx);
+      setOpen(true);
+    }
+  // Only run on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (items.length === 0) return null;
 
@@ -58,6 +73,7 @@ export default function MissionArtifacts({ artifacts, baseUrl }: Props) {
         onClose={() => setOpen(false)}
         baseUrl={baseUrl}
         canShare
+        fromContext={missionId ? { type: 'mission', missionId } : undefined}
         onShareChange={(id, next) =>
           setItems((prev) =>
             prev.map((it) =>

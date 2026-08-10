@@ -1,6 +1,6 @@
 # Mobile Artifact Feed — Design Spec
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `docs/design/mobile-feed-spec.md` (design tokens, brutalist system, component kit)
 - `docs/design/mobile-decision-flow.md` (gesture grammar, condensed timeline)
