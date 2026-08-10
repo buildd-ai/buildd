@@ -4,7 +4,7 @@ import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS } from '@buildd/shared';
+import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -368,6 +368,7 @@ export class WorkerManager {
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private heartbeatInterval?: Timer;
+  private livenessInterval?: Timer;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
   // One-shot timer that wakes the runner to poll the moment an exhausted OAuth
@@ -545,6 +546,13 @@ export class WorkerManager {
           this.knowledgeIngestPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
+
+      // Liveness ping: a pure "I'm alive" heartbeat every 60s, separate from the
+      // task-poll cycle. isRunnerOnline on the Health tab keys off this so an idle
+      // runner never shows "stale" while it is reachable.
+      this.livenessInterval = setInterval(() => {
+        this.sendHeartbeat();
+      }, LIVENESS_PING_INTERVAL_MS);
     }
 
     // Initialize Pusher if configured
@@ -4278,6 +4286,9 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
+    }
+    if (this.livenessInterval) {
+      clearInterval(this.livenessInterval);
     }
     if (this.evictionInterval) {
       clearInterval(this.evictionInterval);
