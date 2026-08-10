@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { initiativeStatusChip } from '@/lib/initiative-presentation';
+import { initiativeStatusChip, deriveInitiativeDisplayStatus } from '@/lib/initiative-presentation';
 import type { InitiativeListItem } from '@/lib/initiative-list';
 
 /**
@@ -25,9 +25,9 @@ export default function InitiativeRail({ initiatives }: { initiatives: Initiativ
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 snap-x">
         {initiatives.map((initiative) => {
-          const chip = initiativeStatusChip(initiative.progress.status);
-          const showAccent =
-            initiative.progress.status === 'active' || initiative.progress.status === 'blocked';
+          const displayStatus = deriveInitiativeDisplayStatus({ status: initiative.status, rollupStatus: initiative.progress.status });
+          const chip = initiativeStatusChip(displayStatus);
+          const showAccent = displayStatus === 'active' || displayStatus === 'blocked';
           return (
             <Link
               key={initiative.id}

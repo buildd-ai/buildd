@@ -50,7 +50,7 @@ export function InitiativesStrip({ initiatives }: { initiatives: InitiativeStrip
               />
             </div>
             <div className="flex items-center gap-2 text-[11px] text-text-muted">
-              <span className="capitalize">{i.rollupStatus}</span>
+              <span className="capitalize">{i.status}</span>
               <span>·</span>
               <span>{i.completedMissions}/{i.totalMissions} missions</span>
             </div>

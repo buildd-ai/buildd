@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { SegmentStrip } from './SegmentStrip';
-import { initiativeStatusChip, motionLabel } from '@/lib/initiative-presentation';
+import { initiativeStatusChip, motionLabel, deriveInitiativeDisplayStatus } from '@/lib/initiative-presentation';
 import type { InitiativeListItem } from '@/lib/initiative-list';
 
 /**
@@ -12,11 +12,15 @@ import type { InitiativeListItem } from '@/lib/initiative-list';
  * The whole card is a single link — it carries no inner anchors (no in-flight task
  * link like MissionProgress), so wrapping is safe.
  */
+const RECENCY_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export default function InitiativeCard({ initiative }: { initiative: InitiativeListItem }) {
   const { progress, segments } = initiative;
-  const chip = initiativeStatusChip(progress.status);
-  const isActive = progress.status === 'active';
+  const displayStatus = deriveInitiativeDisplayStatus({ status: initiative.status, rollupStatus: progress.status });
+  const chip = initiativeStatusChip(displayStatus);
+  const isActive = displayStatus === 'active' || displayStatus === 'blocked';
   const hasProgress = progress.progress > 0;
+  const showNewBadge = Date.now() - new Date(initiative.createdAt).getTime() < RECENCY_BADGE_MS;
 
   return (
     <Link
@@ -32,9 +36,16 @@ export default function InitiativeCard({ initiative }: { initiative: InitiativeL
           <h3 className="text-sm font-medium text-text-primary leading-snug line-clamp-2 min-w-0">
             {initiative.title}
           </h3>
-          <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border ${chip.className}`}>
-            {chip.label}
-          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {showNewBadge && (
+              <span className="text-[9px] font-mono uppercase tracking-wide border border-status-success/50 text-status-success px-1.5 py-0.5">
+                New
+              </span>
+            )}
+            <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border ${chip.className}`}>
+              {chip.label}
+            </span>
+          </div>
         </div>
 
         {/* Aggregate progress — segment strip, or a flat empty track when task-less. */}

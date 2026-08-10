@@ -182,10 +182,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
-    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (inherit|opus|sonnet|haiku|claude-sonnet-5|claude-fable-5 or full model ID), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
-    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model?, allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
@@ -2512,9 +2512,15 @@ export async function handleBuilddAction(
           const data = await api(`/api/missions?${qs}`);
           const missions = data.missions || [];
           if (missions.length === 0) return text('No missions found.');
-          const summary = missions.map((m: any) =>
-            `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}`
-          ).join('\n\n');
+          const summary = missions.map((m: any) => {
+            const activityLine = m.lastActivityAt
+              ? `\n  Last activity: ${new Date(m.lastActivityAt).toISOString()}`
+              : '';
+            const createdLine = m.createdAt
+              ? `\n  Created: ${new Date(m.createdAt).toISOString()}`
+              : '';
+            return `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
+          }).join('\n\n');
           return text(`${missions.length} mission(s):\n\n${summary}`);
         }
         case 'create': {
@@ -2725,9 +2731,15 @@ export async function handleBuilddAction(
           const data = await api(`/api/initiatives?${qs}`);
           const initiatives = data.initiatives || [];
           if (initiatives.length === 0) return text('No initiatives found.');
-          const summary = initiatives.map((i: any) =>
-            `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}`
-          ).join('\n\n');
+          const summary = initiatives.map((i: any) => {
+            const motionLine = i.lastMotionAt
+              ? `\n  Last activity: ${new Date(i.lastMotionAt).toISOString()}`
+              : '';
+            const createdLine = i.createdAt
+              ? `\n  Created: ${new Date(i.createdAt).toISOString()}`
+              : '';
+            return `- **${i.title}** [${i.status}] — ${i.progress?.progress ?? 0}% (${i.progress?.completedMissions ?? 0}/${i.progress?.totalMissions ?? 0} missions, ${i.progress?.completedTasks ?? 0}/${i.progress?.totalTasks ?? 0} tasks)\n  ID: ${i.id}${i.workspace ? `\n  Workspace: ${i.workspace.name}` : ''}${motionLine}${createdLine}`;
+          }).join('\n\n');
           return text(`${initiatives.length} initiative(s):\n\n${summary}`);
         }
         case 'create': {

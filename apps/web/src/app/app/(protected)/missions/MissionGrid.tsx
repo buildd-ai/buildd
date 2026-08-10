@@ -76,6 +76,10 @@ export interface MissionItem {
   nextRunAt: string | null;
   startAt: string | null;
   lastRunAt: string | null;
+  /** ISO string of most recent task/worker activity; null if mission has no tasks. */
+  lastActivityAt: string | null;
+  /** ISO string of when this mission was created. */
+  createdAt: string | null;
   lastDeferralReason: string | null;
   lastDeferredAt: string | null;
   teamName: string | null;
@@ -265,12 +269,17 @@ export function MissionGrid({
         subGroups.scheduled.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
 
         // Split completed into recent vs old for progressive disclosure
+        // Use lastActivityAt as the recency signal (actual task activity), falling back to lastRunAt
         const now = Date.now();
+        const completedAgeMs = (m: MissionItem) => {
+          const ref = m.lastActivityAt ?? m.lastRunAt;
+          return ref ? now - new Date(ref).getTime() : Infinity;
+        };
         const recentCompleted = subGroups.completed.filter(
-          m => m.lastRunAt && now - new Date(m.lastRunAt).getTime() < COMPLETED_AGE_THRESHOLD_MS
+          m => completedAgeMs(m) < COMPLETED_AGE_THRESHOLD_MS
         );
         const oldCompleted = subGroups.completed.filter(
-          m => !m.lastRunAt || now - new Date(m.lastRunAt).getTime() >= COMPLETED_AGE_THRESHOLD_MS
+          m => completedAgeMs(m) >= COMPLETED_AGE_THRESHOLD_MS
         );
 
         const hasContent = GROUP_ORDER.some(g => subGroups[g].length > 0);
@@ -589,11 +598,19 @@ function ArmButton({ missionId }: { missionId: string }) {
   );
 }
 
+const RECENCY_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isRecentlyCreated(createdAt: string | null): boolean {
+  if (!createdAt) return false;
+  return Date.now() - new Date(createdAt).getTime() < RECENCY_BADGE_MS;
+}
+
 /* ── Full Mission Card (running, scheduled, attention) ── */
 function FullMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
   const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
   const isHibernating = nextRun.urgency === 'far';
   const hasFooterLinks = mission.primaryPrUrl || mission.latestTaskId;
+  const showNewBadge = isRecentlyCreated(mission.createdAt);
 
   return (
     <div
@@ -669,6 +686,11 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               }`}
             >
               {mission.priority === 10 ? 'High' : 'Medium'}
+            </span>
+          )}
+          {showNewBadge && (
+            <span className="text-[9px] font-mono uppercase tracking-wide border border-status-success/50 text-status-success px-1.5 py-0.5">
+              New
             </span>
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
@@ -770,6 +792,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
 /* ── Compact Mission Card (completed/paused) ── */
 function CompactMissionCard({ mission, group }: { mission: MissionItem; group: MissionGroup }) {
   const nextRun = formatNextRun(mission.nextScanMins, mission.nextRunAt);
+  const showNewBadge = isRecentlyCreated(mission.createdAt);
 
   return (
     <div className={`card mission-card mission-card-compact hover:bg-[var(--card-hover)] hover:-translate-y-px transition-all duration-150 ${GROUP_ACCENT_CLASS[group]}`}>
@@ -826,6 +849,11 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
               {mission.priority === 10 ? 'High' : 'Medium'}
             </span>
           )}
+          {showNewBadge && (
+            <span className="text-[9px] font-mono uppercase tracking-wide border border-status-success/50 text-status-success px-1.5 py-0.5">
+              New
+            </span>
+          )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
         {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
@@ -833,13 +861,13 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           {mission.totalTasks > 0 && (
             <span>{mission.completedTasks} of {mission.totalTasks} done</span>
           )}
-          {mission.lastRunAt && (
-            <>
-              <span>&middot;</span>
-              <span>{timeAgo(mission.lastRunAt)}</span>
-            </>
-          )}
-          {mission.latestFinding && !mission.lastRunAt && (
+          <>
+            <span>&middot;</span>
+            <span title={mission.lastActivityAt ? `Last activity: ${mission.lastActivityAt}` : undefined}>
+              {mission.lastActivityAt ? timeAgo(mission.lastActivityAt) : 'never'}
+            </span>
+          </>
+          {mission.latestFinding && !mission.lastActivityAt && (
             <>
               <span>&middot;</span>
               <span className="text-accent-text truncate">{mission.latestFinding.title}</span>
