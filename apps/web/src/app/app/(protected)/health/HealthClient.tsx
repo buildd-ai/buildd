@@ -1040,7 +1040,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function confidenceClass(c: string | null): string {
   if (c === 'high') return 'text-status-success';
-  if (c === 'low') return 'text-status-warning';
+  // low/medium confidence is noise, not a warning — keep it muted
   return 'text-text-muted';
 }
 
@@ -1053,6 +1053,11 @@ function timeUntilShort(iso: string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+function formatReset(iso: string): string {
+  const t = timeUntilShort(iso);
+  return t === 'now' ? 'resetting' : `resets in ${t}`;
+}
+
 function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
@@ -1062,44 +1067,54 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
 
   if (!hasAny) return null;
 
+  const activeSessions = forecast.oauthSessions.filter(s => s.state === 'active');
+  const learningSessions = forecast.oauthSessions.filter(s => s.state === 'learning');
+
   return (
     <section data-testid="health-section-budget-forecast" className="mb-6">
       <h2 className="section-label mb-3">Budget Forecast</h2>
       <div className="card divide-y divide-border-default">
 
-        {/* OAuth session rows */}
-        {forecast.oauthSessions.map((s) => (
+        {/* Active OAuth session rows — labeled by account name */}
+        {activeSessions.map((s) => (
           <div key={s.accountId} className="px-4 py-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-sm text-text-primary">Claude session</span>
-              {s.state === 'learning' ? (
-                <span className="text-xs text-text-muted">learning ({s.episodes} episode{s.episodes !== 1 ? 's' : ''})</span>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-text-secondary">
-                  <span className="tabular-nums font-medium text-text-primary">{s.pressurePct}% used</span>
-                  <span className="text-text-muted">·</span>
-                  <span>resets in {timeUntilShort(s.windowEndsAt)}</span>
-                  <span className="text-text-muted">·</span>
-                  <span className={confidenceClass(s.confidence)}>
-                    confidence: {s.confidence ?? 'low'}
-                  </span>
-                </div>
-              )}
-            </div>
-            {s.state === 'active' && (
-              <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    s.pressurePct >= 90 ? 'bg-status-error' :
-                    s.pressurePct >= 70 ? 'bg-status-warning' :
-                    'bg-primary'
-                  }`}
-                  style={{ width: `${Math.min(100, s.pressurePct)}%` }}
-                />
+              <span className="text-sm text-text-primary">{s.accountName || 'Claude session'}</span>
+              <div className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className="tabular-nums font-medium text-text-primary">{s.pressurePct}% used</span>
+                <span className="text-text-muted">·</span>
+                <span>{formatReset(s.windowEndsAt)}</span>
+                {s.confidence && s.confidence !== 'low' && (
+                  <>
+                    <span className="text-text-muted">·</span>
+                    <span className={confidenceClass(s.confidence)}>
+                      confidence: {s.confidence}
+                    </span>
+                  </>
+                )}
               </div>
-            )}
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  s.pressurePct >= 90 ? 'bg-status-error' :
+                  s.pressurePct >= 70 ? 'bg-status-warning' :
+                  'bg-primary'
+                }`}
+                style={{ width: `${Math.min(100, s.pressurePct)}%` }}
+              />
+            </div>
           </div>
         ))}
+
+        {/* Collapsed learning sessions — one summary line instead of per-row cards */}
+        {learningSessions.length > 0 && (
+          <div className="px-4 py-2.5">
+            <span className="text-xs text-text-muted">
+              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} still learning
+            </span>
+          </div>
+        )}
 
         {/* Monthly dollar budget */}
         {forecast.monthly && (
@@ -1111,7 +1126,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                   ${forecast.monthly.spentUsd.toFixed(2)} / ${forecast.monthly.budgetUsd.toFixed(0)}
                 </span>
                 <span className="text-text-muted">·</span>
-                <span>resets in {timeUntilShort(forecast.monthly.resetsAt)}</span>
+                <span>{formatReset(forecast.monthly.resetsAt)}</span>
                 {forecast.monthly.daysToDepletion !== null && (
                   <>
                     <span className="text-text-muted">·</span>
@@ -1123,10 +1138,14 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                     </span>
                   </>
                 )}
-                <span className="text-text-muted">·</span>
-                <span className={confidenceClass(forecast.monthly.confidence)}>
-                  confidence: {forecast.monthly.confidence}
-                </span>
+                {forecast.monthly.confidence !== 'low' && (
+                  <>
+                    <span className="text-text-muted">·</span>
+                    <span className={confidenceClass(forecast.monthly.confidence)}>
+                      confidence: {forecast.monthly.confidence}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
@@ -1152,7 +1171,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                 {forecast.codex.resetsAt && (
                   <>
                     <span className="text-text-muted">·</span>
-                    <span className="text-text-secondary">resets in {timeUntilShort(forecast.codex.resetsAt)}</span>
+                    <span className="text-text-secondary">{formatReset(forecast.codex.resetsAt)}</span>
                   </>
                 )}
               </div>
