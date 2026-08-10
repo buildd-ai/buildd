@@ -214,6 +214,7 @@ export function HealthClient({
       // Push-only runner has no inbound HTTP server (headless/NAT). Evaluate
       // heartbeat recency as the single source of truth instead of probing.
       const online = isRunnerOnline(hb.lastHeartbeatAt);
+      const idlePushOnly = online && hb.activeWorkerCount === 0;
       const beat = timeAgo(hb.lastHeartbeatAt);
       setRunnerHealth(prev => {
         const next = new Map(prev);
@@ -222,7 +223,9 @@ export function HealthClient({
           expanded: true,
           pushOnlyResult: {
             online,
-            message: online ? `last beat ${beat} — healthy` : `last beat ${beat} — stale`,
+            message: online
+              ? idlePushOnly ? `last beat ${beat} — healthy (idle)` : `last beat ${beat} — healthy`
+              : `last beat ${beat} — stale`,
           },
         });
         return next;
@@ -414,7 +417,12 @@ export function HealthClient({
             <div className="divide-y divide-border-default">
               {runners.map((hb) => {
                 const online = isRunnerOnline(hb.lastHeartbeatAt);
+                const idle = online && hb.activeWorkerCount === 0;
                 const health = runnerHealth.get(hb.id);
+                const statusLabel = online ? (idle ? 'idle' : 'online') : 'stale';
+                const statusClass = online
+                  ? idle ? 'text-text-muted' : 'text-status-success'
+                  : 'text-text-muted';
                 return (
                   <div key={hb.id}>
                     <div className="flex items-center gap-3 px-4 py-3">
@@ -427,8 +435,8 @@ export function HealthClient({
                           <p className="text-sm text-text-primary truncate">
                             {hb.accountName || 'Runner'}
                           </p>
-                          <span className={`text-[10px] font-mono ${online ? 'text-status-success' : 'text-text-muted'}`}>
-                            {online ? 'online' : 'stale'}
+                          <span className={`text-[10px] font-mono ${statusClass}`}>
+                            {statusLabel}
                           </span>
                         </div>
                         <p className="text-xs text-text-muted">

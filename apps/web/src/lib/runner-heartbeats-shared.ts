@@ -21,9 +21,12 @@ export interface RunnerHeartbeat {
   connectivity: 'reachable' | 'push_only';
 }
 
-/** Runner is "online" when its last beat is within the past 2 minutes. */
+// 3× the 60-second liveness ping interval — absorbs transient network hiccups.
+const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+/** Runner is "online" when its last liveness beat arrived within the past 3 minutes. */
 export function isRunnerOnline(lastHeartbeatAt: string | Date): boolean {
-  return Date.now() - new Date(lastHeartbeatAt).getTime() < 2 * 60 * 1000;
+  return Date.now() - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_WINDOW_MS;
 }
 
 /**
