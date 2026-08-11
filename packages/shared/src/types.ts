@@ -915,6 +915,12 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /** Credentials expiring within 2 hours — runner pre-refreshes via POST /api/runner/credential-refresh */
+    pendingCredentialRefreshes?: Array<{
+      secretId: string;
+      purpose: 'claude_credential' | 'codex_credential';
+      expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
+    }>;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
