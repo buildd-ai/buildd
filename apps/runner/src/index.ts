@@ -5,6 +5,7 @@ import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
+import { startCredentialRefreshSweep } from './credential-refresh-sweep';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from './updater';
@@ -656,6 +657,9 @@ if (workerManager) {
       setLatestCommit(event.latestCommit);
     }
   });
+  // Periodic idle credential refresh — rotates tokens seen in claim responses
+  // even when the runner is quiet and no tasks are being polled.
+  startCredentialRefreshSweep();
 } else if (config.serverless || !config.apiKey) {
   // In serverless mode, poll the public /api/version endpoint
   pollVersion();
