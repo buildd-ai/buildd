@@ -66,6 +66,14 @@ export interface UpsertChunk {
   relations?: RelationRef[];
   /** Entity keys or source_ids this chunk supersedes. Phase 2+. */
   supersedes?: string[];
+  /**
+   * When true, skip inserting this chunk if identical content (same content_hash)
+   * already exists in the namespace under a different source_id. Prevents
+   * cross-entity near-duplicates — e.g. the same file diff appearing in multiple
+   * rebased PRs produces near-identical chunks that dilute PR corpus retrieval.
+   * Default false.
+   */
+  contentDedup?: boolean;
 }
 
 /** Result of an upsert batch. Superseded counts explicit-supersession matches. */
