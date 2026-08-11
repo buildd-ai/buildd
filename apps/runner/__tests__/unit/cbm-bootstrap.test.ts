@@ -242,7 +242,7 @@ describe('runCbmBootstrap', () => {
     expect(capturedEnv!['CBM_CACHE_DIR']).toBe('/tmp/cbm-wk-env');
     expect(capturedEnv!['CBM_ALLOWED_ROOT']).toBe('/tmp/my-worktree');
     expect(capturedEnv!['CBM_AUTO_WATCH']).toBe('false');
-    expect(capturedEnv!['CBM_MEM_BUDGET_MB']).toBe('512');
+    expect(capturedEnv!['CBM_MEM_BUDGET_MB']).toBe('1024');
   });
 
   it('substitutes __WORKSPACE_DIR__ in env values from the server config', async () => {
@@ -334,10 +334,10 @@ describe('buildCbmMcpEntry', () => {
     expect(entry.env['EXTRA']).toBe('/actual/cwd/sub');
   });
 
-  it('always sets CBM_AUTO_WATCH=false and CBM_MEM_BUDGET_MB=512', () => {
+  it('always sets CBM_AUTO_WATCH=false and CBM_MEM_BUDGET_MB=1024', () => {
     const entry = buildCbmMcpEntry(fakeCbmConfig(), '/tmp/cbm-y', '/cwd');
     expect(entry.env['CBM_AUTO_WATCH']).toBe('false');
-    expect(entry.env['CBM_MEM_BUDGET_MB']).toBe('512');
+    expect(entry.env['CBM_MEM_BUDGET_MB']).toBe('1024');
   });
 
   it('passes through server args from config', () => {
