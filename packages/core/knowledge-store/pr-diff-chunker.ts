@@ -99,6 +99,11 @@ export function chunkPrDiffFile(
     sourcePath: null,
     sourceUrl: file.sourceUrl ?? undefined,
     sourceTs: meta.sourceTs ?? undefined,
+    // Skip if identical diff content already exists under a different PR's source_id.
+    // A file that appears unchanged across multiple rebased PRs (e.g. a design doc
+    // added in PR A and carried forward into PRs B and C) produces near-identical
+    // chunks that degrade retrieval precision. First-indexed wins; later PRs skip.
+    contentDedup: true,
     metadata: {
       prNumber: meta.prNumber,
       path: file.path,
