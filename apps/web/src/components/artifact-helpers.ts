@@ -3,6 +3,57 @@
  * Extracted from ArtifactList component for testability.
  */
 
+/**
+ * Strips markdown formatting and truncates to 160 chars at a word boundary,
+ * for use in collapsed artifact card previews (mobile, 2-line display).
+ * Returns null for null/empty input. Never throws.
+ */
+export function getArtifactCollapsedPreview(content: string | null | undefined): string | null {
+  if (!content) return null;
+  try {
+    let s = content.trim();
+    // Remove ATX heading markers (keep heading text)
+    s = s.replace(/^#{1,6}\s+/gm, '');
+    // Remove setext heading underlines (lines of only = or -)
+    s = s.replace(/^[=\-]+\s*$/gm, '');
+    // Strip bold/italic markers
+    s = s.replace(/[*_]{1,3}([^*_\n]+)[*_]{1,3}/g, '$1');
+    // Strip code fence delimiter lines
+    s = s.replace(/^```[^\n]*$/gm, '').replace(/^~~~[^\n]*$/gm, '');
+    // Strip inline code backticks
+    s = s.replace(/`([^`]+)`/g, '$1');
+    // Strip list markers
+    s = s.replace(/^[-*+]\s+/gm, '').replace(/^\d+\.\s+/gm, '');
+    // Collapse multiple blank lines
+    s = s.replace(/\n{3,}/g, '\n\n');
+    // Collapse to single space-separated string of words
+    const words = s.split(/\s+/).filter(Boolean);
+    s = words.join(' ');
+    if (!s) return null;
+    if (s.length <= 160) return s;
+    const truncated = s.slice(0, 160);
+    const lastSpace = truncated.lastIndexOf(' ');
+    return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '…';
+  } catch {
+    return content.slice(0, 160);
+  }
+}
+
+function normalizeForDedupeCompare(s: string): string {
+  return s.trim().replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * Returns true if a summary-type artifact's content is effectively a duplicate
+ * of the task result.summary (equal, or one is a substring of the other).
+ */
+export function isSummaryDuplicate(artifactContent: string | null | undefined, resultSummary: string | null | undefined): boolean {
+  if (!artifactContent || !resultSummary) return false;
+  const a = normalizeForDedupeCompare(artifactContent);
+  const b = normalizeForDedupeCompare(resultSummary);
+  return a === b || b.includes(a) || a.includes(b);
+}
+
 export interface ArtifactPreviewInput {
   type: string;
   content: string | null;

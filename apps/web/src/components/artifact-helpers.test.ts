@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { getArtifactPreview, buildCreateTaskUrl, type ArtifactPreviewInput } from './artifact-helpers';
+import { getArtifactPreview, buildCreateTaskUrl, getArtifactCollapsedPreview, isSummaryDuplicate, type ArtifactPreviewInput } from './artifact-helpers';
 
 describe('getArtifactPreview', () => {
   test('returns URL for link artifacts from metadata', () => {
@@ -77,6 +77,87 @@ describe('getArtifactPreview', () => {
       metadata: {},
     };
     expect(getArtifactPreview(artifact)).toBe('# Report\n\nSome markdown content with **bold** text.');
+  });
+});
+
+describe('getArtifactCollapsedPreview', () => {
+  test('returns null for null input (AC-7)', () => {
+    expect(getArtifactCollapsedPreview(null)).toBeNull();
+  });
+
+  test('returns null for empty string', () => {
+    expect(getArtifactCollapsedPreview('')).toBeNull();
+  });
+
+  test('strips ATX heading markers, keeps heading text', () => {
+    expect(getArtifactCollapsedPreview('## My Heading')).toBe('My Heading');
+  });
+
+  test('strips bold and italic markers', () => {
+    expect(getArtifactCollapsedPreview('This is **bold** and _italic_ text.')).toBe(
+      'This is bold and italic text.'
+    );
+  });
+
+  test('strips unordered list markers', () => {
+    expect(getArtifactCollapsedPreview('- Item one\n- Item two')).toBe('Item one Item two');
+  });
+
+  test('strips ordered list markers', () => {
+    expect(getArtifactCollapsedPreview('1. First\n2. Second')).toBe('First Second');
+  });
+
+  test('truncates to 160 chars at a word boundary and appends ellipsis', () => {
+    // Build a string that exceeds 160 chars with words so word-boundary truncation is observable
+    const words = Array.from({ length: 40 }, (_, i) => `word${i}`).join(' ');
+    const result = getArtifactCollapsedPreview(words)!;
+    expect(result.endsWith('…')).toBe(true);
+    // Slice without the ellipsis must be ≤ 160 chars
+    expect(result.slice(0, -1).length).toBeLessThanOrEqual(160);
+    // Must end on a word boundary (no trailing partial word before the ellipsis)
+    const withoutEllipsis = result.slice(0, -1);
+    expect(withoutEllipsis.endsWith(' ')).toBe(false);
+    expect(words.startsWith(withoutEllipsis)).toBe(true);
+  });
+
+  test('returns full string when ≤ 160 chars', () => {
+    const short = 'Short content without any markdown.';
+    expect(getArtifactCollapsedPreview(short)).toBe(short);
+  });
+
+  test('never throws on malformed markdown', () => {
+    const malformed = '**unclosed bold *** _mixed__ `backtick ~~strike';
+    expect(() => getArtifactCollapsedPreview(malformed)).not.toThrow();
+  });
+});
+
+describe('isSummaryDuplicate', () => {
+  test('returns false when artifactContent is null (AC-5)', () => {
+    expect(isSummaryDuplicate(null, 'some summary')).toBe(false);
+  });
+
+  test('returns false when resultSummary is null', () => {
+    expect(isSummaryDuplicate('some content', null)).toBe(false);
+  });
+
+  test('returns true for normalized-equal strings (AC-5)', () => {
+    expect(isSummaryDuplicate('Hello world', 'Hello world')).toBe(true);
+  });
+
+  test('returns true when artifact content is a substring of summary', () => {
+    expect(isSummaryDuplicate('short', 'This is a short summary')).toBe(true);
+  });
+
+  test('returns true when summary is a substring of artifact content', () => {
+    expect(isSummaryDuplicate('This is a short summary', 'short')).toBe(true);
+  });
+
+  test('returns false for totally different strings', () => {
+    expect(isSummaryDuplicate('apple pie recipe', 'quantum computing overview')).toBe(false);
+  });
+
+  test('returns true for strings that differ only by trailing newline', () => {
+    expect(isSummaryDuplicate('Hello world\n', 'Hello world')).toBe(true);
   });
 });
 

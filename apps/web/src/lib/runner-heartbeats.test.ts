@@ -105,18 +105,21 @@ describe('isPushOnlyRunner', () => {
 });
 
 describe('isRunnerOnline', () => {
-  it('returns true when last heartbeat was under 2 minutes ago', () => {
+  // Runner now sends a liveness ping every 60s. isRunnerOnline uses a 3-minute
+  // window (3× the ping interval) to absorb transient network hiccups.
+
+  it('returns true when last heartbeat was under 3 minutes ago', () => {
     const recent = new Date(Date.now() - 60 * 1000).toISOString();
     expect(isRunnerOnline(recent)).toBe(true);
   });
 
-  it('returns true at just under 2 minutes', () => {
-    const boundary = new Date(Date.now() - 119 * 1000).toISOString();
+  it('returns true at just under 3 minutes', () => {
+    const boundary = new Date(Date.now() - 179 * 1000).toISOString();
     expect(isRunnerOnline(boundary)).toBe(true);
   });
 
-  it('returns false when last heartbeat was over 2 minutes ago', () => {
-    const stale = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+  it('returns false when last heartbeat was over 3 minutes ago', () => {
+    const stale = new Date(Date.now() - 4 * 60 * 1000).toISOString();
     expect(isRunnerOnline(stale)).toBe(false);
   });
 

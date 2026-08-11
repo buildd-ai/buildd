@@ -27,6 +27,8 @@ export interface ArtifactViewerProps {
     id: string,
     next: { visibility: 'private' | 'public'; shareToken: string | null },
   ) => void; // notify parent after share/unshare so it can update local state
+  /** If set, the "Open ↗" link appends ?from=task&taskId=<id> or ?from=mission&missionId=<id> */
+  fromContext?: { type: 'task'; taskId: string } | { type: 'mission'; missionId: string };
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -65,6 +67,7 @@ export default function ArtifactViewer({
   baseUrl,
   canShare = false,
   onShareChange,
+  fromContext,
 }: ArtifactViewerProps) {
   const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -323,7 +326,7 @@ export default function ArtifactViewer({
           </div>
 
           {/* Footer actions */}
-          <footer className="border-t border-card-border px-4 py-3">
+          <footer className="border-t border-card-border px-4 py-3 pb-[max(12px,env(safe-area-inset-bottom,0px))]" style={{ minHeight: 44 }}>
             {shareErrorId === active.id && (
               <p className="mb-2 text-xs text-status-error">
                 Something went wrong. Please try again.
@@ -362,7 +365,12 @@ export default function ArtifactViewer({
               )}
 
               <Link
-                href={`/app/artifacts/${active.id}`}
+                href={(() => {
+                  const base = `/app/artifacts/${active.id}`;
+                  if (!fromContext) return base;
+                  if (fromContext.type === 'task') return `${base}?from=task&taskId=${fromContext.taskId}`;
+                  return `${base}?from=mission&missionId=${fromContext.missionId}`;
+                })()}
                 className="px-3 py-1.5 text-xs font-medium bg-surface-3 border border-card-border text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
               >
                 Open ↗

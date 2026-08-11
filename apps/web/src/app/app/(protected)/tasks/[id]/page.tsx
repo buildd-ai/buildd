@@ -26,6 +26,9 @@ import AiFeedback from '@/components/AiFeedback';
 import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
+import { isSummaryDuplicate } from '@/components/artifact-helpers';
+import TaskArtifactsSection from './TaskArtifactsSection';
+import ArtifactShareControl from '@/components/ArtifactShareControl';
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -40,10 +43,13 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 export default async function TaskDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ artifact?: string }>;
 }) {
   const { id } = await params;
+  const { artifact: initialOpenArtifactId } = await searchParams;
   if (!isValidTaskId(id)) notFound();
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
@@ -129,6 +135,17 @@ export default async function TaskDetailPage({
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
   );
+
+  // Dedupe: find if exactly one summary-type artifact duplicates result.summary
+  const resultSummary = (task.result as any)?.summary as string | undefined;
+  const summaryArtifacts = deliverableArtifacts.filter(a => a.type === 'summary');
+  const suppressedSummaryArtifact =
+    resultSummary && summaryArtifacts.length === 1 && isSummaryDuplicate(summaryArtifacts[0].content, resultSummary)
+      ? summaryArtifacts[0]
+      : null;
+  const visibleArtifacts = suppressedSummaryArtifact
+    ? deliverableArtifacts.filter(a => a.id !== suppressedSummaryArtifact.id)
+    : deliverableArtifacts;
 
   // Fetch execution plan chain: siblings (if child) or children (if parent)
   const planParentId = task.parentTaskId ?? (task.subTasks?.length ? task.id : null);
@@ -810,8 +827,24 @@ export default async function TaskDetailPage({
                 {!hasCodeDeliverables && result.summary && (
                   <div className="p-5 bg-surface-2 border border-border-default rounded-[10px] mb-4">
                     <MarkdownContent content={result.summary} />
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex justify-end">
+                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
                       <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
+                      {suppressedSummaryArtifact && (
+                        <div className="flex items-center gap-2">
+                          <ArtifactShareControl
+                            artifactId={suppressedSummaryArtifact.id}
+                            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+                            initialVisibility={(suppressedSummaryArtifact.visibility as 'private' | 'public') ?? 'private'}
+                            initialShareToken={suppressedSummaryArtifact.shareToken}
+                          />
+                          <a
+                            href={`/app/artifacts/${suppressedSummaryArtifact.id}`}
+                            className="text-[11px] text-text-muted hover:text-text-secondary"
+                          >
+                            Open ↗
+                          </a>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -881,67 +914,22 @@ export default async function TaskDetailPage({
         )}
 
         {/* Artifacts */}
-        {deliverableArtifacts.length > 0 && (
-          <div className="mb-8">
-            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-              Artifacts ({deliverableArtifacts.length})
-            </div>
-            <div className="space-y-3">
-              {deliverableArtifacts.map((art) => {
-                const artMeta = art.metadata as Record<string, unknown> | null;
-                const artUrl = artMeta?.url as string | undefined;
-                const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-                const shareLink = art.shareToken ? `${baseUrl}/share/${art.shareToken}` : null;
-
-                return (
-                  <div key={art.id} className="p-4 bg-surface-2 border border-border-default rounded-[10px]">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider bg-surface-3 text-text-muted rounded">
-                        {art.type}
-                      </span>
-                      <span className="text-sm font-medium text-text-primary">{art.title}</span>
-                      {shareLink && (
-                        <a
-                          href={shareLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-auto px-2.5 py-1 text-[11px] bg-surface-3 border border-border-default rounded hover:bg-surface-4 text-text-secondary"
-                        >
-                          Share
-                        </a>
-                      )}
-                    </div>
-                    {art.type === 'link' && artUrl && (
-                      <a
-                        href={artUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary-400 hover:underline break-all"
-                      >
-                        {artUrl}
-                      </a>
-                    )}
-                    {(art.type === 'content' || art.type === 'report' || art.type === 'summary') && art.content && (
-                      <div className="text-sm text-text-secondary max-h-48 overflow-hidden relative">
-                        <MarkdownContent content={art.content} />
-                        {art.content.length > 500 && (
-                          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-surface-2 to-transparent" />
-                        )}
-                      </div>
-                    )}
-                    {art.type === 'data' && art.content && (
-                      <pre className="text-xs font-mono text-text-muted mt-1 line-clamp-3 overflow-hidden">
-                        {art.content.length > 500 ? art.content.slice(0, 500) + '...' : art.content}
-                      </pre>
-                    )}
-                    <div className="mt-2 pt-2 border-t border-border-default/50 flex justify-end">
-                      <AiFeedback entityType="artifact" entityId={art.id} showDismiss compact />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        {visibleArtifacts.length > 0 && (
+          <TaskArtifactsSection
+            artifacts={visibleArtifacts.map(a => ({
+              id: a.id,
+              type: a.type,
+              title: a.title,
+              content: a.content,
+              shareToken: a.shareToken,
+              visibility: (a.visibility as 'private' | 'public') ?? 'private',
+              metadata: (a.metadata as Record<string, unknown>) ?? {},
+              createdAt: a.createdAt.toISOString(),
+            }))}
+            taskId={task.id}
+            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+            initialOpenArtifactId={initialOpenArtifactId}
+          />
         )}
 
         {/* Worker History */}

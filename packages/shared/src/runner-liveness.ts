@@ -5,7 +5,13 @@ export const RUNNER_POLL_MIN = Number(
   process.env.BUILDD_RUNNER_POLL_MIN ?? 60
 );
 
+// Task-poll cycle: reconcile, claim fallback, and knowledge ingest all fire here.
+// This is NOT the liveness ping — it's the task-coordination heartbeat.
 export const RUNNER_HEARTBEAT_INTERVAL_MS = RUNNER_POLL_MIN * 60_000;
+
+// Liveness ping interval: a pure "runner is alive" signal sent every 60s,
+// independent of task activity. isRunnerOnline on the Health tab keys off this.
+export const LIVENESS_PING_INTERVAL_MS = 60_000;
 
 // Runner is "online" when its last beat arrived within 1.5× the interval.
 // Between 1.5× and 2.5× it shows as "stale" (beat is overdue but runner may recover).
