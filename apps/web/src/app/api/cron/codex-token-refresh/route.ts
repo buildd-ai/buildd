@@ -106,6 +106,11 @@ export async function GET(req: NextRequest) {
   let claudeErrors = 0;
   let claudeNoCredential = 0;
 
+  // BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true: opt-in fallback that retains this
+  // direct token-endpoint call from Vercel's rotating IP. Default OFF because
+  // an IP-flip on the first refresh after a quiet period is the root cause of
+  // invalid_grant revocations. Only set this flag if the runner is persistently
+  // offline and you accept the revocation risk.
   for (const cred of expiringClaude) {
     const outcome = await refreshClaudeCredential(cred.id);
     claudeRefreshResults[cred.id] = outcome;

@@ -26,6 +26,7 @@ import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from '
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { runnerRefreshCredential } from './credential-refresh';
+import { updateSeenCredential } from './credential-refresh-sweep';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
@@ -951,11 +952,15 @@ export class WorkerManager {
         // Pre-refresh expiring credentials before spawning the subprocess.
         // Both server-side (claim-gate) and runner-side paths are live during the
         // transition; the DB lock prevents double-rotation.
-        if (process.env.BUILDD_RUNNER_REFRESH === 'true') {
-          const pending = (claimedWorker as any).pendingCredentialRefreshes as
-            Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
-          if (pending && pending.length > 0) {
-            for (const entry of pending) {
+        const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
+          Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
+        if (pendingRefreshes && pendingRefreshes.length > 0) {
+          // Always record in the sweep map so the idle sweep knows about these credentials.
+          for (const entry of pendingRefreshes) {
+            updateSeenCredential(entry);
+          }
+          if (process.env.BUILDD_RUNNER_REFRESH === 'true') {
+            for (const entry of pendingRefreshes) {
               const result = await runnerRefreshCredential(entry.secretId, entry.purpose);
               console.log(`[Worker ${claimedWorker.id}] Pre-spawn credential refresh ${entry.purpose} (${entry.secretId}): ${result}`);
             }
