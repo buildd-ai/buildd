@@ -251,7 +251,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 1. \`recall\` (query: task title) BEFORE starting — check for prior gotchas and patterns.
 2. \`buildd\` action=claim_task → checkout the returned branch → do the work.
 3. Report progress at milestones (25%, 50%, 75%) via action=update_progress.
-4. When done: push commits → action=create_pr.
+4. When done: push commits → action=create_pr → optionally action=get_pr to check CI/review state → action=merge_pr to merge once green.
 5. Before completing: write a summary artifact (\`buildd\` action=create_artifact, type=summary) and save relevant lessons (\`learn\`).
 6. \`buildd\` action=complete_task (with summary).
 

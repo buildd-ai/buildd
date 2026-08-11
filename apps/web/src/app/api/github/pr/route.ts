@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull } from 'drizzle-orm';
-import { githubApi } from '@/lib/github';
+import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 
@@ -327,6 +327,217 @@ export async function PATCH(req: NextRequest) {
   } catch (error) {
     console.error('Close PR error:', error);
     const message = error instanceof Error ? error.message : 'Failed to close PR';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+// PUT /api/github/pr - Merge a pull request
+export async function PUT(req: NextRequest) {
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  const account = await authenticateApiKey(apiKey);
+  if (!account) {
+    return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { workerId, prNumber, mergeMethod = 'squash' } = body;
+
+    if (!workerId) {
+      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
+    }
+    if (!prNumber || typeof prNumber !== 'number') {
+      return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
+    }
+
+    const worker = await db.query.workers.findFirst({
+      where: eq(workers.id, workerId),
+      with: { workspace: true },
+    });
+
+    if (!worker) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+    if (worker.accountId !== account.id) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+
+    const workspace = worker.workspace;
+    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
+      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
+    }
+
+    const repo = await db.query.githubRepos.findFirst({
+      where: eq(githubRepos.id, workspace.githubRepoId),
+      with: { installation: true },
+    });
+
+    if (!repo || !repo.installation) {
+      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    }
+
+    const result = await mergePullRequest(
+      repo.installation.installationId,
+      repo.fullName,
+      prNumber,
+      mergeMethod as 'merge' | 'squash' | 'rebase',
+    );
+
+    if (result.merged) {
+      await db
+        .update(workers)
+        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+        .where(eq(workers.id, workerId));
+    } else if (/resource not accessible by integration/i.test(result.message)) {
+      // The GitHub App installation lacks the required permissions.
+      // Merging requires pull_requests:write AND contents:write.
+      // Closing (close_pr) only needs pull_requests:write, which explains why close
+      // succeeds but merge fails on a fresh installation.
+      return NextResponse.json({
+        error: result.message,
+        hint: 'GitHub App merge requires contents:write permission in addition to pull_requests:write. Update the App permissions at github.com/settings/apps and have org admins re-accept.',
+      }, { status: 403 });
+    }
+
+    return NextResponse.json({
+      ok: result.merged,
+      merged: result.merged,
+      message: result.message,
+      pr: {
+        number: prNumber,
+        url: worker.prUrl ?? null,
+      },
+    });
+  } catch (error) {
+    console.error('Merge PR error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to merge PR';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+// GET /api/github/pr?workerId=...&prNumber=... - Read PR details
+export async function GET(req: NextRequest) {
+  const authHeader = req.headers.get('authorization');
+  const apiKey = authHeader?.replace('Bearer ', '') || null;
+
+  const account = await authenticateApiKey(apiKey);
+  if (!account) {
+    return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+  }
+
+  try {
+    const { searchParams } = new URL(req.url);
+    const workerId = searchParams.get('workerId');
+    const prNumberParam = searchParams.get('prNumber');
+
+    if (!workerId) {
+      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
+    }
+
+    const worker = await db.query.workers.findFirst({
+      where: eq(workers.id, workerId),
+      with: { workspace: true },
+    });
+
+    if (!worker) {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+    if (worker.accountId !== account.id) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+
+    const workspace = worker.workspace;
+    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
+      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
+    }
+
+    const repo = await db.query.githubRepos.findFirst({
+      where: eq(githubRepos.id, workspace.githubRepoId),
+      with: { installation: true },
+    });
+
+    if (!repo || !repo.installation) {
+      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    }
+
+    const prNumber = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
+    if (!prNumber) {
+      return NextResponse.json(
+        { error: 'prNumber required — pass ?prNumber= or ensure worker has a PR' },
+        { status: 400 },
+      );
+    }
+
+    const installationId = repo.installation.installationId;
+    const fullName = repo.fullName;
+
+    // Fetch PR first to get headSha for the check-runs query
+    const pr = await githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}`);
+    const headSha = pr.head?.sha;
+
+    // Fetch CI checks and reviews in parallel
+    const [checksResult, reviewsResult] = await Promise.allSettled([
+      headSha
+        ? githubApi(installationId, `/repos/${fullName}/commits/${headSha}/check-runs?per_page=100`)
+        : Promise.resolve(null),
+      githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}/reviews`),
+    ]);
+
+    const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
+    const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
+
+    // Summarise CI checks
+    const checkRuns = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
+    const terminal = (c: any) => c.status === 'completed';
+    const passing = (c: any) => terminal(c) && (c.conclusion === 'success' || c.conclusion === 'skipped' || c.conclusion === 'neutral');
+    const failing = (c: any) => terminal(c) && (c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled' || c.conclusion === 'action_required');
+    const ciSummary = {
+      total: checkRuns.length,
+      passed: checkRuns.filter(passing).length,
+      failed: checkRuns.filter(failing).length,
+      pending: checkRuns.filter((c: any) => !terminal(c)).length,
+      state: checkRuns.length === 0 ? 'none' as const
+        : checkRuns.every(passing) ? 'success' as const
+        : checkRuns.some(failing) ? 'failure' as const
+        : 'pending' as const,
+    };
+
+    // Summarise reviews — count only the latest review per user
+    const reviewList = Array.isArray(reviewsData) ? reviewsData : [];
+    const latestByUser = new Map<string, string>();
+    for (const r of reviewList) {
+      if (r.user?.login) latestByUser.set(r.user.login, r.state);
+    }
+    const reviewStates = [...latestByUser.values()];
+    const reviewSummary = {
+      approved: reviewStates.filter(s => s === 'APPROVED').length,
+      changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
+      pending: reviewStates.filter(s => s === 'PENDING').length,
+    };
+
+    return NextResponse.json({
+      ok: true,
+      pr: {
+        number: prNumber,
+        title: pr.title ?? null,
+        body: pr.body ?? null,
+        state: pr.state ?? null,
+        url: pr.html_url ?? worker.prUrl ?? null,
+        mergeable: pr.mergeable ?? null,
+        mergeableState: pr.mergeable_state ?? null,
+        headSha: headSha ?? worker.lastCommitSha ?? null,
+        additions: pr.additions ?? null,
+        deletions: pr.deletions ?? null,
+        changedFiles: pr.changed_files ?? null,
+      },
+      checks: ciSummary,
+      reviews: reviewSummary,
+    });
+  } catch (error) {
+    console.error('Get PR error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to get PR';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
