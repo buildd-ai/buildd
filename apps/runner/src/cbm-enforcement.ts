@@ -94,7 +94,8 @@ export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string) {
       CBM_CACHE_DIR: cbmCacheDir,
       CBM_ALLOWED_ROOT: sessionCwd,
       CBM_AUTO_WATCH: 'false',
-      CBM_MEM_BUDGET_MB: '512',
+      // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.
+      CBM_MEM_BUDGET_MB: '1024',
     },
   };
 }
