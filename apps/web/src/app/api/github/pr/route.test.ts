@@ -1618,6 +1618,45 @@ describe('GET /api/github/pr', () => {
     expect(data.reviews.changesRequested).toBe(0);
   });
 
+  it('COMMENTED review after APPROVED does not erase approval', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 42,
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      lastCommitSha: null,
+      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'owner/repo',
+      defaultBranch: 'main',
+      installation: { installationId: 12345 },
+    });
+
+    // PR details
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42, title: 'test', body: null, state: 'open',
+      mergeable: true, mergeable_state: 'clean',
+      html_url: 'https://github.com/owner/repo/pull/42',
+      head: { sha: 'abc123' }, additions: 1, deletions: 0, changed_files: 1,
+    });
+    // check-runs: empty
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    // reviews: alice approved, then posted a follow-up comment
+    mockGithubApi.mockResolvedValueOnce([
+      { user: { login: 'alice' }, state: 'APPROVED' },
+      { user: { login: 'alice' }, state: 'COMMENTED' },
+    ]);
+
+    const res = await GET(createGetRequest('w-1', 42));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.reviews.approved).toBe(1);
+    expect(data.reviews.changesRequested).toBe(0);
+  });
+
   it('auto-resolves prNumber from worker when not provided in query', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

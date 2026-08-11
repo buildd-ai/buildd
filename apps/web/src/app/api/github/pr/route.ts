@@ -504,11 +504,16 @@ export async function GET(req: NextRequest) {
         : 'pending' as const,
     };
 
-    // Summarise reviews — count only the latest review per user
+    // Summarise reviews — count only the latest actionable review per user.
+    // Skip COMMENTED (comment-only submits) so a follow-up comment after an
+    // approval doesn't overwrite the approval in the Map.
+    const ACTIONABLE_REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED', 'PENDING']);
     const reviewList = Array.isArray(reviewsData) ? reviewsData : [];
     const latestByUser = new Map<string, string>();
     for (const r of reviewList) {
-      if (r.user?.login) latestByUser.set(r.user.login, r.state);
+      if (r.user?.login && ACTIONABLE_REVIEW_STATES.has(r.state)) {
+        latestByUser.set(r.user.login, r.state);
+      }
     }
     const reviewStates = [...latestByUser.values()];
     const reviewSummary = {
