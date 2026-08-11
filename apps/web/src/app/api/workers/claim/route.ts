@@ -2155,6 +2155,45 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Populate pendingCredentialRefreshes: credentials expiring within 2 hours that
+  // the runner should pre-refresh before spawning its subprocess. Both claude_credential
+  // and codex_credential rows visible to each task's workspace/team are included.
+  // The existing server-side refresh calls above are NOT removed yet (cutover in step-5);
+  // the DB lock prevents double-rotation when both paths run.
+  if (process.env.ENCRYPTION_KEY) {
+    for (const cw of claimedWorkers) {
+      const task = filteredTasks.find(t => t.id === cw.taskId);
+      const wsId = task?.workspaceId;
+      const teamId = (task as any)?.workspace?.teamId;
+      if (!wsId || !teamId) continue;
+
+      try {
+        const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
+        const pendingRows = await db.query.secrets.findMany({
+          where: and(
+            eq(secrets.teamId, teamId),
+            inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
+            not(eq(secrets.healthStatus, 'revoked')),
+            isNotNull(secrets.tokenExpiresAt),
+            lt(secrets.tokenExpiresAt, twoHoursFromNow),
+            or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
+          ),
+          columns: { id: true, purpose: true, tokenExpiresAt: true },
+        });
+
+        if (pendingRows.length > 0) {
+          (cw as any).pendingCredentialRefreshes = pendingRows.map(row => ({
+            secretId: row.id,
+            purpose: row.purpose as 'claude_credential' | 'codex_credential',
+            expiresAt: row.tokenExpiresAt ? (row.tokenExpiresAt as Date).toISOString() : null,
+          }));
+        }
+      } catch (err) {
+        console.warn(`[claim] Failed to query pending credential refreshes for workspace ${wsId}:`, err);
+      }
+    }
+  }
+
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
     const task = cw.task as any;
