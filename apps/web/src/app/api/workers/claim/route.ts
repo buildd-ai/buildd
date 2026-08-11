@@ -12,8 +12,8 @@ import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { hasCodexCredential, resolveCodexCredential, refreshCodexCredential, getCodexSecretId } from '@/lib/codex-credential';
-import { resolveClaudeCredential, refreshClaudeCredential, getClaudeSecretId } from '@/lib/claude-credential';
+import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
+import { resolveClaudeCredential } from '@/lib/claude-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import {
   describeOauthPressure,
@@ -2050,36 +2050,8 @@ export async function POST(req: NextRequest) {
 
       try {
         // Resolve the most-specific credential: workspace > account > team-wide.
-        let cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
-        if (cred) {
-          // D: Claim-gate refresh. Refresh an OAuth credential that is expired OR
-          // within 10 minutes of expiry, preventing the runner from starting with a
-          // token that will expire mid-session. Matching the Claude credential path.
-          const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
-          if (
-            cred.credentialType === 'oauth' &&
-            cred.tokenExpiresAt &&
-            new Date(cred.tokenExpiresAt) < tenMinutesFromNow
-          ) {
-            const secretId = await getCodexSecretId({ teamId, accountId: account.id, workspaceId: wsId });
-            if (secretId) {
-              const refreshResult = await refreshCodexCredential(secretId);
-              if (refreshResult === 'refreshed') {
-                // Re-fetch the now-fresh credential
-                const refreshed = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
-                if (refreshed) cred = refreshed;
-                console.log(`[claim] Codex credential refreshed at claim time for workspace ${wsId}`);
-              } else if (refreshResult === 'error' || refreshResult === 'revoked') {
-                // Refresh failed — omit the credential so the worker errors
-                // immediately with a clear message instead of using a stale token.
-                console.warn(`[claim] Codex credential refresh ${refreshResult} for workspace ${wsId} — omitting credential`);
-                cred = null;
-              }
-              // 'locked' means another refresh is in progress — proceed with the
-              // existing (potentially just-refreshed) credential.
-            }
-          }
-        }
+        // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
+        const cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
         if (cred) {
           (cw as any).codexCredential = {
             credentialType: cred.credentialType,
@@ -2110,8 +2082,9 @@ export async function POST(req: NextRequest) {
   // file, it cannot call Anthropic's token endpoint, eliminating the "token family
   // revocation" cascade that occurs when multiple workers rotate concurrently.
   //
-  // Server-side refresh (with a 60-minute optimistic DB lock) ensures the access_token
-  // is fresh at claim time. The cron job proactively refreshes tokens before they expire.
+  // Refresh is now runner-side: the runner calls /api/runner/credential-refresh before
+  // spawning its subprocess when pendingCredentialRefreshes is non-empty. The cron job
+  // nudges runners proactively via credential-refresh tasks before tokens expire.
   if (process.env.ENCRYPTION_KEY) {
     for (const cw of claimedWorkers) {
       const task = filteredTasks.find(t => t.id === cw.taskId);
@@ -2123,27 +2096,11 @@ export async function POST(req: NextRequest) {
       if (!wsId || !teamId) continue;
 
       try {
-        let cred = await resolveClaudeCredential({ teamId, workspaceId: wsId });
-        if (cred) {
-          // Claim-gate refresh: if the access_token is within 10 minutes of expiry,
-          // refresh server-side before handing it to the runner.
-          const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
-          if (cred.tokenExpiresAt && new Date(cred.tokenExpiresAt) < tenMinutesFromNow) {
-            const secretId = await getClaudeSecretId({ teamId, workspaceId: wsId });
-            if (secretId) {
-              const refreshResult = await refreshClaudeCredential(secretId);
-              if (refreshResult === 'refreshed') {
-                const refreshed = await resolveClaudeCredential({ teamId, workspaceId: wsId });
-                if (refreshed) cred = refreshed;
-                console.log(`[claim] Claude credential refreshed at claim time for workspace ${wsId}`);
-              } else if (refreshResult === 'error') {
-                console.warn(`[claim] Claude credential refresh failed for workspace ${wsId} — omitting`);
-                cred = null;
-              }
-              // 'locked' = concurrent refresh in progress — proceed with existing token.
-            }
-          }
-        }
+        // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
+        // NOTE: credentials with healthStatus = 'revoked' (killed by prior Vercel IP-flip refreshes)
+        // cannot be recovered by this cutover — users must reconnect via the OAuth device-code flow.
+        // The first refresh after reconnect comes from the runner (workers.ts BUILDD_RUNNER_REFRESH gate).
+        const cred = await resolveClaudeCredential({ teamId, workspaceId: wsId });
         if (cred) {
           (cw as any).claudeAccessToken = cred.accessToken;
           (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
@@ -2158,8 +2115,7 @@ export async function POST(req: NextRequest) {
   // Populate pendingCredentialRefreshes: credentials expiring within 2 hours that
   // the runner should pre-refresh before spawning its subprocess. Both claude_credential
   // and codex_credential rows visible to each task's workspace/team are included.
-  // The existing server-side refresh calls above are NOT removed yet (cutover in step-5);
-  // the DB lock prevents double-rotation when both paths run.
+  // Server-side claim-gate refresh has been removed; the runner is now the sole refresh origin.
   if (process.env.ENCRYPTION_KEY) {
     for (const cw of claimedWorkers) {
       const task = filteredTasks.find(t => t.id === cw.taskId);

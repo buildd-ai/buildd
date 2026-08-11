@@ -132,5 +132,6 @@ export async function runnerRefreshCredential(
   }
 
   console.log(`[runner-refresh] Refreshed ${purpose} for ${secretId}`);
+  console.log(`[credential-refresh] RUNNER-ORIGIN refresh complete: secretId=${secretId} purpose=${purpose} expiresAt=${expiresAt}`);
   return 'refreshed';
 }
