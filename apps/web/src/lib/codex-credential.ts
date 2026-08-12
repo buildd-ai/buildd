@@ -268,7 +268,7 @@ export async function resolveCodexCredential(opts: {
   };
 }
 
-/** True when an unexpired Codex credential exists for this task scope. Does not decrypt token values. */
+/** True when a live (non-revoked) Codex credential exists for this task scope. Does not decrypt token values. */
 export async function hasCodexCredential(opts: {
   teamId: string;
   accountId?: string | null;
@@ -281,10 +281,13 @@ export async function hasCodexCredential(opts: {
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     ),
-    columns: { tokenExpiresAt: true },
+    columns: { tokenExpiresAt: true, healthStatus: true },
   });
-  // Any stored credential counts — Codex CLI refreshes expired tokens via refresh_token.
-  return rows.length > 0;
+  // Expired credentials still count — the CLI refreshes via refresh_token. Revoked
+  // credentials cannot be refreshed (the refresh_token family was invalidated by the
+  // provider), so exclude them to prevent tryFlipToCodex from routing tasks to a
+  // disconnected backend that resolveCodexCredential will then return null for.
+  return rows.some((r) => (r.healthStatus as string) !== 'revoked');
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */
