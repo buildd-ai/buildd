@@ -1204,9 +1204,16 @@ export default async function HomePage({
                                 ) : (
                                   <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
                                 )}
-                                {item.workspaceName && (
-                                  <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                                )}
+                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                  {item.workspaceName && (
+                                    <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                                  )}
+                                  {item.prUrl && (
+                                    <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                                      PR #{item.prNumber} ↗
+                                    </ExternalLink>
+                                  )}
+                                </div>
                                 {item.escalationReason && (
                                   <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
                                     {item.escalationReason}

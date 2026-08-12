@@ -258,6 +258,9 @@ export default async function TaskDetailPage({
     );
   }
 
+  // Most recent worker that created a PR — surfaced prominently in the header
+  const workerWithPr = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+
   // Dependency resolution checks
   // A dep is unresolved if: not completed/cancelled, OR completed but has an open (non-closed) PR
   const unresolvedDeps = depTasks.filter(d => {
@@ -415,6 +418,29 @@ export default async function TaskDetailPage({
             <p className="text-[14px] text-text-secondary">
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}
             </p>
+            {workerWithPr && (
+              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                <a
+                  href={workerWithPr.prUrl!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[13px] text-primary hover:underline font-medium"
+                >
+                  PR #{workerWithPr.prNumber} ↗
+                </a>
+                {workerWithPr.prLifecycleStatus && (
+                  <span className={`px-1.5 py-0.5 text-[11px] font-medium rounded ${
+                    workerWithPr.prLifecycleStatus === 'merged'
+                      ? 'bg-status-success/15 text-status-success'
+                      : workerWithPr.prLifecycleStatus === 'closed'
+                      ? 'bg-status-error/15 text-status-error'
+                      : 'bg-primary/10 text-primary'
+                  }`}>
+                    {workerWithPr.prLifecycleStatus}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex gap-2 flex-wrap shrink-0 md:justify-end md:max-w-[55%]">
             {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
