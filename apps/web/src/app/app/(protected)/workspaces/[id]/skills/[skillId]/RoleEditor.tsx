@@ -6,15 +6,7 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ScopeSelector } from '@/components/ScopeSelector';
-
-const MODEL_OPTIONS = [
-  { value: 'inherit', label: 'Inherit' },
-  { value: 'opus', label: 'Claude Opus 4' },
-  { value: 'sonnet', label: 'Claude Sonnet 4' },
-  { value: 'haiku', label: 'Claude Haiku 4.5' },
-  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
-  { value: 'claude-fable-5', label: 'Claude Fable 5' },
-] as const;
+import { ModelPicker } from '@/components/ModelPicker';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -615,11 +607,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             {/* Model */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Model</label>
-              <Select
-                value={model}
-                onChange={setModel}
-                options={MODEL_OPTIONS}
-              />
+              <ModelPicker value={model} onChange={setModel} />
             </div>
 
             {/* Agent backend */}

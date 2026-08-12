@@ -52,7 +52,9 @@ async function getCachedModels() {
     return modelsCache.models;
   }
   const models = await fetchModels();
-  modelsCache = { models, fetchedAt: Date.now() };
+  if (models.length > 0) {
+    modelsCache = { models, fetchedAt: Date.now() };
+  }
   return models;
 }
 
