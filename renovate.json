@@ -21,6 +21,11 @@
     {
       "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
       "groupName": "drizzle"
+    },
+    {
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "< 7.0.0",
+      "description": "TypeScript 7 is a native-first rewrite that dropped lib/typescript.js; Next.js 16 can't detect it. Hold at 5.x until Next.js ships stable TS7 support."
     }
   ]
 }
