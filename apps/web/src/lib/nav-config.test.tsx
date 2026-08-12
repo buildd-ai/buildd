@@ -52,10 +52,10 @@ describe('HealthClient viewport parity', () => {
   });
 
   it('has data-testid anchors on all four expected sections for E2E viewport assertions', () => {
+    expect(healthClientSrc).toContain('data-testid="health-section-problems"');
     expect(healthClientSrc).toContain('data-testid="health-section-runners"');
     expect(healthClientSrc).toContain('data-testid="health-section-usage"');
     expect(healthClientSrc).toContain('data-testid="health-section-schedules"');
-    expect(healthClientSrc).toContain('data-testid="health-section-watched-projects"');
   });
 });
 
