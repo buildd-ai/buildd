@@ -337,6 +337,180 @@ describe('refreshExpiring', () => {
   });
 });
 
+// ── crash recovery ────────────────────────────────────────────────────────────
+
+/**
+ * These tests simulate a broker process crashing mid-rotation and assert that
+ * the credential is left in a non-corrupted, refreshable state.
+ *
+ * The lock→provider→commit sequence is:
+ *   1. lock   — sets lastRefreshedAt=NOW() on the DB row, returns current refresh_token
+ *   2. provider — calls the OAuth token endpoint with the refresh_token
+ *   3. commit  — writes new access_token + refresh_token to the DB
+ *
+ * Crash before commit (step 2→3): DB still holds the OLD refresh_token because
+ * commit never ran. The old token is still valid; the next lease-holder retries
+ * after the 60-minute lock window expires.
+ *
+ * Crash after commit (step 3→use): DB holds the NEW committed tokens. A new
+ * broker bootstraps and obtains them immediately — no data loss.
+ */
+describe('crash recovery — mid-rotation invariants', () => {
+  async function setupLeasedBroker(
+    brokerInstance: CredentialBroker,
+    expiresAt: string,
+    bootstrapTokens: { accessToken: string; refreshToken: string },
+  ) {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { ...bootstrapTokens, expiresAt } },
+    ]);
+    brokerInstance.notifyCredentials([
+      { secretId: SECRET_ID, purpose: 'claude_credential', expiresAt },
+    ]);
+    await new Promise((r) => setTimeout(r, 20));
+    fetchCalls = []; // reset — setup calls accounted for
+  }
+
+  test('crash before commit: DB retains old refresh token and credential is refreshable after lock expires', async () => {
+    // 30-min expiry triggers the 2-h window check in refreshExpiring.
+    const soonExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    await setupLeasedBroker(broker, soonExpiry, {
+      accessToken: 'initial-at',
+      refreshToken: 'initial-rt',
+    });
+
+    // Simulate crash between provider response and commit: commit call throws.
+    let commitAttempted = false;
+    let callCount = 0;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      callCount++;
+      let body: Record<string, unknown> = {};
+      if (init?.body) {
+        try {
+          body = JSON.parse(init.body as string) as Record<string, unknown>;
+        } catch {
+          body = { __urlencoded: init.body as string };
+        }
+      }
+      fetchCalls.push({ url, body });
+
+      if (callCount === 1) {
+        // lock — succeeds, returns old RT (DB still has it)
+        return new Response(
+          JSON.stringify({ locked: true, refreshToken: 'initial-rt' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (callCount === 2) {
+        // provider token endpoint — succeeds, issues new tokens
+        return new Response(
+          JSON.stringify({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      // commit — process "crashes" before it can write to DB
+      commitAttempted = true;
+      throw new Error('ECONNRESET: broker process killed mid-rotation');
+    }) as unknown as typeof fetch;
+
+    await (broker as any).refreshExpiring();
+
+    expect(commitAttempted).toBe(true); // crash point was reached
+    // broker's in-memory expiresAt unchanged since result !== 'refreshed'
+    const stillManaged = (broker as any).managed.get(SECRET_ID);
+    expect(stillManaged.expiresAt).toBe(soonExpiry);
+
+    // ── Simulate broker restart (new process, empty in-memory state) ──────────
+    // DB state: old tokens still there (commit never ran)
+    const broker2 = new CredentialBroker();
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: 'restart-lease-id' } },
+      // Bootstrap returns OLD tokens — DB was not touched by the crashed commit
+      { body: { accessToken: 'initial-at', refreshToken: 'initial-rt', expiresAt: soonExpiry } },
+    ]);
+    broker2.notifyCredentials([
+      { secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: soonExpiry },
+    ]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const managed2 = (broker2 as any).managed.get(SECRET_ID);
+    expect(managed2).toBeDefined();
+    // Old tokens are intact — credential is non-corrupted
+    expect(managed2.refreshToken).toBe('initial-rt');
+    expect(managed2.accessToken).toBe('initial-at');
+
+    // ── After the lock window expires, the old RT is used for a successful refresh ─
+    fetchCalls = [];
+    globalThis.fetch = makeFetchMock([
+      // lock succeeds (60-min window has passed — simulated by the mock returning locked: true)
+      { body: { locked: true, refreshToken: 'initial-rt' } },
+      // provider accepts the old RT and issues fresh tokens
+      { body: { access_token: 'recovered-at', refresh_token: 'recovered-rt', expires_in: 3600 } },
+      // commit succeeds this time
+      { body: { ok: true } },
+    ]);
+    await (broker2 as any).refreshExpiring();
+
+    const lockCall = fetchCalls.find((c) => c.body.action === 'lock');
+    const commitCall = fetchCalls.find((c) => c.body.action === 'commit');
+    expect(lockCall).toBeDefined();
+    expect(lockCall!.body.secretId).toBe(SECRET_ID);
+    expect(commitCall).toBeDefined();
+    expect(commitCall!.body.refreshToken).toBe('recovered-rt');
+    expect(commitCall!.body.accessToken).toBe('recovered-at');
+    // expiresAt updated optimistically (≥ OPTIMISTIC_EXPIRY_AFTER_REFRESH_MS ≈ 8h)
+    const recovered = (broker2 as any).managed.get(SECRET_ID);
+    expect(new Date(recovered.expiresAt).getTime()).toBeGreaterThan(Date.now() + 60 * 60 * 1000);
+  });
+
+  test('crash after commit: new broker bootstraps with the committed (new) tokens — no data loss', async () => {
+    const soonExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    await setupLeasedBroker(broker, soonExpiry, {
+      accessToken: 'initial-at',
+      refreshToken: 'initial-rt',
+    });
+
+    // Full refresh cycle completes: lock → provider → commit all succeed.
+    const committedExpiry = new Date(Date.now() + 3600 * 1000).toISOString();
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: 'initial-rt' } },
+      { body: { access_token: 'committed-at', refresh_token: 'committed-rt', expires_in: 3600 } },
+      { body: { ok: true } },
+    ]);
+    await (broker as any).refreshExpiring();
+
+    const commitCall = fetchCalls.find((c) => c.body.action === 'commit');
+    expect(commitCall).toBeDefined();
+    expect(commitCall!.body.refreshToken).toBe('committed-rt');
+    expect(commitCall!.body.accessToken).toBe('committed-at');
+
+    // ── Broker crashes here — DB holds committed tokens ───────────────────────
+    // New broker restarts, acquires the (now-expired) lease, and bootstraps.
+
+    const broker2 = new CredentialBroker();
+    const farExpiry = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: 'post-crash-lease-id' } },
+      // Bootstrap returns the COMMITTED tokens — DB was updated before the crash
+      { body: { accessToken: 'committed-at', refreshToken: 'committed-rt', expiresAt: farExpiry } },
+    ]);
+    broker2.notifyCredentials([
+      { secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: farExpiry },
+    ]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const managed = (broker2 as any).managed.get(SECRET_ID);
+    expect(managed).toBeDefined();
+    // New broker has the freshly committed tokens — no re-rotation needed
+    expect(managed.refreshToken).toBe('committed-rt');
+    expect(managed.accessToken).toBe('committed-at');
+    expect(managed.expiresAt).toBe(farExpiry);
+    // Far expiry means no immediate refresh will be triggered
+    expect(new Date(managed.expiresAt).getTime()).toBeGreaterThan(Date.now() + 2 * 60 * 60 * 1000);
+  });
+});
+
 // ── shutdown path ─────────────────────────────────────────────────────────────
 
 describe('shutdown', () => {
