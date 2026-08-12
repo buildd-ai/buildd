@@ -75,6 +75,7 @@ beforeEach(() => {
   mockRefreshClaude.mockReset();
   mockRefreshCodex.mockReset();
   mockNotifyTeam.mockReset();
+  mockNotifyTeam.mockImplementation(() => Promise.resolve());
 
   // Default: return refreshed
   mockRefreshClaude.mockImplementation(() => Promise.resolve('refreshed'));
