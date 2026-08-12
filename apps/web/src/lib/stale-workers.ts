@@ -87,20 +87,39 @@ async function resolveStaleTask(
     return;
   }
 
-  // Check if the stale worker produced deliverables
-  let hasDeliverables = false;
+  // Check if the stale worker produced deliverables.
+  // IMPORTANT: getWorkerArtifactCount is tried separately so a transient DB error
+  // does NOT prevent the prUrl/commitCount check — those fields live on the worker
+  // row itself and require no extra query. Swallowing the whole block (old pattern)
+  // would leave hasDeliverables=false even when prUrl was already registered.
+  let deliverables: ReturnType<typeof checkWorkerDeliverables> | undefined;
   if (staleWorker) {
+    let artifactCount = 0;
     try {
-      const artifactCount = await getWorkerArtifactCount(staleWorker.id);
-      const deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
-      hasDeliverables = deliverables.hasAny;
-    } catch { /* non-fatal — default to pending */ }
+      artifactCount = await getWorkerArtifactCount(staleWorker.id);
+    } catch { /* non-fatal — artifact count defaults to 0; prUrl still checked below */ }
+    deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
   }
+  const hasDeliverables = !!deliverables?.hasAny;
 
-  if (hasDeliverables) {
+  if (hasDeliverables && staleWorker) {
     await db
       .update(tasks)
-      .set({ status: 'completed', updatedAt: new Date() })
+      .set({
+        status: 'completed',
+        updatedAt: new Date(),
+        // Populate result so mission/review state sees a real completion, not a blank row.
+        result: {
+          summary: `Completed by stale-worker reaper: worker delivered ${deliverables!.details} before going offline.`,
+          ...(staleWorker.prUrl ? { prUrl: staleWorker.prUrl } : {}),
+          ...(staleWorker.prNumber ? { prNumber: staleWorker.prNumber } : {}),
+          ...(staleWorker.branch ? { branch: staleWorker.branch } : {}),
+          ...(typeof staleWorker.commitCount === 'number' && staleWorker.commitCount > 0
+            ? { commits: staleWorker.commitCount }
+            : {}),
+          reaperAutoCompleted: true,
+        },
+      })
       .where(eq(tasks.id, taskId));
   } else {
     // Count code_failure workers only — budget_limited and infra_failure exits do
