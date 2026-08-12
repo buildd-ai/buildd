@@ -22,6 +22,7 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
+import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
@@ -1371,6 +1372,15 @@ export async function PATCH(
       // Resolve dependencies (check if parent's children all completed)
       await runStep('resolve-dependencies', async () => {
         await resolveCompletedTask(taskId, worker.workspaceId);
+      });
+
+      // Auto-evaluate mission goalCriteria when all tasks reach terminal state.
+      // Only fires when the mission has criteria and autoVerify != false.
+      // Idempotent — skips if an evaluation already exists.
+      await runStep('goal-criteria-eval', async () => {
+        if (taskMissionId) {
+          await autoEvaluateMissionOnCompletion(taskMissionId);
+        }
       });
 
       // Reconciliation sweep on retry completion: if this task had a subject

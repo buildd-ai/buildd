@@ -326,6 +326,16 @@ export async function PATCH(
         if (goalCriteria.length > 20) {
           return NextResponse.json({ error: 'goalCriteria must have at most 20 criteria' }, { status: 400 });
         }
+        const VALID_CRITERION_TYPES = ['all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description'];
+        for (let i = 0; i < goalCriteria.length; i++) {
+          const c = goalCriteria[i];
+          if (typeof c !== 'object' || c === null || Array.isArray(c)) {
+            return NextResponse.json({ error: `goalCriteria[${i}] must be an object` }, { status: 400 });
+          }
+          if (!VALID_CRITERION_TYPES.includes((c as any).type)) {
+            return NextResponse.json({ error: `goalCriteria[${i}].type must be one of: ${VALID_CRITERION_TYPES.join(', ')}` }, { status: 400 });
+          }
+        }
       }
       updateData.goalCriteria = goalCriteria ?? null;
     }
