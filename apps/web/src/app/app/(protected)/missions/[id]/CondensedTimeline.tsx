@@ -197,6 +197,20 @@ function TaskRow({
         </SwipeableRow>
       </div>
 
+      {/* Blocked-by line — shows which task(s) are gating this one */}
+      {task.chain && task.chain.blockedBy.length > 0 && (
+        <div className="pl-7 text-[10px] text-status-warning mt-0.5 mb-0.5">
+          {'← blocked on '}
+          {task.chain.blockedBy.map((b, i) => (
+            <span key={b.id}>
+              {i > 0 && ', '}
+              {b.prNumber ? `#${b.prNumber}` : b.title}
+              {b.prUrl ? ' (open)' : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* PR status line — single reference for open PRs (replaces GateChip + WaitingOnYouMergeCTA) */}
       {showPrLine && (
         <PrStatusLine task={task} effectivePolicyTier={effectivePolicyTier} />
