@@ -289,6 +289,32 @@ describe('hasCodexCredential', () => {
     mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
   });
+
+  it('returns false when the only credential is revoked — cannot be refreshed', async () => {
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'revoked' }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(false);
+  });
+
+  it('returns false when all credentials are revoked', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { tokenExpiresAt: null, healthStatus: 'revoked' },
+      { tokenExpiresAt: null, healthStatus: 'revoked' },
+    ]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(false);
+  });
+
+  it('returns true when at least one live credential exists alongside revoked ones', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { tokenExpiresAt: null, healthStatus: 'revoked' },
+      { tokenExpiresAt: new Date(Date.now() + 3600_000), healthStatus: 'healthy' },
+    ]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
+  });
+
+  it('returns true for a degraded credential — transient failure, still retryable', async () => {
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'degraded' }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
+  });
 });
 
 describe('getCodexStatus', () => {
