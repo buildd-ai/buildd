@@ -86,13 +86,13 @@ export async function GET(req: NextRequest) {
       ? `A one-shot control-plane refresh was attempted (outcome: ${refreshOutcome ?? 'n/a'}).`
       : 'No fallback refresh was attempted (BUILDD_ALLOW_CONTROL_PLANE_REFRESH is off).';
 
-    void notifyTeam(credential.teamId, 'credentialExpired', {
+    await notifyTeam(credential.teamId, 'credentialExpired', {
       title: 'Credential lease expired — runner may be down',
       message: `The broker lease for a ${purpose} credential expired without renewal (runner: ${lease.heldByRunnerId}). The runner may have crashed. ${fallbackNote}`,
       url: `${appUrl}/app/settings`,
       urlTitle: 'Open settings',
       priority: 0,
-    });
+    }).catch(err => console.error('[lease-expiry-guard] notify failed:', err));
     alerted++;
 
     details[credential.id] = {
