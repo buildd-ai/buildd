@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // ── DB mocks ──────────────────────────────────────────────────────────────────
 
-const mockCountPending = mock(() => Promise.resolve(0));
+// Used by countPendingTasksForMission (imported from ./mission-release) via db.select chain.
+// We mock at the DB level rather than mocking @/lib/mission-release with mock.module(),
+// because mock.module() is global in bun and would poison mission-release.test.ts.
+const mockPendingSelectWhere = mock(() => Promise.resolve([{ count: 0 }]));
 const mockMissionFindFirst = mock((): any => null);
 const mockTaskFindMany = mock((): any[] => []);
 const mockWorkerFindMany = mock((): any[] => []);
@@ -22,10 +25,6 @@ const mockNotesInsert = mock(() => ({
   }),
 }));
 
-mock.module('@/lib/mission-release', () => ({
-  countPendingTasksForMission: mockCountPending,
-}));
-
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -34,6 +33,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkerFindMany },
       artifacts: { findMany: mockArtifactFindMany },
     },
+    select: () => ({ from: () => ({ where: mockPendingSelectWhere }) }),
     update: () => mockMissionsUpdate(),
     insert: () => mockNotesInsert(),
   },
@@ -62,13 +62,14 @@ mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b }),
   and: (...args: any[]) => args,
   inArray: (a: any, b: any) => ({ a, b }),
+  count: () => ({ type: 'count' }),
 }));
 
 import { autoEvaluateMissionOnCompletion } from './mission-criteria-eval';
 
 describe('autoEvaluateMissionOnCompletion', () => {
   beforeEach(() => {
-    mockCountPending.mockReset();
+    mockPendingSelectWhere.mockReset();
     mockMissionFindFirst.mockReset();
     mockTaskFindMany.mockReset();
     mockWorkerFindMany.mockReset();
@@ -78,7 +79,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
     updatedMissionData = null;
     insertedNoteValues = null;
 
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockTaskFindMany.mockResolvedValue([]);
     mockWorkerFindMany.mockResolvedValue([]);
     mockArtifactFindMany.mockResolvedValue([]);
@@ -97,7 +98,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('skips evaluation when pending tasks remain', async () => {
-    mockCountPending.mockResolvedValue(3);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 3 }]);
 
     await autoEvaluateMissionOnCompletion('mission-1');
 
@@ -106,7 +107,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('skips evaluation when mission has no goalCriteria', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test',
@@ -124,7 +125,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('skips evaluation when autoVerify=false', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test',
@@ -142,7 +143,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('skips evaluation when goalCriteriaState already exists', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test',
@@ -160,7 +161,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('evaluates and persists state when all conditions met', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test Mission',
@@ -181,7 +182,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('posts a mission note after evaluation', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test Mission',
@@ -201,7 +202,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
   });
 
   it('also evaluates when autoVerify is true', async () => {
-    mockCountPending.mockResolvedValue(0);
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockMissionFindFirst.mockResolvedValue({
       id: 'mission-1',
       title: 'Test Mission',
