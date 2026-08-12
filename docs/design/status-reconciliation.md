@@ -1,6 +1,6 @@
 # Status Reconciliation: Derive State from Ground Truth
 
-**Status:** Accepted
+**Status:** Proposed
 **Related:**
 - `apps/web/src/lib/mission-dependency.ts` — dependency gate implementation
 - `apps/web/src/lib/mission-helpers.ts` — mission health / drive-state derivation
@@ -57,12 +57,12 @@ These are **pure functions of observable data** computed at read time — the ri
 
 | Function | File | What it derives |
 |----------|------|----------------|
-| `deriveHealth()` | `apps/web/src/lib/mission-helpers.ts:60` | `NOMINAL \| BLOCKED \| FAILING \| STALLED` from tasks + workers |
-| `deriveDriveState()` | `apps/web/src/lib/mission-helpers.ts:13` | `AUTO \| MANUAL \| QUIET_HOURS \| SEATS_FULL \| COMPLETE` from mission fields |
+| `deriveHealth()` | `apps/web/src/lib/mission-helpers.ts:93` | `NOMINAL \| BLOCKED \| FAILING \| STALLED` from tasks + workers |
+| `deriveDriveState()` | `apps/web/src/lib/mission-helpers.ts:46` | `AUTO \| MANUAL \| QUIET_HOURS \| SEATS_FULL \| COMPLETE` from mission fields |
 | `deriveMissionDisplayState()` | `apps/web/src/lib/mission-helpers.ts` | Collapsed display chip |
-| `computeMissionProgress()` | `packages/core/mission-helpers.ts:68` | Progress % + segments from tasks + workers |
-| `isDeliverableTask()` | `packages/core/mission-helpers.ts:21` | Inclusion predicate, pure |
-| `deriveDisplayStatus()` | `apps/web/src/lib/task-timestamps.ts` | Task chip, pure |
+| `computeMissionProgress()` | `packages/core/mission-helpers.ts:265` | Progress % + segments from tasks + workers |
+| `isDeliverableTask()` | `packages/core/mission-helpers.ts:216` | Inclusion predicate, pure |
+| `deriveDisplayStatus()` | `apps/web/src/lib/task-presentation.ts:37` | Task chip, pure |
 | `isMissionBlocked()` | `apps/web/src/lib/mission-dependency.ts:27` | Blocked? — BUT has the merged-gate gap (see §1) |
 
 The display layer is largely correct. The gap is at the data layer: stored verdicts being treated as current facts.
@@ -226,7 +226,7 @@ interface CachedVerdict<T> {
 - The existing `MAX_WORKER_RETRIES = 3` guard is correct; the gap is the deliverables check being short-circuited by a shared try-catch (already fixed in PR #1594; verify this holds).
 
 **Step 3 — goalCriteria cheap types at read-time:**
-- Surface area: `apps/web/src/lib/goal-criteria-evaluator.ts` (or wherever `evaluateGoalCriteria()` lives)
+- Surface area: `packages/core/mission-helpers.ts:19` (`evaluateGoalCriteria()`)
 - Change: for `all_prs_merged`, `no_open_tasks`, `artifact_exists` criterion types, compute the verdict synchronously in the `GET /api/missions/[id]` response without touching `goalCriteriaState`. Surface this as a `liveVerdict` field alongside the cached `goalCriteriaState`.
 - This means the mission detail view always shows a live answer for cheap criteria, and the cached state is clearly labeled as an evaluation snapshot.
 
