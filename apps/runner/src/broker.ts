@@ -14,7 +14,7 @@
  */
 
 import { hostname } from 'os';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { runnerRefreshCredential } from './credential-refresh';
 
 const HEARTBEAT_INTERVAL_MS = 60 * 1_000;      // 60 s — well inside the 5-min lease TTL
@@ -53,6 +53,9 @@ class CredentialBroker {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private localServer: { stop(closeActiveConnections?: boolean): void } | null = null;
   private shuttingDown = false;
+  // worker token files to update after a mid-session refresh:
+  //   secretId → Map<workerId, credentialFilePath>
+  private credentialFiles = new Map<string, Map<string, string>>();
 
   constructor() {
     this.baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
@@ -257,6 +260,13 @@ class CredentialBroker {
       if (result === 'refreshed') {
         // Optimistically extend so we don't re-refresh until the next claim response corrects it.
         cred.expiresAt = new Date(now + OPTIMISTIC_EXPIRY_AFTER_REFRESH_MS).toISOString();
+        // Pull the freshly committed access token into in-memory cache so the next
+        // broker token query returns the new token, and push it to active workers'
+        // credential files to prevent mid-session 401s.
+        await this.bootstrapCredential(secretId, cred.purpose);
+        if (cred.accessToken) {
+          this.updateCredentialFiles(secretId, cred.accessToken, cred.expiresAt);
+        }
       }
     }
   }
@@ -291,6 +301,61 @@ class CredentialBroker {
     console.log('[broker] shutdown complete');
   }
 
+  /**
+   * Register a worker's CLAUDE_CONFIG_DIR credential file so the broker can push
+   * a fresh access_token into it after a mid-session proactive refresh. The worker
+   * process reads this file on every Anthropic API call (the Claude Code SDK re-reads
+   * the credentials file), so an in-place update extends the session beyond the
+   * original token's TTL without restarting the subprocess.
+   *
+   * Call this immediately after materializeClaudeConfigDir returns.
+   * Call deregisterCredentialFile in the finally block when the worker finishes.
+   */
+  registerCredentialFile(workerId: string, secretId: string, filePath: string): void {
+    let workers = this.credentialFiles.get(secretId);
+    if (!workers) {
+      workers = new Map();
+      this.credentialFiles.set(secretId, workers);
+    }
+    workers.set(workerId, filePath);
+  }
+
+  /** Remove a worker's credential file entry (call on worker completion/cleanup). */
+  deregisterCredentialFile(workerId: string): void {
+    for (const [secretId, workers] of this.credentialFiles) {
+      if (workers.has(workerId)) {
+        workers.delete(workerId);
+        if (workers.size === 0) this.credentialFiles.delete(secretId);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Write a fresh access_token to every registered credential file for this secretId.
+   * File format matches materializeClaudeConfigDir: `{ type, access_token, expires_at? }`.
+   */
+  private updateCredentialFiles(secretId: string, accessToken: string, expiresAt: string | null): void {
+    const workers = this.credentialFiles.get(secretId);
+    if (!workers || workers.size === 0) return;
+    const credentials: Record<string, unknown> = {
+      type: 'oauth_token',
+      access_token: accessToken,
+      ...(expiresAt != null ? { expires_at: Math.floor(new Date(expiresAt).getTime() / 1000) } : {}),
+    };
+    const content = JSON.stringify(credentials);
+    for (const [workerId, filePath] of workers) {
+      try {
+        // File was created by materializeClaudeConfigDir with mode 0600; writeFileSync
+        // preserves existing permissions — no chmod needed here.
+        writeFileSync(filePath, content);
+        console.log(`[broker] Updated credential file for worker ${workerId} (secretId=${secretId})`);
+      } catch (err) {
+        console.warn(`[broker] Failed to update credential file for worker ${workerId}:`, err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
   private authHeader(): Record<string, string> {
     return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
   }
@@ -314,4 +379,48 @@ export function notifyBrokerCredentials(entries: CredentialEntry[]): void {
  */
 export function getBrokerSocketPath(): string {
   return credentialBroker.socketPath;
+}
+
+/**
+ * Fetch an access token from the broker's local Unix socket (env injection at spawn).
+ *
+ * Called by the harness once before spawning the worker subprocess. The returned
+ * token is materialized into CLAUDE_CONFIG_DIR/.credentials.json and passed via
+ * the CLAUDE_CONFIG_DIR env var — the worker process never calls this endpoint
+ * directly (env injection, not socket-read approach).
+ *
+ * Returns null when:
+ *  - broker socket is unavailable (runner started without broker)
+ *  - credential not managed by this broker (403/404)
+ *  - bootstrap still in progress (503)
+ *  - network/timeout error
+ *
+ * On null, callers should fall back to the inline claudeAccessToken from the
+ * claim response (Phase 1 path), which remains valid as a safety net.
+ *
+ * Timeout defaults to 2 s — fast enough not to block spawn, long enough for
+ * the broker to respond even under moderate load.
+ */
+export async function fetchTokenFromBroker(
+  secretId: string,
+  socketPath: string,
+  timeoutMs = 2_000,
+): Promise<{ accessToken: string; expiresAt: string | null } | null> {
+  if (!socketPath) return null;
+  try {
+    // Bun extends RequestInit with `unix` for Unix domain socket connections.
+    const res = await fetch('http://localhost/token', {
+      unix: socketPath,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: secretId }),
+      signal: AbortSignal.timeout(timeoutMs),
+    } as RequestInit);
+    if (!res.ok) return null;
+    const data = await res.json() as { access_token?: string; expires_at?: string | null };
+    if (!data.access_token) return null;
+    return { accessToken: data.access_token, expiresAt: data.expires_at ?? null };
+  } catch {
+    return null;
+  }
 }
