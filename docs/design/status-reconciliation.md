@@ -1,11 +1,13 @@
 # Status Reconciliation: Derived-at-Read-Time State
 
-**Status:** Proposed
+**Status:** Accepted
 **Related:**
 - `apps/web/src/lib/mission-dependency.ts` — dependency gate logic
 - `apps/web/src/lib/mission-helpers.ts` — `deriveHealth()`, `deriveDriveState()`
 - `apps/web/src/lib/stale-workers.ts` — reaper and deliverable detection
 - `packages/core/db/schema.ts` — all stored status fields
+- `packages/shared/src/types.ts` — `GoalCriterion`, `GoalCriteriaState`, `InitiativeKPI`
+- `docs/specs/missions.md`, `docs/specs/workers.md`
 - `docs/design/mission-state-progress.md` — prior drive-state/health split design
 - PR #971 — mission dependency gate (dependsOnMission introduced)
 - PR #1174 — prLifecycleStatus + webhook integration
