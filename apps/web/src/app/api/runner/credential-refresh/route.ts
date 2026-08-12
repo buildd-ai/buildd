@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { secrets } from '@buildd/core/db/schema';
+import { secrets, credentialLeases } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
-import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, lt, gt, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
     refreshToken?: string;
     expiresAt?: string;
     reason?: string;
+    runnerId?: string;
   };
 
   const { secretId, action, purpose, accessToken, refreshToken, expiresAt } = body;
@@ -149,5 +150,48 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  return NextResponse.json({ error: 'Invalid action. Must be lock, commit, or revoke' }, { status: 400 });
+  // ── bootstrap ─────────────────────────────────────────────────────────────────
+  //
+  // Called by the broker after acquiring a Postgres lease to pull the current
+  // credential into its in-memory cache. Only the runner that holds the active
+  // lease may call this — the runnerId is checked against credential_leases.
+
+  if (action === 'bootstrap') {
+    const { runnerId } = body;
+    if (!runnerId) {
+      return NextResponse.json({ error: 'runnerId is required for bootstrap' }, { status: 400 });
+    }
+
+    const lease = await db.query.credentialLeases.findFirst({
+      where: and(
+        eq(credentialLeases.credentialId, secretId),
+        eq(credentialLeases.heldByRunnerId, runnerId),
+        gt(credentialLeases.expiresAt, sql`NOW()`),
+      ),
+      columns: { id: true },
+    });
+    if (!lease) {
+      return NextResponse.json(
+        { error: 'Forbidden: runner does not hold the active lease' },
+        { status: 403 },
+      );
+    }
+
+    const credential = await db.query.secrets.findFirst({
+      where: and(eq(secrets.id, secretId), eq(secrets.purpose, purpose as AllowedPurpose)),
+      columns: { encryptedValue: true, tokenExpiresAt: true },
+    });
+    if (!credential) {
+      return NextResponse.json({ error: 'Secret not found' }, { status: 404 });
+    }
+
+    const blob = JSON.parse(decrypt(credential.encryptedValue)) as Record<string, unknown>;
+    return NextResponse.json({
+      accessToken: typeof blob.access_token === 'string' ? blob.access_token : null,
+      refreshToken: typeof blob.refresh_token === 'string' ? blob.refresh_token : null,
+      expiresAt: credential.tokenExpiresAt ? (credential.tokenExpiresAt as Date).toISOString() : null,
+    });
+  }
+
+  return NextResponse.json({ error: 'Invalid action. Must be lock, commit, revoke, or bootstrap' }, { status: 400 });
 }

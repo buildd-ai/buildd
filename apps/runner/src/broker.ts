@@ -28,6 +28,9 @@ interface ManagedCredential {
   purpose: 'claude_credential' | 'codex_credential';
   expiresAt: string | null;
   leaseId: string;
+  // Credential cache — populated on lease acquire via bootstrap pull; memory only, never disk.
+  accessToken: string | null;
+  refreshToken: string | null;
 }
 
 type CredentialEntry = {
@@ -41,6 +44,7 @@ class CredentialBroker {
   private readonly apiKey: string;
   private readonly runnerId: string;
   private readonly endpoint: string;
+  private readonly refreshEndpoint: string;
 
   private managed = new Map<string, ManagedCredential>(); // secretId → info
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -52,6 +56,7 @@ class CredentialBroker {
     this.apiKey = process.env.BUILDD_API_KEY ?? '';
     this.runnerId = process.env.BUILDD_RUNNER_ID ?? hostname();
     this.endpoint = `${this.baseUrl}/api/runner/credential-lease`;
+    this.refreshEndpoint = `${this.baseUrl}/api/runner/credential-refresh`;
   }
 
   /** Start heartbeat and refresh loops; register SIGTERM/SIGINT handlers. */
@@ -100,10 +105,47 @@ class CredentialBroker {
         console.log(`[broker] lease held by another runner for ${secretId}`);
         return;
       }
-      this.managed.set(secretId, { purpose, expiresAt, leaseId: body.leaseId });
+      this.managed.set(secretId, { purpose, expiresAt, leaseId: body.leaseId, accessToken: null, refreshToken: null });
       console.log(`[broker] acquired lease ${body.leaseId} for ${secretId} purpose=${purpose}`);
+      await this.bootstrapCredential(secretId, purpose);
     } catch (err) {
       console.warn(`[broker] network error acquiring lease for ${secretId}:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Pull the current credential from the control plane after acquiring a lease.
+   * Stores accessToken and refreshToken in the in-memory managed map only — nothing is
+   * written to disk. On broker restart the map is empty and bootstrap re-runs after
+   * the lease is re-acquired, so the runner never trusts stale on-disk state.
+   */
+  private async bootstrapCredential(
+    secretId: string,
+    purpose: 'claude_credential' | 'codex_credential',
+  ): Promise<void> {
+    try {
+      const res = await fetch(this.refreshEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeader() },
+        body: JSON.stringify({ secretId, purpose, action: 'bootstrap', runnerId: this.runnerId }),
+      });
+      if (!res.ok) {
+        console.warn(`[broker] bootstrap failed for ${secretId}: HTTP ${res.status}`);
+        return;
+      }
+      const data = await res.json() as {
+        accessToken?: string | null;
+        refreshToken?: string | null;
+        expiresAt?: string | null;
+      };
+      const entry = this.managed.get(secretId);
+      if (!entry) return; // race: lease was released during async bootstrap
+      entry.accessToken = data.accessToken ?? null;
+      entry.refreshToken = data.refreshToken ?? null;
+      if (data.expiresAt) entry.expiresAt = data.expiresAt;
+      console.log(`[broker] bootstrapped ${secretId} purpose=${purpose} expiresAt=${data.expiresAt ?? 'null'}`);
+    } catch (err) {
+      console.warn(`[broker] network error bootstrapping ${secretId}:`, err instanceof Error ? err.message : String(err));
     }
   }
 
