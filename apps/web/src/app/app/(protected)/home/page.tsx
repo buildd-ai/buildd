@@ -1374,39 +1374,39 @@ export default async function HomePage({
                       key={item.reviewerWorkerId}
                       className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                              Agent Reviewing
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                            Agent Reviewing
+                          </span>
+                          {item.reviewerRoleSlug && (
+                            <span className="text-[10px] text-text-muted">· {item.reviewerRoleSlug}</span>
+                          )}
+                          {item.reviewerStartedAt && (
+                            <span className="text-[10px] text-text-muted">
+                              {timeAgo(item.reviewerStartedAt)}
                             </span>
-                            {item.reviewerRoleSlug && (
-                              <span className="text-[10px] text-text-muted">· {item.reviewerRoleSlug}</span>
-                            )}
-                            {item.reviewerStartedAt && (
-                              <span className="text-[10px] text-text-muted">
-                                {timeAgo(item.reviewerStartedAt)}
-                              </span>
-                            )}
-                          </div>
-                          <Link
-                            href={`/app/tasks/${item.taskId}`}
-                            className="text-[13px] font-medium text-text-primary truncate hover:underline block"
-                          >
-                            {item.taskTitle}
-                          </Link>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            {item.workspaceName && (
-                              <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
-                            )}
-                            {item.prUrl && (
-                              <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
-                                PR #{item.prNumber} ↗
-                              </ExternalLink>
-                            )}
-                          </div>
+                          )}
                         </div>
-                        <InterruptReviewButton workerId={item.reviewerWorkerId} />
+                        <Link
+                          href={`/app/tasks/${item.taskId}`}
+                          className="text-[13px] font-medium text-text-primary hover:underline block"
+                        >
+                          {item.taskTitle}
+                        </Link>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {item.workspaceName && (
+                            <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                          )}
+                          {item.prUrl && (
+                            <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                              PR #{item.prNumber} ↗
+                            </ExternalLink>
+                          )}
+                        </div>
+                        <div className="mt-2">
+                          <InterruptReviewButton workerId={item.reviewerWorkerId} />
+                        </div>
                       </div>
                     </div>
                   ))}
