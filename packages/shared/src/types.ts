@@ -1169,7 +1169,8 @@ export type GoalCriterionType =
   | 'command'
   | 'no_open_tasks'
   | 'artifact_exists'
-  | 'metric';
+  | 'metric'
+  | 'description';
 
 export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED';
 
@@ -1201,7 +1202,19 @@ export type GoalCriterion =
       threshold: number;
       unit?: string;
       label?: string;
+    }
+  | {
+      /** Free-form natural-language criterion evaluated by LLM against mission evidence. */
+      type: 'description';
+      description: string;
+      label?: string;
     };
+
+export interface GoalCriteriaEvidenceRef {
+  type: 'artifact' | 'task';
+  id: string;
+  title?: string;
+}
 
 export interface GoalCriteriaState {
   evaluatedAt: string;
@@ -1213,6 +1226,7 @@ export interface GoalCriteriaState {
     label?: string;
     verdict: CriterionVerdict;
     evidence?: string;
+    evidenceRefs?: GoalCriteriaEvidenceRef[];
     workerTaskId?: string;
   }>;
 }

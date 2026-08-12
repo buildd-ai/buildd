@@ -182,6 +182,33 @@ describe('evaluateGoalCriteria — metric criterion', () => {
   });
 });
 
+describe('evaluateGoalCriteria — description criterion', () => {
+  it('returns UNVERIFIED pending LLM evaluation', () => {
+    const criterion: GoalCriterion = { type: 'description', description: 'Scorecard artifact produced covering all retrieval layers' };
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx());
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state.criteria[0].evidence).toContain('Pending evidence-based evaluation');
+    expect(state.overall).toBe('UNVERIFIED');
+  });
+
+  it('records the criterion label when provided', () => {
+    const criterion: GoalCriterion = { type: 'description', description: 'All gaps closed', label: 'Gaps resolved' };
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx());
+    expect(state.criteria[0].label).toBe('Gaps resolved');
+  });
+
+  it('overall=UNVERIFIED when mixed with a passing structural criterion', () => {
+    const criteria: GoalCriterion[] = [
+      { type: 'no_open_tasks' },
+      { type: 'description', description: 'BM25 lexical search is functional' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[1].verdict).toBe('UNVERIFIED');
+    expect(state.overall).toBe('UNVERIFIED');
+  });
+});
+
 describe('evaluateGoalCriteria — overall verdict logic', () => {
   it('overall=pass when all criteria pass', () => {
     const criteria: GoalCriterion[] = [
