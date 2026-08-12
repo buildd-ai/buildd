@@ -1,6 +1,6 @@
 # Status Reconciliation: Derived-at-Read-Time State
 
-**Status:** Accepted
+**Status:** Proposed
 **Related:**
 - `apps/web/src/lib/mission-dependency.ts` — dependency gate logic
 - `apps/web/src/lib/mission-helpers.ts` — `deriveHealth()`, `deriveDriveState()`
