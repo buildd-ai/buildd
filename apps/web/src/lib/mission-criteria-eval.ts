@@ -3,9 +3,9 @@ import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/
 import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
+import { resolveTierEntrySync } from '@buildd/core/model-tier-registry';
 import { countPendingTasksForMission } from './mission-release';
 
-const LLM_MODEL = 'claude-haiku-4-5-20251001';
 const LLM_MAX_TOKENS = 2048;
 const ARTIFACT_CONTENT_LIMIT = 3000;
 
@@ -102,7 +102,7 @@ Respond with exactly this JSON shape:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
+        model: resolveTierEntrySync('budget').model,
         max_tokens: LLM_MAX_TOKENS,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
