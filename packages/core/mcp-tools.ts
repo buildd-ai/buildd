@@ -112,7 +112,7 @@ export const triggerActions = [
 
 export const workerActions = [
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'close_pr', 'update_task', 'create_task', 'create_artifact',
+  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
@@ -168,6 +168,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
+    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
+    get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -1241,6 +1243,65 @@ export async function handleBuilddAction(
 
       const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
       return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
+    }
+
+    case 'merge_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.prNumber) throw new Error('prNumber is required');
+
+      const mergeMethod = params.mergeMethod ?? 'squash';
+
+      const data = await api('/api/github/pr', {
+        method: 'PUT',
+        body: JSON.stringify({ workerId, prNumber: params.prNumber, mergeMethod }),
+      });
+
+      if (!data.merged) {
+        const hint = data.hint ? `\n\n**Action required:** ${data.hint}` : '';
+        return text(`PR #${data.pr?.number ?? params.prNumber} merge failed: ${data.message ?? data.error}${hint}`);
+      }
+      return text(`PR #${data.pr.number} merged successfully.\n**URL:** ${data.pr.url}\n**Message:** ${data.message}`);
+    }
+
+    case 'get_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const prNumberPart = params.prNumber ? `&prNumber=${params.prNumber}` : '';
+
+      const data = await api(`/api/github/pr?workerId=${workerId}${prNumberPart}`);
+
+      const pr = data.pr;
+      const checks = data.checks;
+      const reviews = data.reviews;
+
+      const ciLine = checks.total === 0
+        ? 'CI: none configured'
+        : `CI: ${checks.state} (${checks.passed}/${checks.total} passed${checks.failed > 0 ? `, ${checks.failed} failed` : ''}${checks.pending > 0 ? `, ${checks.pending} pending` : ''})`;
+
+      const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
+        ? `Reviews: ${reviews.approved} approved${reviews.changesRequested > 0 ? `, ${reviews.changesRequested} changes requested` : ''}`
+        : 'Reviews: none';
+
+      const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
+        : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
+        : `Mergeable: unknown (${pr.mergeableState ?? 'computing'})`;
+
+      const statsLine = pr.additions !== null
+        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s)`
+        : '';
+
+      const bodyPreview = pr.body
+        ? `\n\n**Agent summary:**\n${pr.body.slice(0, 800)}${pr.body.length > 800 ? '\n…(truncated)' : ''}`
+        : '';
+
+      return text([
+        `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
+        `State: ${pr.state} | ${mergeableLine}`,
+        ciLine,
+        reviewLine,
+        statsLine,
+        `URL: ${pr.url}`,
+        bodyPreview,
+      ].filter(Boolean).join('\n'));
     }
 
     case 'update_task': {
