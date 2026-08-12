@@ -12,6 +12,13 @@
  *   8. refreshExpiring → skips creds not expiring within 2h
  *   9. refreshExpiring → calls runnerRefreshCredential for expiring creds
  *  10. shutdown → releases all leases (idempotent)
+ *  11. handleLocalRequest → 404 for unknown credential_id
+ *  12. handleLocalRequest → 503 when bootstrapping in progress (null access_token)
+ *  13. handleLocalRequest → 200 with access_token + expires_at for managed credential
+ *  14. handleLocalRequest → 405 for non-POST methods
+ *  15. handleLocalRequest → 404 for unknown paths
+ *  16. start() creates unix socket at socketPath with mode 0600
+ *  17. shutdown() removes the socket file
  *
  * Run: bun test apps/runner/__tests__/unit/broker.test.ts
  */
@@ -552,3 +559,124 @@ describe('shutdown', () => {
     expect(fetchCalls.length).toBe(0);
   });
 });
+
+// ── local token server ────────────────────────────────────────────────────────
+
+const SOCKET_PATH = `/tmp/buildd-broker-test-${process.pid}.sock`;
+
+describe('local token server — handleLocalRequest', () => {
+  beforeEach(() => {
+    process.env.BUILDD_BROKER_SOCKET = SOCKET_PATH;
+    // clean up any leftover socket from a previous run
+    try { unlinkSync(SOCKET_PATH); } catch {}
+    broker = new CredentialBroker();
+  });
+
+  afterEach(async () => {
+    await broker.shutdown();
+    try { unlinkSync(SOCKET_PATH); } catch {}
+    globalThis.fetch = originalFetch;
+  });
+
+  test('returns 404 when credential_id is not managed', async () => {
+    const req = new Request('http://localhost/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: 'unknown-cred' }),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('not_managed');
+  });
+
+  test('returns 503 when credential is managed but access_token is null (bootstrapping)', async () => {
+    (broker as any).managed.set(SECRET_ID, {
+      purpose: 'claude_credential',
+      expiresAt: '2030-01-01T00:00:00Z',
+      leaseId: LEASE_ID,
+      accessToken: null,
+      refreshToken: 'rt',
+    });
+    const req = new Request('http://localhost/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: SECRET_ID }),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('not_ready');
+  });
+
+  test('returns 200 with access_token and expires_at for fully bootstrapped credential', async () => {
+    const expiresAt = '2030-06-01T12:00:00Z';
+    (broker as any).managed.set(SECRET_ID, {
+      purpose: 'claude_credential',
+      expiresAt,
+      leaseId: LEASE_ID,
+      accessToken: 'sk-ant-live-token',
+      refreshToken: 'rt-stored',
+    });
+    const req = new Request('http://localhost/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: SECRET_ID }),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { access_token: string; expires_at: string | null };
+    expect(body.access_token).toBe('sk-ant-live-token');
+    expect(body.expires_at).toBe(expiresAt);
+  });
+
+  test('returns 200 with null expires_at when expiresAt is null', async () => {
+    (broker as any).managed.set(SECRET_ID, {
+      purpose: 'claude_credential',
+      expiresAt: null,
+      leaseId: LEASE_ID,
+      accessToken: 'at-no-expiry',
+      refreshToken: null,
+    });
+    const req = new Request('http://localhost/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: SECRET_ID }),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { access_token: string; expires_at: string | null };
+    expect(body.access_token).toBe('at-no-expiry');
+    expect(body.expires_at).toBeNull();
+  });
+
+  test('returns 405 for non-POST requests to /token', async () => {
+    const req = new Request('http://localhost/token', { method: 'GET' });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(405);
+  });
+
+  test('returns 404 for unknown paths', async () => {
+    const req = new Request('http://localhost/unknown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(404);
+  });
+
+  test('returns 400 when body is missing credential_id', async () => {
+    const req = new Request('http://localhost/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong_field: 'oops' }),
+    });
+    const res = await (broker as any).handleLocalRequest(req);
+    expect(res.status).toBe(400);
+  });
+});
+
+// NOTE: socket lifecycle tests (start() creates socket, chmod 0600, shutdown removes file)
+// are in apps/runner/__tests__/standalone/broker-socket-lifecycle.test.ts because
+// they require real fs I/O and must not run alongside tests that mock the 'fs' module.
