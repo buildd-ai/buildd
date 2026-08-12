@@ -1694,11 +1694,39 @@ export const deviceCodesRelations = relations(deviceCodes, ({ one }) => ({
   user: one(users, { fields: [deviceCodes.userId], references: [users.id] }),
 }));
 
-export const secretsRelations = relations(secrets, ({ one }) => ({
+export const secretsRelations = relations(secrets, ({ one, many }) => ({
   team: one(teams, { fields: [secrets.teamId], references: [teams.id] }),
   account: one(accounts, { fields: [secrets.accountId], references: [accounts.id] }),
   workspace: one(workspaces, { fields: [secrets.workspaceId], references: [workspaces.id] }),
+  lease: many(credentialLeases),
 }));
+
+// Per-credential lease: exactly one broker may hold a given credential's lease at a time.
+// The unique index on credential_id is the DB-level enforcement — a second runner racing
+// for the same lease gets 0 rows back from the conditional INSERT ON CONFLICT and backs off.
+// The broker renews the lease via heartbeat every 60s (TTL = 5 min), so stale leases from
+// crashed brokers expire naturally within 5 minutes and become acquirable again.
+export const credentialLeases = pgTable('credential_leases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  credentialId: uuid('credential_id')
+    .notNull()
+    .references(() => secrets.id, { onDelete: 'cascade' }),
+  heldByRunnerId: text('held_by_runner_id').notNull(),
+  acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull().defaultNow(),
+  // Broker extends this every heartbeat; if it lapses, a competing runner may steal the lease.
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  credentialIdUniq: uniqueIndex('credential_leases_credential_id_uniq').on(t.credentialId),
+  expiresAtIdx: index('credential_leases_expires_at_idx').on(t.expiresAt),
+}));
+
+export const credentialLeasesRelations = relations(credentialLeases, ({ one }) => ({
+  credential: one(secrets, { fields: [credentialLeases.credentialId], references: [secrets.id] }),
+}));
+
+export type CredentialLease = typeof credentialLeases.$inferSelect;
+export type NewCredentialLease = typeof credentialLeases.$inferInsert;
 
 
 // Per-team notification preferences (config, not a credential — the channel
