@@ -146,7 +146,7 @@ export default function MissionInlineEdit({
               titleBeforeEdit.current = title;
               setEditingTitle(true);
             }}
-            className={`text-xl font-semibold text-text-primary font-sans cursor-text hover:border-b hover:border-text-muted/20 transition-colors ${savingTitle ? 'opacity-60' : ''}`}
+            className={`text-lg sm:text-xl font-semibold text-text-primary font-sans cursor-text hover:border-b hover:border-text-muted/20 transition-colors line-clamp-2 sm:line-clamp-none ${savingTitle ? 'opacity-60' : ''}`}
           >
             {title}
           </h1>

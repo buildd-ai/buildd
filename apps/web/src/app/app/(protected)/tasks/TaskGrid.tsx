@@ -61,7 +61,7 @@ function deriveSwipeCardType(task: GridTask): SwipeCardType {
   return 'running-task';
 }
 
-function renderTaskCard(task: GridTask) {
+function renderTaskCard(task: GridTask, missionScoped = false) {
   const cardType = deriveSwipeCardType(task);
   const swipePrUrl = cardType === 'blocked-task'
     ? (task.chain?.blockedBy?.[0]?.prUrl ?? task.prUrl)
@@ -80,7 +80,7 @@ function renderTaskCard(task: GridTask) {
         taskStatus={task.status}
         workerStatus={task.workerStatus}
         missionId={task.missionId}
-        missionTitle={task.missionTitle}
+        missionTitle={missionScoped ? null : task.missionTitle}
         workspaceName={task.workspaceName}
         chain={task.chain}
         taskCreatedAt={task.createdAt}
@@ -615,7 +615,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">
-                {needsInputTasks.map((task) => renderTaskCard(task))}
+                {needsInputTasks.map((task) => renderTaskCard(task, !!missionFilter))}
               </div>
             </div>
           )}
@@ -667,7 +667,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   </span>
                 </button>
 
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
               </div>
             );
           })}
@@ -691,7 +691,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
               </div>
             );
           })}
@@ -715,13 +715,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task))}
+                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
               </div>
             );
           })}
 
           {/* Flat list (no grouping) */}
-          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskCard(task))}
+          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskCard(task, !!missionFilter))}
 
           {/* Empty filtered state */}
           {filtered.length === 0 && visibleTasks.length > 0 && (
