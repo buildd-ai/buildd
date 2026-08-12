@@ -8,8 +8,11 @@ const mockAuthenticateApiKey = mock(() => Promise.resolve(null as any));
 // Innermost returning mock so tests can control what the UPDATE...RETURNING yields.
 const mockDbUpdateReturning = mock(() => Promise.resolve([]));
 
-// db.query.secrets.findFirst mock (used for commit + revoke)
+// db.query.secrets.findFirst mock (used for commit + revoke + bootstrap)
 const mockDbFindFirst = mock(() => Promise.resolve(null as any));
+
+// db.query.credentialLeases.findFirst mock (used for bootstrap lease check)
+const mockDbLeaseFindFirst = mock(() => Promise.resolve(null as any));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -25,6 +28,9 @@ mock.module('@buildd/core/db', () => ({
     query: {
       secrets: {
         findFirst: mockDbFindFirst,
+      },
+      credentialLeases: {
+        findFirst: mockDbLeaseFindFirst,
       },
     },
   },
@@ -46,6 +52,11 @@ mock.module('@buildd/core/db/schema', () => ({
     healthStatus: 'health_status',
     teamId: 'team_id',
   },
+  credentialLeases: {
+    credentialId: 'credential_id',
+    heldByRunnerId: 'held_by_runner_id',
+    expiresAt: 'expires_at',
+  },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -54,6 +65,7 @@ mock.module('drizzle-orm', () => ({
   or: (...c: any[]) => ({ __or: c }),
   isNull: (f: any) => ({ __isNull: f }),
   lt: (f: any, v: any) => ({ __lt: { f, v } }),
+  gt: (f: any, v: any) => ({ __gt: { f, v } }),
   // sql is a tagged template literal: sql`NOW()` → sql(['NOW()'])
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: any[]) => ({ __sql: strings.raw.join('') }),
@@ -102,6 +114,7 @@ describe('POST /api/runner/credential-refresh', () => {
     mockAuthenticateApiKey.mockReset();
     mockDbUpdateReturning.mockReset();
     mockDbFindFirst.mockReset();
+    mockDbLeaseFindFirst.mockReset();
     mockEncrypt.mockReset();
     mockDecrypt.mockReset();
     mockRecordCredentialAuthSuccess.mockReset();
@@ -309,6 +322,79 @@ describe('POST /api/runner/credential-refresh', () => {
       const res = await POST(makeReq({ ...BASE, action: 'revoke' }));
       expect(res.status).toBe(404);
       expect(mockRecordCredentialAuthFailure).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── bootstrap ──────────────────────────────────────────────────────────────
+
+  describe('action=bootstrap', () => {
+    const RUNNER_ID = 'runner-host-1';
+
+    it('returns accessToken, refreshToken, and expiresAt when runner holds active lease', async () => {
+      mockDbLeaseFindFirst.mockResolvedValue({ id: 'lease-uuid-1' });
+      const blob = { access_token: 'at-live', refresh_token: 'rt-live' };
+      mockDbFindFirst.mockResolvedValue({
+        encryptedValue: `enc:${JSON.stringify(blob)}`,
+        tokenExpiresAt: new Date('2026-10-01T00:00:00.000Z'),
+      });
+
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap', runnerId: RUNNER_ID }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.accessToken).toBe('at-live');
+      expect(data.refreshToken).toBe('rt-live');
+      expect(data.expiresAt).toBe('2026-10-01T00:00:00.000Z');
+    });
+
+    it('returns expiresAt:null when tokenExpiresAt is null', async () => {
+      mockDbLeaseFindFirst.mockResolvedValue({ id: 'lease-uuid-1' });
+      mockDbFindFirst.mockResolvedValue({
+        encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+        tokenExpiresAt: null,
+      });
+
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap', runnerId: RUNNER_ID }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.expiresAt).toBeNull();
+    });
+
+    it('returns null accessToken/refreshToken when blob fields are missing', async () => {
+      mockDbLeaseFindFirst.mockResolvedValue({ id: 'lease-uuid-1' });
+      mockDbFindFirst.mockResolvedValue({
+        encryptedValue: 'enc:{}',
+        tokenExpiresAt: null,
+      });
+
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap', runnerId: RUNNER_ID }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.accessToken).toBeNull();
+      expect(data.refreshToken).toBeNull();
+    });
+
+    it('returns 403 when runner does not hold the active lease', async () => {
+      mockDbLeaseFindFirst.mockResolvedValue(null); // no matching lease row
+
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap', runnerId: RUNNER_ID }));
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('lease');
+    });
+
+    it('returns 404 when credential not found after lease check', async () => {
+      mockDbLeaseFindFirst.mockResolvedValue({ id: 'lease-uuid-1' });
+      mockDbFindFirst.mockResolvedValue(null); // secret missing
+
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap', runnerId: RUNNER_ID }));
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 when runnerId is missing', async () => {
+      const res = await POST(makeReq({ ...BASE, action: 'bootstrap' }));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('runnerId');
     });
   });
 

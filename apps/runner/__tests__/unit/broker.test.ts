@@ -2,14 +2,16 @@
  * Unit tests for apps/runner/src/broker.ts
  *
  * Mocks globalThis.fetch; covers:
- *   1. notifyCredentials → acquire succeeds
+ *   1. notifyCredentials → acquire succeeds → bootstrap called
  *   2. notifyCredentials → acquire fails (another runner holds lease)
  *   3. notifyCredentials on already-managed credential → no re-acquire
- *   4. heartbeatAll → success
- *   5. heartbeatAll → 404 (stolen) → lease removed
- *   6. refreshExpiring → skips creds not expiring within 2h
- *   7. refreshExpiring → calls runnerRefreshCredential for expiring creds
- *   8. shutdown → releases all leases (idempotent)
+ *   4. bootstrap → tokens stored in managed map
+ *   5. bootstrap → non-fatal on failure (lease still held)
+ *   6. heartbeatAll → success
+ *   7. heartbeatAll → 404 (stolen) → lease removed
+ *   8. refreshExpiring → skips creds not expiring within 2h
+ *   9. refreshExpiring → calls runnerRefreshCredential for expiring creds
+ *  10. shutdown → releases all leases (idempotent)
  *
  * Run: bun test apps/runner/__tests__/unit/broker.test.ts
  */
@@ -64,20 +66,31 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+const BOOTSTRAP_RESPONSE = { body: { accessToken: 'at-cached', refreshToken: 'rt-cached', expiresAt: null } };
+
 // ── acquire path ──────────────────────────────────────────────────────────────
 
 describe('notifyCredentials / acquire', () => {
-  test('acquires lease when control plane returns acquired=true', async () => {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+  test('acquires lease then calls bootstrap when control plane returns acquired=true', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
 
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
 
-    expect(fetchCalls.length).toBe(1);
-    expect(fetchCalls[0].url).toBe(LEASE_ENDPOINT);
-    expect(fetchCalls[0].body.action).toBe('acquire');
-    expect(fetchCalls[0].body.credentialId).toBe(SECRET_ID);
-    expect(fetchCalls[0].body.runnerId).toBe(RUNNER_ID);
+    expect(fetchCalls.length).toBe(2);
+    const acquireCall = fetchCalls[0];
+    expect(acquireCall.url).toBe(LEASE_ENDPOINT);
+    expect(acquireCall.body.action).toBe('acquire');
+    expect(acquireCall.body.credentialId).toBe(SECRET_ID);
+    expect(acquireCall.body.runnerId).toBe(RUNNER_ID);
+    const bootstrapCall = fetchCalls[1];
+    expect(bootstrapCall.url).toBe(REFRESH_ENDPOINT);
+    expect(bootstrapCall.body.action).toBe('bootstrap');
+    expect(bootstrapCall.body.secretId).toBe(SECRET_ID);
+    expect(bootstrapCall.body.runnerId).toBe(RUNNER_ID);
   });
 
   test('does not add to managed set when acquired=false', async () => {
@@ -95,7 +108,10 @@ describe('notifyCredentials / acquire', () => {
   });
 
   test('does not re-acquire if credential is already managed', async () => {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
 
@@ -107,13 +123,101 @@ describe('notifyCredentials / acquire', () => {
   });
 
   test('sends Authorization header with API key', async () => {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'codex_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
 
-    // Verify the mock was called with a function whose init included the header.
-    // We reconstruct by checking fetchCalls contains exactly one entry.
+    // Both acquire and bootstrap calls should have been made.
+    expect(fetchCalls.length).toBe(2);
+  });
+});
+
+// ── bootstrap path ────────────────────────────────────────────────────────────
+
+describe('bootstrapCredential', () => {
+  test('stores accessToken and refreshToken in managed map after successful bootstrap', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { accessToken: 'live-at', refreshToken: 'live-rt', expiresAt: '2030-06-01T00:00:00Z' } },
+    ]);
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const managed = (broker as any).managed.get(SECRET_ID);
+    expect(managed).toBeDefined();
+    expect(managed.accessToken).toBe('live-at');
+    expect(managed.refreshToken).toBe('live-rt');
+    expect(managed.expiresAt).toBe('2030-06-01T00:00:00Z');
+  });
+
+  test('overrides expiresAt with fresher value from bootstrap response', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { accessToken: 'at', refreshToken: 'rt', expiresAt: '2027-01-01T00:00:00Z' } },
+    ]);
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: '2026-01-01T00:00:00Z' }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const managed = (broker as any).managed.get(SECRET_ID);
+    expect(managed.expiresAt).toBe('2027-01-01T00:00:00Z');
+  });
+
+  test('bootstrap failure is non-fatal — lease is still held for heartbeat', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { error: 'Forbidden' }, status: 403 },
+    ]);
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Lease is still managed despite bootstrap failure.
+    fetchCalls = [];
+    globalThis.fetch = makeFetchMock([{ body: { ok: true } }]);
+    await (broker as any).heartbeatAll();
     expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls[0].body.action).toBe('heartbeat');
+  });
+
+  test('bootstrap network error is non-fatal', async () => {
+    let callCount = 0;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      callCount++;
+      if (callCount === 1) {
+        // acquire
+        fetchCalls.push({ url, body: {} });
+        return new Response(JSON.stringify({ acquired: true, leaseId: LEASE_ID }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // bootstrap — throw network error
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Lease still managed.
+    const managed = (broker as any).managed.get(SECRET_ID);
+    expect(managed).toBeDefined();
+    expect(managed.accessToken).toBeNull();
+    expect(managed.refreshToken).toBeNull();
+  });
+
+  test('bootstrap preserves null tokens when blob fields missing', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { accessToken: null, refreshToken: null, expiresAt: null } },
+    ]);
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'codex_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const managed = (broker as any).managed.get(SECRET_ID);
+    expect(managed.accessToken).toBeNull();
+    expect(managed.refreshToken).toBeNull();
   });
 });
 
@@ -121,7 +225,10 @@ describe('notifyCredentials / acquire', () => {
 
 describe('heartbeatAll', () => {
   async function acquireLease() {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -146,12 +253,16 @@ describe('heartbeatAll', () => {
 
     await (broker as any).heartbeatAll();
 
-    // Credential should no longer be managed — next notify triggers a new acquire.
+    // Credential should no longer be managed — next notify triggers a new acquire (+ bootstrap).
     fetchCalls = [];
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: 'new-lease-id' } }]);
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: 'new-lease-id' } },
+      BOOTSTRAP_RESPONSE,
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
-    expect(fetchCalls.length).toBe(1); // tried acquire again
+    expect(fetchCalls.length).toBe(2); // acquire + bootstrap
+    expect(fetchCalls[0].body.action).toBe('acquire');
   });
 
   test('is a no-op when no leases are held', async () => {
@@ -165,7 +276,12 @@ describe('heartbeatAll', () => {
 
 describe('refreshExpiring', () => {
   async function acquireLeaseWithExpiry(expiresAt: string) {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+    // Provide acquire + bootstrap responses. Bootstrap returns expiresAt=null so it
+    // doesn't override the expiresAt we passed to notifyCredentials.
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { accessToken: 'at', refreshToken: 'rt', expiresAt: null } },
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt }]);
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -199,14 +315,11 @@ describe('refreshExpiring', () => {
   });
 
   test('calls runnerRefreshCredential for null expiresAt (unknown expiry)', async () => {
-    await acquireLeaseWithExpiry(''); // empty string parsed as invalid date → getTime() = NaN
-    // Actually let's use null directly.
     const broker2 = new CredentialBroker();
+    // acquire + bootstrap, then refresh loop: lock → provider → commit
     globalThis.fetch = makeFetchMock([
       { body: { acquired: true, leaseId: LEASE_ID } },
-      { body: { locked: true, refreshToken: 'rt-abc' } },
-      { body: { access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 } },
-      { body: { ok: true } },
+      { body: { accessToken: 'at', refreshToken: 'rt', expiresAt: null } }, // bootstrap
     ]);
     broker2.notifyCredentials([{ secretId: SECRET_ID, purpose: 'codex_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
@@ -228,7 +341,10 @@ describe('refreshExpiring', () => {
 
 describe('shutdown', () => {
   async function acquireLease() {
-    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
     broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
     await new Promise((r) => setTimeout(r, 20));
   }
