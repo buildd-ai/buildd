@@ -19,12 +19,20 @@
  *  15. handleLocalRequest → 404 for unknown paths
  *  16. start() creates unix socket at socketPath with mode 0600
  *  17. shutdown() removes the socket file
+ *  18. fetchTokenFromBroker → 200 returns accessToken + expiresAt
+ *  19. fetchTokenFromBroker → 404 returns null
+ *  20. fetchTokenFromBroker → 503 returns null
+ *  21. fetchTokenFromBroker → network error returns null
+ *
+ * Tests for registerCredentialFile / deregisterCredentialFile and socket lifecycle
+ * are in apps/runner/__tests__/standalone/ (real fs I/O, avoids mock.module pollution).
  *
  * Run: bun test apps/runner/__tests__/unit/broker.test.ts
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { CredentialBroker } from '../../src/broker';
+import { unlinkSync } from 'fs';
+import { CredentialBroker, fetchTokenFromBroker } from '../../src/broker';
 
 const CONTROL_PLANE = 'https://buildd.dev';
 const API_KEY = 'bld_test_key';
@@ -677,6 +685,66 @@ describe('local token server — handleLocalRequest', () => {
   });
 });
 
-// NOTE: socket lifecycle tests (start() creates socket, chmod 0600, shutdown removes file)
-// are in apps/runner/__tests__/standalone/broker-socket-lifecycle.test.ts because
-// they require real fs I/O and must not run alongside tests that mock the 'fs' module.
+// ── fetchTokenFromBroker ──────────────────────────────────────────────────────
+
+describe('fetchTokenFromBroker', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test('returns accessToken and expiresAt on 200', async () => {
+    const expiresAt = '2030-06-01T12:00:00Z';
+    globalThis.fetch = makeFetchMock([
+      { body: { access_token: 'at-from-broker', expires_at: expiresAt }, status: 200 },
+    ]);
+    const result = await fetchTokenFromBroker(SECRET_ID, '/tmp/test.sock');
+    expect(result).not.toBeNull();
+    expect(result!.accessToken).toBe('at-from-broker');
+    expect(result!.expiresAt).toBe(expiresAt);
+    expect(fetchCalls[0].body.credential_id).toBe(SECRET_ID);
+  });
+
+  test('returns null on 404 (not managed)', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { error: 'not_managed' }, status: 404 },
+    ]);
+    const result = await fetchTokenFromBroker(SECRET_ID, '/tmp/test.sock');
+    expect(result).toBeNull();
+  });
+
+  test('returns null on 503 (not ready)', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { error: 'not_ready' }, status: 503 },
+    ]);
+    const result = await fetchTokenFromBroker(SECRET_ID, '/tmp/test.sock');
+    expect(result).toBeNull();
+  });
+
+  test('returns null on network error', async () => {
+    globalThis.fetch = mock(async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const result = await fetchTokenFromBroker(SECRET_ID, '/tmp/test.sock');
+    expect(result).toBeNull();
+  });
+
+  test('returns null when access_token is missing from response', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { expires_at: '2030-01-01T00:00:00Z' }, status: 200 },
+    ]);
+    const result = await fetchTokenFromBroker(SECRET_ID, '/tmp/test.sock');
+    expect(result).toBeNull();
+  });
+
+  test('passes credential_id in request body', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { access_token: 'tok', expires_at: null }, status: 200 },
+    ]);
+    await fetchTokenFromBroker('my-cred-id', '/tmp/test.sock');
+    expect(fetchCalls[0].body.credential_id).toBe('my-cred-id');
+  });
+});
+
+// NOTE: Tests requiring real fs I/O (socket lifecycle, credential file updates) live in
+// apps/runner/__tests__/standalone/ because Bun's mock.module is process-global — other
+// unit tests that mock 'fs' without these exports would break them.

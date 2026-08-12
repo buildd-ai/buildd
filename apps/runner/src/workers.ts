@@ -25,7 +25,7 @@ import { PusherManager } from './pusher-manager';
 import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
-import { notifyBrokerCredentials } from './broker';
+import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
@@ -949,8 +949,8 @@ export class WorkerManager {
         this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
 
         // Notify the credential broker about credentials seen in this claim response.
-        // The broker acquires leases and schedules proactive refreshes; workers never
-        // call the token endpoint directly (Phase 2 replaces Phase 1's in-harness path).
+        // The broker acquires leases and schedules proactive refreshes; workers fetch
+        // their token from the broker socket at spawn (Phase 2 live path).
         const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
           Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
         if (pendingRefreshes && pendingRefreshes.length > 0) {
@@ -1273,6 +1273,15 @@ export class WorkerManager {
         ? new Date(claimedWorker.claudeTokenExpiresAt)
         : null;
       console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
+    }
+    // Extract the claude_credential secretId from pendingCredentialRefreshes so startSession
+    // can query the broker for a fresh token at spawn time (Phase 2 live path).
+    const pendingCredentialRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
+      Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
+    const claudeCredentialId = pendingCredentialRefreshes?.find(r => r.purpose === 'claude_credential')?.secretId;
+    if (claudeCredentialId) {
+      worker.claudeCredentialId = claudeCredentialId;
+      console.log(`[Worker ${claimedWorker.id}] Claude credential broker secretId: ${claudeCredentialId}`);
     }
 
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
@@ -1904,25 +1913,57 @@ export class WorkerManager {
         if (session) (session as any).codexHome = codexHome;
       }
 
-      // Claude credential isolation: when the claim supplied a managed access_token
-      // (from claude_credential purpose), create a per-worker CLAUDE_CONFIG_DIR and
-      // write credentials.json with ONLY the access_token (no refresh_token).
-      // This prevents the SDK from calling the Anthropic refresh endpoint in-session,
-      // eliminating the token family revocation cascade from concurrent workers.
-      if (worker.claudeAccessToken) {
-        const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
-          worker.id,
-          worker.claudeAccessToken,
-          worker.claudeTokenExpiresAt ?? null,
-          this.config.workspaceIsolationRoot
-            ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
-            : undefined,
-        );
-        claudeConfigDir = _cd;
-        cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
-        // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
-        delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
-        console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
+      // Claude credential isolation: create a per-worker CLAUDE_CONFIG_DIR and write
+      // credentials.json with ONLY the access_token (no refresh_token). This prevents
+      // the SDK from calling the Anthropic refresh endpoint in-session, eliminating the
+      // token family revocation cascade from concurrent workers.
+      //
+      // Phase 2 live path: query the broker socket first (env injection at spawn).
+      // The broker holds the most recently refreshed token in memory; this ensures
+      // workers starting after a proactive refresh pick up the fresh token immediately
+      // rather than the potentially-older token from the claim response.
+      // Fallback: use claudeAccessToken from the claim response (always available if a
+      // claude_credential exists), which remains valid until the broker has had time to
+      // refresh it.
+      if (worker.claudeAccessToken || worker.claudeCredentialId) {
+        let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
+        let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
+
+        if (worker.claudeCredentialId && !isCodexTask) {
+          const brokerToken = await fetchTokenFromBroker(worker.claudeCredentialId, getBrokerSocketPath());
+          if (brokerToken) {
+            claudeTokenForSession = brokerToken.accessToken;
+            claudeTokenExpiry = brokerToken.expiresAt ? new Date(brokerToken.expiresAt) : null;
+            console.log(`[Worker ${worker.id}] Using broker-fetched Claude token (Phase 2)`);
+          } else {
+            console.log(`[Worker ${worker.id}] Broker not ready — falling back to claim-delivered claudeAccessToken`);
+          }
+        }
+
+        if (claudeTokenForSession) {
+          const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
+            worker.id,
+            claudeTokenForSession,
+            claudeTokenExpiry,
+            this.config.workspaceIsolationRoot
+              ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+              : undefined,
+          );
+          claudeConfigDir = _cd;
+          cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+          // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
+          delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+          // Register the credential file with the broker so mid-session proactive refreshes
+          // update the file on disk (prevents mid-session 401s on long-running workers).
+          if (worker.claudeCredentialId) {
+            credentialBroker.registerCredentialFile(
+              worker.id,
+              worker.claudeCredentialId,
+              join(claudeConfigDir, '.credentials.json'),
+            );
+          }
+          console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
+        }
       }
 
       // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
@@ -3197,6 +3238,12 @@ If something is missing or incomplete, describe what and fix it now.`;
         // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
+        }
+
+        // Deregister credential file from broker before cleanup — so mid-session refresh
+        // callbacks stop writing to a path we're about to delete.
+        if (worker.claudeCredentialId) {
+          credentialBroker.deregisterCredentialFile(worker.id);
         }
 
         // Clean up per-worker Claude config dir (access_token isolation).
