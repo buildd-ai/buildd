@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Initiative triage surface with effort sparklines: SparklineBar component, /api/initiatives/effort endpoint, InitiativeTriageRow and InitiativeTriage components (#1647, #1648, #1649, #1650)
+- Tier-first ModelPicker replacing hardcoded model selects (#1599)
+- LLM-based goalCriteria evaluation — evidence assembly + description type (#1592)
+- Runner-anchored credential broker Phase 2: Postgres leases, unix-socket token endpoint, and bootstrap credential pull (#1624, #1632, #1639)
+- Broker-driven worker credential injection live path (#1641)
+- Lease-expiry-guard — alert + optional fallback refresh on runner death (#1634)
+- Periodic credential-refresh sweep and runner-offline guard for runners (#1619, #1620)
+- Gate direct credential refresh loops behind BUILDD_ALLOW_CONTROL_PLANE_REFRESH flag (#1621)
+- runner/credential-refresh control-plane endpoint (#1617)
+- merge_pr + get_pr MCP actions with GitHub App merge 403 fix (#1612)
 - GET /api/models route with Anthropic model list (#1598)
 - Recency signals on missions/initiatives landing page (#1593)
 - enforceGreenCI workspace policy + mergeable_state check (#1571)
@@ -61,10 +71,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replace InitiativesStrip double-render with InitiativeTriage surface (#1650)
+- Health page signal-first restructure, remove Watched Projects section (#1578)
+- Remove server-side claim-gate refresh; runner is now sole credential refresh origin (#1622)
 - Bump @anthropic-ai/claude-agent-sdk to ^0.2.119 (#708)
 
 ### Fixed
 
+- Promote task to completed when heartbeat-expired worker has delivered a PR (#1594)
+- Exclude revoked Codex credentials from fallback candidate check (#1640)
+- Register lease-expiry-guard in vercel.json + await notifyTeam (#1638)
+- Confirm-state overlaps card content on mobile (#1629)
+- Surface PR number on escalation cards and task detail (#1628)
+- Home screen merge panel, initiative rail, and right-now card layout on mobile (#1627)
+- Activity view header + task row readability on mobile (#1625)
+- Goal criteria rows now show descriptions and are tappable on mobile (#1623)
+- Content-hash dedup for PR corpus to eliminate cross-PR near-duplicates (#1618)
+- Runner CBM memory budget bumped from 512 to 1024 MB (#1613)
 - Initiative status uses DB lifecycle, not rollup from mission counts (#1596)
 - Define ack/dismiss actions in activity feed, add swipe affordance, and declutter rows (#1563)
 - Eliminate trailing-action / ⋯ menu overlap in SwipeableRow (#1558)
