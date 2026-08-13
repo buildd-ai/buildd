@@ -455,4 +455,58 @@ describe('PATCH /api/missions/[id]', () => {
     expect(updatedScheduleData?.enabled).toBe(false);
     expect(deletedTables).not.toContain('taskSchedules');
   });
+
+  it('rejects PATCH goalCriteria item without type field', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        goalCriteria: [{ description: 'All PRs merged' }],
+      }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+
+  it('rejects PATCH goalCriteria item with invalid type string', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        goalCriteria: [{ type: 'wrong_type' }],
+      }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+
+  it('accepts PATCH goalCriteria with valid types', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        goalCriteria: [
+          { type: 'all_prs_merged' },
+          { type: 'description', description: 'Ship the feature' },
+        ],
+      }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.goalCriteria).toEqual([
+      { type: 'all_prs_merged' },
+      { type: 'description', description: 'Ship the feature' },
+    ]);
+  });
+
+  it('accepts null goalCriteria to clear criteria', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: null }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.goalCriteria).toBeNull();
+  });
 });
