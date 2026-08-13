@@ -20,9 +20,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-07-18
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
 
-## Draft (0)
+## Draft (1)
 
-_none_
+- [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
 
 ## Superseded (0)
 
