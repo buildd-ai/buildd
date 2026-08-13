@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives, tasks } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -7,12 +7,13 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { MissionGrid, type InitiativeGroupData } from './MissionGrid';
-import { InitiativesStrip, type InitiativeStripItem } from './InitiativesStrip';
+import { MissionGrid } from './MissionGrid';
+import { InitiativeTriage } from './InitiativeTriage';
+import type { InitiativeTriageItem } from './triage-types';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
 export const dynamic = 'force-dynamic';
@@ -101,23 +102,6 @@ export default async function MissionsPage({
     },
   });
 
-  const initiativeItems: InitiativeStripItem[] = teamInitiatives.map((init) => {
-    const children: ChildMissionProgress[] = (init.missions || []).map((m: any) => {
-      const { totalTasks, completedTasks } = computeMissionProgress(m.tasks || []);
-      return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
-    });
-    const rollup = computeInitiativeProgress(children);
-    return {
-      id: init.id,
-      title: init.title,
-      status: init.status,
-      progress: rollup.progress,
-      completedMissions: rollup.completedMissions,
-      totalMissions: rollup.totalMissions,
-      rollupStatus: rollup.status,
-    };
-  });
-
   // Query roles for display
   const wsIds = await getUserWorkspaceIds(user.id);
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -164,6 +148,44 @@ export default async function MissionsPage({
       schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
     },
   });
+
+  // Effort data for InitiativeTriage sparklines — 14-day token aggregation per initiative (team-scoped).
+  const EFFORT_WINDOW_DAYS = 14;
+  const effortCutoff = new Date(Date.now() - EFFORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const effortRows = await db
+    .select({
+      initiativeId: missions.initiativeId,
+      day: sql<string>`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
+      tokens: sql<number>`SUM(${workers.inputTokens} + ${workers.outputTokens})`,
+      merged: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'completed' AND ${workers.prUrl} IS NOT NULL)`,
+      failed: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'error')`,
+      open: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} NOT IN ('completed', 'error'))`,
+    })
+    .from(workers)
+    .innerJoin(tasks, eq(tasks.id, workers.taskId))
+    .innerJoin(missions, eq(missions.id, tasks.missionId))
+    .where(and(
+      eq(missions.teamId, activeTeamId),
+      sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) >= ${effortCutoff}`,
+    ))
+    .groupBy(
+      missions.initiativeId,
+      sql`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
+    );
+
+  type EffortDayEntry = { date: string; tokens: number; merged: number; failed: number; open: number };
+  const effortByInitiative = new Map<string, EffortDayEntry[]>();
+  for (const row of effortRows) {
+    const key = row.initiativeId ?? '__unassigned__';
+    if (!effortByInitiative.has(key)) effortByInitiative.set(key, []);
+    effortByInitiative.get(key)!.push({
+      date: row.day,
+      tokens: Number(row.tokens),
+      merged: Number(row.merged),
+      failed: Number(row.failed),
+      open: Number(row.open),
+    });
+  }
 
   const POLICY_TIER_LABEL: Record<string, string> = {
     'auto-threshold': 'Auto',
@@ -307,40 +329,60 @@ export default async function MissionsPage({
     return bTime - aTime;
   });
 
-  // Build initiative title index from the raw query results (O(n) lookup later).
-  const initiativeTitleIndex = new Map<string, string>();
-  for (const obj of allMissions) {
-    if (obj.initiativeId && (obj.initiative as any)?.title) {
-      initiativeTitleIndex.set(obj.initiativeId, (obj.initiative as any).title);
+  // Build triage items for InitiativeTriage surface.
+  // awaitingVerification: completed tasks with an open (unmerged, unclosed) PR.
+  const awaitingByInitiative = new Map<string, number>();
+  for (const m of allMissions) {
+    if (!m.initiativeId) continue;
+    let count = 0;
+    for (const t of (m.tasks || []) as any[]) {
+      if (t.status !== 'completed') continue;
+      const hasOpenPR = (t.workers || []).some(
+        (w: any) => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed',
+      );
+      if (hasOpenPR) count++;
     }
+    awaitingByInitiative.set(m.initiativeId, (awaitingByInitiative.get(m.initiativeId) ?? 0) + count);
   }
 
-  // Compute per-initiative rollup data for group headers.
-  // Groups missions by initiativeId; for each group computes rollup status/progress
-  // and the aggregate segment strip via computeInitiativeSegments.
-  const initiativeGroupMap = new Map<string, { title: string; missions: typeof missionsList }>();
+  // blocked (PR-blocked pending tasks), held missions, and shipped-this-week from missionsList.
+  const NOW_MS = Date.now();
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const blockedByInitiative = new Map<string, number>();
+  const heldByInitiative = new Map<string, number>();
+  const shippedThisWeekByInitiative = new Map<string, number>();
   for (const m of missionsList) {
     if (!m.initiativeId) continue;
-    const title = initiativeTitleIndex.get(m.initiativeId) ?? m.initiativeId;
-    if (!initiativeGroupMap.has(m.initiativeId)) {
-      initiativeGroupMap.set(m.initiativeId, { title, missions: [] });
+    blockedByInitiative.set(m.initiativeId, (blockedByInitiative.get(m.initiativeId) ?? 0) + m.blockedPRCount);
+    if (m.isHeld) {
+      heldByInitiative.set(m.initiativeId, (heldByInitiative.get(m.initiativeId) ?? 0) + 1);
     }
-    initiativeGroupMap.get(m.initiativeId)!.missions.push(m);
+    if (m.health === 'shipped' && m.lastActivityAt) {
+      const age = NOW_MS - new Date(m.lastActivityAt).getTime();
+      if (age <= SEVEN_DAYS_MS) {
+        shippedThisWeekByInitiative.set(m.initiativeId, (shippedThisWeekByInitiative.get(m.initiativeId) ?? 0) + 1);
+      }
+    }
   }
 
-  const STATUS_RANK: Record<string, number> = { blocked: 0, active: 1, paused: 2, completed: 3, empty: 4 };
-  const initiativeGroups: InitiativeGroupData[] = [...initiativeGroupMap.entries()]
-    .map(([id, { title, missions: gMissions }]) => {
-      const children: ChildMissionProgress[] = gMissions.map((m) => ({
-        status: m.status as ChildMissionProgress['status'],
-        totalTasks: m.totalTasks,
-        completedTasks: m.completedTasks,
-      }));
-      const rollup = computeInitiativeProgress(children);
-      const segments = computeInitiativeSegments(gMissions);
-      return { id, title, rollupStatus: rollup.status, progress: rollup.progress, segments };
-    })
-    .sort((a, b) => (STATUS_RANK[a.rollupStatus] ?? 5) - (STATUS_RANK[b.rollupStatus] ?? 5));
+  // Use teamInitiatives for accurate progress (all missions, no 50-mission cap).
+  const triageItems: InitiativeTriageItem[] = teamInitiatives.map((init) => {
+    const children: ChildMissionProgress[] = (init.missions || []).map((m: any) => {
+      const { totalTasks, completedTasks } = computeMissionProgress(m.tasks || []);
+      return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
+    });
+    const rollup = computeInitiativeProgress(children);
+    return {
+      id: init.id,
+      title: init.title,
+      progress: rollup.progress,
+      effortDays: effortByInitiative.get(init.id) ?? [],
+      awaitingVerification: awaitingByInitiative.get(init.id) ?? 0,
+      blocked: blockedByInitiative.get(init.id) ?? 0,
+      held: heldByInitiative.get(init.id) ?? 0,
+      shippedThisWeek: shippedThisWeekByInitiative.get(init.id) ?? 0,
+    };
+  });
 
   const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
@@ -384,7 +426,7 @@ export default async function MissionsPage({
         </div>
       </div>
 
-      <InitiativesStrip initiatives={initiativeItems} />
+      <InitiativeTriage items={triageItems} teamId={activeTeamId} />
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
@@ -394,7 +436,7 @@ export default async function MissionsPage({
           </p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} initiativeGroups={initiativeGroups} />
+        <MissionGrid missions={missionsList} />
       )}
     </div>
   );
