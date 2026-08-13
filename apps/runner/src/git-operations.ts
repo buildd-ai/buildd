@@ -3,9 +3,59 @@
  * Extracted from WorkerManager to reduce workers.ts complexity.
  */
 
-import { existsSync, readFileSync } from 'fs';
+import * as cp from 'child_process';
+import * as fs from 'fs';
+import * as util from 'util';
 import { join } from 'path';
 import { resolveWorktreeBase, clearResumeContext, BranchFetchResult } from './worktree-utils';
+
+// Mutable dep references — tests inject mocks via __setGitOpsDeps() without
+// touching bun's mock.module registry (which is shared across parallel workers
+// and can be cleared by mock.restore() in sibling test files).
+// Production code uses real implementations captured at load time.
+// Note: execFileAsync is NOT initialised here because util.promisify(undefined)
+// throws when a sibling test file's partial child_process mock (e.g. only
+// execSync) is active during module load. Instead, installWorkspaceDeps creates
+// a fresh promisified wrapper from the current execFile on every call.
+let execSync = cp.execSync;
+let execFile: typeof cp.execFile = cp.execFile;
+let existsSync = fs.existsSync;
+let mkdirSync = fs.mkdirSync;
+let appendFileSync = fs.appendFileSync;
+let readFileSync = fs.readFileSync;
+let rmSync = fs.rmSync;
+
+export interface GitOpsDeps {
+  execSync: typeof cp.execSync;
+  execFile: typeof cp.execFile;
+  existsSync: typeof fs.existsSync;
+  mkdirSync: typeof fs.mkdirSync;
+  appendFileSync: typeof fs.appendFileSync;
+  readFileSync: typeof fs.readFileSync;
+  rmSync: typeof fs.rmSync;
+}
+
+/** Test-only: replace internal dependencies with mocks. */
+export function __setGitOpsDeps(mocks: GitOpsDeps): void {
+  execSync = mocks.execSync;
+  execFile = mocks.execFile;
+  existsSync = mocks.existsSync;
+  mkdirSync = mocks.mkdirSync;
+  appendFileSync = mocks.appendFileSync;
+  readFileSync = mocks.readFileSync;
+  rmSync = mocks.rmSync;
+}
+
+/** Test-only: restore real implementations. */
+export function __resetGitOpsDeps(): void {
+  execSync = cp.execSync;
+  execFile = cp.execFile;
+  existsSync = fs.existsSync;
+  mkdirSync = fs.mkdirSync;
+  appendFileSync = fs.appendFileSync;
+  readFileSync = fs.readFileSync;
+  rmSync = fs.rmSync;
+}
 
 export interface GitStats {
   commitCount?: number;
@@ -32,10 +82,11 @@ export interface GitStats {
  * the caller falls back to the main repo).
  */
 async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<void> {
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const run = promisify(execFile);
   const opts = { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const };
+  // Wrap the current execFile each time so test mocks injected via __setGitOpsDeps
+  // are picked up without a module-level promisify call (which would fail if
+  // execFile is undefined when a sibling test's partial mock is active).
+  const run = util.promisify(execFile);
 
   console.log(`[Worker ${workerId}] Running bun install in worktree (frozen lockfile)...`);
   try {
@@ -71,8 +122,6 @@ export async function setupWorktree(
   workerId: string,
   taskContext?: Record<string, unknown>,
 ): Promise<string | null> {
-  const { execSync } = await import('child_process');
-  const fs = await import('fs');
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
@@ -82,14 +131,14 @@ export async function setupWorktree(
 
   try {
     // Ensure worktree base directory exists
-    fs.mkdirSync(worktreeBase, { recursive: true });
+    mkdirSync(worktreeBase, { recursive: true });
 
     // Add .buildd-worktrees to .git/info/exclude if not already there
     const excludePath = join(repoPath, '.git', 'info', 'exclude');
     if (existsSync(excludePath)) {
       const excludeContent = readFileSync(excludePath, 'utf-8');
       if (!excludeContent.includes('.buildd-worktrees')) {
-        fs.appendFileSync(excludePath, '\n.buildd-worktrees\n');
+        appendFileSync(excludePath, '\n.buildd-worktrees\n');
       }
     }
 
@@ -108,7 +157,7 @@ export async function setupWorktree(
         execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
       } catch {
         // Force-remove the directory if git worktree remove fails
-        fs.rmSync(worktreePath, { recursive: true, force: true });
+        rmSync(worktreePath, { recursive: true, force: true });
         try { execSync('git worktree prune', execOpts); } catch {}
       }
     }
@@ -196,7 +245,7 @@ export async function setupWorktree(
     // Clean up partial worktree
     try {
       if (existsSync(worktreePath)) {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
+        rmSync(worktreePath, { recursive: true, force: true });
       }
       execSync('git worktree prune', { ...execOpts, timeout: 5000 });
     } catch {}
@@ -209,8 +258,6 @@ export async function setupWorktree(
  * Removes the worktree directory and prunes git worktree metadata.
  */
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
-  const { execSync } = await import('child_process');
-  const fs = await import('fs');
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
 
   try {
@@ -219,7 +266,7 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
   } catch (err) {
     console.warn(`[Worker ${workerId}] git worktree remove failed, cleaning up manually:`, err instanceof Error ? err.message : err);
     try {
-      fs.rmSync(worktreePath, { recursive: true, force: true });
+      rmSync(worktreePath, { recursive: true, force: true });
       execSync('git worktree prune', execOpts);
     } catch {}
   }
@@ -238,7 +285,6 @@ export async function collectGitStats(
 ): Promise<GitStats> {
   if (!cwd) return {};
 
-  const { execSync } = await import('child_process');
   const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
   const stats: Record<string, number | string | undefined> = {};
 
