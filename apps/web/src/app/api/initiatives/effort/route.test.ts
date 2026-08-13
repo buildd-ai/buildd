@@ -61,6 +61,19 @@ describe('GET /api/initiatives/effort', () => {
     mockSelectRows.mockReturnValue([]);
   });
 
+  it('returns 400 when workspaceId is missing', async () => {
+    const req = new NextRequest('http://localhost/api/initiatives/effort');
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when workspace belongs to a different team', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-other', teamId: 'team-other' } as any);
+    const req = new NextRequest('http://localhost/api/initiatives/effort?workspaceId=ws-other');
+    const res = await GET(req);
+    expect(res.status).toBe(404);
+  });
+
   it('returns 401 when unauthenticated', async () => {
     mockGetCurrentUser.mockReturnValue(null as any);
     mockAuthenticateApiKey.mockReturnValue(null);
