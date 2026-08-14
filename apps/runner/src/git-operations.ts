@@ -5,7 +5,6 @@
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
-import * as util from 'util';
 import { join } from 'path';
 import { resolveWorktreeBase, clearResumeContext, BranchFetchResult } from './worktree-utils';
 
@@ -13,10 +12,9 @@ import { resolveWorktreeBase, clearResumeContext, BranchFetchResult } from './wo
 // touching bun's mock.module registry (which is shared across parallel workers
 // and can be cleared by mock.restore() in sibling test files).
 // Production code uses real implementations captured at load time.
-// Note: execFileAsync is NOT initialised here because util.promisify(undefined)
-// throws when a sibling test file's partial child_process mock (e.g. only
-// execSync) is active during module load. Instead, installWorkspaceDeps creates
-// a fresh promisified wrapper from the current execFile on every call.
+// Note: installWorkspaceDeps uses `new Promise` with execFile directly (not
+// util.promisify) so mock injection via __setGitOpsDeps works consistently
+// across bun versions — util.promisify behaviour varies between 1.3.x releases.
 let execSync = cp.execSync;
 let execFile: typeof cp.execFile = cp.execFile;
 let existsSync = fs.existsSync;
@@ -83,14 +81,16 @@ export interface GitStats {
  */
 async function installWorkspaceDeps(worktreePath: string, workerId: string): Promise<void> {
   const opts = { cwd: worktreePath, timeout: 120_000, encoding: 'utf-8' as const };
-  // Wrap the current execFile each time so test mocks injected via __setGitOpsDeps
-  // are picked up without a module-level promisify call (which would fail if
-  // execFile is undefined when a sibling test's partial mock is active).
-  const run = util.promisify(execFile);
+
+  // Use new Promise + execFile directly instead of util.promisify so that mock
+  // injection via __setGitOpsDeps works consistently across bun versions.
+  const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+    execFile('bun', args, opts, (err) => { if (err) reject(err); else resolve(); });
+  });
 
   console.log(`[Worker ${workerId}] Running bun install in worktree (frozen lockfile)...`);
   try {
-    await run('bun', ['install', '--frozen-lockfile'], opts);
+    await run(['install', '--frozen-lockfile']);
     console.log(`[Worker ${workerId}] Workspace packages linked`);
     return;
   } catch (err) {
@@ -101,7 +101,7 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
   }
 
   try {
-    await run('bun', ['install'], opts);
+    await run(['install']);
     console.log(`[Worker ${workerId}] Workspace packages linked (unfrozen)`);
   } catch (err) {
     console.warn(
