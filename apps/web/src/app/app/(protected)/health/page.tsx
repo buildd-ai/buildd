@@ -1,10 +1,10 @@
 import { db } from '@buildd/core/db';
-import { watchedProjects, watcherEvents, workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql, lt, or } from 'drizzle-orm';
+import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets } from '@buildd/core/db/schema';
+import { and, eq, inArray, desc, sql, or } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import { HealthClient } from './HealthClient';
@@ -12,27 +12,6 @@ import { HealthClient } from './HealthClient';
 export type { BudgetForecast };
 
 export const dynamic = 'force-dynamic';
-
-export interface WatchedProjectRow {
-  id: string;
-  workspaceId: string;
-  workspaceName: string;
-  repo: string;
-  enabled: boolean;
-  inFlightWindowMin: number;
-  roleSlug: string;
-  pushoverApp: 'tasks' | 'alerts';
-  releasePrFilter: { base?: string; label?: string; titlePrefix?: string };
-  notes: string | null;
-  lastCheckedAt: string | null;
-  lastError: string | null;
-  recentEvents: { kind: string; firedAt: string; taskId: string | null }[];
-}
-
-export interface WorkspaceOption {
-  id: string;
-  name: string;
-}
 
 export interface ScheduleRow {
   id: string;
@@ -93,7 +72,7 @@ export default async function HealthPage({
   if (teamIds.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-2">Project Health</h1>
+        <h1 className="text-2xl font-bold mb-2">Health</h1>
         <p className="text-sm text-text-tertiary">No team found.</p>
       </div>
     );
@@ -113,29 +92,20 @@ export default async function HealthPage({
   if (teamWorkspaceIds.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-2">Project Health</h1>
+        <h1 className="text-2xl font-bold mb-2">Health</h1>
         <p className="text-sm text-text-tertiary">No workspaces yet.</p>
       </div>
     );
   }
 
-  // Scope watched projects and usage to workspace filter when set
   const scopedWsIds = wsFilter && teamWorkspaceIds.includes(wsFilter)
     ? [wsFilter]
     : teamWorkspaceIds;
 
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
-  // Parallel fetches: watched projects, runners, usage, schedules, recent failures, credential health, budget forecast
-  const [rows, runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast] = await Promise.all([
-    // Watched projects
-    db
-      .select()
-      .from(watchedProjects)
-      .where(inArray(watchedProjects.workspaceId, scopedWsIds))
-      .orderBy(desc(watchedProjects.createdAt))
-      .catch(() => [] as any[]),
-
+  // Parallel fetches: runners, usage, schedules, recent failures, credential health, budget forecast
+  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
@@ -263,7 +233,7 @@ export default async function HealthPage({
 
     // Unhealthy backend credentials for this team
     (async (): Promise<CredentialHealthItem[]> => {
-      const rows = await db.query.secrets.findMany({
+      const credRows = await db.query.secrets.findMany({
         where: and(
           eq(secrets.teamId, activeTeamId),
           or(
@@ -287,7 +257,7 @@ export default async function HealthPage({
           lastVerifiedAt: true,
         },
       });
-      return (rows as any[]).map((r: any) => ({
+      return (credRows as any[]).map((r: any) => ({
         id: r.id,
         purpose: r.purpose,
         healthStatus: r.healthStatus as 'degraded' | 'revoked',
@@ -302,42 +272,6 @@ export default async function HealthPage({
     // Budget forecast
     getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null),
   ]);
-
-  // Attach recent events to watched project rows
-  const projectIds = (rows as any[]).map((r: any) => r.id as string);
-  const events = projectIds.length
-    ? await db
-        .select()
-        .from(watcherEvents)
-        .where(inArray(watcherEvents.projectId, projectIds))
-        .orderBy(desc(watcherEvents.firedAt))
-        .limit(50)
-        .catch(() => [] as any[])
-    : [];
-  const eventsByProject = new Map<string, { kind: string; firedAt: string; taskId: string | null }[]>();
-  for (const e of events) {
-    const list = eventsByProject.get(e.projectId) ?? [];
-    if (list.length < 5) {
-      list.push({ kind: e.kind, firedAt: e.firedAt.toISOString(), taskId: e.taskId });
-      eventsByProject.set(e.projectId, list);
-    }
-  }
-
-  const serialized: WatchedProjectRow[] = (rows as any[]).map((r: any) => ({
-    id: r.id,
-    workspaceId: r.workspaceId,
-    workspaceName: wsById.get(r.workspaceId) ?? '(unknown)',
-    repo: r.repo,
-    enabled: r.enabled,
-    inFlightWindowMin: r.inFlightWindowMin,
-    roleSlug: r.roleSlug,
-    pushoverApp: r.pushoverApp,
-    releasePrFilter: r.releasePrFilter ?? {},
-    notes: r.notes,
-    lastCheckedAt: r.lastCheckedAt ? r.lastCheckedAt.toISOString() : null,
-    lastError: r.lastError,
-    recentEvents: eventsByProject.get(r.id) ?? [],
-  }));
 
   const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
     .map((s: any) => ({
@@ -362,15 +296,8 @@ export default async function HealthPage({
       return (a.nextRunAt ?? '9999') < (b.nextRunAt ?? '9999') ? -1 : 1;
     });
 
-  const workspaceOptions: WorkspaceOption[] = (teamWorkspaceRows as any[]).map((w: any) => ({
-    id: w.id as string,
-    name: w.name as string,
-  }));
-
   return (
     <HealthClient
-      initialRows={serialized}
-      workspaces={workspaceOptions}
       runners={runners}
       usageStats={usageStats}
       schedules={serializedSchedules}

@@ -70,7 +70,7 @@ function ChainStrip({ chain }: { chain: ChainPositionResult }) {
     <div className="flex items-center gap-1">
       <SegmentStrip segments={chain.segments} continuous={false} />
       <span className="font-mono text-[10px] text-text-muted tabular-nums">
-        {chain.index}/{chain.total}
+        step {chain.index}/{chain.total}
       </span>
     </div>
   );
@@ -284,6 +284,13 @@ export function TaskCard({
           </div>
         )}
 
+        {/* T3 — elapsed time for queued tasks (right side empty otherwise) */}
+        {!showChip && !showInlinePr && (
+          <span className="font-mono text-[10px] text-text-muted tabular-nums shrink-0 pointer-events-none">
+            {timestampLabel}
+          </span>
+        )}
+
         {/* T4 — inline PR for done-group tasks (merged / closed): single line */}
         {showInlinePr && (
           <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] pointer-events-none">
@@ -309,7 +316,7 @@ export function TaskCard({
   // Tiers 1–4, sparkline optional.
   if (density === 'row') {
     return (
-      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 hover:bg-surface-3 transition-colors">
+      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors">
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
@@ -341,7 +348,7 @@ export function TaskCard({
 
           {/* T2 — blocked-by text */}
           {chain && chain.blockedBy.length > 0 && (
-            <div className="text-[10px] text-status-warning mt-0.5 truncate">
+            <div className="text-[10px] text-status-warning mt-0.5">
               {'← blocked on '}
               {chain.blockedBy.map((b, i) => (
                 <span key={b.id}>

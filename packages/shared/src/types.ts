@@ -362,6 +362,8 @@ export interface TaskResult {
   structuredOutput?: Record<string, unknown>;
   mcpServers?: string[];
   nextSuggestion?: string;
+  /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
+  reaperAutoCompleted?: boolean;
 }
 
 /**
@@ -915,6 +917,12 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /** Credentials expiring within 2 hours — runner pre-refreshes via POST /api/runner/credential-refresh */
+    pendingCredentialRefreshes?: Array<{
+      secretId: string;
+      purpose: 'claude_credential' | 'codex_credential';
+      expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
+    }>;
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
@@ -1163,7 +1171,8 @@ export type GoalCriterionType =
   | 'command'
   | 'no_open_tasks'
   | 'artifact_exists'
-  | 'metric';
+  | 'metric'
+  | 'description';
 
 export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED';
 
@@ -1195,7 +1204,19 @@ export type GoalCriterion =
       threshold: number;
       unit?: string;
       label?: string;
+    }
+  | {
+      /** Free-form natural-language criterion evaluated by LLM against mission evidence. */
+      type: 'description';
+      description: string;
+      label?: string;
     };
+
+export interface GoalCriteriaEvidenceRef {
+  type: 'artifact' | 'task';
+  id: string;
+  title?: string;
+}
 
 export interface GoalCriteriaState {
   evaluatedAt: string;
@@ -1207,6 +1228,7 @@ export interface GoalCriteriaState {
     label?: string;
     verdict: CriterionVerdict;
     evidence?: string;
+    evidenceRefs?: GoalCriteriaEvidenceRef[];
     workerTaskId?: string;
   }>;
 }

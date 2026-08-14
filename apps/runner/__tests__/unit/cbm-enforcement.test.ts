@@ -87,8 +87,8 @@ describe('buildCbmMcpEntry', () => {
     expect(entry.env.CBM_AUTO_WATCH).toBe('false');
   });
 
-  test('caps memory budget to 512 MB', () => {
-    expect(entry.env.CBM_MEM_BUDGET_MB).toBe('512');
+  test('caps memory budget to 1024 MB', () => {
+    expect(entry.env.CBM_MEM_BUDGET_MB).toBe('1024');
   });
 
   test('CBM_ALLOWED_ROOT reflects the actual sessionCwd (no stale path)', () => {

@@ -112,7 +112,7 @@ export const triggerActions = [
 
 export const workerActions = [
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'close_pr', 'update_task', 'create_task', 'create_artifact',
+  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
@@ -168,6 +168,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
+    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
+    get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -190,7 +192,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears; each criterion MUST have type (required) — one of: "all_prs_merged" | "command" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string; type-specific required fields: description→description:string, command→command:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string; example: [{type:"description",description:"All PRs merged and CI green",label:"CI green"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
@@ -1241,6 +1243,65 @@ export async function handleBuilddAction(
 
       const titlePart = data.pr.title ? ` — ${data.pr.title}` : '';
       return text(`Pull request #${data.pr.number} closed${titlePart}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
+    }
+
+    case 'merge_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (!params.prNumber) throw new Error('prNumber is required');
+
+      const mergeMethod = params.mergeMethod ?? 'squash';
+
+      const data = await api('/api/github/pr', {
+        method: 'PUT',
+        body: JSON.stringify({ workerId, prNumber: params.prNumber, mergeMethod }),
+      });
+
+      if (!data.merged) {
+        const hint = data.hint ? `\n\n**Action required:** ${data.hint}` : '';
+        return text(`PR #${data.pr?.number ?? params.prNumber} merge failed: ${data.message ?? data.error}${hint}`);
+      }
+      return text(`PR #${data.pr.number} merged successfully.\n**URL:** ${data.pr.url}\n**Message:** ${data.message}`);
+    }
+
+    case 'get_pr': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      const prNumberPart = params.prNumber ? `&prNumber=${params.prNumber}` : '';
+
+      const data = await api(`/api/github/pr?workerId=${workerId}${prNumberPart}`);
+
+      const pr = data.pr;
+      const checks = data.checks;
+      const reviews = data.reviews;
+
+      const ciLine = checks.total === 0
+        ? 'CI: none configured'
+        : `CI: ${checks.state} (${checks.passed}/${checks.total} passed${checks.failed > 0 ? `, ${checks.failed} failed` : ''}${checks.pending > 0 ? `, ${checks.pending} pending` : ''})`;
+
+      const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
+        ? `Reviews: ${reviews.approved} approved${reviews.changesRequested > 0 ? `, ${reviews.changesRequested} changes requested` : ''}`
+        : 'Reviews: none';
+
+      const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
+        : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
+        : `Mergeable: unknown (${pr.mergeableState ?? 'computing'})`;
+
+      const statsLine = pr.additions !== null
+        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s)`
+        : '';
+
+      const bodyPreview = pr.body
+        ? `\n\n**Agent summary:**\n${pr.body.slice(0, 800)}${pr.body.length > 800 ? '\n…(truncated)' : ''}`
+        : '';
+
+      return text([
+        `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
+        `State: ${pr.state} | ${mergeableLine}`,
+        ciLine,
+        reviewLine,
+        statsLine,
+        `URL: ${pr.url}`,
+        bodyPreview,
+      ].filter(Boolean).join('\n'));
     }
 
     case 'update_task': {
@@ -2602,12 +2663,12 @@ export async function handleBuilddAction(
             if (state?.criteria && state.criteria.length > 0) {
               criteriaInfo += ` overall=${state.overall} (as of ${state.evaluatedAt})`;
               criteriaInfo += '\n' + (state.criteria as any[]).map((c: any) =>
-                `  • [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
+                `  • [${c.verdict}] ${c.label ?? c.description ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
               ).join('\n');
             } else {
               criteriaInfo += ' (not yet evaluated — use action=evaluate or action=get_criteria_state)';
               criteriaInfo += '\n' + criteriaArr.map((c: any) =>
-                `  • ${c.label ?? c.type}`
+                `  • ${c.label ?? c.description ?? c.type ?? '(malformed criterion — missing type field)'}`
               ).join('\n');
             }
           }

@@ -666,3 +666,93 @@ describe('GET /api/missions', () => {
     expect(body.missions[0].lastDeferredAt).toBeNull();
   });
 });
+
+describe('POST /api/missions — goalCriteria validation', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockMissionsInsert.mockReset();
+    mockSchedulesInsert.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockInitiativesFindFirst.mockReset();
+    mockRunMission.mockReset();
+    insertedMissionValues = null;
+
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1' });
+    mockInitiativesFindFirst.mockResolvedValue(null);
+    mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
+    mockMissionsInsert.mockImplementation(() => ({
+      values: mock((vals: any) => {
+        insertedMissionValues = vals;
+        return { returning: mock(() => [{ id: 'obj-1', ...vals }]) };
+      }),
+    }));
+    mockSchedulesInsert.mockImplementation(() => ({
+      values: mock((vals: any) => ({
+        returning: mock(() => [{ id: 'sched-1', ...vals }]),
+      })),
+    }));
+  });
+
+  it('rejects goalCriteria item without type field', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with bad criteria',
+        goalCriteria: [{ description: 'All PRs merged' }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+
+  it('rejects goalCriteria item with invalid type', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with bad criteria',
+        goalCriteria: [{ type: 'unknown_type', label: 'Something' }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+
+  it('accepts goalCriteria with valid types', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with good criteria',
+        goalCriteria: [
+          { type: 'all_prs_merged' },
+          { type: 'description', description: 'All tasks reviewed', label: 'Reviewed' },
+          { type: 'no_open_tasks' },
+        ],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects non-object criterion (e.g. string)', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with string criteria',
+        goalCriteria: ['All PRs merged'],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+});

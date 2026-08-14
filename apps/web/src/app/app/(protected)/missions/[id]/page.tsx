@@ -288,7 +288,8 @@ export default async function MissionDetailPage({
       result: t.result,
     }))
   );
-  const heartbeatOverdue = isHeartbeat && mission.schedule?.nextRunAt && scheduleCron
+  const TERMINAL_STATUSES = ['completed', 'cancelled', 'budget_exhausted'];
+  const heartbeatOverdue = isHeartbeat && !TERMINAL_STATUSES.includes(mission.status) && mission.schedule?.nextRunAt && scheduleCron
     ? checkOverdue(mission.schedule.nextRunAt, scheduleCron)
     : false;
 

@@ -5,6 +5,7 @@ import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
+import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from './updater';
@@ -656,6 +657,9 @@ if (workerManager) {
       setLatestCommit(event.latestCommit);
     }
   });
+  // Start the credential broker daemon — acquires Postgres leases and proactively
+  // refreshes credentials on behalf of all workers on this runner.
+  credentialBroker.start();
 } else if (config.serverless || !config.apiKey) {
   // In serverless mode, poll the public /api/version endpoint
   pollVersion();

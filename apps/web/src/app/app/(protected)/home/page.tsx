@@ -9,7 +9,6 @@ import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
-import MergeConfirmButton from '@/components/MergeConfirmButton';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
@@ -24,6 +23,7 @@ import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
+import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
@@ -1179,48 +1179,7 @@ export default async function HomePage({
                           taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
                           prUrl={item.prUrl}
                         >
-                          <div className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                  <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
-                                    Review
-                                  </span>
-                                  {item.waitingMinutes != null && item.waitingMinutes > 0 && (
-                                    <span className="text-[10px] text-text-muted">
-                                      {item.waitingMinutes < 60
-                                        ? `${item.waitingMinutes}m`
-                                        : `${Math.floor(item.waitingMinutes / 60)}h`}
-                                    </span>
-                                  )}
-                                </div>
-                                {item.taskId ? (
-                                  <Link
-                                    href={`/app/tasks/${item.taskId}`}
-                                    className="text-[13px] font-medium text-text-primary truncate hover:underline block"
-                                  >
-                                    {item.taskTitle}
-                                  </Link>
-                                ) : (
-                                  <div className="text-[13px] font-medium text-text-primary truncate">{item.taskTitle}</div>
-                                )}
-                                {item.workspaceName && (
-                                  <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-                                )}
-                                {item.escalationReason && (
-                                  <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
-                                    {item.escalationReason}
-                                  </p>
-                                )}
-                              </div>
-                              {item.prNumber != null && (
-                                <MergeConfirmButton
-                                  prNumber={item.prNumber}
-                                  prUrl={item.prUrl ?? ''}
-                                />
-                              )}
-                            </div>
-                          </div>
+                          <WaitingOnYouReviewCard item={item} />
                         </SwipeableRow>
                       );
                     }

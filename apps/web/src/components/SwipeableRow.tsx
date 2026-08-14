@@ -487,7 +487,7 @@ export function SwipeableRow({
 
       {/* Swiping card content (flex-1 so the ⋯ button sits as a sibling) */}
       <div
-        className="flex-1 min-w-0 relative"
+        className="flex-1 min-w-0 relative bg-surface-1"
         style={{
           transform: `translateX(${translateX}px)`,
           transition: isAnimating

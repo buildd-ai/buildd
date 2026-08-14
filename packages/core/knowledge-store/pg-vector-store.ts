@@ -187,6 +187,24 @@ export class PgVectorStore implements KnowledgeStore {
       const fileHash = chunk.fileHash ?? null;
       const sourceTs = chunk.sourceTs ?? null;
 
+      // Content-hash dedup: skip if identical content already exists in the namespace
+      // under a DIFFERENT source_id. This prevents cross-PR near-duplicates where the
+      // same file diff appears in multiple rebased PRs (e.g. a design doc added in PR
+      // #1604 that also shows as @@ -0,0 +1,348 @@ in PRs #1608 and #1609). The
+      // content_hash_idx on (namespace, content_hash) makes the lookup fast.
+      if (chunk.contentDedup) {
+        const existingRows = await db.execute(sql`
+          SELECT source_id FROM knowledge_chunks
+          WHERE namespace = ${namespace}
+            AND content_hash = ${contentHash}
+            AND source_id != ${clean.sourceId}
+          LIMIT 1
+        `);
+        if ((existingRows.rows as Array<{ source_id: string }>).length > 0) {
+          continue;
+        }
+      }
+
       // Write source_ts into metadata so recency scoring can read it on query
       const metadataWithTs = {
         ...(chunk.metadata ?? {}),

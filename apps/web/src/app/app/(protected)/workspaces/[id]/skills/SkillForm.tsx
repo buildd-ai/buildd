@@ -2,17 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
-
-const MODEL_OPTIONS = [
-  { value: 'inherit', label: 'Inherit' },
-  { value: 'opus', label: 'Claude Opus 4' },
-  { value: 'sonnet', label: 'Claude Sonnet 4' },
-  { value: 'haiku', label: 'Claude Haiku 4.5' },
-  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
-  { value: 'claude-fable-5', label: 'Claude Fable 5' },
-] as const;
+import { ModelPicker } from '@/components/ModelPicker';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -179,11 +170,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
           {/* Model */}
           <div>
             <label className="block text-sm font-medium mb-1.5">Model</label>
-            <Select
-              value={model}
-              onChange={setModel}
-              options={MODEL_OPTIONS}
-            />
+            <ModelPicker value={model} onChange={setModel} />
           </div>
 
           {/* Agent backend */}

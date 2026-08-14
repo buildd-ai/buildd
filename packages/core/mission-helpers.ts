@@ -132,6 +132,23 @@ export function evaluateGoalCriteria(
         evidence = 'metric query not implemented — deferred to follow-on spec';
         break;
       }
+
+      case 'description': {
+        // Free-form criteria require LLM evaluation against mission evidence.
+        // The pure evaluator returns UNVERIFIED; the evaluate route upgrades
+        // verdicts with an LLM call when ANTHROPIC_API_KEY is available.
+        verdict = 'UNVERIFIED';
+        evidence = `Pending evidence-based evaluation: "${criterion.description}"`;
+        break;
+      }
+
+      default: {
+        // Unknown type — stored by a client that predates this version.
+        // Leave UNVERIFIED so the route's LLM evaluator can attempt a verdict.
+        verdict = 'UNVERIFIED';
+        evidence = `Unknown criterion type: ${(criterion as any).type}`;
+        break;
+      }
     }
 
     results.push({

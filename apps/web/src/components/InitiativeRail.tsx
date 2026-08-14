@@ -19,11 +19,11 @@ export default function InitiativeRail({ initiatives }: { initiatives: Initiativ
     <div className="mb-8">
       <div className="flex items-center justify-between mb-3">
         <div className="section-label">Initiatives</div>
-        <Link href="/app/initiatives" className="text-xs text-text-muted hover:text-text-secondary">
+        <Link href="/app/initiatives" className="text-xs text-text-muted hover:text-text-secondary pr-1">
           {initiatives.length} arc{initiatives.length === 1 ? '' : 's'}
         </Link>
       </div>
-      <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 snap-x">
+      <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 snap-x snap-mandatory scroll-pl-4">
         {initiatives.map((initiative) => {
           const displayStatus = deriveInitiativeDisplayStatus({ status: initiative.status, rollupStatus: initiative.progress.status });
           const chip = initiativeStatusChip(displayStatus);
@@ -36,7 +36,7 @@ export default function InitiativeRail({ initiatives }: { initiatives: Initiativ
             >
               {showAccent && <div className="w-1 self-stretch bg-primary shrink-0" aria-hidden />}
               <div className="flex-1 py-3 px-3 min-w-0">
-                <div className="font-mono text-[14px] font-semibold text-text-primary truncate mb-1.5 leading-snug">
+                <div className="font-mono text-[14px] font-semibold text-text-primary line-clamp-2 mb-1.5 leading-snug">
                   {initiative.title}
                 </div>
                 <div className="font-mono text-[11px] font-semibold text-accent-text mb-1.5">

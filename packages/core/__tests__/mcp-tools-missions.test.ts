@@ -469,4 +469,39 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const text = (result as any).content[0].text;
     expect(text).not.toContain('Goal criteria');
   });
+
+  it('get response shows description fallback for criteria without type (malformed legacy data)', async () => {
+    mockApi.mockResolvedValueOnce({
+      id: 'mission-4',
+      title: 'Legacy mission',
+      status: 'completed',
+      progress: 100,
+      completedTasks: 3,
+      totalTasks: 3,
+      goalCriteria: [
+        { description: 'All PRs merged and CI green' },
+        { description: 'Docs updated' },
+        { text: 'Tests passing' },
+      ],
+      autoVerify: null,
+      goalCriteriaState: null,
+      tasks: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      { action: 'get', missionId: 'mission-4' },
+      createMockContext(),
+    );
+
+    const text = (result as any).content[0].text;
+    expect(text).toContain('Goal criteria (3');
+    // Should fall back to description field, not show 'undefined'
+    expect(text).toContain('All PRs merged and CI green');
+    expect(text).toContain('Docs updated');
+    expect(text).not.toContain('undefined');
+    // For the third criterion without description, show the malformed marker
+    expect(text).toContain('malformed criterion');
+  });
 });

@@ -212,6 +212,10 @@ export interface LocalWorker {
   // access_token — no refresh_token — preventing in-session token rotation.
   claudeAccessToken?: string;
   claudeTokenExpiresAt?: Date | null;
+  // secretId of the claude_credential managed by the broker for this worker.
+  // Used by startSession to fetch a fresh token via the broker socket instead
+  // of relying on the potentially-stale claudeAccessToken from the claim response.
+  claudeCredentialId?: string;
   // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
   codexCredential?: {
     accessToken: string;

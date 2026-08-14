@@ -13,9 +13,10 @@
  * Run: bun test apps/runner/__tests__/unit/git-operations.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
+import { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 
-// ─── Mocks (must be set up before any import of the module under test) ────────
+// ─── Mock state ───────────────────────────────────────────────────────────────
 
 type SyncCall = { cmd: string; opts: Record<string, unknown> };
 type FileCall = { file: string; args: string[]; opts: Record<string, unknown> };
@@ -29,48 +30,56 @@ let existsSyncMap: Record<string, boolean> = {};
 // and total-failure paths without re-importing the module under test.
 let failBunInstall: { frozen: boolean; unfrozen: boolean } = { frozen: false, unfrozen: false };
 
-mock.module('child_process', () => ({
-  execSync: (cmd: string, opts: Record<string, unknown>) => {
-    syncCalls.push({ cmd, opts });
-    // git sparse-checkout list on a non-sparse repo exits non-zero (throws)
-    if (cmd.includes('sparse-checkout list')) {
-      const err: any = new Error('this worktree is not sparse');
-      err.status = 1;
-      throw err;
-    }
-    // git branch -D when the branch doesn't exist locally yet
-    if (cmd.includes('branch -D')) {
-      const err: any = new Error('error: branch not found');
-      err.status = 1;
-      throw err;
-    }
-    return '';
-  },
-  // Node callback convention so promisify(execFile) resolves/rejects correctly.
-  execFile: (
-    file: string,
-    args: string[],
-    _opts: Record<string, unknown>,
-    cb: (err: Error | null, stdout?: string, stderr?: string) => void,
-  ) => {
-    fileCalls.push({ file, args, opts: _opts });
-    const frozen = args.includes('--frozen-lockfile');
-    if (frozen && failBunInstall.frozen) return cb(new Error('lockfile drifted'));
-    if (!frozen && failBunInstall.unfrozen) return cb(new Error('bun: command not found'));
-    return cb(null, '', '');
-  },
-}));
+function mockExecSync(cmd: string, opts: Record<string, unknown>) {
+  syncCalls.push({ cmd, opts });
+  // git sparse-checkout list on a non-sparse repo exits non-zero (throws)
+  if (cmd.includes('sparse-checkout list')) {
+    const err: any = new Error('this worktree is not sparse');
+    err.status = 1;
+    throw err;
+  }
+  // git branch -D when the branch doesn't exist locally yet
+  if (cmd.includes('branch -D')) {
+    const err: any = new Error('error: branch not found');
+    err.status = 1;
+    throw err;
+  }
+  return '';
+}
 
-mock.module('fs', () => ({
+// Node callback convention so promisify(execFile) resolves/rejects correctly.
+function mockExecFile(
+  file: string,
+  args: string[],
+  _opts: Record<string, unknown>,
+  cb: (err: Error | null, stdout?: string, stderr?: string) => void,
+) {
+  fileCalls.push({ file, args, opts: _opts });
+  const frozen = args.includes('--frozen-lockfile');
+  if (frozen && failBunInstall.frozen) return cb(new Error('lockfile drifted'));
+  if (!frozen && failBunInstall.unfrozen) return cb(new Error('bun: command not found'));
+  return cb(null, '', '');
+}
+
+// ─── Setup / teardown ─────────────────────────────────────────────────────────
+
+// Inject mocks before any test runs. Uses the exported dep-injection hook so
+// the test works regardless of bun version and mock.module registry state
+// (avoids races with mock.restore() called in sibling test files like
+// updater.test.ts that share a mock registry across parallel workers).
+__setGitOpsDeps({
+  execSync: mockExecSync as any,
+  execFile: mockExecFile as any,
   existsSync: (p: string) => existsSyncMap[p] ?? false,
   mkdirSync: () => {},
-  readFileSync: () => '# exclude\n',
+  readFileSync: () => '# exclude\n' as any,
   appendFileSync: () => {},
   rmSync: () => {},
-}));
+});
 
-// Import after mocking so the module sees the mocked child_process / fs
-const { setupWorktree } = await import('../../src/git-operations');
+afterAll(() => {
+  __resetGitOpsDeps();
+});
 
 const WORKTREE_PATH = '/repo/.buildd-worktrees/buildd_test-branch';
 

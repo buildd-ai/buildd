@@ -6,8 +6,13 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
+import type { GoalCriterion, GoalCriteriaState, GoalCriteriaEvidenceRef, CriterionVerdict } from '@buildd/shared';
 
 const RATE_LIMIT_PER_HOUR = 6;
+const LLM_MODEL = 'claude-haiku-4-5-20251001';
+const LLM_MAX_TOKENS = 2048;
+// Truncate artifact content to keep prompt manageable
+const ARTIFACT_CONTENT_LIMIT = 3000;
 
 async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
   if (teamIds.includes(mission.teamId)) return true;
@@ -21,12 +26,171 @@ async function hasMissionAccess(mission: { teamId: string; workspaceId: string |
   return false;
 }
 
+type EvidenceTask = { id: string; title: string | null; summary: string | undefined };
+type EvidenceArtifact = { id: string; title: string | null; type: string; contentSnippet: string | null };
+
+interface LLMCriterionInput {
+  index: number;
+  text: string;
+}
+
+interface LLMCriterionVerdict {
+  index: number;
+  verdict: CriterionVerdict;
+  evidence: string;
+  evidenceRef?: GoalCriteriaEvidenceRef;
+}
+
+/**
+ * Determine the human-readable text for a criterion to pass to the LLM.
+ */
+function criterionText(criterion: GoalCriterion): string {
+  if (criterion.type === 'description') return criterion.description;
+  if (criterion.type === 'command') return criterion.label ?? criterion.command;
+  return criterion.label ?? criterion.type;
+}
+
+/**
+ * Returns true for criterion types that should be upgraded via LLM when UNVERIFIED.
+ * Structural types (artifact_exists, no_open_tasks, all_prs_merged) are mechanical — LLM
+ * can't override them. `metric` needs a data query. Unknown types (from future/older clients)
+ * are LLM-eligible so evidence is surfaced rather than silently ignored.
+ */
+function isLlmEligible(type: string): boolean {
+  return !['artifact_exists', 'no_open_tasks', 'all_prs_merged', 'metric'].includes(type);
+}
+
+/**
+ * Call Claude to judge each LLM-eligible UNVERIFIED criterion against mission evidence.
+ * Returns a verdict per criterion index. Falls back gracefully on API errors.
+ */
+async function judgeWithLLM(
+  inputs: LLMCriterionInput[],
+  missionTitle: string,
+  missionDescription: string | null,
+  completedTasks: EvidenceTask[],
+  evidenceArtifacts: EvidenceArtifact[],
+  anthropicApiKey: string,
+): Promise<LLMCriterionVerdict[]> {
+  const taskEvidence = completedTasks.map(t =>
+    `[task:${t.id.slice(0, 8)}] "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
+  ).join('\n\n');
+
+  const artifactEvidence = evidenceArtifacts.map(a =>
+    `[artifact:${a.id.slice(0, 8)}] "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent snippet:\n${a.contentSnippet}` : ''}`,
+  ).join('\n\n');
+
+  const criteriaList = inputs.map((c, i) =>
+    `${i + 1}. index=${c.index}: ${c.text}`,
+  ).join('\n');
+
+  const hasEvidence = completedTasks.length > 0 || evidenceArtifacts.length > 0;
+
+  const systemPrompt = `You are evaluating whether a mission's completion criteria are met based on available evidence.
+Be evidence-grounded: only return "pass" if evidence directly supports the criterion being satisfied.
+Return "UNVERIFIED" when evidence is ambiguous or absent — not "fail".
+Return "fail" only when evidence clearly contradicts the criterion.
+Respond ONLY with a JSON object — no prose, no markdown fences.`;
+
+  const userPrompt = `## Mission: ${missionTitle}
+${missionDescription ? `Description: ${missionDescription}\n` : ''}
+
+## Criteria to evaluate (${inputs.length}):
+${criteriaList}
+
+## Evidence
+
+### Completed tasks (${completedTasks.length}):
+${taskEvidence || '(none)'}
+
+### Artifacts (${evidenceArtifacts.length}):
+${artifactEvidence || '(none)'}
+
+${!hasEvidence ? '⚠️  No evidence available. Return UNVERIFIED for all criteria.\n' : ''}
+## Instructions
+For each criterion above, determine whether the evidence shows it is met, not met, or unverifiable.
+Cite the specific evidence item (use the [task:XXXXXXXX] or [artifact:XXXXXXXX] ref from above).
+
+Respond with exactly this JSON shape:
+{
+  "verdicts": [
+    {
+      "index": <criterion index number>,
+      "verdict": "pass" | "fail" | "UNVERIFIED",
+      "evidence": "<one sentence citing specific evidence, or 'No relevant evidence found'>",
+      "evidenceRef": { "type": "artifact" | "task", "id": "<full UUID>", "title": "<title>" } | null
+    }
+  ]
+}`;
+
+  let resp: Response;
+  try {
+    resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        max_tokens: LLM_MAX_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+  } catch (err) {
+    console.error('[evaluate/llm] fetch error:', err);
+    return [];
+  }
+
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    console.error(`[evaluate/llm] API error ${resp.status}: ${bodyText.substring(0, 200)}`);
+    return [];
+  }
+
+  const data = await resp.json() as { content?: Array<{ type: string; text?: string }> };
+  const text = data.content?.find(b => b.type === 'text')?.text ?? '';
+
+  try {
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch?.[0]) throw new Error('no JSON found');
+    const parsed = JSON.parse(jsonMatch[0]) as { verdicts?: unknown[] };
+    if (!Array.isArray(parsed.verdicts)) throw new Error('missing verdicts array');
+
+    return (parsed.verdicts as any[]).map(v => ({
+      index: v.index as number,
+      verdict: (['pass', 'fail', 'UNVERIFIED'].includes(v.verdict) ? v.verdict : 'UNVERIFIED') as CriterionVerdict,
+      evidence: typeof v.evidence === 'string' ? v.evidence : '',
+      ...(v.evidenceRef && typeof v.evidenceRef === 'object' && v.evidenceRef !== null
+        ? { evidenceRef: v.evidenceRef as GoalCriteriaEvidenceRef }
+        : {}),
+    }));
+  } catch (parseErr) {
+    console.error('[evaluate/llm] parse error:', parseErr, '| raw:', text.substring(0, 200));
+    return [];
+  }
+}
+
+function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
+  if (criteria.every(r => r.verdict === 'pass')) return 'pass';
+  if (criteria.some(r => r.verdict === 'fail')) return 'fail';
+  return 'UNVERIFIED';
+}
+
 /**
  * POST /api/missions/[id]/evaluate
  *
  * On-demand evaluation of a mission's goalCriteria.
  * Returns GoalCriteriaState with per-criterion verdicts.
  * Rate limited to 6 calls per mission per hour.
+ *
+ * Evidence assembly:
+ * - Structural criteria (artifact_exists, no_open_tasks, all_prs_merged) are evaluated
+ *   mechanically from DB state.
+ * - Description/command/unknown criteria that remain UNVERIFIED after mechanical evaluation
+ *   are upgraded via an LLM call that reads artifact titles+content and task summaries.
  */
 export async function POST(
   req: NextRequest,
@@ -56,6 +220,8 @@ export async function POST(
         id: true,
         teamId: true,
         workspaceId: true,
+        title: true,
+        description: true,
         goalCriteria: true,
         workingBranch: true,
         status: true,
@@ -94,10 +260,12 @@ export async function POST(
       );
     }
 
-    // Gather context: tasks and workers (via task join) and artifacts
+    // ── Evidence assembly ──────────────────────────────────────────────────────
+
+    // Tasks: include result (summary) for LLM evaluation
     const missionTasks = await db.query.tasks.findMany({
       where: eq(tasks.missionId, id),
-      columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
+      columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, result: true },
     });
 
     let missionWorkers: Array<{ taskId: string | null; mergedAt: Date | null; prUrl: string | null; branch: string }> = [];
@@ -109,12 +277,15 @@ export async function POST(
       });
     }
 
+    // Artifacts: load titles and content for LLM evaluation
     const missionArtifacts = await db.query.artifacts.findMany({
       where: eq(artifacts.missionId, id),
-      columns: { key: true, type: true },
+      columns: { id: true, key: true, type: true, title: true, content: true },
     });
 
     const evaluatedBy: 'auto' | 'manual' | 'mcp' = apiAccount ? 'mcp' : 'manual';
+
+    // ── Mechanical evaluation ──────────────────────────────────────────────────
 
     const state = evaluateGoalCriteria(
       { id: mission.id, workingBranch: mission.workingBranch },
@@ -133,7 +304,57 @@ export async function POST(
       }
     );
 
-    // Persist state and optionally transition mission to completed
+    // ── LLM evidence-based evaluation for UNVERIFIED criteria ─────────────────
+
+    const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    const llmEligible = state.criteria.filter(
+      c => c.verdict === 'UNVERIFIED' && isLlmEligible(c.type)
+    );
+
+    if (anthropicApiKey && llmEligible.length > 0) {
+      const completedTasks: EvidenceTask[] = missionTasks
+        .filter(t => t.status === 'completed')
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          summary: (t.result as any)?.summary as string | undefined,
+        }));
+
+      const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
+        id: a.id,
+        title: a.title,
+        type: a.type,
+        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+      }));
+
+      const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
+        index: c.index,
+        text: criterionText(criteria[c.index] as GoalCriterion),
+      }));
+
+      const llmVerdicts = await judgeWithLLM(
+        llmInputs,
+        mission.title,
+        mission.description ?? null,
+        completedTasks,
+        evidenceArtifacts,
+        anthropicApiKey,
+      );
+
+      for (const lv of llmVerdicts) {
+        const criterionState = state.criteria.find(c => c.index === lv.index);
+        if (!criterionState) continue;
+        criterionState.verdict = lv.verdict;
+        if (lv.evidence) criterionState.evidence = lv.evidence;
+        if (lv.evidenceRef) (criterionState as any).evidenceRefs = [lv.evidenceRef];
+      }
+
+      // Recalculate overall after LLM upgrades
+      (state as any).overall = recalculateOverall(state.criteria);
+    }
+
+    // ── Persist state ──────────────────────────────────────────────────────────
+
     const updates: Partial<typeof missions.$inferInsert> = {
       goalCriteriaState: state as any,
       updatedAt: new Date(),

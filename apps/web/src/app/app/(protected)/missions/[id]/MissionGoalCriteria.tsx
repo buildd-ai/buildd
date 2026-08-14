@@ -18,6 +18,7 @@ const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
   artifact_exists: 'Artifact exists',
   command: 'Command',
   metric: 'Metric',
+  description: 'Description',
 };
 
 const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; icon: string }> = {
@@ -39,9 +40,12 @@ function formatRelativeTime(isoString: string): string {
 
 function criterionLabel(c: GoalCriterion): string {
   if (c.label) return c.label;
+  // Agents sometimes store a human-readable description instead of label — use it as fallback
+  if ((c as any).description) return (c as any).description;
   if (c.type === 'metric') return `${c.query} ${c.operator} ${c.threshold}${c.unit ? ' ' + c.unit : ''}`;
   if (c.type === 'command') return c.command.length > 60 ? c.command.slice(0, 60) + '…' : c.command;
   if (c.type === 'artifact_exists') return c.key ? `Artifact: ${c.key}` : `Artifact type: ${c.artifactType ?? 'any'}`;
+  if (c.type === 'description') return c.description.length > 80 ? c.description.slice(0, 80) + '…' : c.description;
   return CRITERION_TYPE_LABELS[c.type] ?? c.type;
 }
 
@@ -62,6 +66,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
   const [metricThreshold, setMetricThreshold] = useState('');
   const [metricUnit, setMetricUnit] = useState('');
   const [requireBranchDeleted, setRequireBranchDeleted] = useState(false);
+  const [description, setDescription] = useState('');
 
   function buildCriterion(): GoalCriterion | null {
     const base = label ? { label } : {};
@@ -78,6 +83,10 @@ function AddCriterionForm({ onAdd, onCancel }: {
       const t = parseFloat(metricThreshold);
       if (!metricQuery.trim() || isNaN(t)) return null;
       return { type, query: metricQuery.trim(), operator: metricOp, threshold: t, unit: metricUnit || undefined, ...base };
+    }
+    if (type === 'description') {
+      if (!description.trim()) return null;
+      return { type, description: description.trim(), ...base };
     }
     return null;
   }
@@ -102,8 +111,23 @@ function AddCriterionForm({ onAdd, onCancel }: {
           <option value="artifact_exists">Artifact exists</option>
           <option value="command">Command passes</option>
           <option value="metric">Metric threshold</option>
+          <option value="description">Description (LLM-evaluated)</option>
         </select>
       </div>
+
+      {type === 'description' && (
+        <div className="flex items-start gap-2">
+          <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
+          <textarea
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
+            rows={2}
+            className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+            required
+          />
+        </div>
+      )}
 
       {type === 'command' && (
         <div className="flex items-start gap-2">
@@ -231,6 +255,16 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
   const [showAddForm, setShowAddForm] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
   const [savingAutoVerify, setSavingAutoVerify] = useState(false);
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+
+  function toggleRow(index: number) {
+    setExpandedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
 
   // Run verification
   async function handleRunVerification() {
@@ -369,39 +403,65 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             const cs = stateByIndex.get(i);
             const verdict: CriterionVerdict = cs?.verdict ?? 'UNVERIFIED';
             const vc = VERDICT_CONFIG[verdict];
+            const isExpanded = expandedRows.has(i);
+            const label = criterionLabel(c);
+            const typeLabel = CRITERION_TYPE_LABELS[c.type] ?? c.type;
             return (
-              <div key={i} className="flex items-start gap-3 py-2 border-b border-border-default last:border-b-0">
+              <div
+                key={i}
+                className="flex items-start gap-3 py-2.5 border-b border-border-default last:border-b-0 cursor-pointer touch-manipulation select-none active:bg-surface-2 transition-colors duration-75 rounded-sm"
+                onClick={() => toggleRow(i)}
+                role="button"
+                aria-expanded={isExpanded}
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && toggleRow(i)}
+              >
                 {/* Verdict badge */}
                 <span className={`shrink-0 mt-0.5 w-5 h-5 flex items-center justify-center border text-[11px] font-bold ${vc.cls}`}>
                   {vc.icon}
                 </span>
                 {/* Content */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[13px] text-text-primary font-medium leading-snug">
-                      {criterionLabel(c)}
-                    </span>
-                    <span className="text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm shrink-0">
-                      {CRITERION_TYPE_LABELS[c.type]}
-                    </span>
-                  </div>
+                  <span className="inline-block text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
+                    {typeLabel}
+                  </span>
+                  <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
+                    {label}
+                  </p>
                   {cs?.evidence && (
-                    <p className="text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words">
+                    <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
                       {cs.evidence}
                     </p>
                   )}
+                  {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {cs.evidenceRefs.map((ref, ri) => (
+                        <span key={ri} className="text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                          {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {/* Remove button */}
-                {!readonly && (
-                  <button
-                    onClick={() => handleRemoveCriterion(i)}
-                    disabled={savingCriteria}
-                    className="shrink-0 text-[11px] text-text-muted hover:text-status-error transition-colors mt-0.5 disabled:opacity-40"
-                    title="Remove criterion"
+                {/* Expand chevron + remove button */}
+                <div className="shrink-0 flex items-center gap-2 mt-0.5">
+                  {!readonly && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
+                      disabled={savingCriteria}
+                      className="text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
+                      title="Remove criterion"
+                    >
+                      ✕
+                    </button>
+                  )}
+                  <svg
+                    className={`w-3.5 h-3.5 text-text-muted transition-transform duration-150${isExpanded ? ' rotate-180' : ''}`}
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                   >
-                    ✕
-                  </button>
-                )}
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
               </div>
             );
           })}

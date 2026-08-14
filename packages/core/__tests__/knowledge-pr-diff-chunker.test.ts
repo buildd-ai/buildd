@@ -57,6 +57,9 @@ describe('chunkPrDiffFile', () => {
     // older PRs touching the same file as superseded (PR corpus is history).
     expect(chunks[0].sourcePath ?? null).toBeNull();
     expect(chunks[0].metadata).toMatchObject({ prNumber: 42, path: 'src/app.ts', sha: 'abc123' });
+    // contentDedup must be true: prevents cross-PR near-duplicates when the same
+    // file diff appears in multiple rebased PRs with identical patch content.
+    expect(chunks[0].contentDedup).toBe(true);
   });
 
   it('includes the file path and PR number in lexicalText for BM25', () => {
