@@ -11,6 +11,7 @@ const mockInsert = mock();
 const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
 const mockUpdateWhere = mock(() => Promise.resolve());
+const mockWorkspacesFindMany = mock(() => [] as any[]);
 
 // Track chained select calls to return different results
 let selectCallCount = 0;
@@ -40,6 +41,9 @@ mock.module('@buildd/core/db', () => ({
           const callIndex = missionsFindFirstCallCount++;
           return Promise.resolve(missionsFindFirstResults[callIndex] ?? null);
         },
+      },
+      workspaces: {
+        findMany: (...args: any[]) => mockWorkspacesFindMany(...args),
       },
     },
     select: (...args: any[]) => {
@@ -102,6 +106,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchUnblockedTask: mockDispatchUnblockedTask,
 }));
 
+const mockRefreshWorkerMergeState = mock(() => Promise.resolve(false));
+mock.module('./pr-reconcile', () => ({
+  refreshWorkerMergeStateIfStale: mockRefreshWorkerMergeState,
+}));
+
 import { resolveCompletedTask, checkDependsOnResolved } from './task-dependencies';
 
 function resetMocks() {
@@ -117,6 +126,10 @@ function resetMocks() {
   mockUpdateSet.mockReset();
   mockUpdateWhere.mockReset();
   mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
+  mockWorkspacesFindMany.mockReset();
+  mockWorkspacesFindMany.mockResolvedValue([]);
+  mockRefreshWorkerMergeState.mockReset();
+  mockRefreshWorkerMergeState.mockResolvedValue(false);
   selectCallCount = 0;
   selectWhereResults = [];
   findFirstCallCount = 0;
@@ -701,6 +714,60 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
 
     await checkDependsOnResolved('phase-1');
 
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+  });
+
+  it('dispatches when dep has open PR but live-refresh reveals it is actually merged', async () => {
+    // The refresh returns true (PR is merged), so hasOpenPr flips to false → unblocked.
+    mockRefreshWorkerMergeState.mockResolvedValue(true);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', githubInstallation: { installationId: 42 } },
+    ]);
+
+    selectWhereResults = [
+      // select[0]: dependent task
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1', title: 'Phase 2',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: dep task statuses (includes workspaceId for refresh lookup)
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      // select[2]: worker with open PR (has id, prNumber, prUrl for refresh)
+      [{ id: 'w-abc', taskId: 'phase-1', mergedAt: null, prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' }],
+      // select[3]: workspace for dispatch
+      [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd',
+         webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
+    ];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockRefreshWorkerMergeState).toHaveBeenCalledWith(
+      { id: 'w-abc', prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' },
+      42,
+    );
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:unblocked',
+      { taskId: 'phase-2', resolvedDependency: 'phase-1' },
+    );
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('still blocks when live-refresh confirms PR is still open', async () => {
+    mockRefreshWorkerMergeState.mockResolvedValue(false);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', githubInstallation: { installationId: 42 } },
+    ]);
+
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1', title: 'Phase 2',
+         description: null, mode: null, priority: null, missionId: null }],
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      [{ id: 'w-abc', taskId: 'phase-1', mergedAt: null, prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' }],
+    ];
+
+    await checkDependsOnResolved('phase-1');
+
+    expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(1);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
     expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
   });

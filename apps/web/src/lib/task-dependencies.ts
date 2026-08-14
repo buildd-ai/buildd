@@ -5,6 +5,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 
 /**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
@@ -344,21 +345,26 @@ export async function checkDependsOnResolved(
   // Fetch statuses for all dependency tasks in a single query.
   // loopState is also fetched: a looping task must reach 'satisfied' (or null for non-looped)
   // before it can unblock dependents — a task still between loop iterations is not done.
+  // workspaceId is fetched for the live-refresh lookup below.
   const depTasks = await db
-    .select({ id: tasks.id, status: tasks.status, loopState: tasks.loopState })
+    .select({ id: tasks.id, status: tasks.status, loopState: tasks.loopState, workspaceId: tasks.workspaceId })
     .from(tasks)
     .where(inArray(tasks.id, Array.from(allDepIds)));
 
   const statusMap = new Map(depTasks.map((t) => [t.id, t.status]));
   const loopStateMap = new Map(depTasks.map((t) => [t.id, t.loopState]));
+  const depTaskWorkspaceMap = new Map(depTasks.map((t) => [t.id, t.workspaceId]));
 
   // Also check if any dep has an open (unmerged) PR. A dependency is truly resolved
   // only when status=completed AND (no PR, or PR merged). This prevents dispatching
   // downstream tasks that would fail the claim route's mergedAt gate.
   const depWorkers = await db
     .select({
+      id: workers.id,
       taskId: workers.taskId,
       mergedAt: workers.mergedAt,
+      prNumber: workers.prNumber,
+      prUrl: workers.prUrl,
     })
     .from(workers)
     .where(
@@ -371,9 +377,48 @@ export async function checkDependsOnResolved(
 
   // Build map: taskId → hasOpenPr (most-recent worker with a PR, mergedAt null)
   const openPrMap = new Map<string, boolean>();
+  const latestOpenPrWorkerMap = new Map<string, typeof depWorkers[0]>();
   for (const w of depWorkers) {
     if (w.taskId && !openPrMap.has(w.taskId)) {
-      openPrMap.set(w.taskId, w.mergedAt === null);
+      const hasOpen = w.mergedAt === null;
+      openPrMap.set(w.taskId, hasOpen);
+      if (hasOpen) latestOpenPrWorkerMap.set(w.taskId, w);
+    }
+  }
+
+  // Live-refresh: for any dep that appears to have an open PR, call GitHub to
+  // verify — the webhook may have been missed. Only runs when installationId
+  // is resolvable from the workspace.
+  const openPrTaskIds = Array.from(latestOpenPrWorkerMap.keys());
+  if (openPrTaskIds.length > 0) {
+    const uniqueWsIds = [...new Set(
+      openPrTaskIds.map(id => depTaskWorkspaceMap.get(id)).filter((id): id is string => !!id)
+    )];
+    if (uniqueWsIds.length > 0) {
+      const wsRecords = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, uniqueWsIds),
+        columns: { id: true },
+        with: { githubInstallation: { columns: { installationId: true } } },
+      });
+      const wsInstallMap = new Map(
+        wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
+      );
+
+      await Promise.all(openPrTaskIds.map(async (taskId) => {
+        const worker = latestOpenPrWorkerMap.get(taskId);
+        if (!worker?.prNumber || !worker?.prUrl) return;
+        const wsId = depTaskWorkspaceMap.get(taskId);
+        const installationId = wsId ? wsInstallMap.get(wsId) : null;
+        if (!installationId) return;
+
+        const refreshed = await refreshWorkerMergeStateIfStale(
+          { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
+          installationId,
+        );
+        if (refreshed) {
+          openPrMap.set(taskId, false);
+        }
+      }));
     }
   }
 
