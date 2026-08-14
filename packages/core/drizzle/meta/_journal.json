@@ -736,6 +736,13 @@
       "when": 1786495695314,
       "tag": "0104_curved_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1786709321711,
+      "tag": "0105_polite_shaman",
+      "breakpoints": true
     }
   ]
 }
