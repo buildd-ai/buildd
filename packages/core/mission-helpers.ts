@@ -510,11 +510,14 @@ export function computeMissionSkyline(
   const peakLanes = laneEndSlot.length;
   const foldedLanes = Math.max(0, peakLanes - SKYLINE_MAX_LANES);
 
-  // Peak concurrency via sweep-line over slot events
+  // Peak concurrency via sweep-line over slot events.
+  // Encode end=slot*2, start=slot*2+1 so end events sort before start events
+  // at the same slot boundary — sequential workers (A ends at slot N, B starts
+  // at slot N) are NOT counted as concurrent.
   const events: Array<[number, number]> = [];
   for (const s of slotSpans) {
-    events.push([s.startSlot * 2, +1]); // start before end at same slot
-    events.push([s.endSlot * 2 + 1, -1]);
+    events.push([s.endSlot * 2, -1]); // end before any start at same slot
+    events.push([s.startSlot * 2 + 1, +1]); // start after any end at same slot
   }
   events.sort((a, b) => a[0] - b[0]);
   let concurrent = 0;
