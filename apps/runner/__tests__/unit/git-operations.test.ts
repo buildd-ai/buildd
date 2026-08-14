@@ -91,6 +91,19 @@ describe('setupWorktree', () => {
     fileCalls.length = 0;
     existsSyncMap = {};
     failBunInstall = { frozen: false, unfrozen: false };
+    // Re-inject each test: in Bun 1.3.14+, module re-evaluation (triggered when a
+    // sibling file calls mock.restore()) causes live bindings to follow the new
+    // module instance. Re-injecting here ensures the mocks are always on the same
+    // instance as the imported setupWorktree.
+    __setGitOpsDeps({
+      execSync: mockExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
   });
 
   test('runs bun install in the worktree after git worktree add', async () => {
