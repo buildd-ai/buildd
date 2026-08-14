@@ -37,13 +37,15 @@ export async function refreshWorkerMergeStateIfStale(
     ) as { state: string; merged: boolean; merged_at: string | null };
 
     if (pr.merged && pr.merged_at) {
+      const now = new Date();
       await db.update(workers)
-        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', updatedAt: new Date() })
+        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, updatedAt: now })
         .where(eq(workers.id, worker.id));
       return true;
     }
     return false;
-  } catch {
+  } catch (err) {
+    console.warn(`[pr-reconcile] refreshWorkerMergeStateIfStale worker ${worker.id} PR #${worker.prNumber}:`, err);
     return false;
   }
 }

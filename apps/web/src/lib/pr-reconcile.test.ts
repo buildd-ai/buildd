@@ -96,6 +96,21 @@ describe('refreshWorkerMergeStateIfStale', () => {
     expect(mockWorkersUpdate).not.toHaveBeenCalled();
   });
 
+  it('stamps prLastCheckedAt alongside mergedAt when PR is merged', async () => {
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' },
+      456,
+    );
+
+    const [setArgs] = setMock.mock.calls;
+    expect(setArgs[0]).toHaveProperty('prLastCheckedAt');
+    expect(setArgs[0].prLastCheckedAt).toBeInstanceOf(Date);
+  });
+
   it('returns false on GitHub API error without throwing', async () => {
     mockGithubApi.mockRejectedValue(new Error('GitHub API error: 404 Not Found'));
 
@@ -106,6 +121,21 @@ describe('refreshWorkerMergeStateIfStale', () => {
 
     expect(result).toBe(false);
     expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('logs a warning on GitHub API error', async () => {
+    mockGithubApi.mockRejectedValue(new Error('rate limited'));
+    const logs: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { logs.push(args); };
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 99, prUrl: 'https://github.com/owner/repo/pull/99' },
+      123,
+    );
+
+    console.warn = orig;
+    expect(logs.length).toBeGreaterThan(0);
   });
 
   it('returns false when prUrl is not a valid GitHub URL', async () => {
