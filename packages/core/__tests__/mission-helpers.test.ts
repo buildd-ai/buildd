@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, computeMissionSkyline, type MissionSegmentState } from '../mission-helpers';
 
 describe('isDeliverableTask', () => {
   it('returns true for a normal task with no special kind or title', () => {
@@ -327,5 +327,175 @@ describe('computeMissionProgress — segments', () => {
     expect(stateMap['ghost-id']).toBe('ghost');
     expect(stateMap['empty-id']).toBe('empty');
     expect(stateMap['notch-id']).toBe('notch');
+  });
+});
+
+// ── computeMissionSkyline ─────────────────────────────────────────────────────
+
+describe('computeMissionSkyline', () => {
+  const T0 = new Date('2025-01-01T10:00:00Z').getTime();
+  const SLOT = 15 * 60 * 1000; // 15 min
+
+  function ms(offsetMin: number) {
+    return new Date(T0 + offsetMin * 60_000).toISOString();
+  }
+
+  function makeWorker(
+    startMin: number,
+    endMin: number,
+    opts: { status?: string; prUrl?: string | null; mergedAt?: string | null } = {},
+  ) {
+    return {
+      startedAt: ms(startMin),
+      completedAt: ms(endMin),
+      status: opts.status ?? 'completed',
+      prUrl: opts.prUrl ?? null,
+      mergedAt: opts.mergedAt ?? null,
+    };
+  }
+
+  it('returns null when no tasks have workers', () => {
+    expect(computeMissionSkyline([])).toBeNull();
+    expect(computeMissionSkyline([{ workers: [] }])).toBeNull();
+  });
+
+  it('returns null when no workers have startedAt', () => {
+    expect(
+      computeMissionSkyline([
+        { workers: [{ startedAt: null, completedAt: null, status: 'completed', prUrl: null, mergedAt: null }] },
+      ]),
+    ).toBeNull();
+  });
+
+  it('sequential mission: flat lane 0, totalSlots = ceil(duration/15)', () => {
+    // 30-min worker → 2 slots
+    const result = computeMissionSkyline([{ workers: [makeWorker(0, 30)] }]);
+    expect(result).not.toBeNull();
+    expect(result!.totalSlots).toBe(2);
+    expect(result!.peakLanes).toBe(1);
+    expect(result!.foldedLanes).toBe(0);
+    expect(result!.blocks).toHaveLength(1);
+    expect(result!.blocks[0]).toMatchObject({ lane: 0, startSlot: 0, endSlot: 2 });
+  });
+
+  it('minimum 1 slot for very short worker (<15m)', () => {
+    const result = computeMissionSkyline([{ workers: [makeWorker(0, 5)] }]);
+    expect(result!.blocks[0].endSlot - result!.blocks[0].startSlot).toBeGreaterThanOrEqual(1);
+  });
+
+  it('parallel tasks stack into lanes', () => {
+    // two workers both starting at 0, ending at 30 → should be in different lanes
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(0, 30)] },
+    ]);
+    expect(result!.peakLanes).toBe(2);
+    const lanes = result!.blocks.map((b) => b.lane);
+    expect(new Set(lanes).size).toBe(2);
+  });
+
+  it('sequential tasks pack into lane 0 (no wasted lanes)', () => {
+    // worker B starts after worker A ends → both fit in lane 0
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15)] },
+      { workers: [makeWorker(15, 30)] },
+    ]);
+    expect(result!.peakLanes).toBe(1);
+    expect(result!.blocks.every((b) => b.lane === 0)).toBe(true);
+  });
+
+  it('peak concurrency reflects simultaneous workers, not lanes', () => {
+    // 3 workers all overlapping
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(0, 30)] },
+    ]);
+    expect(result!.peakConcurrency).toBe(3);
+  });
+
+  it('state: failed when status=error', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15, { status: 'error' })] },
+    ]);
+    expect(result!.blocks[0].state).toBe('failed');
+  });
+
+  it('state: awaiting when prUrl set and mergedAt null', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15, { prUrl: 'https://github.com/pr/1', mergedAt: null })] },
+    ]);
+    expect(result!.blocks[0].state).toBe('awaiting');
+  });
+
+  it('state: merged when mergedAt set', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15, { prUrl: 'https://github.com/pr/1', mergedAt: ms(20) })] },
+    ]);
+    expect(result!.blocks[0].state).toBe('merged');
+  });
+
+  it('state: merged for completed worker with no PR', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15, { prUrl: null })] },
+    ]);
+    expect(result!.blocks[0].state).toBe('merged');
+  });
+
+  it('activeSpanMin = first start → last end in minutes', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(10, 60)] },
+    ]);
+    expect(result!.activeSpanMin).toBe(60);
+  });
+
+  it('agentTimeMin = sum of individual worker durations', () => {
+    // worker A: 30m, worker B: 20m → total 50m
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(20, 40)] },
+    ]);
+    expect(result!.agentTimeMin).toBeCloseTo(50, 1);
+  });
+
+  it('parallelFactor = agentTimeMin / activeSpanMin', () => {
+    // A: 0–30, B: 0–30 → activeSpan 30, agentTime 60 → factor 2.0
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },
+      { workers: [makeWorker(0, 30)] },
+    ]);
+    expect(result!.parallelFactor).toBeCloseTo(2.0, 1);
+  });
+
+  it('folds lanes beyond 4 into foldedLanes', () => {
+    // 6 simultaneous workers → 4 visible, 2 folded
+    const result = computeMissionSkyline(
+      Array.from({ length: 6 }, () => ({ workers: [makeWorker(0, 30)] })),
+    );
+    expect(result!.foldedLanes).toBe(2);
+    expect(result!.blocks.some((b) => b.lane >= 4)).toBe(true);
+  });
+
+  it('reviewTailMin is set when missionCompletedAt is given after work ends', () => {
+    // Work ends at 30m, mission closed at 90m → tail = 60m
+    const result = computeMissionSkyline(
+      [{ workers: [makeWorker(0, 30)] }],
+      { missionCompletedAt: ms(90) },
+    );
+    expect(result!.reviewTailMin).toBeCloseTo(60, 0);
+  });
+
+  it('reviewTailMin is null when no missionCompletedAt is given', () => {
+    const result = computeMissionSkyline([{ workers: [makeWorker(0, 30)] }]);
+    expect(result!.reviewTailMin).toBeNull();
+  });
+
+  it('reviewTailMin is null when tail is ≤5m (negligible)', () => {
+    const result = computeMissionSkyline(
+      [{ workers: [makeWorker(0, 30)] }],
+      { missionCompletedAt: ms(32) }, // only 2m after work ends
+    );
+    expect(result!.reviewTailMin).toBeNull();
   });
 });
