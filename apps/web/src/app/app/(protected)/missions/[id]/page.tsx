@@ -697,13 +697,21 @@ export default async function MissionDetailPage({
               { label: 'Completed', value: String(completedTasks) },
               { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
               { label: 'Duration', value: (() => {
-                const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
-                const hours = Math.floor(ms / 3600000);
-                const minutes = Math.floor((ms % 3600000) / 60000);
-                if (hours > 24) {
-                  const days = Math.floor(hours / 24);
-                  return `${days}d ${hours % 24}h`;
+                // Active span: first worker start → last worker end across all tasks.
+                const allWorkers = allTasks.flatMap((t: any) => t.workers ?? []);
+                const starts = allWorkers.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
+                const ends = allWorkers.map((w: any) => (w.completedAt ?? w.updatedAt) ? new Date((w.completedAt ?? w.updatedAt) as string).getTime() : null).filter(Boolean) as number[];
+                if (starts.length === 0 || ends.length === 0) {
+                  const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
+                  const hours = Math.floor(ms / 3600000);
+                  const minutes = Math.floor((ms % 3600000) / 60000);
+                  if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
+                  return `${hours}h ${minutes}m`;
                 }
+                const spanMs = Math.max(...ends) - Math.min(...starts);
+                const hours = Math.floor(spanMs / 3600000);
+                const minutes = Math.floor((spanMs % 3600000) / 60000);
+                if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
                 return `${hours}h ${minutes}m`;
               })() },
             ].map(stat => (
