@@ -771,4 +771,66 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
     expect(mockTriggerEvent).not.toHaveBeenCalled();
     expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
   });
+
+  it('deduplicates workers sharing the same prNumber — calls GitHub once, unblocks all deps', async () => {
+    // Two deps share prNumber 55; only one GitHub call should be made but both deps flip to open=false.
+    mockRefreshWorkerMergeState.mockResolvedValue(true);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', githubInstallation: { installationId: 42 } },
+    ]);
+
+    selectWhereResults = [
+      // select[0]: phase-z depends on both dep-a and dep-b
+      [{ id: 'phase-z', dependsOn: ['dep-a', 'dep-b'], workspaceId: 'ws-1', title: 'Phase Z',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: both completed
+      [
+        { id: 'dep-a', status: 'completed', loopState: null, workspaceId: 'ws-1' },
+        { id: 'dep-b', status: 'completed', loopState: null, workspaceId: 'ws-1' },
+      ],
+      // select[2]: both workers share prNumber 55
+      [
+        { id: 'w-a', taskId: 'dep-a', mergedAt: null, prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' },
+        { id: 'w-b', taskId: 'dep-b', mergedAt: null, prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' },
+      ],
+      // select[3]: workspace for dispatch
+      [{ id: 'ws-1', name: 'buildd', repo: 'buildd-ai/buildd',
+         webhookConfig: null, githubInstallationId: null, githubRepoId: null }],
+    ];
+
+    await checkDependsOnResolved('any-completed');
+
+    // One GitHub call despite two deps
+    expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(1);
+    // phase-z unblocked — both dep-a and dep-b flipped to open=false
+    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps live-refresh at 5 unique PRs per invocation', async () => {
+    // 6 deps each with a unique open PR — only 5 GitHub calls should be made.
+    mockRefreshWorkerMergeState.mockResolvedValue(false);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', githubInstallation: { installationId: 42 } },
+    ]);
+
+    const depIds = ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'];
+    selectWhereResults = [
+      // select[0]: phase-x depends on all 6 deps
+      [{ id: 'phase-x', dependsOn: depIds, workspaceId: 'ws-1', title: 'Phase X',
+         description: null, mode: null, priority: null, missionId: null }],
+      // select[1]: all completed
+      depIds.map(id => ({ id, status: 'completed', loopState: null, workspaceId: 'ws-1' })),
+      // select[2]: 6 workers with unique prNumbers 100-105
+      depIds.map((id, i) => ({
+        id: `w-${id}`, taskId: id, mergedAt: null,
+        prNumber: 100 + i, prUrl: `https://github.com/o/r/pull/${100 + i}`,
+      })),
+      // No workspace result needed — none unblocked (all still blocked)
+    ];
+
+    await checkDependsOnResolved('completed');
+
+    expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(5);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
 });

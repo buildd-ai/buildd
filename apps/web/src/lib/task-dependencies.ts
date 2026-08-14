@@ -389,6 +389,9 @@ export async function checkDependsOnResolved(
   // Live-refresh: for any dep that appears to have an open PR, call GitHub to
   // verify — the webhook may have been missed. Only runs when installationId
   // is resolvable from the workspace.
+  // Dedup by prNumber so two deps pointing at the same PR cost one API call.
+  // Cap at MAX_LIVE_CHECKS to bound fan-out.
+  const MAX_LIVE_CHECKS = 5;
   const openPrTaskIds = Array.from(latestOpenPrWorkerMap.keys());
   if (openPrTaskIds.length > 0) {
     const uniqueWsIds = [...new Set(
@@ -404,10 +407,24 @@ export async function checkDependsOnResolved(
         wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
       );
 
-      await Promise.all(openPrTaskIds.map(async (taskId) => {
+      // Group taskIds by prNumber so we can dedup and propagate the result to all.
+      const prNumberToTaskIds = new Map<number, string[]>();
+      for (const taskId of openPrTaskIds) {
         const worker = latestOpenPrWorkerMap.get(taskId);
+        if (!worker?.prNumber) continue;
+        if (!prNumberToTaskIds.has(worker.prNumber)) {
+          prNumberToTaskIds.set(worker.prNumber, []);
+        }
+        prNumberToTaskIds.get(worker.prNumber)!.push(taskId);
+      }
+
+      const uniquePrEntries = Array.from(prNumberToTaskIds.entries()).slice(0, MAX_LIVE_CHECKS);
+
+      await Promise.all(uniquePrEntries.map(async ([, taskIds]) => {
+        const representativeId = taskIds[0];
+        const worker = latestOpenPrWorkerMap.get(representativeId);
         if (!worker?.prNumber || !worker?.prUrl) return;
-        const wsId = depTaskWorkspaceMap.get(taskId);
+        const wsId = depTaskWorkspaceMap.get(representativeId);
         const installationId = wsId ? wsInstallMap.get(wsId) : null;
         if (!installationId) return;
 
@@ -416,7 +433,9 @@ export async function checkDependsOnResolved(
           installationId,
         );
         if (refreshed) {
-          openPrMap.set(taskId, false);
+          for (const taskId of taskIds) {
+            openPrMap.set(taskId, false);
+          }
         }
       }));
     }
