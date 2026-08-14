@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "pr_last_checked_at" timestamp with time zone;
