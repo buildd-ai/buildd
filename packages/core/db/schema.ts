@@ -2188,4 +2188,21 @@ export type NewTaskSubjectReport = typeof taskSubjectReports.$inferInsert;
 export type TaskSubjectClaim = typeof taskSubjectClaims.$inferSelect;
 export type NewTaskSubjectClaim = typeof taskSubjectClaims.$inferInsert;
 
+// Dark-check detection: tracks required CI checks that consistently report
+// 'skipped', signalling a misconfigured gate that silently bypasses CI.
+// One row per (workspace, checkName). consecutiveSkips resets to 0 when the
+// check reports a non-skipped conclusion. lastAlertedAt guards 24h dedup.
+export const darkCheckAlerts = pgTable('dark_check_alerts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  checkName: text('check_name').notNull(),
+  consecutiveSkips: integer('consecutive_skips').default(0).notNull(),
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCheckUnique: uniqueIndex('dark_check_alerts_ws_check_idx').on(t.workspaceId, t.checkName),
+}));
+
+export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
+
 // smoke-test-3-ci-retry-1 20260725
