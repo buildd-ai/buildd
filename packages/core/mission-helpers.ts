@@ -8,17 +8,23 @@ export type TaskType = 'retry' | 'review' | 'review-retry';
 
 /**
  * Derive a task's display type from its title prefix and parentTaskId.
- * Returns null for primary tasks (parentTaskId IS NULL).
- * Falls back to 'retry' for attempt tasks with unrecognized or absent prefix.
+ * Recognized prefixes ([CI Retry], [reviewer], [reviewer retry]) are detected
+ * regardless of parentTaskId — this covers legacy attempt tasks that predate the
+ * parentTaskId column and therefore have parentTaskId IS NULL despite being retries.
+ * Falls back to 'retry' for attempt tasks (parentTaskId IS NOT NULL) with an
+ * unrecognized or absent prefix. Returns null for plain primary tasks.
  */
 export function deriveTaskType(task: {
   title: string;
   parentTaskId?: string | null;
 }): TaskType | null {
-  if (!task.parentTaskId) return null;
+  // Check recognized prefixes first — applies to both legacy tasks (parentTaskId IS NULL
+  // with an old-style title prefix) and current attempt tasks (parentTaskId IS NOT NULL).
   if (/^\[reviewer retry/i.test(task.title)) return 'review-retry';
   if (/^\[reviewer\]/i.test(task.title)) return 'review';
   if (/^\[(?:CI )?retry/i.test(task.title)) return 'retry';
+  // No recognized prefix: primary tasks stay untyped; attempt tasks fall back to 'retry'.
+  if (!task.parentTaskId) return null;
   return 'retry';
 }
 

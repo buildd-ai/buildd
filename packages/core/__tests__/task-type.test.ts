@@ -6,8 +6,14 @@ describe('deriveTaskType', () => {
     expect(deriveTaskType({ title: 'Fix auth bug', parentTaskId: null })).toBe(null);
   });
 
-  it('returns null for a primary task even with bracket prefix in title', () => {
-    expect(deriveTaskType({ title: '[CI Retry #1] Fix auth bug', parentTaskId: null })).toBe(null);
+  it('detects type from recognized prefix even when parentTaskId is null (legacy tasks)', () => {
+    expect(deriveTaskType({ title: '[CI Retry #1] Fix auth bug', parentTaskId: null })).toBe('retry');
+    expect(deriveTaskType({ title: '[reviewer] Fix auth bug', parentTaskId: null })).toBe('review');
+    expect(deriveTaskType({ title: '[reviewer retry #1] Fix auth bug', parentTaskId: null })).toBe('review-retry');
+  });
+
+  it('returns null for a plain primary task with unrecognized bracket prefix and no parentTaskId', () => {
+    expect(deriveTaskType({ title: '[Something] Fix auth bug', parentTaskId: null })).toBe(null);
   });
 
   it('returns retry for CI retry title', () => {
@@ -35,8 +41,9 @@ describe('deriveTaskType', () => {
     expect(deriveTaskType({ title: 'Fix auth bug', parentTaskId: 'parent-id' })).toBe('retry');
   });
 
-  it('handles undefined parentTaskId as null', () => {
-    expect(deriveTaskType({ title: '[CI Retry #1] Fix', parentTaskId: undefined })).toBe(null);
+  it('treats undefined parentTaskId same as null — recognized prefix still classifies', () => {
+    expect(deriveTaskType({ title: '[CI Retry #1] Fix', parentTaskId: undefined })).toBe('retry');
+    expect(deriveTaskType({ title: 'Fix auth bug', parentTaskId: undefined })).toBe(null);
   });
 });
 
