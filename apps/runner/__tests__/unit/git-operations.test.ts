@@ -13,13 +13,7 @@
  * Run: bun test apps/runner/__tests__/unit/git-operations.test.ts
  */
 
-import { describe, test, expect, afterAll, beforeEach, mock } from 'bun:test';
-
-// ─── Module isolation ─────────────────────────────────────────────────────────
-// waiting-worktree-eviction.test.ts installs mock.module('../../src/git-operations')
-// in the same Bun worker. That mock doesn't export __setGitOpsDeps, so we'd import
-// undefined and the dep injection would silently fail. Restore the real module first.
-mock.restore();
+import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
 
 // ─── Mock state ───────────────────────────────────────────────────────────────
 
@@ -84,15 +78,17 @@ function mockExecFile(
 
 // ─── Setup / teardown ─────────────────────────────────────────────────────────
 
-// Dynamic import AFTER mock.restore() so we get the real git-operations module,
-// not a sibling file's partial mock (e.g. waiting-worktree-eviction.test.ts mocks
-// this module without __setGitOpsDeps, which would make the dep injection silently
-// fail and cause all tests to see empty syncCalls/fileCalls).
-const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = await import('../../src/git-operations');
+// Use require() (CJS) instead of await import() to load the real git-operations
+// module, bypassing the ES module mock registry. waiting-worktree-eviction.test.ts
+// installs mock.module('../../src/git-operations') which only affects ES imports;
+// require() always returns the real module regardless of mock.module() state.
+// This avoids the top-level await race where other files' mock.module() calls can
+// run during the await and replace the module before it resolves.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
 
-// Inject mocks via the exported dep-injection hook so the test works regardless
-// of bun version and without touching the shared mock.module registry (which is
-// cleared by mock.restore() in sibling test files like updater.test.ts).
+// Inject mocks before any test runs. Uses the exported dep-injection hook so
+// the test works regardless of bun version and mock.module registry state.
 __setGitOpsDeps({
   execSync: mockExecSync as any,
   execFile: mockExecFile as any,
@@ -118,6 +114,17 @@ describe('setupWorktree', () => {
     existsSyncMap = {};
     failBunInstall = { frozen: false, unfrozen: false };
     revListBehavior = 'ok';
+    // Re-inject each test to reset mocks to initial state (clears per-test overrides
+    // like custom execSync functions set in the stale-branch guard tests).
+    __setGitOpsDeps({
+      execSync: mockExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
   });
 
   test('runs bun install in the worktree after git worktree add', async () => {
