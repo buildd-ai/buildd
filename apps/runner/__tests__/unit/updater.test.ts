@@ -10,6 +10,8 @@ import { join } from 'path';
 // nodeFs is fetched via CommonJS require (not ES module import) so it bypasses
 // any mock.module('fs', ...) leakage from earlier-loaded test files — require
 // always returns the real module regardless of mock.module state.
+// applyUpdate accepts fsOps as an explicit parameter in tests, so the ES-module
+// 'fs' binding on updater.ts doesn't matter for test correctness.
 // NOTE: Do NOT call mock.restore() here — it triggers re-evaluation of
 // git-operations.ts (which also imports 'fs'), resetting its __setGitOpsDeps
 // injection and breaking setupWorktree tests in Bun 1.3.14+.

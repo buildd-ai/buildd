@@ -856,6 +856,9 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
+          {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (
+            <span>{mission.completedTasks} of {mission.totalTasks} done</span>
+          )}
           <span title={mission.lastActivityAt ? `Last activity: ${mission.lastActivityAt}` : undefined}>
             {mission.lastActivityAt ? timeAgo(mission.lastActivityAt) : 'never'}
           </span>

@@ -321,6 +321,7 @@ export default async function MissionsPage({
       ? Math.max(0, Math.round((pendingUserScheduledAt.getTime() - Date.now()) / 60000))
       : null);
 
+
     return {
       id: obj.id,
       title: obj.title,
