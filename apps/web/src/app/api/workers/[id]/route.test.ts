@@ -197,6 +197,7 @@ mock.module('@/lib/github', () => ({
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
+  checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
 // Override webhook/route.test.ts's merge-policy module mock when Bun runs the
