@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
-import { desc, eq, inArray, and, gte } from 'drizzle-orm';
+import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -84,6 +84,7 @@ export default async function TasksPage({
             where: and(
               inArray(tasks.workspaceId, wsIds),
               gte(tasks.updatedAt, thirtyDaysAgo),
+              isNull(tasks.parentTaskId),
             ),
             columns: {
               id: true,
