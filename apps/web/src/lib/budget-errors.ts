@@ -31,14 +31,15 @@ export function isBudgetExhaustionError(error?: string | null): boolean {
 }
 
 /**
- * Parse a reset time like "5pm" (UTC) into a Date. Returns null if unparseable.
+ * Parse a reset time like "5pm" or "11:10am" (UTC) into a Date. Returns null if unparseable.
  */
 export function parseResetTime(timeStr: string): Date | null {
-  const match = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
+  const match = timeStr.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i);
   if (!match) return null;
 
   let hour = parseInt(match[1], 10);
-  const ampm = match[2]?.toLowerCase();
+  const minute = match[2] ? parseInt(match[2], 10) : 0;
+  const ampm = match[3]?.toLowerCase();
   if (ampm === 'pm' && hour < 12) hour += 12;
   if (ampm === 'am' && hour === 12) hour = 0;
 
@@ -47,7 +48,7 @@ export function parseResetTime(timeStr: string): Date | null {
     now.getUTCFullYear(),
     now.getUTCMonth(),
     now.getUTCDate(),
-    hour, 0, 0, 0,
+    hour, minute, 0, 0,
   ));
   // If the reset time is in the past today, it means tomorrow
   if (reset.getTime() <= now.getTime()) {

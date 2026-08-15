@@ -28,6 +28,7 @@ import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { reviewerRetryTitle } from '@/lib/task-title';
@@ -593,7 +594,7 @@ export async function PATCH(
     const defaultResetMs = 5 * 60 * 60 * 1000;
     let budgetResetsAt = new Date(Date.now() + defaultResetMs);
     if (typeof error === 'string') {
-      const resetMatch = error.match(/resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
+      const resetMatch = error.match(/resets\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\s*\((\w+)\)/i);
       if (resetMatch) {
         const parsed = parseResetTime(resetMatch[1]);
         if (parsed) budgetResetsAt = parsed;
@@ -1659,6 +1660,17 @@ export async function PATCH(
       { error: 'Worker state changed concurrently', abort: true },
       { status: 409 },
     );
+  }
+
+  // Release the concurrency seat for OAuth accounts on terminal worker transitions.
+  // activeSessions is incremented at claim time; every path that moves a live worker
+  // to a terminal state must decrement it so Gate B (maxConcurrentSessions) doesn't
+  // permanently block claims after all real work is done.
+  if (isTerminalStatus && (LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
+      .where(eq(accounts.id, account.id));
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
