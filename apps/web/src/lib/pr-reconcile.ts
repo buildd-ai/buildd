@@ -11,6 +11,45 @@ import { workers, workspaces } from '@buildd/core/db/schema';
 import { and, isNull, isNotNull, eq, lt } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 
+/**
+ * On-demand merge-state check for a single worker.
+ *
+ * Calls GET /repos/{owner}/{repo}/pulls/{prNumber} and, if the PR is merged,
+ * stamps mergedAt + prLifecycleStatus='merged' in the workers table.
+ *
+ * Returns true when a merge was detected and written, false otherwise.
+ * Safe to call speculatively — skips the GitHub call if mergedAt is already set.
+ */
+export async function refreshWorkerMergeStateIfStale(
+  worker: { id: string; prNumber: number; prUrl: string; mergedAt?: Date | null },
+  installationId: number,
+): Promise<boolean> {
+  if (worker.mergedAt) return false;
+
+  const match = worker.prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\//);
+  if (!match) return false;
+  const repo = match[1];
+
+  try {
+    const pr = await githubApi(
+      installationId,
+      `/repos/${repo}/pulls/${worker.prNumber}`,
+    ) as { state: string; merged: boolean; merged_at: string | null };
+
+    if (pr.merged && pr.merged_at) {
+      const now = new Date();
+      await db.update(workers)
+        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, updatedAt: now })
+        .where(eq(workers.id, worker.id));
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn(`[pr-reconcile] refreshWorkerMergeStateIfStale worker ${worker.id} PR #${worker.prNumber}:`, err);
+    return false;
+  }
+}
+
 /** Workers older than this are candidates for reconciliation. */
 const STALE_DAYS = 7;
 

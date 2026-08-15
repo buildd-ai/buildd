@@ -944,6 +944,10 @@ export const workers = pgTable('workers', {
   // Set the first time prLifecycleStatus transitions to 'conflict'. Used to measure
   // conflictDeadDays. Never cleared (even if PR later becomes mergeable).
   conflictDetectedAt: timestamp('conflict_detected_at', { withTimezone: true }),
+  // Last time we proactively fetched this PR's state from GitHub.
+  // Null = never checked (or pre-migration). Used by the read-through refresh to
+  // skip workers that were polled within the last 5 minutes.
+  prLastCheckedAt: timestamp('pr_last_checked_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),

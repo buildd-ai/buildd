@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
@@ -16,6 +16,7 @@ import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -167,6 +168,20 @@ export async function GET(req: NextRequest) {
           },
         })
       : [];
+
+    // Stale-while-revalidate: refresh stale PR state for workers in these
+    // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
+    if (workspaceIds.length > 0) {
+      try {
+        after(() =>
+          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
+            console.error('[pr-state-refresh] task list refresh failed:', err)
+          )
+        );
+      } catch {
+        // after() unavailable outside request scope (tests/build)
+      }
+    }
 
     return jsonResponse({
       tasks: allTasks,

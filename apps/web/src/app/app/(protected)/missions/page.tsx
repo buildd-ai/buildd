@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, computeMissionSkyline, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -140,7 +140,7 @@ export default async function MissionsPage({
         limit: 20,
         with: {
           workers: {
-            columns: { id: true, status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },
+            columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },
             limit: 5,
           },
         },
@@ -269,6 +269,17 @@ export default async function MissionsPage({
     const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
     const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
 
+    // v1 approximation: updatedAt serves as mission close time for the review-tail
+    // calculation. A dedicated closedAt column would be more precise but requires
+    // a migration. The approximation is wrong only if the mission row is edited
+    // (e.g. title rename) after workers finish but before the row is marked completed.
+    const skyline = obj.status === 'completed'
+      ? computeMissionSkyline(
+          (obj.tasks || []).map((t: any) => ({ workers: t.workers || [] })),
+          { missionCompletedAt: (obj as any).updatedAt },
+        )
+      : null;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -314,6 +325,8 @@ export default async function MissionsPage({
       priority: obj.priority ?? 0,
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
       goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | null,
+      skyline,
+      normalizationSlots: 0, // patched below after all missions are computed
     };
   });
 
@@ -328,6 +341,22 @@ export default async function MissionsPage({
     const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
     return bTime - aTime;
   });
+
+  // Compute per-initiative normalization slots so sibling missions share a time axis.
+  // For completed missions only (skyline is only shown there).
+  const initNormSlots = new Map<string, number>();
+  for (const m of missionsList) {
+    if (!m.initiativeId || !m.skyline) continue;
+    const prev = initNormSlots.get(m.initiativeId) ?? 0;
+    if (m.skyline.totalSlots > prev) initNormSlots.set(m.initiativeId, m.skyline.totalSlots);
+  }
+  for (const m of missionsList) {
+    if (m.initiativeId && m.skyline) {
+      m.normalizationSlots = initNormSlots.get(m.initiativeId) ?? m.skyline.totalSlots;
+    } else if (m.skyline) {
+      m.normalizationSlots = m.skyline.totalSlots;
+    }
+  }
 
   // Build triage items for InitiativeTriage surface.
   // awaitingVerification: completed tasks with an open (unmerged, unclosed) PR.
