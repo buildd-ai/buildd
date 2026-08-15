@@ -1008,6 +1008,32 @@ export const workers = pgTable('workers', {
   //                     task requeues; fix by adding path to BUILDD_MOUNT_ALLOWLIST_EXTRA.
   // null: worker is still active, completed successfully, or predates this column.
   exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | null>(),
+  // Subagent spans flushed once at worker terminal state (not on every progress event).
+  // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
+  // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).
+  subagentSpans: jsonb('subagent_spans').default([]).$type<Array<{
+    taskId: string;
+    toolUseId: string;
+    agentId?: string;
+    parentAgentId?: string;
+    description: string;
+    taskType: string;
+    startedAt: number;
+    completedAt?: number;
+    status: 'running' | 'completed' | 'failed';
+    isBackground: boolean;
+    durationMs?: number;
+    toolCount?: number;
+    cumulativeUsage?: { inputTokens: number; outputTokens: number; costUsd: number };
+  }>>(),
+  // Total task_started events observed during the session. May exceed subagentSpans.length
+  // when the 100-span in-memory cap was hit. When observedCount > length, span-derived
+  // metrics (e.g. backgroundAgentMs) are floors, not exact totals.
+  subagentSpansObserved: integer('subagent_spans_observed').default(0).notNull(),
+  // Sum of durationMs for isBackground=true spans.
+  // Mission agent-time = Σ(worker wall-clock) + Σ(backgroundAgentMs).
+  // Foreground subagents are excluded — their time is already inside the parent's wall clock.
+  backgroundAgentMs: integer('background_agent_ms').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

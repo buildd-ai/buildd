@@ -57,6 +57,7 @@ import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecre
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
+import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
@@ -1252,6 +1253,7 @@ export class WorkerManager {
       messages: [],
       checkpoints: [],
       subagentTasks: [],
+      subagentTasksObservedCount: 0,
       checkpointEvents: new Set<CheckpointEventType>(),
       pendingMcpCalls: [],
       phaseText: null,
@@ -3110,6 +3112,10 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
         }
 
+        // Build subagent spans for terminal flush (not on hot path — only at completion).
+        const subagentSpans = buildSubagentSpans(worker.subagentTasks);
+        const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
+
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
           milestones: worker.milestones,
@@ -3123,6 +3129,10 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
+          // Subagent spans — terminal-only flush
+          ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
+          subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+          backgroundAgentMs,
         });
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -3157,6 +3167,15 @@ If something is missing or incomplete, describe what and fix it now.`;
 
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
+      // Flush subagent spans on terminal failure (spans still running persist as-is).
+      const failSpans = buildSubagentSpans(worker.subagentTasks);
+      const failBgMs = computeBackgroundAgentMs(failSpans);
+      const spanPayload = {
+        ...(failSpans.length > 0 ? { subagentSpans: failSpans } : {}),
+        subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+        backgroundAgentMs: failBgMs,
+      };
+
       if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
@@ -3168,6 +3187,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error || 'Session aborted',
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
+          ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
         // Unexpected error
@@ -3199,6 +3219,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(isBudgetError && { budgetExhausted: true }),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
+          ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
@@ -3453,6 +3474,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         ...(agentId ? { agentId } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
       };
+      worker.subagentTasksObservedCount = (worker.subagentTasksObservedCount ?? 0) + 1;
       worker.subagentTasks.push(subagentTask);
       // Keep last 100 subagent tasks
       if (worker.subagentTasks.length > 100) {

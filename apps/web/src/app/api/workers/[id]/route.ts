@@ -277,6 +277,12 @@ export async function PATCH(
     prNumber: selfReportedPrNumber,
     // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
     verificationEvidence,
+    // Subagent spans — persisted at terminal status only (completed/failed/error).
+    // Runners only send these on terminal transitions; the server writes them through
+    // unconditionally (no guard needed — hot-path updates never include them).
+    subagentSpans,
+    subagentSpansObserved,
+    backgroundAgentMs,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -373,6 +379,10 @@ export async function PATCH(
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
   // SDK result metadata
   if (resultMeta !== undefined) updates.resultMeta = resultMeta;
+  // Subagent spans (terminal flush — runner only sends on completed/failed/error).
+  if (Array.isArray(subagentSpans)) updates.subagentSpans = subagentSpans;
+  if (typeof subagentSpansObserved === 'number') updates.subagentSpansObserved = subagentSpansObserved;
+  if (typeof backgroundAgentMs === 'number') updates.backgroundAgentMs = backgroundAgentMs;
   // Self-reported PR (for runners that open PRs outside the create_pr MCP action)
   if (typeof selfReportedPrUrl === 'string' && selfReportedPrUrl) updates.prUrl = selfReportedPrUrl;
   if (typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0) updates.prNumber = selfReportedPrNumber;

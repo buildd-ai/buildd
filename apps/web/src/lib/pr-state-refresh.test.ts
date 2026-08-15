@@ -98,9 +98,6 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
     mockTriggerEvent.mockReset();
-    // mockClear preserves the Promise-returning implementation so the function stays
-    // callable after this file's tests complete. mockReset() would leave it returning
-    // undefined, which causes .catch() to throw in co-running test files.
     mockCheckDependsOnResolved.mockClear();
   });
 

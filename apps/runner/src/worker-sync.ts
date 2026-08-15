@@ -110,6 +110,7 @@ export class WorkerSync {
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
         if (!worker.subagentTasks) worker.subagentTasks = [];
+        if (worker.subagentTasksObservedCount === undefined) worker.subagentTasksObservedCount = worker.subagentTasks.length;
         // Ensure checkpointEvents set exists (reconstructed from milestones by worker-store)
         if (!worker.checkpointEvents || !(worker.checkpointEvents instanceof Set)) {
           worker.checkpointEvents = new Set<CheckpointEventType>(
