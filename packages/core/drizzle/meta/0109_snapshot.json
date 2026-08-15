@@ -1,6 +1,6 @@
 {
-  "id": "8a10ee7e-12c2-4c0f-9fca-324fed7c9968",
-  "prevId": "d6b41ce7-9f65-4dcd-bd05-be1e0c2eefdd",
+  "id": "abb58cc4-5e39-4928-94ca-3505d9222bb1",
+  "prevId": "8a10ee7e-12c2-4c0f-9fca-324fed7c9968",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5893,6 +5893,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "conflict_retry_pr_number": {
+          "name": "conflict_retry_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conflict_retry_head_sha": {
+          "name": "conflict_retry_head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "category": {
           "name": "category",
           "type": "text",
@@ -6312,6 +6324,34 @@
           ],
           "isUnique": true,
           "where": "\"tasks\".\"creation_source\" = 'webhook' AND \"tasks\".\"ci_retry_pr_number\" IS NOT NULL AND \"tasks\".\"ci_retry_head_sha\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tasks_conflict_retry_event_unique": {
+          "name": "tasks_conflict_retry_event_unique",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conflict_retry_pr_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conflict_retry_head_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tasks\".\"conflict_retry_pr_number\" IS NOT NULL AND \"tasks\".\"conflict_retry_head_sha\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

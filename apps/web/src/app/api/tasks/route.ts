@@ -94,10 +94,13 @@ export async function GET(req: NextRequest) {
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
     //   ?status=active     — only non-terminal tasks (drops the 24h terminal window)
-    // Both are used by the dependency picker so it stops fetching every
-    // workspace's task and filtering client-side (see DependencySelector).
+    //   ?limit=N&offset=M  — OPT-IN pagination; returns lean row shape + total/pendingCount/hasMore
+    // Both workspaceId and status are used by the dependency picker so it stops
+    // fetching every workspace's task and filtering client-side (see DependencySelector).
     const requestedWorkspaceId = req.nextUrl.searchParams.get('workspaceId');
     const statusFilter = req.nextUrl.searchParams.get('status');
+    const limitParam = req.nextUrl.searchParams.get('limit');
+    const offsetParam = req.nextUrl.searchParams.get('offset');
 
     // Intersect the requested workspace with the caller's accessible set.
     // If it isn't accessible, workspaceIds becomes empty → returns [] below
@@ -106,12 +109,85 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
-    // Get tasks from the resolved workspace IDs (lightweight list view)
-    // Default returns: all active tasks + completed/failed from the last 24h.
     const terminalStatuses = ['completed', 'failed'];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
 
+    // ── Paginated lean path (OPT-IN when ?limit=N is present) ──────────────
+    // Returns only the columns list consumers need, sorted pending-first /
+    // priority-desc (server-side), with total + pendingCount + hasMore so
+    // callers never have to fetch all rows just to render a header line.
+    if (limitParam !== null) {
+      const limit = Math.min(Math.max(parseInt(limitParam, 10) || 0, 1), 200);
+      const offset = Math.max(parseInt(offsetParam ?? '0', 10) || 0, 0);
+
+      if (workspaceIds.length === 0) {
+        return jsonResponse({ tasks: [], total: 0, pendingCount: 0, hasMore: false }, undefined, { route: req.nextUrl.pathname });
+      }
+
+      const where = and(
+        inArray(tasks.workspaceId, workspaceIds),
+        activeOnly
+          ? notInArray(tasks.status, terminalStatuses)
+          : or(
+              notInArray(tasks.status, terminalStatuses),
+              and(
+                inArray(tasks.status, terminalStatuses),
+                gte(tasks.updatedAt, oneDayAgo),
+              ),
+            ),
+      );
+
+      const [countsResult, leanTasks] = await Promise.all([
+        db.select({
+          total: sql<number>`count(*)::int`,
+          pendingCount: sql<number>`count(*) filter (where ${tasks.status} = 'pending')::int`,
+        }).from(tasks).where(where),
+        db.select({
+          id: tasks.id,
+          workspaceId: tasks.workspaceId,
+          title: tasks.title,
+          status: tasks.status,
+          priority: tasks.priority,
+          category: tasks.category,
+          descriptionPreview: sql<string | null>`left(${tasks.description}, 150)`,
+        })
+        .from(tasks)
+        .where(where)
+        .orderBy(
+          // Claimable (pending) first, then running, then other active
+          sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
+          desc(tasks.priority),
+        )
+        .limit(limit)
+        .offset(offset),
+      ]);
+
+      const total = countsResult[0]?.total ?? 0;
+      const pendingCount = countsResult[0]?.pendingCount ?? 0;
+
+      try {
+        after(() =>
+          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
+            console.error('[pr-state-refresh] task list refresh failed:', err)
+          )
+        );
+      } catch {
+        // after() unavailable outside request scope (tests/build)
+      }
+
+      return jsonResponse({
+        tasks: leanTasks,
+        total,
+        pendingCount,
+        hasMore: offset + limit < total,
+      }, undefined, { route: req.nextUrl.pathname });
+    }
+
+    // ── Full (un-paginated) path — existing behaviour, dashboard-safe ───────
+    // Returns all active tasks + completed/failed from the last 24h, with the
+    // wide column set the dashboard reads. budgetWindows is included for MCP
+    // callers that need budget-reset info alongside the task list.
     const allTasks = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
           where: and(
@@ -196,7 +272,7 @@ export async function GET(req: NextRequest) {
           resolution: 'default_budget_window',
         },
       } : undefined,
-    });
+    }, undefined, { route: req.nextUrl.pathname });
   } catch (error) {
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks' }, { status: 500 });
