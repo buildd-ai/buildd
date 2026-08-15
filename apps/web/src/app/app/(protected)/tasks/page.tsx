@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
@@ -14,9 +14,9 @@ import TaskGrid from './TaskGrid';
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string }>;
 }) {
-  const { mission: missionId, workspace: wsFilter } = await searchParams;
+  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = await searchParams;
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
@@ -58,6 +58,8 @@ export default async function TasksPage({
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+  let initiativeTitle: string | null = null;
+  let initiativeMissionIds: string[] = [];
 
   if (!isDev && user) {
     try {
@@ -65,6 +67,17 @@ export default async function TasksPage({
       const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
 
       if (activeTeamId) {
+        // Resolve initiative title early (independent of workspace/task queries)
+        if (initiativeId) {
+          try {
+            const init = await db.query.initiatives.findFirst({
+              where: eq(initiatives.id, initiativeId),
+              columns: { title: true },
+            });
+            initiativeTitle = init?.title || null;
+          } catch {}
+        }
+
         const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
 
         // Load team workspaces for filter dropdown + name lookup
@@ -117,10 +130,13 @@ export default async function TasksPage({
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
               where: inArray(missions.id, missionIds),
-              columns: { id: true, title: true },
+              columns: { id: true, title: true, initiativeId: true },
             });
             for (const m of misns) {
               missionTitleMap.set(m.id, m.title);
+              if (initiativeId && m.initiativeId === initiativeId) {
+                initiativeMissionIds.push(m.id);
+              }
             }
           }
 
@@ -289,6 +305,9 @@ export default async function TasksPage({
       missionTitle={missionTitle}
       workspaces={teamWorkspaces}
       selectedWorkspaceId={wsFilter ?? null}
+      initiativeFilter={initiativeId || null}
+      initiativeTitle={initiativeTitle}
+      initiativeMissionIds={initiativeMissionIds}
     />
   );
 }

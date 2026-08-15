@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Select } from '@/components/ui/Select';
+import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
@@ -131,18 +131,26 @@ interface TaskGridProps {
   missionTitle?: string | null;
   workspaces?: { id: string; name: string }[];
   selectedWorkspaceId?: string | null;
+  initiativeFilter?: string | null;
+  initiativeTitle?: string | null;
+  initiativeMissionIds?: string[];
 }
 
-export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId }: TaskGridProps) {
+export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
+  const router = useRouter();
+
   const visibleTasks = useMemo(() => {
-    if (!missionFilter) return tasks;
-    return tasks.filter(t => t.missionId === missionFilter);
-  }, [tasks, missionFilter]);
+    if (missionFilter) return tasks.filter(t => t.missionId === missionFilter);
+    if (initiativeMissionIds && initiativeMissionIds.length > 0) {
+      return tasks.filter(t => t.missionId !== null && initiativeMissionIds.includes(t.missionId));
+    }
+    return tasks;
+  }, [tasks, missionFilter, initiativeMissionIds]);
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
-  // Default to flat/recency view; persist user preference per device
-  const [groupBy, setGroupBy] = useState<GroupBy>(missionFilter ? 'none' : 'none');
+  // groupBy is fixed: mission grouping is the default (no user control)
+  const groupBy: GroupBy = missionFilter ? 'none' : 'mission';
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -165,15 +173,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     }
   }, [searchOpen]);
 
-  // Load persisted filter + groupBy from localStorage on mount
+  // Load persisted filter from localStorage on mount
   useEffect(() => {
     if (missionFilter) return; // don't persist when scoped to a mission
     try {
       const stored = localStorage.getItem('buildd-activity-prefs');
       if (stored) {
-        const prefs = JSON.parse(stored) as { filter?: FilterStatus; groupBy?: GroupBy };
+        const prefs = JSON.parse(stored) as { filter?: FilterStatus };
         if (prefs.filter) setFilter(prefs.filter);
-        if (prefs.groupBy) setGroupBy(prefs.groupBy);
       }
     } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -188,14 +195,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     } catch {}
   }, [missionFilter]);
 
-  const updateGroupBy = useCallback((g: GroupBy) => {
-    setGroupBy(g);
-    if (missionFilter) return;
-    try {
-      const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
-      localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, groupBy: g }));
-    } catch {}
-  }, [missionFilter]);
+  const dismissInitiative = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('initiative');
+    const qs = params.toString();
+    router.push(`/app/tasks${qs ? `?${qs}` : ''}`);
+  }, [router]);
 
   // Counts from unfiltered tasks
   const allCount = visibleTasks.length;
@@ -398,102 +403,105 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between px-4 mb-3">
-          <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>
-            {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
-          </h1>
+        <div className="flex items-center gap-3 px-4 mb-3">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <h1 className="text-[28px] font-bold text-text-primary shrink-0" style={{ fontFamily: 'var(--font-display, inherit)' }}>
+              {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
+            </h1>
+            {initiativeFilter && (
+              <span className="flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-full bg-surface-3 text-text-secondary border border-border-default shrink-0 max-w-[180px]">
+                <span className="truncate">{initiativeTitle || 'Initiative'}</span>
+                <button
+                  onClick={dismissInitiative}
+                  aria-label="Remove initiative filter"
+                  className="ml-0.5 text-text-muted hover:text-text-primary leading-none shrink-0"
+                >
+                  ×
+                </button>
+              </span>
+            )}
+          </div>
           {!missionFilter && workspaces && (
             <WorkspaceFilter workspaces={workspaces} selectedId={selectedWorkspaceId ?? null} />
           )}
         </div>
 
-        {/* Mobile filter UI: combined chip row + utility row (search icon + group) */}
+        {/* Mobile filter UI: single scrollable chip row + optional search */}
         <div className="sm:hidden">
-          {/* Row 1: Combined scrollable chip row — type chips | status chips */}
+          {/* Combined scrollable chip row — type chips | status chips | search toggle */}
           {!missionFilter && (
-            <div
-              className="flex items-center gap-1.5 px-4 mb-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            >
-              {/* Type chips */}
-              {([
-                { key: 'all' as ContentFilter, label: 'All' },
-                { key: 'missions' as ContentFilter, label: 'Missions' },
-                { key: 'tasks' as ContentFilter, label: 'Tasks' },
-                { key: 'retries' as ContentFilter, label: '↻ Retries' },
-                { key: 'reviews' as ContentFilter, label: '⬡ Reviews' },
-              ]).map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setContentFilter(key)}
-                  className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
-                    contentFilter === key
-                      ? 'bg-surface-3 text-text-primary'
-                      : 'text-text-muted'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-              {/* Visual divider */}
-              <span className="shrink-0 w-px h-4 bg-border-default mx-0.5" />
-              {/* Status chips — tap active chip to deselect (returns to all) */}
-              {statusFilters.filter(f => f.key !== 'all').map((f) => (
-                <button
-                  key={f.key}
-                  onClick={() => updateFilter(filter === f.key ? 'all' : f.key)}
-                  className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
-                    filter === f.key
-                      ? 'bg-text-primary text-surface-1'
-                      : f.count === 0
-                        ? 'text-text-muted/50'
-                        : 'text-text-desc'
-                  }`}
-                >
-                  {f.label}
-                  {f.count > 0 && (
-                    <span className={`ml-1 text-[11px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
-                      {f.count}
-                    </span>
-                  )}
-                </button>
-              ))}
+            <div className="flex items-center gap-2 mb-2">
+              {/* Chips scroll area — wrapper pattern ensures right-side padding isn't clipped */}
+              <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex-1">
+                <div className="flex items-center gap-1.5 pl-4 pr-2 min-w-max">
+                  {/* Type chips */}
+                  {([
+                    { key: 'all' as ContentFilter, label: 'All' },
+                    { key: 'missions' as ContentFilter, label: 'Missions' },
+                    { key: 'tasks' as ContentFilter, label: 'Tasks' },
+                    { key: 'retries' as ContentFilter, label: '↻ Retries' },
+                    { key: 'reviews' as ContentFilter, label: '⬡ Reviews' },
+                  ]).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      onClick={() => setContentFilter(key)}
+                      className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                        contentFilter === key
+                          ? 'bg-surface-3 text-text-primary'
+                          : 'text-text-muted'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  {/* Visual divider */}
+                  <span className="shrink-0 w-px h-4 bg-border-default mx-0.5" />
+                  {/* Status chips — tap active chip to deselect (returns to all) */}
+                  {statusFilters.filter(f => f.key !== 'all').map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => updateFilter(filter === f.key ? 'all' : f.key)}
+                      className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                        filter === f.key
+                          ? 'bg-text-primary text-surface-1'
+                          : f.count === 0
+                            ? 'text-text-muted/50'
+                            : 'text-text-desc'
+                      }`}
+                    >
+                      {f.label}
+                      {f.count > 0 && (
+                        <span className={`ml-1 text-[11px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
+                          {f.count}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Search toggle — fixed right, doesn't scroll with chips */}
+              <button
+                onClick={toggleSearch}
+                aria-label={searchOpen ? 'Close search' : 'Search tasks'}
+                className={`shrink-0 mr-4 p-1.5 rounded-md transition-colors ${
+                  searchOpen
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                {searchOpen ? (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                )}
+              </button>
             </div>
           )}
-          {/* Row 2: Utility row — search icon + group dropdown */}
-          <div className="flex items-center gap-2 px-4 mb-3">
-            <button
-              onClick={toggleSearch}
-              aria-label={searchOpen ? 'Close search' : 'Search tasks'}
-              className={`p-1.5 rounded-md transition-colors ${
-                searchOpen
-                  ? 'bg-surface-3 text-text-primary'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-              }`}
-            >
-              {searchOpen ? (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              )}
-            </button>
-            <div className="flex-1" />
-            <Select
-              value={groupBy}
-              onChange={(v) => updateGroupBy(v as GroupBy)}
-              options={[
-                { value: 'none', label: 'Group: None' },
-                { value: 'mission', label: 'Group: Mission' },
-                { value: 'workspace', label: 'Group: Workspace' },
-                { value: 'status', label: 'Group: Status' },
-              ]}
-              size="sm"
-            />
-          </div>
-          {/* Row 2.5: Expanded search input (conditional) */}
+          {/* Expanded search input (conditional) */}
           {searchOpen && (
             <div className="px-4 mb-3">
               <input
@@ -508,52 +516,52 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
           )}
         </div>
 
-        {/* Desktop filter UI (unchanged) */}
-        <div className="hidden sm:block">
-          {/* Content type segmented filter: All / Missions / Tasks */}
-          {!missionFilter && (
-            <div className="flex items-center gap-1 px-4 mb-3">
-              {([
-                { key: 'all' as ContentFilter, label: 'All' },
-                { key: 'missions' as ContentFilter, label: 'Missions' },
-                { key: 'tasks' as ContentFilter, label: 'Tasks' },
-              ]).map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setContentFilter(key)}
-                  className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
-                    contentFilter === key
-                      ? 'bg-surface-3 text-text-primary'
-                      : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* Filter + search + group bar */}
-          <div className="flex items-center gap-2 px-4 mb-4 flex-wrap">
-            <div className="flex gap-1">
-              {statusFilters.map((f) => (
-                <button
-                  key={f.key}
-                  onClick={() => updateFilter(f.key)}
-                  className={`px-3 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
-                    filter === f.key
-                      ? 'bg-text-primary text-surface-1'
+        {/* Desktop filter UI — single chip row: type | status chips + search */}
+        {!missionFilter && (
+          <div className="hidden sm:flex items-center gap-2 px-4 mb-4 flex-wrap">
+            {/* Content type chips */}
+            {([
+              { key: 'all' as ContentFilter, label: 'All' },
+              { key: 'missions' as ContentFilter, label: 'Missions' },
+              { key: 'tasks' as ContentFilter, label: 'Tasks' },
+              { key: 'retries' as ContentFilter, label: '↻ Re-runs' },
+              { key: 'reviews' as ContentFilter, label: '⬡ Reviews' },
+            ]).map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setContentFilter(key)}
+                className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
+                  contentFilter === key
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            {/* Divider */}
+            <span className="w-px h-4 bg-border-default mx-0.5" />
+            {/* Status chips — tap active chip to deselect (returns to all) */}
+            {statusFilters.filter(f => f.key !== 'all').map((f) => (
+              <button
+                key={f.key}
+                onClick={() => updateFilter(filter === f.key ? 'all' : f.key)}
+                className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
+                  filter === f.key
+                    ? 'bg-text-primary text-surface-1'
+                    : f.count === 0
+                      ? 'text-text-muted/50'
                       : 'text-text-desc hover:text-text-primary hover:bg-surface-2'
-                  }`}
-                >
-                  {f.label}
-                  {f.count > 0 && (
-                    <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
-                      {f.count}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+                }`}
+              >
+                {f.label}
+                {f.count > 0 && (
+                  <span className={`ml-1.5 text-[12px] ${filter === f.key ? 'text-surface-1 opacity-70' : 'text-text-desc'}`}>
+                    {f.count}
+                  </span>
+                )}
+              </button>
+            ))}
             <div className="flex-1" />
             <input
               type="text"
@@ -562,19 +570,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               onChange={(e) => setSearch(e.target.value)}
               className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
             />
-            <Select
-              value={groupBy}
-              onChange={(v) => updateGroupBy(v as GroupBy)}
-              options={[
-                { value: 'none', label: 'Group: None' },
-                { value: 'mission', label: 'Group: Mission' },
-                { value: 'workspace', label: 'Group: Workspace' },
-                { value: 'status', label: 'Group: Status' },
-              ]}
-              size="sm"
-            />
           </div>
-        </div>
+        )}
 
         {/* Mobile recent-tasks strip: always visible on mobile, regardless of filter/grouping.
             Gives a one-tap path to the most recently active tasks without navigating filters. */}
