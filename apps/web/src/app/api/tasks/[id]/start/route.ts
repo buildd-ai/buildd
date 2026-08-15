@@ -224,7 +224,9 @@ export async function POST(
       }
     }
 
-    // Human override: mark the task so the claim route bypasses relevant gates.
+    // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
+    // even if the Pusher broadcast is missed. Also boost priority once to float it
+    // above other same-priority tasks. Human-override bypass flags are written here too.
     // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
     // bypassStartGate — skip the deferred-start floor (when startAt is in future).
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
@@ -232,23 +234,36 @@ export async function POST(
     const hasDeps = dependsOn.length > 0;
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
-    const needsContextUpdate = (forceOverride && (hasDeps || hasStartGate || hasMission)) || (capExempt && !isCapExemptAlready);
-    if (needsContextUpdate) {
-      await db
-        .update(tasks)
-        .set({
-          context: {
-            ...(task.context as Record<string, unknown> || {}),
-            ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
-            ...(forceOverride && hasStartGate ? { bypassStartGate: true } : {}),
-            ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
-            ...(capExempt ? { capExempt: true } : {}),
-          },
-          ...(forceOverride && hasStartGate ? { startAt: null } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
-    }
+    const existingContext = (task.context as Record<string, unknown>) || {};
+    const alreadyManualStarted = !!existingContext.manualStartAt;
+    const now = new Date();
+
+    await db
+      .update(tasks)
+      .set({
+        context: {
+          ...existingContext,
+          manualStartAt: now.toISOString(),
+          ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
+          ...(forceOverride && hasStartGate ? { bypassStartGate: true } : {}),
+          ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
+          ...(capExempt ? { capExempt: true } : {}),
+        },
+        // Boost priority once on first manual start so task floats to top of claim queue.
+        // Idempotent: re-poking ('Poke workers again') does not compound the boost.
+        ...(!alreadyManualStarted ? { priority: (task.priority ?? 0) + 1 } : {}),
+        ...(forceOverride && hasStartGate ? { startAt: null } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
+
+    console.log(JSON.stringify({
+      event: 'start_broadcast',
+      taskId: task.id,
+      workspaceId: task.workspaceId,
+      manualStartAt: now.toISOString(),
+      targetLocalUiUrl: targetLocalUiUrl || null,
+    }));
 
     // Build minimal task payload for Pusher (10KB event limit).
     // Full task data (with context, attachments, workspace config) is fetched

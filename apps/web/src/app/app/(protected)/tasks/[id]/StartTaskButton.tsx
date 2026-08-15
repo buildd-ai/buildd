@@ -10,12 +10,13 @@ interface Props {
   workspaceId: string;
 }
 
-// How long the modal actively waits for a worker to claim before it stops
-// counting down. This is NOT a deadline for the task — /start only broadcasts a
-// Pusher poke and the task stays queued regardless — so on expiry we show a
-// "still queued" state, not an error. 8s was too tight for the
-// Pusher→runner→claim round-trip and made every start look like it failed.
-const ASSIGNMENT_TIMEOUT_MS = 30000;
+// How long to show the optimistic "Start requested" state before degrading to
+// "queued at front" panel. NOT a deadline for the task — /start writes
+// context.manualStartAt and bumps priority so the next claim cycle picks it up
+// regardless of whether Pusher delivered. 10s is long enough for a connected
+// runner to respond via the fast Pusher path; on expiry we show the degraded
+// queued panel with fleet liveness info, never a failure.
+const ASSIGNMENT_TIMEOUT_MS = 10_000;
 
 export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [showModal, setShowModal] = useState(false);
@@ -23,8 +24,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued' | 'gated'>('idle');
-  const [countdown, setCountdown] = useState(0);
   const [error, setError] = useState('');
+  const [runnerFleet, setRunnerFleet] = useState<{ count: number; lastSeenSecs: number | null } | null>(null);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
   const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
@@ -59,20 +60,36 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     };
   }, []);
 
+  const fetchRunnerFleet = useCallback(async () => {
+    try {
+      const res = await fetch('/api/workers/active');
+      if (!res.ok) return;
+      const data = await res.json();
+      const uis: Array<{ lastUpdated: string; workspaceIds: string[] }> = data.activeLocalUis || [];
+      const relevant = uis.filter(u => u.workspaceIds?.includes(workspaceId));
+      const now = Date.now();
+      const lastSeenMs = relevant.length > 0
+        ? Math.min(...relevant.map(u => now - new Date(u.lastUpdated).getTime()))
+        : null;
+      setRunnerFleet({
+        count: relevant.length,
+        lastSeenSecs: lastSeenMs !== null ? Math.floor(lastSeenMs / 1000) : null,
+      });
+    } catch {
+      // best-effort — fleet info is non-critical
+    }
+  }, [workspaceId]);
+
   const pollTaskStatus = useCallback(async (startTime: number, targetLocalUiUrl: string) => {
-    // Update countdown and check timeout BEFORE the API call
-    // so they always execute regardless of API response
     const elapsed = Date.now() - startTime;
-    const remaining = Math.max(0, Math.ceil((ASSIGNMENT_TIMEOUT_MS - elapsed) / 1000));
-    setCountdown(remaining);
 
     if (elapsed >= ASSIGNMENT_TIMEOUT_MS) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
-      // Not a failure: the task is still queued and will be claimed as soon as a
-      // worker is free (or on the next runner poll). Say so instead of implying
-      // it broke.
+      // Not a failure: manualStartAt + priority boost mean the task is at the
+      // front of the claim queue. Show queued state with fleet liveness.
+      fetchRunnerFleet();
       setStatus('queued');
       return;
     }
@@ -115,7 +132,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     } catch {
       // Ignore polling errors — countdown/timeout still runs above
     }
-  }, [taskId]);
+  }, [taskId, fetchRunnerFleet]);
 
   const handleStart = async (forceOverride = false, capExempt = false) => {
     setLoading(true);
@@ -152,9 +169,10 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         throw new Error(data.error || 'Failed to start task');
       }
 
-      // Start polling for task status change
+      // Show optimistic state immediately — task has manualStartAt stamped and
+      // priority boosted, so next claim cycle picks it up even if Pusher is missed.
       setStatus('waiting');
-      setCountdown(Math.ceil(ASSIGNMENT_TIMEOUT_MS / 1000));
+      setRunnerFleet(null);
       const startTime = Date.now();
       const targetUrl = selectedLocalUi;
 
@@ -181,7 +199,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
 
       pollIntervalRef.current = setInterval(() => {
         pollTaskStatus(startTime, targetUrl);
-      }, 1000);
+      }, 5000);
 
       // Initial poll
       pollTaskStatus(startTime, targetUrl);
@@ -194,7 +212,6 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   };
 
   const handleClose = () => {
-    if (status === 'waiting') return; // Don't close while waiting
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
     }
@@ -212,6 +229,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setGateData(null);
     setRaisingCap(false);
     setCapRaiseTarget(null);
+    setRunnerFleet(null);
   };
 
   const handleViewInDashboard = () => {
@@ -266,11 +284,17 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
               <div className="p-6 text-center">
                 <div className="animate-spin w-8 h-8 border-2 border-status-success border-t-transparent rounded-full mx-auto mb-4" />
                 <p className="text-text-primary mb-2">
-                  Waiting for worker to accept...
+                  Start requested
                 </p>
                 <p className="text-sm text-text-secondary">
-                  Timeout in {countdown}s
+                  A worker will pick this up — you can close this.
                 </p>
+                <button
+                  onClick={handleClose}
+                  className="mt-4 px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
+                >
+                  Close
+                </button>
               </div>
             ) : status === 'accepted' ? (
               <div className="p-6">
@@ -304,12 +328,30 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
-                  <p className="text-text-primary font-medium mb-1">Still queued</p>
+                  <p className="text-text-primary font-medium mb-1">Queued at front — auto-starts</p>
                   <p className="text-sm text-text-secondary">
-                    No worker is free right now. The task stays queued and starts
-                    automatically as soon as a worker picks it up — you can close this.
+                    No runner responded yet. The task is prioritized at the front of the
+                    queue and will start automatically on the next claim cycle.
                   </p>
                 </div>
+                {runnerFleet !== null && (
+                  <div className="mb-4 p-3 bg-surface-3 rounded border border-border-default text-xs text-text-secondary">
+                    {runnerFleet.count === 0 ? (
+                      <span className="text-status-warning">No runners online — task will start when a runner comes online.</span>
+                    ) : (
+                      <span>
+                        <span className="text-text-primary font-medium">{runnerFleet.count} runner{runnerFleet.count !== 1 ? 's' : ''} online</span>
+                        {runnerFleet.lastSeenSecs !== null && (
+                          <>, last seen {runnerFleet.lastSeenSecs < 60
+                            ? `${runnerFleet.lastSeenSecs}s ago`
+                            : `${Math.floor(runnerFleet.lastSeenSecs / 60)}m ago`}
+                          </>
+                        )}
+                        {' — runner may be mid-task; this task will be claimed on the next poll.'}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="flex justify-center gap-2">
                   <button
                     onClick={handleRetry}
