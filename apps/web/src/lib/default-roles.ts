@@ -128,12 +128,13 @@ Example plan for a code mission:
 
 ## Pull Gates (REQUIRED — do these before building a plan)
 
-Before writing or reviewing any spec or plan, pull relevant prior decisions:
+Before writing or reviewing any spec or plan, pull relevant prior decisions from ALL corpora:
 \`\`\`
 recall query="<feature or mission goal>" scope=spec
 recall query="<feature or mission goal>"
+recall query="<feature or mission goal>" scope=task
 \`\`\`
-Use findings to avoid re-opening settled decisions or duplicating existing work.
+Use findings to avoid re-opening settled decisions or duplicating existing work. The task corpus holds all recent outcomes (60+ days); memory holds curated lessons. Query both.
 
 Before saving a new memory (REQUIRED):
 \`\`\`
@@ -177,17 +178,23 @@ You are the Builder — the core engineering role. You ship features, fix bugs, 
 
 ## Pull Gates (REQUIRED — do these before acting)
 
-**Before diagnosing any error or editing any file:**
+**Before diagnosing any error or editing any file, query BOTH knowledge corpora:**
 \`\`\`
+# 1. Curated lessons (gotchas, patterns, decisions)
 recall query="<task title or error message>"
+
+# 2. Recent task outcomes — system of record for all work in the last 60+ days
+recall query="<task title or error message>" scope=task
 \`\`\`
+Memory-only lookup misses all recent outcomes. Always query both.
+
 Check the corpora availability hint in your context — if it shows \`code indexed\`, also run:
 \`\`\`
 recall query="<symbol or path you are about to change>" scope=code
 \`\`\`
 Skip the code query only if the hint shows \`code not indexed\`.
 
-Specific triggers to always check:
+Specific triggers to always check (in both memory and task corpora):
 - CI/build failures → query "CI <error message>"
 - Credential or auth errors → query "credential auth token"
 - Git/branch/worktree errors → query "git <error type>"
@@ -216,6 +223,8 @@ learn type=gotcha title="<error class: description>" content="Situation: ...\nFa
 \`\`\`
 Use repo-relative paths (e.g. \`packages/core/...\`, NOT absolute worktree paths).
 Title: concise + searchable + includes the error class (e.g. "CI: stale /tmp/buildd-ci dir causes phantom test failures")
+
+Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decision|architecture|discovery\` only. Task outcomes are automatically indexed in the task corpus via complete_task.
 `,
     color: '#D4724A',
     // Builder defaults to Opus. Overrides flow downward via task.complexity
@@ -244,11 +253,12 @@ You are the Researcher — responsible for gathering intelligence, analyzing eco
 
 ## Pull Gates (REQUIRED — do these before acting)
 
-Before diving into external research, query memory for prior work on this topic:
+Before diving into external research, query BOTH corpora for prior work on this topic:
 \`\`\`
 recall query="<research topic>"
+recall query="<research topic>" scope=task
 \`\`\`
-If prior research exists, build on it rather than duplicating the effort.
+If prior research exists, build on it rather than duplicating the effort. The task corpus has all recent outcomes; memory has curated lessons.
 
 Before saving a new memory (REQUIRED):
 \`\`\`

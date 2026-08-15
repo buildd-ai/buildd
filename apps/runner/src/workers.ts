@@ -3130,36 +3130,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
 
-        // Capture summary observation (non-fatal)
-        try {
-          const summary = buildSessionSummary(worker);
-          const files = extractFilesFromToolCalls(worker.toolCalls);
-
-          // Extract concepts from task title + commit messages for better searchability
-          const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it', 'be', 'as', 'by', 'with', 'from', 'this', 'that', 'not', 'are', 'was', 'has', 'have', 'do', 'does', 'did', 'will', 'would', 'can', 'could', 'should', 'task']);
-          const conceptSource = [task.title, ...worker.commits.map(c => c.message)].join(' ');
-          const concepts = [...new Set(
-            conceptSource
-              .toLowerCase()
-              .replace(/[^a-z0-9\s-]/g, ' ')
-              .split(/\s+/)
-              .filter(w => w.length > 2 && !STOPWORDS.has(w))
-          )].slice(0, 15);
-
-          await this.buildd.createObservation(task.workspaceId, {
-            type: 'summary',
-            title: `Task: ${task.title}`,
-            content: summary,
-            files,
-            concepts,
-            workerId: worker.id,
-            taskId: task.id,
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[Worker ${worker.id}] Failed to capture summary observation: ${errMsg}`);
-          // Non-fatal - task still completed successfully
-        }
+        // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
+        // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
+        // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
       }
 
     } catch (error) {
