@@ -97,7 +97,7 @@ export default async function MissionsPage({
     with: {
       missions: {
         columns: { id: true, status: true },
-        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true } } },
+        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true } } },
       },
     },
   });
@@ -135,9 +135,8 @@ export default async function MissionsPage({
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, dependsOn: true },
+        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
-        limit: 20,
         with: {
           workers: {
             columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },
@@ -145,7 +144,7 @@ export default async function MissionsPage({
           },
         },
       },
-      schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
+      schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
     },
   });
 
@@ -237,9 +236,39 @@ export default async function MissionsPage({
       ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
       : null;
 
+
     const scheduleCron = (obj.schedule as any)?.cronExpression || null;
-    const lastDeferralReason = (obj.schedule as any)?.lastDeferralReason || null;
+    const rawDeferralReason = (obj.schedule as any)?.lastDeferralReason || null;
     const lastDeferredAt = (obj.schedule as any)?.lastDeferredAt ? String((obj.schedule as any).lastDeferredAt) : null;
+
+    // Compute whether the per-schedule concurrent cap is still actually exceeded.
+    // If not, clear the stale 'concurrent_cap' reason so the badge shows AUTO.
+    let lastDeferralReason = rawDeferralReason;
+    if (rawDeferralReason === 'concurrent_cap') {
+      const schedId = (obj.schedule as any)?.id;
+      const maxConcurrent: number = (obj.schedule as any)?.maxConcurrentFromSchedule ?? 1;
+      const activeScheduleTasks = (obj.tasks || []).filter((t: any) =>
+        t.scheduleId === schedId &&
+        ['pending', 'assigned', 'in_progress'].includes(t.status)
+      ).length;
+      if (activeScheduleTasks < maxConcurrent) lastDeferralReason = null;
+    }
+
+    // Compute the earliest future startAt from user-scheduled pending tasks
+    // (loopIteration === 0 means the task was explicitly scheduled, not a loop retry).
+    const now = Date.now();
+    let pendingUserScheduledAt: Date | null = null;
+    for (const t of (obj.tasks || []) as any[]) {
+      if (t.status !== 'pending') continue;
+      if ((t.loopIteration ?? 0) !== 0) continue;
+      if (!t.startAt) continue;
+      const ts = new Date(t.startAt).getTime();
+      if (ts > now && (pendingUserScheduledAt === null || ts < pendingUserScheduledAt.getTime())) {
+        pendingUserScheduledAt = new Date(t.startAt);
+      }
+    }
+    // A deliberately-scheduled pending task is not a seat-deferral.
+    if (pendingUserScheduledAt) lastDeferralReason = null;
 
     const health = deriveMissionHealth({
       status: obj.status,
@@ -249,6 +278,7 @@ export default async function MissionsPage({
       nextRunAt,
       orchestrationMode: obj.orchestrationMode,
       isHeld: obj.isHeld ?? false,
+      pendingUserScheduledAt,
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;
@@ -280,6 +310,18 @@ export default async function MissionsPage({
         )
       : null;
 
+    // When there's no schedule nextRunAt, use the earliest user-scheduled task
+    // time so that sorted SCHEDULED cards still show meaningful timing.
+    const effectiveNextRunAt = nextRunAt
+      ? String(nextRunAt)
+      : pendingUserScheduledAt
+      ? pendingUserScheduledAt.toISOString()
+      : null;
+    const effectiveNextScanMins = nextScanMins ?? (pendingUserScheduledAt
+      ? Math.max(0, Math.round((pendingUserScheduledAt.getTime() - Date.now()) / 60000))
+      : null);
+
+
     return {
       id: obj.id,
       title: obj.title,
@@ -290,8 +332,8 @@ export default async function MissionsPage({
       completedTasks,
       progress,
       activeAgents,
-      nextScanMins,
-      nextRunAt: nextRunAt ? String(nextRunAt) : null,
+      nextScanMins: effectiveNextScanMins,
+      nextRunAt: effectiveNextRunAt,
       startAt: obj.startAt ? String(obj.startAt) : null,
       lastRunAt: lastRunAt ? String(lastRunAt) : null,
       lastActivityAt,

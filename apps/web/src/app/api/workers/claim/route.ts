@@ -982,8 +982,10 @@ export async function POST(req: NextRequest) {
     // Per-repo concurrency cap (repo-backed workspaces only — repo-less ones are not
     // serialized). Each task is worktree-isolated, so the cap only bounds how many
     // branches run in parallel on one repo.
+    // capExempt=true in context allows one-time bypass (set by /start with capExempt flag).
+    const isCapExempt = taskContext?.capExempt === true;
     const taskWorkspace = (task as any).workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    if (taskWorkspace?.repo) {
+    if (taskWorkspace?.repo && !isCapExempt) {
       const cap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
         deferrals.workspace_cap++;
@@ -2169,5 +2171,5 @@ export async function POST(req: NextRequest) {
       budgetResetsAt: account.budgetResetsAt,
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
-  });
+  }, undefined, { route: req.nextUrl.pathname });
 }

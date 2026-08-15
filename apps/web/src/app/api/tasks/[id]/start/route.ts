@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, or, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -51,7 +51,7 @@ export async function POST(
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { targetLocalUiUrl, forceOverride } = body;
+    const { targetLocalUiUrl, forceOverride, capExempt } = body;
 
     // Get the task
     const task = await db.query.tasks.findFirst({
@@ -169,18 +169,34 @@ export async function POST(
     // Mirrors the per-repo worker-count SQL condition in claim/route.ts.
     // Only repo-backed workspaces are capped; repo-less ones (coordination
     // workspaces) are never serialized.
+    // capExempt=true bypasses the cap for this one task without changing the
+    // workspace setting. The flag is persisted to context so the claim route
+    // also skips the per-task cap check at claim time.
     const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    if (wsForCap?.repo) {
+    const taskCtxForCap = task.context as Record<string, unknown> | null;
+    const isCapExemptAlready = taskCtxForCap?.capExempt === true;
+    if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
       const capResult = await checkWorkspaceCap(
         task.workspaceId,
         wsForCap.maxConcurrentTasks ?? null,
       );
       if (capResult) {
+        // Count other pending tasks to surface queue position in the UI.
+        const pendingAhead = await db.query.tasks.findMany({
+          where: and(
+            eq(tasks.workspaceId, task.workspaceId),
+            eq(tasks.status, 'pending'),
+            ne(tasks.id, taskId),
+          ),
+          columns: { id: true },
+        });
         return NextResponse.json({
           error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
           gateReason: 'workspace_cap_reached',
           active: capResult.active,
           cap: capResult.cap,
+          queuePosition: pendingAhead.length,
+          canExempt: true,
         }, { status: 422 });
       }
     }
@@ -208,28 +224,46 @@ export async function POST(
       }
     }
 
-    // Human override: mark the task so the claim route bypasses relevant gates.
+    // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
+    // even if the Pusher broadcast is missed. Also boost priority once to float it
+    // above other same-priority tasks. Human-override bypass flags are written here too.
     // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
     // bypassStartGate — skip the deferred-start floor (when startAt is in future).
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
+    // capExempt — allow this single task to run as a 4th+ slot (one-time exception).
     const hasDeps = dependsOn.length > 0;
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
-    if (forceOverride && (hasDeps || hasStartGate || hasMission)) {
-      await db
-        .update(tasks)
-        .set({
-          context: {
-            ...(task.context as Record<string, unknown> || {}),
-            ...(hasDeps ? { bypassDepsGate: true } : {}),
-            ...(hasStartGate ? { bypassStartGate: true } : {}),
-            ...(hasMission ? { bypassHeldGate: true } : {}),
-          },
-          ...(hasStartGate ? { startAt: null } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
-    }
+    const existingContext = (task.context as Record<string, unknown>) || {};
+    const alreadyManualStarted = !!existingContext.manualStartAt;
+    const now = new Date();
+
+    await db
+      .update(tasks)
+      .set({
+        context: {
+          ...existingContext,
+          manualStartAt: now.toISOString(),
+          ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
+          ...(forceOverride && hasStartGate ? { bypassStartGate: true } : {}),
+          ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
+          ...(capExempt ? { capExempt: true } : {}),
+        },
+        // Boost priority once on first manual start so task floats to top of claim queue.
+        // Idempotent: re-poking ('Poke workers again') does not compound the boost.
+        ...(!alreadyManualStarted ? { priority: (task.priority ?? 0) + 1 } : {}),
+        ...(forceOverride && hasStartGate ? { startAt: null } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
+
+    console.log(JSON.stringify({
+      event: 'start_broadcast',
+      taskId: task.id,
+      workspaceId: task.workspaceId,
+      manualStartAt: now.toISOString(),
+      targetLocalUiUrl: targetLocalUiUrl || null,
+    }));
 
     // Build minimal task payload for Pusher (10KB event limit).
     // Full task data (with context, attachments, workspace config) is fetched

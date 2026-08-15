@@ -247,6 +247,11 @@ mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
 }));
 
+// Dark-check detection is fire-and-forget; no-op in route tests.
+mock.module('./dark-check-detection', () => ({
+  detectDarkChecksForClosedPr: mock(() => Promise.resolve()),
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 

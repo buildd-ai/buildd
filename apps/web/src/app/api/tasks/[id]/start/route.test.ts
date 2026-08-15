@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockTasksFindMany = mock(() => [] as any[]);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindMany = mock(() => [] as any[]);
@@ -67,7 +68,7 @@ const mockDbUpdate = {
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
       missions: { findFirst: mockMissionsFindFirst },
       workspaceSkills: { findMany: mockWorkspaceSkillsFindMany },
@@ -87,6 +88,7 @@ mock.module('drizzle-orm', () => ({
   isNull: (field: any) => ({ field, type: 'isNull' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  ne: (field: any, value: any) => ({ field, value, type: 'ne' }),
 }));
 
 // Mock schema
@@ -133,6 +135,7 @@ describe('POST /api/tasks/[id]/start', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
     mockWorkersFindMany.mockReset();
     mockMissionsFindFirst.mockReset();
     mockWorkspaceSkillsFindMany.mockReset();
@@ -143,11 +146,13 @@ describe('POST /api/tasks/[id]/start', () => {
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockHasCodexCredential.mockReset();
+    mockDbUpdate.set.mockClear();
 
     // Default: grant access, no blocking dep workers, no connectors, no held mission, no active workers
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockConnectorsFindMany.mockResolvedValue([]);
@@ -722,6 +727,8 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
     // 3 active workers — at the cap
     mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+    // 1 other pending task ahead in queue
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-queued-1' }]);
 
     const response = await callHandler(createMockRequest(), 'task-123');
     expect(response.status).toBe(422);
@@ -729,7 +736,65 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.gateReason).toBe('workspace_cap_reached');
     expect(data.active).toBe(3);
     expect(data.cap).toBe(3);
+    expect(data.queuePosition).toBe(1);
+    expect(data.canExempt).toBe(true);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('workspace_cap_reached includes queuePosition=0 when no other pending tasks', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'New Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('workspace_cap_reached');
+    expect(data.queuePosition).toBe(0);
+  });
+
+  it('capExempt=true bypasses workspace cap and writes context.capExempt', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Urgent Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: {},
+      mode: null,
+      priority: null,
+      startAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: 'org/repo', maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Workspace is at cap
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+
+    const response = await callHandler(createMockRequest({ body: { capExempt: true } }), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    // capExempt flag must be written to context
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ capExempt: true }),
+    }));
   });
 
   it('does not apply workspace_cap gate for repo-less workspaces', async () => {
@@ -841,6 +906,114 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
     // hasCodexCredential should NOT have been called (gate skipped by forceOverride)
     expect(mockHasCodexCredential).not.toHaveBeenCalled();
+  });
+
+  // ── Durable start: manualStartAt + priority boost ─────────────────────────
+
+  it('writes context.manualStartAt on every successful start', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ manualStartAt: expect.any(String) }),
+      })
+    );
+  });
+
+  it('boosts priority by 1 on first manual start', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: 5,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 6 })
+    );
+  });
+
+  it('boosts priority from 0 when task has null priority', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 1 })
+    );
+  });
+
+  it('does not re-boost priority if context.manualStartAt already set (idempotent poke)', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: { manualStartAt: '2026-08-15T08:00:00.000Z' },
+      mode: null,
+      priority: 3,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    // Priority must NOT be re-bumped when manualStartAt is already set
+    const call = mockDbUpdate.set.mock.calls[0]?.[0];
+    expect(call?.priority).toBeUndefined();
   });
 
   it('clean pending task returns 200 with exactly one TASK_ASSIGNED event (regression guard)', async () => {

@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveTaskType } from '@buildd/core/mission-helpers';
 import { MissionProgress } from '@/components/MissionProgress';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -278,8 +278,9 @@ export default async function MissionDetailPage({
   };
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
-  // Raw count for "View all N tasks" links — includes housekeeping and cancelled
-  const allTasksCount = mission.tasks?.length || 0;
+  // Raw count for "View all N tasks" links — includes housekeeping and cancelled,
+  // but excludes attempt tasks (parentTaskId IS NOT NULL) since they nest under parents.
+  const allTasksCount = (mission.tasks || []).filter(t => !t.parentTaskId).length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
@@ -405,7 +406,8 @@ export default async function MissionDetailPage({
       reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
     }
   }
-  // Exclude reviewer tasks from the timeline — they render as inline chips instead
+  // Exclude reviewer tasks — they surface as inline verdict chips on the reviewed task.
+  // Attempt tasks (parentTaskId IS NOT NULL) are included and rendered with a type badge.
   const timelineTasks = allTasks.filter(t => t.category !== 'review');
 
   // Compute chain positions for mission tasks
@@ -500,6 +502,7 @@ export default async function MissionDetailPage({
       roleColor: role?.color ?? '#8A8478',
       chain: chainByTaskId.get(task.id) ?? null,
       latestWorker: condensedTask.workers[0] ?? null,
+      taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId }),
       reviewerNote: reviewerNote
         ? {
             type: reviewerNote.type,

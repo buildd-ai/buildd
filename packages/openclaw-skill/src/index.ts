@@ -12,6 +12,7 @@ interface Task {
   id: string;
   title: string;
   description: string | null;
+  descriptionPreview?: string | null;
   status: string;
   priority: number;
   workspaceId: string;
@@ -61,10 +62,24 @@ export async function listTasks(options?: {
   status?: 'pending' | 'assigned' | 'completed' | 'failed';
   limit?: number;
 }): Promise<Task[]> {
-  // For non-terminal statuses, scope the fetch server-side to shrink the
-  // payload; the client-side filter below still narrows to the exact status.
-  // Terminal statuses fall through to the default (active + recent terminal).
   const nonTerminal = options?.status === 'pending' || options?.status === 'assigned';
+
+  // For non-terminal statuses with a limit, use server-side pagination so we
+  // only transfer the rows we actually need instead of fetching up to 200 rows
+  // and slicing client-side.
+  if (nonTerminal && options?.limit) {
+    const params = new URLSearchParams({ status: 'active', limit: String(options.limit) });
+    const data = await apiCall<{ tasks: Task[]; total: number; pendingCount: number; hasMore: boolean }>(
+      `/api/tasks?${params.toString()}`
+    );
+    let tasks = data.tasks || [];
+    if (options.status) {
+      tasks = tasks.filter(t => t.status === options.status);
+    }
+    return tasks;
+  }
+
+  // Terminal statuses or no limit: fall through to the default (active + recent terminal).
   const path = nonTerminal ? '/api/tasks?status=active' : '/api/tasks';
   const data = await apiCall<{ tasks: Task[] }>(path);
   let tasks = data.tasks || [];

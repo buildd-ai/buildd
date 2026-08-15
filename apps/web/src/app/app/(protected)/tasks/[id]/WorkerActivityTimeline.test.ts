@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { collapseWorkspacePath } from './WorkerActivityTimeline';
+import { collapseWorkspacePath, milestoneLabel } from './WorkerActivityTimeline';
 
 describe('collapseWorkspacePath', () => {
   test('collapses Ran: cd /path && command into ~/basename command', () => {
@@ -44,5 +44,36 @@ describe('collapseWorkspacePath', () => {
   test('handles deeply nested path', () => {
     expect(collapseWorkspacePath('Ran: cd /home/user/workspace/projects/myapp && npm install'))
       .toBe('Ran: ~/myapp npm install');
+  });
+});
+
+describe('milestoneLabel', () => {
+  test('returns the label when present', () => {
+    expect(milestoneLabel({ type: 'action', label: 'Ran: bun test' })).toBe('Ran: bun test');
+  });
+
+  // Sensitive-dataClass workspaces (e.g. cue) have labels stripped server-side and
+  // arrive as { type, ts } only. Every row renderer used to dereference the missing
+  // label, throwing "Cannot read properties of undefined (reading 'length')" and
+  // taking down the whole task page.
+  test('falls back to the activity type when the label was stripped', () => {
+    expect(milestoneLabel({ type: 'phase' })).toBe('Phase');
+    expect(milestoneLabel({ type: 'status' })).toBe('Status update');
+    expect(milestoneLabel({ type: 'checkpoint' })).toBe('Checkpoint');
+    expect(milestoneLabel({ type: 'action' })).toBe('Action');
+  });
+
+  test('treats blank and whitespace-only labels as stripped', () => {
+    expect(milestoneLabel({ type: 'status', label: '' })).toBe('Status update');
+    expect(milestoneLabel({ type: 'status', label: '   ' })).toBe('Status update');
+    expect(milestoneLabel({ type: 'status', label: null })).toBe('Status update');
+  });
+
+  test('falls back to a generic label for unrecognised types', () => {
+    expect(milestoneLabel({ type: 'statusTransition' })).toBe('Activity');
+  });
+
+  test('trims surrounding whitespace on real labels', () => {
+    expect(milestoneLabel({ type: 'action', label: '  Read file  ' })).toBe('Read file');
   });
 });

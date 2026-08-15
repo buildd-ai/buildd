@@ -64,14 +64,15 @@ export async function POST(
   }
 
   const task = (worker as any).task;
-  const milestones = (worker.milestones as Array<{ label: string; timestamp: number }>) || [];
+  // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
+  const milestones = (worker.milestones as Array<{ type?: string; label?: string; timestamp: number }>) || [];
   const question = (worker.waitingFor as { prompt: string }).prompt;
   const taskContext = (task?.context as Record<string, unknown>) || {};
   const currentIteration = (taskContext.iteration as number) || 1;
 
   // Build structured description
   const milestonesText = milestones.length > 0
-    ? milestones.map(m => `- ${m.label}`).join('\n')
+    ? milestones.map(m => `- ${m.label || m.type || 'activity'}`).join('\n')
     : 'No milestones recorded';
 
   const description = [

@@ -195,7 +195,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap — enforced in claim loop, in addition to workspace cap), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears; each criterion MUST have type (required) — one of: "all_prs_merged" | "command" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string; type-specific required fields: description→description:string, command→command:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string; example: [{type:"description",description:"All PRs merged and CI green",label:"CI green"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
-    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap, default 3; raise to allow more concurrent agents), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, and releaseConfig before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
@@ -760,43 +760,29 @@ export async function handleBuilddAction(
   switch (action) {
     case 'list_tasks': {
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      // Scope the fetch server-side to shrink the payload: only active
-      // (non-terminal) tasks, and this workspace when we know it. The
-      // client-side filter below still narrows to the exact statuses.
-      const query = new URLSearchParams({ status: 'active' });
-      if (wsId) query.set('workspaceId', wsId);
-      const data = await api(`/api/tasks?${query.toString()}`);
-      const allTasks = data.tasks || [];
-      // Include pending + assigned + in_progress so planners see all ongoing work,
-      // not just tasks waiting to be claimed. This prevents duplicate task creation
-      // when a planner checks existing work before creating new tasks.
-      let active = allTasks.filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status));
-      if (wsId) {
-        active = active.filter((t: any) => t.workspaceId === wsId);
-      }
-      // Pending tasks first (claimable), then assigned/in_progress (already running)
-      active.sort((a: any, b: any) => {
-        const statusOrder: Record<string, number> = { pending: 0, assigned: 1, in_progress: 2 };
-        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-        if (statusDiff !== 0) return statusDiff;
-        return (b.priority || 0) - (a.priority || 0);
-      });
-
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
-      const paginated = active.slice(offset, offset + limit);
-      const hasMore = offset + limit < active.length;
+      // Server handles status filter, workspace scoping, sort (pending-first /
+      // priority-desc), and pagination — no client-side fan-out needed.
+      const query = new URLSearchParams({ status: 'active', limit: String(limit), offset: String(offset) });
+      if (wsId) query.set('workspaceId', wsId);
+      const data = await api(`/api/tasks?${query.toString()}`);
+      const paginated: any[] = data.tasks || [];
 
-      if (paginated.length === 0) return text('No active tasks found.');
+      if (paginated.length === 0 && offset === 0) return text('No active tasks found.');
+
+      const total: number = data.total ?? paginated.length;
+      const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
+      const hasMore: boolean = data.hasMore ?? false;
 
       const summary = paginated.map((t: any) => {
         const catPrefix = t.category ? `[${t.category}] ` : '';
         const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
-        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
+        const desc = t.descriptionPreview || 'No description';
+        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
       }).join('\n\n');
 
-      const pendingCount = active.filter((t: any) => t.status === 'pending').length;
-      const header = `${active.length} active task${active.length === 1 ? '' : 's'} (${pendingCount} pending, ${active.length - pendingCount} in progress):`;
+      const header = `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
@@ -1337,7 +1323,41 @@ export async function handleBuilddAction(
       const loopInfo = params.maxLoops !== undefined
         ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
         : '';
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}`);
+
+      // Warn when a material field (title/description) is edited on a task whose
+      // worker is still in-flight — the running agent is locked to the previous brief.
+      let activeWorkerWarning = '';
+      const materialChanged = updateFields.title !== undefined || updateFields.description !== undefined;
+      if (materialChanged) {
+        try {
+          const taskData = await api(`/api/tasks/${params.taskId}?include=workers`);
+          const activeStatuses = ['running', 'assigned', 'waiting_input'];
+          const activeWorker = (taskData.workers || []).find(
+            (w: { id: string; status: string }) => activeStatuses.includes(w.status),
+          );
+          if (activeWorker) {
+            activeWorkerWarning = `\nWARNING: worker ${activeWorker.id} is currently ${activeWorker.status} on this task and is running against the PREVIOUS description. This edit did NOT reach it. To steer the running work, call send_agent_message (taskId=${params.taskId}) with the delta.`;
+            // Fire-and-forget: record the divergence on the task feed so it's visible in the UI timeline.
+            const noteEndpoint = updated.missionId
+              ? `/api/missions/${updated.missionId}/notes`
+              : `/api/tasks/${params.taskId}/notes`;
+            api(noteEndpoint, {
+              method: 'POST',
+              body: JSON.stringify({
+                type: 'warning',
+                title: 'Material edit while worker is active',
+                bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) is running against the previous description. Use send_agent_message (taskId=${params.taskId}) to redirect it.`,
+                authorType: 'system',
+                status: 'answered',
+              }),
+            }).catch(() => {});
+          }
+        } catch {
+          // Non-fatal — don't block the update response if the worker check fails
+        }
+      }
+
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}${activeWorkerWarning}`);
     }
 
     case 'create_task': {
@@ -1497,7 +1517,12 @@ export async function handleBuilddAction(
         return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
       }
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${task.startAt ? `Deferred until ${new Date(task.startAt).toISOString()}` : 'Queued — no runner has claimed it yet'}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const statusLabel = task.startAt
+        ? `Deferred until ${new Date(task.startAt).toISOString()}`
+        : task.status === 'assigned'
+          ? 'Assigned — a runner has already claimed it'
+          : 'Queued — no runner has claimed it yet';
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -3025,6 +3050,7 @@ export async function handleBuilddAction(
           if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
           if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
+          if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
 
           // Partial gitConfig: accept a gitConfig object and/or the common
           // autoMergePR shortcut. Shallow-merged server-side (PATCH), so other
@@ -3053,7 +3079,7 @@ export async function handleBuilddAction(
               body: JSON.stringify(body),
             });
           }
-          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}${body.gitConfig ? ` gitConfig merged: ${JSON.stringify(gitConfig)}.` : ''}`);
+          return text(`Workspace ${wsId} updated.${body.repoUrl ? ` Repo set to: ${body.repoUrl}` : ''}${body.name ? ` Name set to: ${body.name}` : ''}${params.releaseConfig !== undefined ? ' Release config updated.' : ''}${body.gitConfig ? ` gitConfig merged: ${JSON.stringify(gitConfig)}.` : ''}${body.maxConcurrentTasks !== undefined ? ` Concurrency cap set to ${body.maxConcurrentTasks}.` : ''}`);
         }
         case 'create_repo': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
