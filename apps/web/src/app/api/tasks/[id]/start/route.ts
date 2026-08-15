@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, or, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -51,7 +51,7 @@ export async function POST(
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { targetLocalUiUrl, forceOverride } = body;
+    const { targetLocalUiUrl, forceOverride, capExempt } = body;
 
     // Get the task
     const task = await db.query.tasks.findFirst({
@@ -169,18 +169,34 @@ export async function POST(
     // Mirrors the per-repo worker-count SQL condition in claim/route.ts.
     // Only repo-backed workspaces are capped; repo-less ones (coordination
     // workspaces) are never serialized.
+    // capExempt=true bypasses the cap for this one task without changing the
+    // workspace setting. The flag is persisted to context so the claim route
+    // also skips the per-task cap check at claim time.
     const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    if (wsForCap?.repo) {
+    const taskCtxForCap = task.context as Record<string, unknown> | null;
+    const isCapExemptAlready = taskCtxForCap?.capExempt === true;
+    if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
       const capResult = await checkWorkspaceCap(
         task.workspaceId,
         wsForCap.maxConcurrentTasks ?? null,
       );
       if (capResult) {
+        // Count other pending tasks to surface queue position in the UI.
+        const pendingAhead = await db.query.tasks.findMany({
+          where: and(
+            eq(tasks.workspaceId, task.workspaceId),
+            eq(tasks.status, 'pending'),
+            ne(tasks.id, taskId),
+          ),
+          columns: { id: true },
+        });
         return NextResponse.json({
           error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
           gateReason: 'workspace_cap_reached',
           active: capResult.active,
           cap: capResult.cap,
+          queuePosition: pendingAhead.length,
+          canExempt: true,
         }, { status: 422 });
       }
     }
@@ -212,20 +228,23 @@ export async function POST(
     // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
     // bypassStartGate — skip the deferred-start floor (when startAt is in future).
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
+    // capExempt — allow this single task to run as a 4th+ slot (one-time exception).
     const hasDeps = dependsOn.length > 0;
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
-    if (forceOverride && (hasDeps || hasStartGate || hasMission)) {
+    const needsContextUpdate = (forceOverride && (hasDeps || hasStartGate || hasMission)) || (capExempt && !isCapExemptAlready);
+    if (needsContextUpdate) {
       await db
         .update(tasks)
         .set({
           context: {
             ...(task.context as Record<string, unknown> || {}),
-            ...(hasDeps ? { bypassDepsGate: true } : {}),
-            ...(hasStartGate ? { bypassStartGate: true } : {}),
-            ...(hasMission ? { bypassHeldGate: true } : {}),
+            ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
+            ...(forceOverride && hasStartGate ? { bypassStartGate: true } : {}),
+            ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
+            ...(capExempt ? { capExempt: true } : {}),
           },
-          ...(hasStartGate ? { startAt: null } : {}),
+          ...(forceOverride && hasStartGate ? { startAt: null } : {}),
           updatedAt: new Date(),
         })
         .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));

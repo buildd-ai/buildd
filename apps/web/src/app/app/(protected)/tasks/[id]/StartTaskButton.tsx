@@ -32,11 +32,15 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     gateReason: string;
     error?: string;
     canForce?: boolean;
+    canExempt?: boolean;
     missionId?: string;
     missingConnectors?: string[];
     active?: number;
     cap?: number;
+    queuePosition?: number;
   } | null>(null);
+  const [raisingCap, setRaisingCap] = useState(false);
+  const [capRaiseTarget, setCapRaiseTarget] = useState<number | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -113,7 +117,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     }
   }, [taskId]);
 
-  const handleStart = async (forceOverride = false) => {
+  const handleStart = async (forceOverride = false, capExempt = false) => {
     setLoading(true);
     setError('');
     setStatus('starting');
@@ -125,6 +129,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
         body: JSON.stringify({
           targetLocalUiUrl: selectedLocalUi || undefined,
           ...(forceOverride ? { forceOverride: true } : {}),
+          ...(capExempt ? { capExempt: true } : {}),
         }),
       });
 
@@ -205,6 +210,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setBlockingDeps([]);
     setDeferredStartAt(null);
     setGateData(null);
+    setRaisingCap(false);
+    setCapRaiseTarget(null);
   };
 
   const handleViewInDashboard = () => {
@@ -218,6 +225,26 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setBlockingDeps([]);
     setDeferredStartAt(null);
     setGateData(null);
+    setRaisingCap(false);
+    setCapRaiseTarget(null);
+  };
+
+  const handleRaiseCapAndStart = async (newCap: number) => {
+    setRaisingCap(true);
+    try {
+      const patchRes = await fetch(`/api/workspaces/${workspaceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxConcurrentTasks: newCap }),
+      });
+      if (!patchRes.ok) throw new Error('Failed to update workspace limit');
+      await handleStart(false, false);
+    } catch (err: any) {
+      setError(err.message);
+      setStatus('failed');
+    } finally {
+      setRaisingCap(false);
+    }
   };
 
   return (
@@ -316,7 +343,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       : gateData?.gateReason === 'connector_routing_mismatch'
                       ? 'Blocked: required connectors not available'
                       : gateData?.gateReason === 'workspace_cap_reached'
-                      ? `Workspace at concurrency limit (${gateData.active}/${gateData.cap})`
+                      ? `Workspace full (${gateData.active}/${gateData.cap} running)`
                       : 'Blocked'}
                   </p>
                   <p className="text-sm text-text-secondary mb-3">
@@ -329,7 +356,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       : gateData?.gateReason === 'connector_routing_mismatch'
                       ? `The role requires connectors that are not configured in this workspace: ${gateData.missingConnectors?.join(', ')}. Contact your workspace admin.`
                       : gateData?.gateReason === 'workspace_cap_reached'
-                      ? `This workspace allows ${gateData.cap} concurrent task${gateData.cap === 1 ? '' : 's'} and all slots are taken. Wait for a running task to finish.`
+                      ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
                       : gateData?.error || 'This task cannot be started right now.'}
                   </p>
                   {gateData?.gateReason === 'unmerged_dep_pr' && (
@@ -355,9 +382,48 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       ))}
                     </div>
                   )}
+                  {gateData?.gateReason === 'workspace_cap_reached' && (
+                    <div className="mt-1 p-3 bg-surface-3 rounded border border-border-default text-sm space-y-3">
+                      <div>
+                        <p className="text-xs text-text-secondary font-medium mb-1.5">Raise limit for this workspace</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setCapRaiseTarget(t => Math.max((gateData.cap ?? 3), (t ?? gateData.cap ?? 3) - 1))}
+                            disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) <= (gateData.cap ?? 3)}
+                            className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
+                          >−</button>
+                          <span className="w-8 text-center font-mono text-sm text-text-primary">
+                            {capRaiseTarget ?? gateData.cap ?? 3}
+                          </span>
+                          <button
+                            onClick={() => setCapRaiseTarget(t => Math.min(20, (t ?? gateData.cap ?? 3) + 1))}
+                            disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) >= 20}
+                            className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
+                          >+</button>
+                          <button
+                            onClick={() => handleRaiseCapAndStart(capRaiseTarget ?? (gateData.cap ?? 3) + 1)}
+                            disabled={loading || raisingCap || (capRaiseTarget ?? 0) <= (gateData.cap ?? 3)}
+                            className="ml-1 px-3 py-1 text-xs bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-40"
+                          >
+                            {raisingCap ? 'Updating…' : 'Save & start'}
+                          </button>
+                        </div>
+                        <p className="text-xs text-text-muted mt-1">Current limit: {gateData.cap}. Set higher to start this task now and allow more concurrent agents going forward.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-col gap-2">
-                  {gateData?.canForce && (
+                <div className="flex flex-col gap-2 mt-3">
+                  {gateData?.gateReason === 'workspace_cap_reached' && gateData.canExempt && (
+                    <button
+                      onClick={() => handleStart(false, true)}
+                      disabled={loading || raisingCap}
+                      className="px-4 py-2 text-sm bg-surface-3 border border-border-default text-text-primary rounded hover:bg-surface-4 disabled:opacity-50 font-medium"
+                    >
+                      Start anyway (this once)
+                    </button>
+                  )}
+                  {gateData?.canForce && gateData?.gateReason !== 'workspace_cap_reached' && (
                     <button
                       onClick={() => handleStart(true)}
                       disabled={loading}
@@ -370,7 +436,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     onClick={handleClose}
                     className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
                   >
-                    {gateData?.canForce ? 'Cancel' : 'Close'}
+                    {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce ? 'Cancel' : 'Close'}
                   </button>
                 </div>
               </div>
