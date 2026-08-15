@@ -202,6 +202,26 @@ export async function setupWorktree(
       // Non-zero exit means sparse checkout is not configured — normal state.
     }
 
+    // Stale-branch guard: warn when the default branch has advanced significantly since
+    // the last fetch. Agents starting on a stale base risk merge conflicts or CI failures
+    // caused by unrelated upstream changes. Non-blocking — this is advisory only.
+    try {
+      const behindStr = execSync(
+        `git rev-list --count HEAD..origin/${defaultBranch}`,
+        { ...execOpts, timeout: 5000 },
+      ).trim();
+      const commitsBehind = parseInt(behindStr, 10);
+      if (!isNaN(commitsBehind) && commitsBehind > 10) {
+        console.warn(
+          `[Worker ${workerId}] ⚠ Stale-branch warning: the working tree is ${commitsBehind} commits ` +
+          `behind origin/${defaultBranch}. Consider running: git fetch origin && git rebase origin/${defaultBranch} ` +
+          `before pushing. Past CI retry chains were caused by this kind of staleness.`,
+        );
+      }
+    } catch {
+      // Non-fatal: git rev-list can fail for repos with no remote or unusual HEAD state.
+    }
+
     // Create worktree with new branch — from resumeBranch/baseBranch (retry) or default branch (fresh)
     // fetchBranch uses already-fetched remote tracking refs (git fetch origin ran above)
     const fetchBranch = async (candidate: string): Promise<BranchFetchResult> => {
