@@ -24,7 +24,7 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
-import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
+import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
@@ -590,16 +590,13 @@ export async function PATCH(
   }
 
   if (isBudgetError && worker.taskId) {
-    // Parse reset time from error message, default to 5 hours from now
-    const defaultResetMs = 5 * 60 * 60 * 1000;
-    let budgetResetsAt = new Date(Date.now() + defaultResetMs);
-    if (typeof error === 'string') {
-      const resetMatch = error.match(/resets\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\s*\((\w+)\)/i);
-      if (resetMatch) {
-        const parsed = parseResetTime(resetMatch[1]);
-        if (parsed) budgetResetsAt = parsed;
-      }
-    }
+    // Read the reset time out of the error string, falling back to a full
+    // session window when it is absent, unparseable, or stated in a timezone we
+    // will not guess at. Extraction lives in @/lib/budget-errors so there is
+    // one pattern to keep in step with the agent's wording — this route used to
+    // carry a second copy that had to be widened separately (#1678) when the
+    // "resets 11:10am (UTC)" form showed up.
+    const budgetResetsAt = extractResetTime(error) ?? new Date(Date.now() + SESSION_WINDOW_MS);
 
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
