@@ -15,12 +15,37 @@ export function MissionBadges({ mission, health, nextRun, isReviewReady }: { mis
   }
   const driveState = deriveDriveState(mission);
   const drive = getDrivePresentation(driveState, nextRun as any);
-  const driveTone = drive.tone === 'warning' ? 'border-status-warning text-status-warning' : drive.tone === 'info' ? 'border-status-info text-status-info' : 'border-border-default text-text-muted';
-  // When the mission is COMPLETE, health issues (e.g. failed tasks) are historical
-  // noise — render a small warning icon rather than a peer badge that implies two
-  // simultaneous states ("COMPLETE" and "FAILING" side-by-side is contradictory).
+  // When the mission is COMPLETE, health issues are historical noise — render a
+  // small warning icon rather than a peer badge.
   const isComplete = driveState === 'COMPLETE';
-  return <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"><span className={`shrink-0 border px-1.5 py-0.5 ${driveTone}`}>{drive.label}</span>{drive.detail && <span className="min-w-0 normal-case tracking-normal text-text-muted">{drive.detail}</span>}{health !== 'NOMINAL' && !isComplete && <span className={`shrink-0 border px-1.5 py-0.5 ${healthTone[health]}`}>{health}</span>}{health !== 'NOMINAL' && isComplete && <span className="shrink-0 text-status-warning" title={`${health} — some tasks ended with issues`}>⚠</span>}</div>;
+  const hasHealthIssue = health !== 'NOMINAL' && !isComplete;
+
+  // One-pill rule: drive and health must never both appear as bordered chips.
+  // When drive is AUTO, health is the more actionable signal — promote it to chip.
+  // For all other drive states (SEATS_FULL, MANUAL, etc.), keep the drive chip and
+  // fold health into the detail text as a plain-language suffix.
+  let chipLabel: string;
+  let chipClass: string;
+  let detail: string;
+  if (hasHealthIssue && driveState === 'AUTO') {
+    chipLabel = health;
+    chipClass = healthTone[health];
+    detail = drive.detail;
+  } else {
+    chipClass = drive.tone === 'warning' ? 'border-status-warning text-status-warning' : drive.tone === 'info' ? 'border-status-info text-status-info' : 'border-border-default text-text-muted';
+    chipLabel = drive.label;
+    detail = hasHealthIssue
+      ? `${drive.detail}${drive.detail ? ' · ' : ''}${health.charAt(0) + health.slice(1).toLowerCase()}`
+      : drive.detail;
+  }
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide">
+      <span className={`shrink-0 border px-1.5 py-0.5 ${chipClass}`}>{chipLabel}</span>
+      {detail && <span className="min-w-0 normal-case tracking-normal text-text-muted">{detail}</span>}
+      {health !== 'NOMINAL' && isComplete && <span className="shrink-0 text-status-warning" title={`${health} — some tasks ended with issues`}>⚠</span>}
+    </div>
+  );
 }
 
 export function MissionProgress({ missionId, segments, completedTasks, totalTasks, inFlightTasks = [] }: { missionId: string; segments: MissionSegment[]; completedTasks: number; totalTasks: number; inFlightTasks?: InFlightTask[] }) {

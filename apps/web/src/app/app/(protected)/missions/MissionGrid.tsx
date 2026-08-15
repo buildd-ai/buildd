@@ -633,11 +633,6 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
               {mission.title}
             </Link>
           </div>
-          {mission.progress > 0 && (
-            <span className="text-[20px] font-semibold text-accent-text shrink-0 tabular-nums">
-              {mission.progress}%
-            </span>
-          )}
         </div>
 
         {mission.description && (
@@ -702,17 +697,11 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
           {mission.role && (
-            <>
-              <span>{mission.role.name}</span>
-              <span className="mx-0.5">&middot;</span>
-            </>
-          )}
-          {mission.totalTasks > 0 && (
-            <span>{mission.completedTasks} of {mission.totalTasks} done</span>
+            <span>{mission.role.name}</span>
           )}
           {mission.activeAgents > 0 && (
             <>
-              <span className="mx-0.5">&middot;</span>
+              {mission.role && <span className="mx-0.5">&middot;</span>}
               <span className="text-status-success">
                 {mission.activeAgents} agent{mission.activeAgents !== 1 ? 's' : ''} active
               </span>
@@ -867,15 +856,9 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
-          {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (
-            <span>{mission.completedTasks} of {mission.totalTasks} done</span>
-          )}
-          <>
-            <span>&middot;</span>
-            <span title={mission.lastActivityAt ? `Last activity: ${mission.lastActivityAt}` : undefined}>
-              {mission.lastActivityAt ? timeAgo(mission.lastActivityAt) : 'never'}
-            </span>
-          </>
+          <span title={mission.lastActivityAt ? `Last activity: ${mission.lastActivityAt}` : undefined}>
+            {mission.lastActivityAt ? timeAgo(mission.lastActivityAt) : 'never'}
+          </span>
           {mission.latestFinding && !mission.lastActivityAt && (
             <>
               <span>&middot;</span>
