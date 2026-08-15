@@ -136,6 +136,32 @@ export async function GET(_req: NextRequest) {
 
   const agentReviewingTaskIds = new Set(reviewerLiveMap.keys());
 
+  // ── Conflict retry lease detection ────────────────────────────────────────
+  // Find live conflict retry tasks. These are tasks with creationSource='conflict'
+  // and a live (pending/assigned/in_progress) status keyed by (workspaceId, prNumber).
+  // While such a task is live, the card renders as RESOLVING rather than asking
+  // the human to act — the agent is already handling it.
+  const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
+  if (openPrWorkers.length > 0) {
+    const conflictRetryTasks = await db.query.tasks.findMany({
+      where: and(
+        inArray(tasks.workspaceId, wsIds),
+        sql`${tasks.creationSource} = 'conflict'`,
+        isNotNull(tasks.conflictRetryPrNumber),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
+    });
+    for (const t of conflictRetryTasks) {
+      if (t.conflictRetryPrNumber == null) continue;
+      const key = `${t.workspaceId}:${t.conflictRetryPrNumber}`;
+      const ctx = (t.context ?? {}) as Record<string, unknown>;
+      const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
+      conflictRetryMap.set(key, { taskId: t.id, iteration });
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const items = openPrWorkers
     .filter(w => {
       if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
@@ -145,6 +171,9 @@ export async function GET(_req: NextRequest) {
 
       // Exclude items currently under an active agent-review lease
       if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
+
+      // Items with a live conflict retry are included but rendered as RESOLVING
+      if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
 
       if (w.taskId && escalationMap.has(w.taskId)) return true;
       // Include agent-approved items (approve-only gate) so the human can merge
@@ -162,6 +191,8 @@ export async function GET(_req: NextRequest) {
       const waitingMinutes = w.completedAt
         ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
         : null;
+
+      const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
 
       const leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human' =
         approval ? 'agent_approved'
@@ -182,6 +213,9 @@ export async function GET(_req: NextRequest) {
         escalationReason: escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null),
         verdictSummary: approval?.summary ?? null,
         waitingMinutes,
+        // Conflict retry fields — present when an agent is actively resolving conflicts
+        conflictRetryTaskId: conflictRetry?.taskId ?? null,
+        conflictRetryIteration: conflictRetry?.iteration ?? null,
       };
     });
 

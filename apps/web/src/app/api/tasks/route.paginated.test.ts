@@ -78,8 +78,9 @@ mock.module('@/lib/deferred-start', () => ({
   resolveDeferredStart: mock(() => ({ startAt: null, resolution: null })),
   laterStartAt: mock(() => null),
 }));
-mock.module('@/lib/subject-intake', () => ({ intakeSubject: mock(() => Promise.resolve({ task: { id: 't1' }, outcome: { action: 'filed' } })) }));
-mock.module('@/lib/subject-intake-db', () => ({ createSubjectIntakeRepository: mock(() => ({})) }));
+// Note: @/lib/subject-intake is intentionally NOT mocked here — these tests cover
+// only GET /api/tasks (paginated). Adding a module-level mock would leak into
+// route.test.ts (POST tests) via Bun 1.3.14+ ESM live bindings.
 mock.module('@/lib/subject-anchor-observer', () => ({
   prepareSubjectFiling: mock(() => Promise.resolve({ anchor: null, match: null, taskValues: {} })),
   recordSubjectMatchObserved: mock(() => Promise.resolve()),

@@ -283,6 +283,11 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
+  // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
+  // Absent / true = ON (default). Set to false to disable auto-dispatch and let
+  // the human trigger resolution manually from the escalation card.
+  autoResolveMergeConflicts?: boolean;
+
   // Data classification for privacy enforcement. Absent / 'standard' = normal retention.
   // 'sensitive' = structured-only retention: free-text fields (progress messages, summaries,
   // artifacts, error traces) are dropped at the control-plane boundary; only schema-validated
@@ -770,7 +775,7 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
-  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator'>(),
+  creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
@@ -779,6 +784,10 @@ export const tasks = pgTable('tasks', {
   // several check-suite deliveries, but it must create only one retry task.
   ciRetryPrNumber: integer('ci_retry_pr_number'),
   ciRetryHeadSha: text('ci_retry_head_sha'),
+  // Stable identity for conflict-resolution retries. A conflict observation fires
+  // from multiple paths (auto-merge, human merge); only one retry task per PR+SHA.
+  conflictRetryPrNumber: integer('conflict_retry_pr_number'),
+  conflictRetryHeadSha: text('conflict_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
@@ -860,6 +869,9 @@ export const tasks = pgTable('tasks', {
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
+  conflictRetryEventIdx: uniqueIndex('tasks_conflict_retry_event_unique')
+    .on(t.workspaceId, t.conflictRetryPrNumber, t.conflictRetryHeadSha)
+    .where(sql`${t.conflictRetryPrNumber} IS NOT NULL AND ${t.conflictRetryHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
