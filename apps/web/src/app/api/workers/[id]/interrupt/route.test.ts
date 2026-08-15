@@ -60,6 +60,7 @@ mock.module('@/lib/pusher', () => ({
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
+  checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({

@@ -197,6 +197,10 @@ mock.module('@/lib/github', () => ({
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
+  // Include checkDependsOnResolved so this mock doesn't break downstream
+  // webhook tests when Bun runs the entire web suite in a single process
+  // (module mocks leak across test files in Bun 1.3.14+).
+  checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
 // Override webhook/route.test.ts's merge-policy module mock when Bun runs the
