@@ -103,8 +103,10 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 // ── Fake knowledge store ─────────────────────────────────────────────────────
-// chunkPrDiff stays real: it's pure and the A3 tests assert on its output shape.
+// Pure functions stay real so downstream tests that rely on their behaviour
+// (knowledge-context.test.ts, claim/route.test.ts) continue to work.
 import { chunkPrDiff } from '@buildd/core/knowledge-store/pr-diff-chunker';
+import { extractFilePaths, renderEntityCatalog, fetchEntityCatalog } from '@buildd/core/knowledge-store/entity-catalog';
 
 let namespaces: string[] = [];
 let deleteBySourceCalls: Array<{ namespace: string; sourcePath?: string }> = [];
@@ -136,6 +138,18 @@ mock.module('@buildd/core/knowledge-store', () => ({
     }
     return { files: files.length, chunks: files.length };
   },
+  // Pure functions and DB-bound functions kept real so downstream tests
+  // (knowledge-context, claim route) continue to work correctly.
+  extractFilePaths,
+  renderEntityCatalog,
+  fetchEntityCatalog,
+  // Stubs for graph-route / role-route / schedule / mission tests that import this module
+  upsertEntity: async (_db: any, entity: any) => `id:${entity.kind}:${entity.key}`,
+  upsertEdge: async () => undefined,
+  upsertAlias: async () => undefined,
+  getKnowledgeHealth: async () => ({ status: 'ok', namespaces: [] }),
+  getVoyageReranker: () => null,
+  applyRerank: async (_reranker: any, _query: string, chunks: any[]) => chunks,
 }));
 
 // Import AFTER mocks

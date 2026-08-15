@@ -1,17 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { sendTaskCallback } from './task-callback';
 
 describe('sendTaskCallback', () => {
-  let fetchSpy: ReturnType<typeof spyOn>;
+  let fetchMock: ReturnType<typeof mock>;
+  let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('ok', { status: 200 })
-    );
+    originalFetch = globalThis.fetch;
+    fetchMock = mock(() => Promise.resolve(new Response('ok', { status: 200 })));
+    globalThis.fetch = fetchMock as any;
   });
 
   afterEach(() => {
-    fetchSpy.mockRestore();
+    globalThis.fetch = originalFetch;
   });
 
   it('sends POST with correct payload when callback URL exists', async () => {
@@ -32,8 +33,8 @@ describe('sendTaskCallback', () => {
       structuredOutput: { key: 'value' },
     });
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://example.com/webhook');
     expect(options.method).toBe('POST');
     expect(options.headers).toEqual(
@@ -77,8 +78,8 @@ describe('sendTaskCallback', () => {
       }
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(options.body as string);
     expect(body).toEqual({
       taskId: 'task-200',
@@ -121,8 +122,8 @@ describe('sendTaskCallback', () => {
       }
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(options.body as string);
     expect(body.turns).toBe(10);
     expect(body.commitCount).toBe(0);
@@ -140,19 +141,19 @@ describe('sendTaskCallback', () => {
       { id: 'task-1', context: null },
       { status: 'completed' }
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
 
     await sendTaskCallback(
       { id: 'task-2', context: {} },
       { status: 'completed' }
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
 
     await sendTaskCallback(
       { id: 'task-3', context: { callback: {} } },
       { status: 'completed' }
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('skips for non-HTTPS URLs', async () => {
@@ -163,7 +164,7 @@ describe('sendTaskCallback', () => {
       },
       { status: 'completed' }
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('does not include Authorization header when no token', async () => {
@@ -175,14 +176,14 @@ describe('sendTaskCallback', () => {
       { status: 'failed', summary: 'Something broke' }
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = options.headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
   });
 
   it('handles fetch timeout/error gracefully', async () => {
-    fetchSpy.mockRejectedValue(new Error('timeout'));
+    fetchMock.mockRejectedValue(new Error('timeout'));
 
     // Should not throw
     await sendTaskCallback(
@@ -193,6 +194,6 @@ describe('sendTaskCallback', () => {
       { status: 'completed' }
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
