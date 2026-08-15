@@ -523,10 +523,10 @@ export default async function HomePage({
             columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
-                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true },
+                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true },
                 with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true }, limit: 5 } },
               },
-              schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },
+              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
               workspace: { columns: { id: true, name: true } },
             },
             limit: 50,
@@ -589,9 +589,37 @@ export default async function HomePage({
             const nextRunAt = (mission.schedule as any)?.nextRunAt ?? null;
             const lastRunAt = (mission.schedule as any)?.lastRunAt ?? null;
             const cronExpression = (mission.schedule as any)?.cronExpression ?? null;
-            const nextScanMins = nextRunAt
+            const schedNextScanMins = nextRunAt
               ? Math.max(0, Math.round((new Date(nextRunAt).getTime() - Date.now()) / 60000))
               : null;
+
+            const rawDeferralReason = (mission.schedule as any)?.lastDeferralReason ?? null;
+
+            // Check if per-schedule concurrent cap is still exceeded; if not, clear the stale reason.
+            let lastDeferralReason = rawDeferralReason;
+            if (rawDeferralReason === 'concurrent_cap') {
+              const schedId = (mission.schedule as any)?.id;
+              const maxConcurrent: number = (mission.schedule as any)?.maxConcurrentFromSchedule ?? 1;
+              const activeScheduleTasks = (mission.tasks as any[]).filter((t: any) =>
+                t.scheduleId === schedId &&
+                ['pending', 'assigned', 'in_progress'].includes(t.status)
+              ).length;
+              if (activeScheduleTasks < maxConcurrent) lastDeferralReason = null;
+            }
+
+            // Earliest future startAt of user-scheduled pending tasks (loopIteration === 0).
+            const nowMs = Date.now();
+            let pendingUserScheduledAt: Date | null = null;
+            for (const t of mission.tasks as any[]) {
+              if (t.status !== 'pending') continue;
+              if ((t.loopIteration ?? 0) !== 0) continue;
+              if (!t.startAt) continue;
+              const ts = new Date(t.startAt).getTime();
+              if (ts > nowMs && (pendingUserScheduledAt === null || ts < pendingUserScheduledAt.getTime())) {
+                pendingUserScheduledAt = new Date(t.startAt);
+              }
+            }
+            if (pendingUserScheduledAt) lastDeferralReason = null;
 
             const orchestrationMode = (mission as any).orchestrationMode ?? null;
             const health = deriveMissionHealth({
@@ -601,7 +629,17 @@ export default async function HomePage({
               lastRunAt,
               nextRunAt,
               orchestrationMode,
+              pendingUserScheduledAt,
             });
+
+            const effectiveNextRunAt = nextRunAt
+              ? String(nextRunAt)
+              : pendingUserScheduledAt
+              ? pendingUserScheduledAt.toISOString()
+              : null;
+            const nextScanMins = schedNextScanMins ?? (pendingUserScheduledAt
+              ? Math.max(0, Math.round((pendingUserScheduledAt.getTime() - nowMs) / 60000))
+              : null);
 
             return {
               id: mission.id,
@@ -615,14 +653,14 @@ export default async function HomePage({
               health,
               group: healthToGroup(health, progress),
               nextScanMins,
-              nextRunAt: nextRunAt ? String(nextRunAt) : null,
+              nextRunAt: effectiveNextRunAt,
               workspaceName: (mission.workspace as any)?.name || null,
               orchestrationMode,
               status: mission.status,
               segments,
               healthState: deriveHealth(mission, mission.tasks),
-              inFlightTasks: mission.tasks.flatMap(t => t.workers.filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
-              lastDeferralReason: (mission.schedule as any)?.lastDeferralReason ?? null,
+              inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
+              lastDeferralReason,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
               blockedPRCount: countHomeMissionBlockedByPR(mission.tasks as any[]),
             };
