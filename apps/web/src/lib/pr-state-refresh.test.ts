@@ -98,7 +98,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
     mockTriggerEvent.mockReset();
-    mockCheckDependsOnResolved.mockReset();
+    mockCheckDependsOnResolved.mockClear();
   });
 
   it('does nothing for empty workspace list', async () => {
@@ -204,7 +204,7 @@ describe('refreshStaleWorkers', () => {
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
     mockTriggerEvent.mockReset();
-    mockCheckDependsOnResolved.mockReset();
+    mockCheckDependsOnResolved.mockClear();
   });
 
   it('skips workers without a prNumber', async () => {
