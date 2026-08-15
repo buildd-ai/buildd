@@ -19,6 +19,13 @@ const mockTasksInsert = mock(() => ({
     returning: mock(() => [{ id: 'new-task-id' }]),
   })),
 }));
+let capturedAccountsSet: any = null;
+const mockAccountsUpdate = mock(() => ({
+  set: mock((vals: any) => {
+    capturedAccountsSet = vals;
+    return { where: mock(() => Promise.resolve()) };
+  }),
+}));
 // Exposed so tests can override section-2 (heartbeat-expiry) behaviour.
 // Default: returns a fresh heartbeat → section 2 does NOT fire in most tests.
 const mockWorkerHeartbeatsFindFirst = mock(() => ({ id: 'hb-1' }));
@@ -33,6 +40,7 @@ mock.module('@buildd/core/db', () => ({
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
+      if (table === 'accounts') return mockAccountsUpdate();
       return mockTasksUpdate();
     },
     insert: (table: any) => table === 'missionNotes'
@@ -67,6 +75,8 @@ mock.module('drizzle-orm', () => ({
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
   not: (expr: any) => ({ expr, type: 'not' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -74,6 +84,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks',
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   missionNotes: 'missionNotes',
+  accounts: 'accounts',
 }));
 
 const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
@@ -1015,5 +1026,175 @@ describe('cleanupStaleWorkers — retry cap', () => {
     // 3 code_failure workers hit the cap → permanently failed
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('failed');
+  });
+});
+
+describe('cleanupStaleWorkers — activeSessions seat release', () => {
+  // Regression: activeSessions was incremented at claim time but never decremented.
+  // Any code path that takes a live worker to a terminal state must decrement it so
+  // future claims are not permanently blocked by Gate B (maxConcurrentSessions check).
+  beforeEach(() => {
+    capturedAccountsSet = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockAccountsUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat by default
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  it('decrements activeSessions when stale workers (15-min path) are reaped', async () => {
+    // One stale worker in 'running' status — it held a seat that must be released.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([])   // failed workers (retry cap)
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    // activeSessions decrement must have been attempted
+    expect(mockAccountsUpdate).toHaveBeenCalled();
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('decrements by the number of reaped workers (batch)', async () => {
+    // Two stale workers — both seats must be released in one decrement.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w2', taskId: 'task-2', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])   // other active workers for task-1
+      .mockResolvedValueOnce([])   // failed workers for task-1
+      .mockResolvedValueOnce([])   // other active workers for task-2
+      .mockResolvedValueOnce([])   // failed workers for task-2
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    // One decrement call for the batch of 2 stale workers
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('decrements activeSessions when heartbeat-orphaned workers are reaped', async () => {
+    // No 15-min stale workers, but heartbeat is stale → section 2 fires.
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null); // no fresh heartbeat
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no 15-min stale workers
+      .mockResolvedValueOnce([    // section 2: one heartbeat-orphaned worker
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // no other active workers for the orphaned task
+      .mockResolvedValueOnce([]); // failed workers count for task-hb (resolveStaleTask)
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await cleanupStaleWorkers('account-1');
+
+    // activeSessions must be decremented for the heartbeat-orphaned worker
+    expect(mockAccountsUpdate).toHaveBeenCalled();
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('does not call accounts update when no workers are reaped', async () => {
+    // No stale workers in either section → no decrement should be attempted.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // section 1: no stale workers
+      .mockResolvedValueOnce([]); // section 2: no orphans (but heartbeat is fresh, so section 2 won't even query)
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(mockAccountsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
+  beforeEach(() => {
+    capturedAccountsSet = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksInsert.mockReset();
+    mockAccountsUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
+    });
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  it('decrements activeSessions when a stuck waiting_input worker is cleaned up', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25 hours ago
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', accountId: 'account-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null, task: { missionId: null } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Fix bug', description: 'Fix the bug',
+      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
+      missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+    });
+
+    await cleanupStuckWaitingInput();
+
+    // activeSessions decrement must have been attempted for the worker's account
+    expect(mockAccountsUpdate).toHaveBeenCalled();
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('does not decrement activeSessions when no stuck workers exist', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    await cleanupStuckWaitingInput();
+
+    expect(mockAccountsUpdate).not.toHaveBeenCalled();
   });
 });
