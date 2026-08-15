@@ -22,6 +22,8 @@ let mkdirSync = fs.mkdirSync;
 let appendFileSync = fs.appendFileSync;
 let readFileSync = fs.readFileSync;
 let rmSync = fs.rmSync;
+// Optional spy for cleanupWorktree — set via __setGitOpsDeps to avoid mock.module pollution
+let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null = null;
 
 export interface GitOpsDeps {
   execSync: typeof cp.execSync;
@@ -31,6 +33,8 @@ export interface GitOpsDeps {
   appendFileSync: typeof fs.appendFileSync;
   readFileSync: typeof fs.readFileSync;
   rmSync: typeof fs.rmSync;
+  // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
+  cleanupSpy?: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null;
 }
 
 /** Test-only: replace internal dependencies with mocks. */
@@ -42,6 +46,7 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   appendFileSync = mocks.appendFileSync;
   readFileSync = mocks.readFileSync;
   rmSync = mocks.rmSync;
+  if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
 
 /** Test-only: restore real implementations. */
@@ -53,6 +58,7 @@ export function __resetGitOpsDeps(): void {
   appendFileSync = fs.appendFileSync;
   readFileSync = fs.readFileSync;
   rmSync = fs.rmSync;
+  _cleanupSpy = null;
 }
 
 export interface GitStats {
@@ -324,6 +330,7 @@ export async function setupWorktree(
  * Removes the worktree directory and prunes git worktree metadata.
  */
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+  if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
 
   try {
