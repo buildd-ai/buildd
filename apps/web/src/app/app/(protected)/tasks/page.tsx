@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
+import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -53,6 +54,7 @@ export default async function TasksPage({
     chain: ChainPositionResult | null;
     attemptCurrent: number | null;
     attemptTotal: number | null;
+    taskType: TaskType | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -103,6 +105,7 @@ export default async function TasksPage({
               loopConfig: true,
               loopIteration: true,
               loopState: true,
+              parentTaskId: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
@@ -257,6 +260,7 @@ export default async function TasksPage({
               chain,
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
+              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId }),
             };
           });
         }

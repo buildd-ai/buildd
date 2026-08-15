@@ -13,6 +13,8 @@ import {
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopState } from '@buildd/shared';
+import type { TaskType } from '@buildd/core/mission-helpers';
+import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +58,8 @@ export interface TaskCardProps {
 
   // Agent current action (shown in inline density when running)
   currentAction?: string | null;
+
+  taskType?: TaskType | null;
 
   density: 'full' | 'row' | 'inline';
 }
@@ -179,6 +183,27 @@ function Sparkline({ data, tier }: { data: number[]; tier: IntensityTier }) {
   );
 }
 
+// ─── Task type badge ──────────────────────────────────────────────────────────
+
+const TASK_TYPE_BADGE: Record<TaskType, { glyph: string; cls: string; label: string }> = {
+  retry:          { glyph: '↻', cls: 'text-status-warning',  label: 'CI Retry' },
+  review:         { glyph: '⬡', cls: 'text-status-info',     label: 'Review' },
+  'review-retry': { glyph: '↻', cls: 'text-[#8B5CF6]',       label: 'Review Retry' },
+};
+
+function TaskTypeBadge({ type }: { type: TaskType }) {
+  const cfg = TASK_TYPE_BADGE[type];
+  return (
+    <span
+      className={`font-mono text-[9px] shrink-0 select-none ${cfg.cls}`}
+      title={cfg.label}
+      aria-label={cfg.label}
+    >
+      {cfg.glyph}
+    </span>
+  );
+}
+
 // ─── Elapsed label ────────────────────────────────────────────────────────────
 
 function useNow(intervalMs = 30_000): number {
@@ -219,6 +244,7 @@ export function TaskCard({
   prNumber,
   prLifecycleStatus,
   currentAction,
+  taskType,
   density,
 }: TaskCardProps) {
   const now = useNow();
@@ -332,9 +358,10 @@ export function TaskCard({
 
         {/* Center — identity + secondary */}
         <div className="flex-1 min-w-0 pointer-events-none">
-          {/* T1 — title */}
-          <div className="text-[13px] font-medium text-text-primary truncate group-hover:text-accent-text transition-colors">
-            {title}
+          {/* T1 — title (with optional type badge) */}
+          <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
+            {taskType && <TaskTypeBadge type={taskType} />}
+            <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
           </div>
 
           {/* T1 — mission + workspace */}
@@ -410,8 +437,9 @@ export function TaskCard({
 
       {/* T1 — title + status pill (top row) */}
       <div className="flex items-start justify-between gap-3 mb-0.5 pointer-events-none">
-        <div className="text-[15px] font-medium text-text-primary truncate group-hover:text-accent-text transition-colors flex-1 min-w-0">
-          {title}
+        <div className="flex items-center gap-1.5 text-[15px] font-medium text-text-primary group-hover:text-accent-text transition-colors flex-1 min-w-0">
+          {taskType && <TaskTypeBadge type={taskType} />}
+          <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
         </div>
         <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
       </div>

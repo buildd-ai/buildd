@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveTaskType } from '@buildd/core/mission-helpers';
 import { MissionProgress } from '@/components/MissionProgress';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -406,9 +406,9 @@ export default async function MissionDetailPage({
       reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
     }
   }
-  // Exclude reviewer and CI-retry tasks from the timeline — reviewer tasks render
-  // as inline chips; CI-retry tasks nest under their parent task.
-  const timelineTasks = allTasks.filter(t => t.category !== 'review' && !t.parentTaskId);
+  // Exclude reviewer tasks — they surface as inline verdict chips on the reviewed task.
+  // Attempt tasks (parentTaskId IS NOT NULL) are included and rendered with a type badge.
+  const timelineTasks = allTasks.filter(t => t.category !== 'review');
 
   // Compute chain positions for mission tasks
   const chainByTaskId = new Map<string, ChainPositionResult | null>();
@@ -502,6 +502,7 @@ export default async function MissionDetailPage({
       roleColor: role?.color ?? '#8A8478',
       chain: chainByTaskId.get(task.id) ?? null,
       latestWorker: condensedTask.workers[0] ?? null,
+      taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId }),
       reviewerNote: reviewerNote
         ? {
             type: reviewerNote.type,
