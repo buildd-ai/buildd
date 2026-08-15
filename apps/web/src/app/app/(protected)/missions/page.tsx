@@ -269,6 +269,13 @@ export default async function MissionsPage({
     const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
     const lastActivityAt = lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null;
 
+<<<<<<< HEAD
+=======
+    // v1 approximation: updatedAt serves as mission close time for the review-tail
+    // calculation. A dedicated closedAt column would be more precise but requires
+    // a migration. The approximation is wrong only if the mission row is edited
+    // (e.g. title rename) after workers finish but before the row is marked completed.
+>>>>>>> origin/dev
     const skyline = obj.status === 'completed'
       ? computeMissionSkyline(
           (obj.tasks || []).map((t: any) => ({ workers: t.workers || [] })),

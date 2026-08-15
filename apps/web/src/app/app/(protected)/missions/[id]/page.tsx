@@ -41,6 +41,7 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
+import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,7 +60,7 @@ export default async function MissionDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  const mission = await db.query.missions.findFirst({
+  let mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
     with: {
       workspace: { columns: { id: true, name: true } },
@@ -127,6 +128,70 @@ export default async function MissionDetailPage({
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
+  }
+
+  // Read-through refresh: stamp mergedAt on any completed workers whose PR
+  // webhook was missed, so the timeline renders the correct state immediately.
+  if (mission.workspaceId) {
+    const staleWorkers = (mission.tasks ?? []).flatMap(t => {
+      if (t.status !== 'completed') return [];
+      const w = (t.workers as any[])?.[0];
+      if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
+      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string }];
+    });
+    if (staleWorkers.length > 0) {
+      const wsWithInstall = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: {},
+        with: { githubInstallation: { columns: { installationId: true } } },
+      });
+      const installId = wsWithInstall?.githubInstallation?.installationId;
+      if (installId) {
+        const refreshed = await Promise.all(
+          staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId))
+        );
+        if (refreshed.some(Boolean)) {
+          const refreshedMission = await db.query.missions.findFirst({
+            where: eq(missions.id, id),
+            with: {
+              workspace: { columns: { id: true, name: true } },
+              initiative: { columns: { id: true, title: true } },
+              tasks: {
+                columns: {
+                  id: true, title: true, status: true, priority: true, createdAt: true,
+                  updatedAt: true, result: true, mode: true, roleSlug: true,
+                  creationSource: true, dependsOn: true, parentTaskId: true, category: true,
+                },
+                orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
+                with: {
+                  workers: {
+                    columns: {
+                      id: true, status: true, waitingFor: true, branch: true, prUrl: true,
+                      prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
+                      turns: true, completedAt: true, startedAt: true, currentAction: true,
+                      commitCount: true, filesChanged: true,
+                    },
+                    orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
+                    limit: 3,
+                    with: {
+                      artifacts: {
+                        columns: {
+                          id: true, type: true, title: true, key: true, shareToken: true,
+                          content: true, visibility: true, metadata: true, createdAt: true,
+                        },
+                        limit: 5,
+                      },
+                    },
+                  },
+                },
+              },
+              schedule: true,
+            },
+          });
+          if (refreshedMission) mission = refreshedMission;
+        }
+      }
+    }
   }
 
   // Query roles and workspaces for this user

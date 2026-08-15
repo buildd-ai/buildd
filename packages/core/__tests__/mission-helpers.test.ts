@@ -404,6 +404,15 @@ describe('computeMissionSkyline', () => {
     expect(result!.blocks.every((b) => b.lane === 0)).toBe(true);
   });
 
+  it('sequential workers have peakConcurrency=1 (touching boundary is not concurrent)', () => {
+    // A ends at slot 1, B starts at slot 1 — they share a boundary but do NOT overlap
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15)] }, // slots [0,1)
+      { workers: [makeWorker(15, 30)] }, // slots [1,2)
+    ]);
+    expect(result!.peakConcurrency).toBe(1);
+  });
+
   it('peak concurrency reflects simultaneous workers, not lanes', () => {
     // 3 workers all overlapping
     const result = computeMissionSkyline([

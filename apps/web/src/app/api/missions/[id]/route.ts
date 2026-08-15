@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, workspaces, missionNotes, initiatives } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -9,6 +9,7 @@ import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
+import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -55,7 +56,7 @@ export async function GET(
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, creationSource: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,
@@ -109,6 +110,30 @@ export async function GET(
       gateCondition: mission.gateCondition,
       dependencyMetAt: mission.dependencyMetAt ?? null,
     });
+
+    // Stale-while-revalidate: fire PR state refresh in the background so the
+    // open view gets corrected state via WORKER_PROGRESS without blocking render.
+    const prCandidates = (mission.tasks || []).flatMap((task: any) =>
+      (task.workers || []).map((w: any) => ({
+        id: w.id as string,
+        prNumber: (w.prNumber ?? null) as number | null,
+        workspaceId: mission.workspaceId as string,
+        taskId: task.id as string,
+        prLifecycleStatus: (w.prLifecycleStatus ?? null) as string | null,
+        prLastCheckedAt: (w.prLastCheckedAt ?? null) as Date | null,
+      }))
+    );
+    if (prCandidates.length > 0) {
+      try {
+        after(() =>
+          refreshStaleWorkers(prCandidates).catch(err =>
+            console.error('[pr-state-refresh] mission detail refresh failed:', err)
+          )
+        );
+      } catch {
+        // after() unavailable outside request scope (tests/build)
+      }
+    }
 
     return NextResponse.json({
       ...mission,

@@ -1333,7 +1333,7 @@ export class WorkerManager {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 
-      const worktreePath = await setupWorktree(
+      const setupResult = await setupWorktree(
         workspacePath,
         claimedWorker.branch,
         defaultBranch,
@@ -1341,9 +1341,31 @@ export class WorkerManager {
         fullTask.context,
       );
 
-      if (worktreePath) {
-        worker.worktreePath = worktreePath;
-        sessionCwd = worktreePath;
+      if (setupResult) {
+        worker.worktreePath = setupResult.path;
+        sessionCwd = setupResult.path;
+        // When the resume branch was honored, the worktree's git branch differs
+        // from the task's own branch.  Update worker.branch so pushes target the
+        // right ref and create_pr finds the existing open PR.
+        if (setupResult.branch !== claimedWorker.branch) {
+          console.log(`[Worker ${worker.id}] Resumed on branch ${setupResult.branch} (task branch: ${claimedWorker.branch})`);
+          worker.branch = setupResult.branch;
+        }
+        // Fallback warning: resume branch was missing/diverged — make it visible
+        // rather than silently starting fresh.
+        if (setupResult.fallback) {
+          const { candidate, reason } = setupResult.fallback;
+          const label = `Resume branch ${reason}: ${candidate} — starting fresh from ${defaultBranch}`;
+          console.warn(`[Worker ${worker.id}] ${label}`);
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'resume_branch_fallback',
+              excerpt: `Branch "${candidate}" was ${reason} on remote — starting fresh from "${defaultBranch}". A new PR will be opened instead of updating the existing one.`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+        }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
         // Worktree setup failed — fall back to main repo (legacy behavior)

@@ -195,6 +195,16 @@ export async function POST(req: NextRequest) {
     const taskContext = worker.task?.context as Record<string, unknown> | null;
     const contextBaseBranch = taskContext?.baseBranch as string | undefined;
 
+    // Stamp retry lineage into the PR body when this is a fresh fallback PR
+    // (resume branch was gone/diverged and a new branch was opened instead of
+    // updating the existing one).  Lets humans disambiguate duplicate-looking
+    // PRs in the list without reading the diff.
+    const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
+    const lineageSuffix = retryIteration > 0
+      ? `\n\n---\n_Retry attempt ${retryIteration} — task \`${worker.taskId}\`._`
+      : '';
+    const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
+
     // Create the PR via GitHub API
     const prData = await githubApi(
       repo.installation.installationId,
@@ -204,7 +214,7 @@ export async function POST(req: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
-          body: prBody || `Created by buildd worker ${worker.name}`,
+          body: effectivePrBody,
           head,
           base: base
             // Stacked plan phases store predecessor branch in context.baseBranch
