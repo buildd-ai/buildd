@@ -1542,11 +1542,6 @@ export default async function HomePage({
                                           {mission.title}
                                         </Link>
                                       </div>
-                                      {mission.progress > 0 && (
-                                        <span className="text-[20px] font-semibold text-accent-text tabular-nums flex-shrink-0">
-                                          {mission.progress}%
-                                        </span>
-                                      )}
                                     </div>
                                     {mission.description && (
                                       <p className="text-[12px] text-text-secondary mb-2 line-clamp-1">
@@ -1561,25 +1556,19 @@ export default async function HomePage({
                                           <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80">
                                             {mission.workspaceName}
                                           </span>
-                                          {(mission.totalTasks > 0 || mission.activeWorkers > 0 || nextRun.text) && (
+                                          {(mission.activeWorkers > 0 || mission.blockedPRCount > 0) && (
                                             <span className="mx-0.5">&middot;</span>
                                           )}
                                         </>
                                       )}
-                                      {mission.totalTasks > 0 && (
-                                        <span>{mission.completedTasks}/{mission.totalTasks} tasks</span>
-                                      )}
                                       {mission.activeWorkers > 0 && (
-                                        <>
-                                          {mission.totalTasks > 0 && <span className="mx-0.5">&middot;</span>}
-                                          <span className="text-accent-text font-medium">
-                                            {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
-                                          </span>
-                                        </>
+                                        <span className="text-accent-text font-medium">
+                                          {mission.activeWorkers} agent{mission.activeWorkers !== 1 ? 's' : ''} active
+                                        </span>
                                       )}
                                       {mission.blockedPRCount > 0 && (
                                         <>
-                                          <span className="mx-0.5">&middot;</span>
+                                          {mission.activeWorkers > 0 && <span className="mx-0.5">&middot;</span>}
                                           <InternalLink
                                             href="/app/home"
                                             className="text-primary font-medium hover:underline"
