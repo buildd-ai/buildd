@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workers, tasks, workerHeartbeats, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, or, not, inArray, lt, gt, notInArray } from 'drizzle-orm';
+import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
+import { eq, and, or, not, inArray, lt, gt, notInArray, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -212,6 +212,14 @@ export async function cleanupStaleWorkers(accountId: string) {
       })
       .where(inArray(workers.id, staleWorkerIds));
 
+    // Release concurrency seats for OAuth accounts. activeSessions is incremented at
+    // claim time and must be decremented whenever a live worker reaches a terminal state.
+    // The WHERE filter on authType is a no-op for non-OAuth accounts so this is safe for all.
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${staleWorkers.length}, 0)` })
+      .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+
     if (staleTaskIds.length > 0) {
       // Fetch workspace IDs before updating, for dependency resolution
       const staleTasks = await db.query.tasks.findMany({
@@ -280,6 +288,12 @@ export async function cleanupStaleWorkers(accountId: string) {
           updatedAt: new Date(),
         })
         .where(inArray(workers.id, orphanIds));
+
+      // Release concurrency seats for the orphaned workers (same pattern as section 1).
+      await db
+        .update(accounts)
+        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${orphanedByHeartbeat.length}, 0)` })
+        .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
 
       if (orphanTaskIds.length > 0) {
         // Fetch workspace IDs for dependency resolution
@@ -416,7 +430,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),
-    columns: { id: true, taskId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
+    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true },
     with: { task: { columns: { missionId: true } } },
   });
 
@@ -506,6 +520,21 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
 
     // Resolve dependencies for the failed task
     await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
+  }
+
+  // Release concurrency seats for OAuth accounts. Group by accountId so each
+  // account gets a single atomic decrement regardless of how many workers were reaped.
+  const countByAccount = new Map<string, number>();
+  for (const w of stuckWorkers) {
+    if (w.accountId) {
+      countByAccount.set(w.accountId, (countByAccount.get(w.accountId) ?? 0) + 1);
+    }
+  }
+  for (const [accId, count] of countByAccount) {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${count}, 0)` })
+      .where(and(eq(accounts.id, accId), eq(accounts.authType, 'oauth')));
   }
 
   return { failedWorkers, retriedTasks };

@@ -2,11 +2,32 @@
 
 import { useState } from 'react';
 
+// `label` is optional on purpose: workspaces with dataClass 'sensitive' have their
+// milestone labels stripped server-side (apps/web/src/app/api/workers/[id]/route.ts),
+// so rows arrive as { type, ts } only. Declaring it required made every row renderer
+// dereference undefined and crash the whole task page.
 type Milestone =
-  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label: string; progress?: number; ts: number }
-  | { type: 'checkpoint'; event: string; label: string; ts: number }
-  | { type: 'action'; label: string; ts: number };
+  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'checkpoint'; event: string; label?: string; ts: number }
+  | { type: 'action'; label?: string; ts: number };
+
+type LabelledMilestone = Milestone & { label: string };
+
+const TYPE_FALLBACK_LABELS: Record<Milestone['type'], string> = {
+  phase: 'Phase',
+  status: 'Status update',
+  checkpoint: 'Checkpoint',
+  action: 'Action',
+};
+
+// Name the activity by its type when the label was withheld, so the row still shows
+// when something happened without inventing detail we were not given.
+export function milestoneLabel(milestone: { type: string; label?: string | null }): string {
+  const label = milestone.label?.trim();
+  if (label) return label;
+  return TYPE_FALLBACK_LABELS[milestone.type as Milestone['type']] ?? 'Activity';
+}
 
 const CHECKPOINT_ORDER = [
   'session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed',
@@ -70,8 +91,13 @@ export default function WorkerActivityTimeline({
     return null;
   }
 
+  // Guarantee a label before dispatching to the row renderers (see milestoneLabel).
+  const labelledMilestones = milestones.map(
+    (m) => ({ ...m, label: milestoneLabel(m) }) as LabelledMilestone
+  );
+
   // Sort milestones by ts (newest first for display)
-  const sortedMilestones = [...milestones].sort((a, b) => b.ts - a.ts);
+  const sortedMilestones = [...labelledMilestones].sort((a, b) => b.ts - a.ts);
   const visibleMilestones = expanded ? sortedMilestones : sortedMilestones.slice(0, maxVisible);
   const hasMore = sortedMilestones.length > maxVisible;
 

@@ -2167,6 +2167,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockClear();
       mockAccountsUpdate.mockClear();
       mockTenantBudgetsInsert.mockClear();
+      mockMeasureOauthWindow.mockClear();
       mockOauthEpisodesFindFirst.mockReset();
       mockOauthEpisodesFindFirst.mockResolvedValue(null);
       accountsUpdateReturning = [{ id: 'account-1' }];
@@ -2417,10 +2418,10 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      // Tenant budgets should have been inserted (not account update)
+      // Tenant budgets should have been inserted (not account-level budget update)
       expect(mockTenantBudgetsInsert).toHaveBeenCalled();
-      // Account should NOT have been updated (tenant takes precedence)
-      expect(mockAccountsUpdate).not.toHaveBeenCalled();
+      // Account-level budget episode must NOT have been recorded (tenant takes precedence over account budget)
+      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
     });
 
     it('does not detect budget error for non-budget failures', async () => {
@@ -2455,9 +2456,49 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      // Account should NOT have been updated for non-budget errors
-      expect(mockAccountsUpdate).not.toHaveBeenCalled();
+      // Budget exhaustion path must not have fired for a plain error
+      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
       expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
+    });
+
+    it('parses HH:MM reset time from session-limit error (auto-resume fix)', async () => {
+      // Regression: the regex only matched hour-only "5pm" format, not "11:10am".
+      // A missed parse fell back to the 5h default, deferring tasks too long.
+      let resetCtx: any = null;
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => {
+          if (vals?.status === 'pending') resetCtx = vals.context;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      }));
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          budgetExhausted: true,
+          error: "Claude Code returned an error result: You've hit your session limit · resets 11:10am (UTC)",
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Task must be re-queued to the parsed reset time (11:10 UTC), not the 5h default.
+      const startAt = new Date(resetCtx?.budgetResetsAt);
+      expect(isNaN(startAt.getTime())).toBe(false);
+      expect(startAt.getUTCHours()).toBe(11);
+      expect(startAt.getUTCMinutes()).toBe(10);
     });
   });
 
@@ -4540,5 +4581,240 @@ describe('PATCH /api/workers/[id]', () => {
       const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
       expect(failedUpdate).toBeDefined();
     });
+  });
+});
+
+describe('PATCH /api/workers/[id] — activeSessions seat release', () => {
+  // Regression: activeSessions was incremented at claim time for OAuth accounts but never
+  // decremented on any terminal transition. Gate B (maxConcurrentSessions check) would
+  // permanently block claims even when zero live workers existed.
+  let capturedAccountsSetValues: any[] = [];
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockArtifactsFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTriggerEvent.mockReset();
+    mockUpsertAutoArtifact.mockReset();
+    mockFormatStructuredOutput.mockReset();
+    mockTeamsFindFirst.mockReset();
+    mockWorkerErrorTracesFindMany.mockReset();
+    mockWorkerErrorTracesFindMany.mockResolvedValue([]);
+    mockUpsertAutoArtifact.mockResolvedValue(undefined);
+    mockFormatStructuredOutput.mockReturnValue('');
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockArtifactsFindMany.mockResolvedValue([]);
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+
+    // Track all values passed to accounts.set() so we can assert the decrement
+    capturedAccountsSetValues = [];
+    mockAccountsUpdate.mockReset();
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSetValues.push(vals);
+        return {
+          where: mock(() => {
+            const p: any = Promise.resolve();
+            p.returning = mock(() => Promise.resolve([]));
+            return p;
+          }),
+        };
+      }),
+    });
+
+    const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [updatedWorker]),
+        })),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('decrements activeSessions when a running OAuth worker completes', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'oauth',
+      maxConcurrentSessions: 3,
+      activeSessions: 2,
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',  // live status before the update
+      taskId: 'task-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // activeSessions must have been decremented
+    const decrementCall = capturedAccountsSetValues.find(
+      v => v.activeSessions != null
+    );
+    expect(decrementCall).toBeDefined();
+  });
+
+  it('decrements activeSessions when a running OAuth worker fails', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'oauth',
+      maxConcurrentSessions: 3,
+      activeSessions: 1,
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    const failedWorker = { id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [failedWorker]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'failed', error: 'Task failed' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const decrementCall = capturedAccountsSetValues.find(
+      v => v.activeSessions != null
+    );
+    expect(decrementCall).toBeDefined();
+  });
+
+  it('does NOT decrement activeSessions for API key accounts', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'api',  // API key, not OAuth — no activeSessions tracking
+      maxConcurrentWorkers: 5,
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const decrementCall = capturedAccountsSetValues.find(
+      v => v.activeSessions != null
+    );
+    expect(decrementCall).toBeUndefined();
+  });
+
+  it('decrements activeSessions when a session-limit error fails an OAuth worker', async () => {
+    // Regression: session-limit errors (budgetExhausted=true) must release the seat
+    // so Gate B (maxConcurrentSessions) does not permanently block claims after reset.
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'oauth',
+      maxConcurrentSessions: 2,
+      activeSessions: 2,
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    const failedWorker = { id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [failedWorker]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', context: {}, workspaceId: 'ws-1',
+      workspace: { teamId: 'team-1' },
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'failed',
+        budgetExhausted: true,
+        error: "You've hit your session limit · resets 11:10am (UTC)",
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Seat must be released even though the task was re-queued (not lost)
+    const decrementCall = capturedAccountsSetValues.find(
+      v => v.activeSessions != null
+    );
+    expect(decrementCall).toBeDefined();
+  });
+
+  it('does NOT decrement activeSessions when worker was already in a terminal state', async () => {
+    // If a worker is already completed/failed, it no longer holds a seat.
+    // Transitioning from terminal → terminal must not double-decrement.
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'oauth',
+      maxConcurrentSessions: 3,
+      activeSessions: 0,
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'failed',  // already terminal — seat was already released
+      taskId: 'task-1',
+      error: 'previous failure',
+    });
+
+    // The early 409 check at line 188 would block this, but test the guard independently
+    // by having the worker already failed but allow-reactivation path active
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+    // This returns 409 because the worker is already failed — but the seat should not be touched
+    await PATCH(req, { params: mockParams });
+
+    const decrementCall = capturedAccountsSetValues.find(
+      v => v.activeSessions != null
+    );
+    expect(decrementCall).toBeUndefined();
   });
 });

@@ -24,10 +24,11 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
-import { isBudgetExhaustionError, parseResetTime } from '@/lib/budget-errors';
+import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { reviewerRetryTitle } from '@/lib/task-title';
@@ -589,16 +590,13 @@ export async function PATCH(
   }
 
   if (isBudgetError && worker.taskId) {
-    // Parse reset time from error message, default to 5 hours from now
-    const defaultResetMs = 5 * 60 * 60 * 1000;
-    let budgetResetsAt = new Date(Date.now() + defaultResetMs);
-    if (typeof error === 'string') {
-      const resetMatch = error.match(/resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
-      if (resetMatch) {
-        const parsed = parseResetTime(resetMatch[1]);
-        if (parsed) budgetResetsAt = parsed;
-      }
-    }
+    // Read the reset time out of the error string, falling back to a full
+    // session window when it is absent, unparseable, or stated in a timezone we
+    // will not guess at. Extraction lives in @/lib/budget-errors so there is
+    // one pattern to keep in step with the agent's wording — this route used to
+    // carry a second copy that had to be widened separately (#1678) when the
+    // "resets 11:10am (UTC)" form showed up.
+    const budgetResetsAt = extractResetTime(error) ?? new Date(Date.now() + SESSION_WINDOW_MS);
 
     // Fetch the task to get tenant context and workspace teamId
     const taskForBudget = await db.query.tasks.findFirst({
@@ -1659,6 +1657,17 @@ export async function PATCH(
       { error: 'Worker state changed concurrently', abort: true },
       { status: 409 },
     );
+  }
+
+  // Release the concurrency seat for OAuth accounts on terminal worker transitions.
+  // activeSessions is incremented at claim time; every path that moves a live worker
+  // to a terminal state must decrement it so Gate B (maxConcurrentSessions) doesn't
+  // permanently block claims after all real work is done.
+  if (isTerminalStatus && (LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
+      .where(eq(accounts.id, account.id));
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has

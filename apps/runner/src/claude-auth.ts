@@ -6,13 +6,47 @@ import { isolatedClaudeConfigDirPath as _isolatedClaudeConfigDirPath } from './i
 export { isolatedClaudeConfigDirPath } from './isolation-paths.js';
 
 /**
- * Materialize a per-worker CLAUDE_CONFIG_DIR containing a `.credentials.json`
- * with ONLY the access_token (no refresh_token).
+ * Build the `.credentials.json` payload Claude Code expects.
  *
- * The Claude Code SDK reads `${CLAUDE_CONFIG_DIR}/.credentials.json` for the
- * session's credential. By omitting refresh_token, the SDK cannot call the
- * Anthropic token refresh endpoint — eliminating the token family revocation
- * cascade that occurs when multiple workers rotate concurrently.
+ * Kept separate from the filesystem write so the shape — the part that actually
+ * broke — is unit-testable without touching disk.
+ */
+export function buildClaudeCredentialsFile(accessToken: string, expiresAt: Date | null) {
+  return {
+    claudeAiOauth: {
+      accessToken,
+      // Deliberately null — workers must not rotate tokens. Not '', which the
+      // CLI reads as a dead-token tombstone.
+      refreshToken: null,
+      // epoch MILLISECONDS — the CLI stores Date.now() + expires_in * 1000 and
+      // compares with (expiresAt - Date.now()).
+      expiresAt: expiresAt != null ? expiresAt.getTime() : null,
+      scopes: ['user:inference'],
+      subscriptionType: null,
+    },
+  };
+}
+
+/**
+ * Materialize a per-worker CLAUDE_CONFIG_DIR containing a `.credentials.json`
+ * with ONLY the access token (no refreshToken).
+ *
+ * The Claude Code SDK reads `${CLAUDE_CONFIG_DIR}/.credentials.json` and looks
+ * the credential up under the `claudeAiOauth` key with camelCase fields —
+ * `{ accessToken, refreshToken, expiresAt, scopes, subscriptionType }`, where
+ * expiresAt is epoch MILLISECONDS. There is no code path in the CLI that reads a
+ * top-level snake_case `access_token` from this file. Writing the flat shape
+ * produced a file the CLI silently ignored, so every worker on this path died
+ * with "Not logged in · Please run /login" (verified against CLI 2.1.217: the
+ * same token in the flat shape gives "Not logged in", in the nested shape it
+ * reaches the API and returns 401 for a bad token).
+ *
+ * refreshToken is null rather than "" — the CLI treats an empty-string
+ * refreshToken as a tombstone marking a revoked token family. Null matches what
+ * the CLI itself synthesizes when authenticating from CLAUDE_CODE_OAUTH_TOKEN.
+ * By omitting a usable refreshToken, the SDK cannot call the Anthropic token
+ * refresh endpoint — eliminating the token family revocation cascade that
+ * occurs when multiple workers rotate concurrently.
  *
  * The server handles all token refresh centrally (claim-gate + cron), so
  * workers only need a valid access_token to operate within their session.
@@ -37,19 +71,13 @@ export function materializeClaudeConfigDir(
     fs.chmodSync(claudeConfigDir, 0o700);
   }
 
-  const credentials = {
-    type: 'oauth_token',
-    access_token: accessToken,
-    // expires_at: epoch seconds (the SDK reads this)
-    ...(expiresAt != null ? { expires_at: Math.floor(expiresAt.getTime() / 1000) } : {}),
-    // Deliberately no refresh_token — workers must not rotate tokens.
-  };
+  const credentials = buildClaudeCredentialsFile(accessToken, expiresAt);
 
   const credPath = join(claudeConfigDir, '.credentials.json');
   fs.writeFileSync(credPath, JSON.stringify(credentials));
   fs.chmodSync(credPath, 0o600);
 
-  console.log(`[Worker ${workerId}] Materialized Claude config dir at ${claudeConfigDir} (access-only, no refresh_token)`);
+  console.log(`[Worker ${workerId}] Materialized Claude config dir at ${claudeConfigDir} (access-only, no refreshToken)`);
   return { claudeConfigDir };
 }
 

@@ -146,6 +146,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockHasCodexCredential.mockReset();
+    mockDbUpdate.set.mockClear();
 
     // Default: grant access, no blocking dep workers, no connectors, no held mission, no active workers
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -905,6 +906,114 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
     // hasCodexCredential should NOT have been called (gate skipped by forceOverride)
     expect(mockHasCodexCredential).not.toHaveBeenCalled();
+  });
+
+  // ── Durable start: manualStartAt + priority boost ─────────────────────────
+
+  it('writes context.manualStartAt on every successful start', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ manualStartAt: expect.any(String) }),
+      })
+    );
+  });
+
+  it('boosts priority by 1 on first manual start', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: 5,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 6 })
+    );
+  });
+
+  it('boosts priority from 0 when task has null priority', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: null,
+      mode: null,
+      priority: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 1 })
+    );
+  });
+
+  it('does not re-boost priority if context.manualStartAt already set (idempotent poke)', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Clean Task',
+      description: null,
+      status: 'pending',
+      workspaceId: 'ws-1',
+      dependsOn: null,
+      missionId: null,
+      roleSlug: null,
+      context: { manualStartAt: '2026-08-15T08:00:00.000Z' },
+      mode: null,
+      priority: 3,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    // Priority must NOT be re-bumped when manualStartAt is already set
+    const call = mockDbUpdate.set.mock.calls[0]?.[0];
+    expect(call?.priority).toBeUndefined();
   });
 
   it('clean pending task returns 200 with exactly one TASK_ASSIGNED event (regression guard)', async () => {
