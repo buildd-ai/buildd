@@ -87,8 +87,8 @@ function mockExecFile(
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
 
-// Inject mocks via the exported dep-injection hook so the test works regardless
-// of bun version and mock.module registry state.
+// Inject mocks before any test runs. Uses the exported dep-injection hook so
+// the test works regardless of bun version and mock.module registry state.
 __setGitOpsDeps({
   execSync: mockExecSync as any,
   execFile: mockExecFile as any,
