@@ -3,7 +3,7 @@
  *
  * Regression guard: worktrees need `bun install` run after creation so that
  * workspace package symlinks (@buildd/core, @buildd/shared, etc.) are present.
- * Without it, deep imports like '@buildd/core/db' fail because Bun's module
+ * Without them, deep imports like '@buildd/core/db' fail because Bun's module
  * resolution only traverses upward through the worktree directory tree, never
  * reaching the parent repo's nested node_modules where the symlinks live.
  *
@@ -14,7 +14,6 @@
  */
 
 import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
-import { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 
 // ─── Mock state ───────────────────────────────────────────────────────────────
 
@@ -79,10 +78,17 @@ function mockExecFile(
 
 // ─── Setup / teardown ─────────────────────────────────────────────────────────
 
-// Inject mocks before any test runs. Uses the exported dep-injection hook so
-// the test works regardless of bun version and mock.module registry state
-// (avoids races with mock.restore() called in sibling test files like
-// updater.test.ts that share a mock registry across parallel workers).
+// Use require() (CJS) instead of await import() to load the real git-operations
+// module, bypassing the ES module mock registry. waiting-worktree-eviction.test.ts
+// installs mock.module('../../src/git-operations') which only affects ES imports;
+// require() always returns the real module regardless of mock.module() state.
+// This avoids the top-level await race where other files' mock.module() calls can
+// run during the await and replace the module before it resolves.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
+
+// Inject mocks via the exported dep-injection hook so the test works regardless
+// of bun version and mock.module registry state.
 __setGitOpsDeps({
   execSync: mockExecSync as any,
   execFile: mockExecFile as any,
@@ -108,10 +114,8 @@ describe('setupWorktree', () => {
     existsSyncMap = {};
     failBunInstall = { frozen: false, unfrozen: false };
     revListBehavior = 'ok';
-    // Re-inject each test: in Bun 1.3.14+, module re-evaluation (triggered when a
-    // sibling file calls mock.restore()) causes live bindings to follow the new
-    // module instance. Re-injecting here ensures the mocks are always on the same
-    // instance as the imported setupWorktree.
+    // Re-inject each test to reset mocks to initial state (clears per-test overrides
+    // like custom execSync functions set in the stale-branch guard tests).
     __setGitOpsDeps({
       execSync: mockExecSync as any,
       execFile: mockExecFile as any,
@@ -254,5 +258,91 @@ describe('setupWorktree', () => {
     const addCmd = syncCalls.find(c => c.cmd.includes('git worktree add'));
     expect(addCmd?.cmd).toContain('buildd/legacy-prior-branch');
     expect(addCmd?.cmd).toContain('origin/buildd/legacy-prior-branch');
+  });
+
+  // ─── Stale-branch guard tests ─────────────────────────────────────────────
+  // Regression guard: when the working tree is many commits behind origin/defaultBranch,
+  // a console.warn is emitted. The guard is non-blocking — setup still succeeds.
+
+  test('stale-branch guard: emits a warn when branch is many commits behind default', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    // Intercept the "HEAD..origin/<defaultBranch>" rev-list call to return a large count.
+    // The existing mockExecSync handles rev-list --count; we need to distinguish between
+    // the fetchBranch probe (origin/<defaultBranch>..origin/<candidate>) and the stale-branch
+    // check (HEAD..origin/<defaultBranch>). We do this by checking for "HEAD.." prefix.
+    const originalExecSync = mockExecSync;
+    const staleExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '25'; // 25 commits behind
+      return originalExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: staleExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-stale');
+      // Setup still succeeds (guard is advisory only)
+      expect(result?.path).toBe(WORKTREE_PATH);
+      // A warning was emitted mentioning the commit count
+      const staleWarn = warns.find(w => w.includes('25') && w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeTruthy();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
+  });
+
+  test('stale-branch guard: no warn when branch is within tolerance (<= 10 commits behind)', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    const freshExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '3'; // only 3 commits behind — OK
+      return mockExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: freshExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-fresh');
+      const staleWarn = warns.find(w => w.toLowerCase().includes('stale') || w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeUndefined();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
   });
 });

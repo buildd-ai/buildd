@@ -237,6 +237,25 @@ export interface WorkspaceGitConfig {
   // Defaults to 3 if not set. Set to 0 to disable CI retries entirely.
   maxCiRetries?: number;
 
+  // Change-intent coordination (see docs/design/change-intent.md)
+  // conflictSurfaces: paths/globs to watch for concurrent-PR collisions. When a PR
+  // touches a declared surface, warning notes are posted on all open-PR tasks that
+  // also touch it. Default action is warn+guide; never blocks.
+  conflictSurfaces?: Array<{
+    pattern: string;  // prefix or glob, e.g. "packages/core/drizzle/**" or "bun.lock"
+    label: string;    // shown in warning notes, e.g. "Drizzle migrations"
+  }>;
+  // sequenceNamespaces: directories where file-name distinctness does NOT prevent
+  // integer-index collisions (Drizzle migrations, ADR numbering). At task-creation
+  // time, any task whose pathManifest touches one of these dirs gets the anchorFile
+  // auto-appended — making the claim-route serialization fire on _journal.json instead
+  // of the individual migration filename (where pathsOverlap() would otherwise miss it).
+  sequenceNamespaces?: Array<{
+    dir: string;        // e.g. "packages/core/drizzle"
+    anchorFile: string; // e.g. "packages/core/drizzle/meta/_journal.json"
+    label: string;
+  }>;
+
   // When true, tasks with outputRequirement='pr_required' that do not already declare a
   // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
   // at task-creation time. The existing loop machinery handles re-queuing.
@@ -556,6 +575,11 @@ export const workspaces = pgTable('workspaces', {
 
   // Work tracker integration — links a connector as the external issue tracker (e.g. Linear)
   workTrackerConfig: jsonb('work_tracker_config').$type<WorkspaceWorkTrackerConfig>(),
+
+  // Atomic migration-number counter. Incremented by POST /api/workspaces/[id]/migration-slot
+  // so concurrent branches get distinct sequential numbers. Starts at 0 (agents read the git
+  // journal directly to bootstrap the right initial value on first use).
+  lastMigrationNumber: integer('last_migration_number').default(0).notNull(),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2126,6 +2150,35 @@ export type NewConnectorShare = typeof connectorShares.$inferInsert;
 
 export type ExternalLink = typeof externalLinks.$inferSelect;
 export type NewExternalLink = typeof externalLinks.$inferInsert;
+
+// Change-intent rows — one per (workspace, conflictSurface, task) while a PR is open.
+// Closed (closedAt set) when the PR merges or is abandoned.
+// See docs/design/change-intent.md.
+export const changeIntents = pgTable('change_intents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // The matched conflictSurface label (e.g. "Drizzle migrations") — human-readable key.
+  surface: text('surface').notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  prNumber: integer('pr_number'),
+  branch: text('branch'),
+  headSha: text('head_sha'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+}, (t) => ({
+  workspaceSurfaceOpenIdx: index('change_intents_ws_surface_open_idx')
+    .on(t.workspaceId, t.surface)
+    .where(sql`${t.closedAt} IS NULL`),
+  taskIdx: index('change_intents_task_idx').on(t.taskId),
+}));
+
+export const changeIntentsRelations = relations(changeIntents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [changeIntents.workspaceId], references: [workspaces.id] }),
+  task: one(tasks, { fields: [changeIntents.taskId], references: [tasks.id] }),
+}));
+
+export type ChangeIntent = typeof changeIntents.$inferSelect;
+export type NewChangeIntent = typeof changeIntents.$inferInsert;
 
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;

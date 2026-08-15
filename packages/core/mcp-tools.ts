@@ -227,7 +227,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Use corpus=memory BEFORE starting work to find prior lessons (gotchas, patterns, decisions) — builders should query for the task title and any error message before diagnosing. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. BEFORE starting work, query TWO corpora: (1) corpus=memory for prior lessons (gotchas, patterns, decisions) and (2) corpus=task for recent task outcomes — task is now the system of record for all work done in the last 60+ days. Memory-only lookup misses recent outcomes. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -953,7 +953,7 @@ export async function handleBuilddAction(
                 const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
                 return `- **[${m.type}] ${m.title}**: ${truncContent}`;
               });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall for more context.`;
+              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall for more context (memory corpus). Also call recall with scope=task to find recent task outcomes — the task corpus is the system of record for all work done in the last 60+ days.`;
             }
           }
         }

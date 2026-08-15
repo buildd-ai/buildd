@@ -1,6 +1,6 @@
 {
-  "id": "58858ca6-53d2-400b-bdf3-b011b8fb3f53",
-  "prevId": "bc82a4c1-a7b3-4c00-9319-84c03b29dbb4",
+  "id": "252b35d0-5ece-42f0-a091-2ef080fd9d39",
+  "prevId": "58858ca6-53d2-400b-bdf3-b011b8fb3f53",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8013,6 +8013,27 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "subagent_spans": {
+          "name": "subagent_spans",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
+        },
+        "subagent_spans_observed": {
+          "name": "subagent_spans_observed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "background_agent_ms": {
+          "name": "background_agent_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",
