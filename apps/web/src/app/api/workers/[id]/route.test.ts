@@ -7,6 +7,9 @@ const mockConnectorsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
 }));
+const mockTaskSchedulesUpdate = mock(() => ({
+  set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+}));
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
@@ -97,6 +100,7 @@ mock.module('@buildd/core/db', () => ({
       if (table === 'accounts') return mockAccountsUpdate();
       if (table === 'teams') return mockTeamsUpdate();
       if (table === 'secrets') return mockSecretsUpdate();
+      if (table === 'taskSchedules') return mockTaskSchedulesUpdate();
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockGenericInsert(table),
@@ -114,6 +118,7 @@ mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
+  gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -189,6 +194,7 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: 'secrets',
   workerErrorTraces: { workerId: 'workerId' },
   missions: 'missions',
+  taskSchedules: 'taskSchedules',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -4816,5 +4822,177 @@ describe('PATCH /api/workers/[id] — activeSessions seat release', () => {
       v => v.activeSessions != null
     );
     expect(decrementCall).toBeUndefined();
+  });
+});
+
+// ── Re-arm cap-deferred schedule on worker completion (Defect 2) ───────────────
+// Regression: cap=1, first task completes → schedule nextRunAt resets to now
+// so the second task is created on the very next cron tick, not the full interval later.
+describe('rearm-cap-deferred-schedules on worker completion', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTaskSchedulesUpdate.mockReset();
+    mockTaskSchedulesUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('resets nextRunAt to now when the completing task frees the per-schedule concurrent cap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'api',
+      maxConcurrentWorkers: 5,
+    });
+
+    const scheduleId = 'sched-1';
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    // The mocked select returns whatever mockTasksFindFirst() returns.
+    // We return an object whose fields satisfy all three callers:
+    //   1. terminalTaskRow (needs scheduleId, outputRequirement, missionId)
+    //   2. schedule lookup (needs maxConcurrentFromSchedule, id, lastDeferralReason, nextRunAt)
+    //   3. active-task count (needs count)
+    // All three are satisfied by this single mock value since all go through mockSelect.
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId,
+      outputRequirement: 'none',
+      missionId: null,
+      maxConcurrentFromSchedule: 1,
+      lastDeferralReason: 'concurrent_cap',
+      nextRunAt: new Date(Date.now() + 3600_000), // 1h in the future
+      count: 0,  // 0 active tasks remaining after this completion
+      // workspace lookup fields
+      context: {},
+      workspace: { teamId: 'team-1' },
+    });
+
+    const completedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [completedWorker]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    // The taskSchedules update (re-arm) must have been called.
+    expect(mockTaskSchedulesUpdate).toHaveBeenCalled();
+    const setCall = mockTaskSchedulesUpdate.mock.results[0]?.value?.set;
+    expect(setCall).toBeDefined();
+    // The set call receives { nextRunAt: <now>, updatedAt: <now> }
+    const setValues = setCall?.mock?.calls?.[0]?.[0];
+    expect(setValues?.nextRunAt).toBeInstanceOf(Date);
+  });
+
+  it('does NOT reset nextRunAt when there are still active tasks from the schedule', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'api',
+      maxConcurrentWorkers: 5,
+    });
+
+    const scheduleId = 'sched-1';
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId,
+      outputRequirement: 'none',
+      missionId: null,
+      maxConcurrentFromSchedule: 1,
+      lastDeferralReason: 'concurrent_cap',
+      nextRunAt: new Date(Date.now() + 3600_000),
+      count: 1,  // 1 task still running — cap (1) is still met
+      context: {},
+      workspace: { teamId: 'team-1' },
+    });
+
+    const completedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [completedWorker]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    // taskSchedules should NOT be updated since cap is still exceeded.
+    expect(mockTaskSchedulesUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-arm when the task has no scheduleId', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      authType: 'api',
+      maxConcurrentWorkers: 5,
+    });
+
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null,  // not from a schedule
+      outputRequirement: 'none',
+      missionId: null,
+      count: 0,
+      context: {},
+      workspace: { teamId: 'team-1' },
+    });
+
+    const completedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' };
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [completedWorker]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Done' },
+    });
+
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    expect(mockTaskSchedulesUpdate).not.toHaveBeenCalled();
   });
 });
