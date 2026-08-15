@@ -200,6 +200,32 @@ Specific triggers to always check:
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 - Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
 
+## Schema Migrations — Reserve Your Number First
+
+Before running \`bun db:generate\` on any schema change, reserve the migration number atomically:
+
+\`\`\`bash
+# Get the highest existing number from the journal
+CURRENT_MAX=\$(cat packages/core/drizzle/meta/_journal.json | jq '[.entries[].idx] | max')
+
+# Reserve the next slot (replace <workspaceId> with your workspace UUID)
+SLOT=\$(curl -s -X POST https://buildd.dev/api/workspaces/<workspaceId>/migration-slot \\\\
+  -H "Authorization: Bearer \${BUILDD_API_KEY}" \\\\
+  -H "Content-Type: application/json" \\\\
+  -d "{\\"currentMax\\": \$CURRENT_MAX}")
+echo "Reserved: \$(echo \$SLOT | jq -r .formatted)"
+\`\`\`
+
+Then rename the generated migration file if Drizzle picked a conflicting number:
+\`\`\`bash
+# After bun db:generate, if the generated number != reserved number, rename:
+cd packages/core/drizzle
+mv <old_number>_<name>.sql <reserved_number>_<name>.sql
+# Update meta/_journal.json to match the new filename and idx
+\`\`\`
+
+This prevents two concurrent branches from both generating migration 0106.
+
 ## End-of-Task Memory (Gotchas Only)
 
 Only save a memory if you hit a **real gotcha** — a non-obvious error or fix that future builders would re-derive from scratch.

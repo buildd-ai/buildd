@@ -5,6 +5,12 @@ import { eq, and, isNull, isNotNull } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
+import {
+  resolveMatchedSurfaces,
+  recordChangeIntents,
+  findConflictingIntents,
+  postConflictWarnings,
+} from '@/lib/change-intent';
 
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
@@ -246,6 +252,44 @@ export async function POST(req: NextRequest) {
 
     await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
+
+    // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
+    try {
+      const taskPathManifest = (worker.task?.pathManifest as string[] | null) ?? [];
+      const matchedSurfaces = resolveMatchedSurfaces(taskPathManifest, workspace.gitConfig ?? null);
+
+      if (matchedSurfaces.length > 0) {
+        // Record intent rows first (so we don't find ourselves as a conflict)
+        await recordChangeIntents({
+          workspaceId: workspace.id,
+          taskId: worker.taskId ?? null,
+          prNumber: prData.number,
+          branch: head,
+          headSha: prData.head?.sha ?? null,
+          matchedSurfaces,
+        });
+
+        // Find other open PRs on the same surfaces
+        const conflicting = await findConflictingIntents(
+          workspace.id,
+          matchedSurfaces,
+          worker.taskId ?? null,
+        );
+
+        if (conflicting.length > 0) {
+          await postConflictWarnings({
+            currentTaskId: worker.taskId ?? null,
+            currentPrNumber: prData.number,
+            currentPrUrl: prData.html_url,
+            currentSurfaces: matchedSurfaces,
+            conflicting,
+          });
+        }
+      }
+    } catch (err) {
+      // Non-fatal: conflict detection must never fail PR creation
+      console.error('[changeIntent] PR conflict detection failed (non-fatal):', err);
+    }
 
     // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
     const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);

@@ -28,6 +28,7 @@ import {
 } from '@/lib/subject-anchor-observer';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
+import { closeIntentsForPr } from '@/lib/change-intent';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -578,6 +579,11 @@ async function handlePullRequestEvent(event: {
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
+
+    // Close any open changeIntent rows for this PR — surfaces are now free.
+    closeIntentsForPr(worker.workspaceId, pr.number).catch(e =>
+      console.error(`[webhook] closeIntentsForPr failed for PR #${pr.number}:`, e),
+    );
 
     // Reconciliation sweep: update subject state for tasks anchored to this PR.
     // Best-effort — sweep failure must never fail the webhook response.
