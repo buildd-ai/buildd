@@ -760,43 +760,29 @@ export async function handleBuilddAction(
   switch (action) {
     case 'list_tasks': {
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      // Scope the fetch server-side to shrink the payload: only active
-      // (non-terminal) tasks, and this workspace when we know it. The
-      // client-side filter below still narrows to the exact statuses.
-      const query = new URLSearchParams({ status: 'active' });
-      if (wsId) query.set('workspaceId', wsId);
-      const data = await api(`/api/tasks?${query.toString()}`);
-      const allTasks = data.tasks || [];
-      // Include pending + assigned + in_progress so planners see all ongoing work,
-      // not just tasks waiting to be claimed. This prevents duplicate task creation
-      // when a planner checks existing work before creating new tasks.
-      let active = allTasks.filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status));
-      if (wsId) {
-        active = active.filter((t: any) => t.workspaceId === wsId);
-      }
-      // Pending tasks first (claimable), then assigned/in_progress (already running)
-      active.sort((a: any, b: any) => {
-        const statusOrder: Record<string, number> = { pending: 0, assigned: 1, in_progress: 2 };
-        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-        if (statusDiff !== 0) return statusDiff;
-        return (b.priority || 0) - (a.priority || 0);
-      });
-
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
-      const paginated = active.slice(offset, offset + limit);
-      const hasMore = offset + limit < active.length;
+      // Server handles status filter, workspace scoping, sort (pending-first /
+      // priority-desc), and pagination — no client-side fan-out needed.
+      const query = new URLSearchParams({ status: 'active', limit: String(limit), offset: String(offset) });
+      if (wsId) query.set('workspaceId', wsId);
+      const data = await api(`/api/tasks?${query.toString()}`);
+      const paginated: any[] = data.tasks || [];
 
-      if (paginated.length === 0) return text('No active tasks found.');
+      if (paginated.length === 0 && offset === 0) return text('No active tasks found.');
+
+      const total: number = data.total ?? paginated.length;
+      const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
+      const hasMore: boolean = data.hasMore ?? false;
 
       const summary = paginated.map((t: any) => {
         const catPrefix = t.category ? `[${t.category}] ` : '';
         const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
-        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
+        const desc = t.descriptionPreview || 'No description';
+        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
       }).join('\n\n');
 
-      const pendingCount = active.filter((t: any) => t.status === 'pending').length;
-      const header = `${active.length} active task${active.length === 1 ? '' : 's'} (${pendingCount} pending, ${active.length - pendingCount} in progress):`;
+      const header = `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
