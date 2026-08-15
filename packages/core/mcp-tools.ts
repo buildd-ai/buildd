@@ -1376,6 +1376,26 @@ export async function handleBuilddAction(
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
+      // Similarity check: run BEFORE creating the task so we don't find our own task.
+      // Skip for child tasks, retry tasks, reviewer tasks, and friction tasks — they
+      // legitimately share a subject with their parent and generate constant false positives.
+      const SIMILAR_TASK_WARN_THRESHOLD = 0.82;
+      const suppressedTitlePattern = /^\[(CI Retry|reviewer retry|reviewer|friction)\b/i;
+      const isChildOrRetryTask =
+        !!params.parentTaskId ||
+        suppressedTitlePattern.test(String(params.title));
+
+      type SimilarCandidate = { id: string; similarity: number; content: string };
+      let priorSimilarCandidates: SimilarCandidate[] = [];
+      if (!isChildOrRetryTask && ctx.knowledgeStore?.nearDupeCheck && wsId) {
+        const taskNs = buildNamespace(wsId, 'task');
+        const queryText = [params.title, params.description]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join('\n')
+          .slice(0, 2000);
+        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, queryText, 5).catch(() => []);
+      }
+
       const taskBody: Record<string, unknown> = {
         workspaceId: wsId,
         title: params.title,
@@ -1510,6 +1530,54 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
+      // Index the new (pending) task into the knowledge store so future create_task
+      // calls can find it via nearDupeCheck. Best-effort — never fail task creation.
+      // Uses the same source_id format as buildTaskCard so complete_task overwrites
+      // the placeholder with the full outcome when the task finishes.
+      if (!isChildOrRetryTask && ctx.knowledgeStore && task?.id && task?.title) {
+        const pendingContent = [
+          `# Task: ${task.title}`,
+          task.description ? `## Description\n${task.description}` : null,
+        ].filter((s): s is string => s !== null).join('\n\n');
+        mirrorWorkProduct(ctx, 'task', {
+          id: `task:${task.id}`,
+          content: pendingContent,
+          lexicalText: [task.title, task.description].filter(Boolean).join('\n'),
+          sourceType: 'task',
+          sourceUrl: `/app/tasks/${task.id}`,
+          metadata: { phase: 'pending', taskId: task.id },
+        }).catch(() => {});
+      }
+
+      // Cross-reference priorSimilarCandidates against currently-open tasks to build
+      // the warning. Only call the active-tasks endpoint when there are candidates
+      // above the threshold (avoids a needless round-trip on clean filings).
+      let similarTasksWarning = '';
+      const aboveThreshold = priorSimilarCandidates.filter(c => c.similarity >= SIMILAR_TASK_WARN_THRESHOLD);
+      if (aboveThreshold.length > 0 && task?.id) {
+        let activeTaskIds = new Set<string>();
+        try {
+          const activePage = await api(`/api/tasks?status=active&workspaceId=${wsId}&limit=100`);
+          for (const t of (activePage?.tasks ?? [])) {
+            if (t?.id) activeTaskIds.add(t.id);
+          }
+        } catch { /* best-effort */ }
+
+        const openSimilar = aboveThreshold.filter(c => {
+          const candidateTaskId = c.id.startsWith('task:') ? c.id.slice(5) : c.id;
+          return candidateTaskId !== task.id && activeTaskIds.has(candidateTaskId);
+        });
+
+        if (openSimilar.length > 0) {
+          const lines = openSimilar.map(c => {
+            const candidateTaskId = c.id.startsWith('task:') ? c.id.slice(5) : c.id;
+            const titleLine = c.content.split('\n')[0].replace(/^#+ Task: /, '').replace(/^#+ Task /, '').trim();
+            return `  - ${candidateTaskId} — "${titleLine}" (similarity ${c.similarity.toFixed(2)})`;
+          });
+          similarTasksWarning = `\n\n⚠ ${openSimilar.length} open task(s) with a similar subject:\n${lines.join('\n')}\nIf filing a genuinely distinct task, pass fileAnywayReason to create_task.`;
+        }
+      }
+
       const createAppBase = ctx.appBaseUrl || 'https://buildd.dev';
       const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
 
@@ -1522,7 +1590,7 @@ export async function handleBuilddAction(
         : task.status === 'assigned'
           ? 'Assigned — a runner has already claimed it'
           : 'Queued — no runner has claimed it yet';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${similarTasksWarning}`);
     }
 
     case 'create_schedule': {

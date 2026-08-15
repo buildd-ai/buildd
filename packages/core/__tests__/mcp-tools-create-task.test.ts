@@ -303,6 +303,230 @@ describe('create_task — parentTaskId support', () => {
   });
 });
 
+describe('create_task — similar open task detection', () => {
+  const EXISTING_TASK_ID = 'b833be4b-0000-0000-0000-000000000001';
+  const NEW_TASK_ID = 'e631d11c-0000-0000-0000-000000000001';
+
+  function buildApi(activeTaskIds: string[] = [EXISTING_TASK_ID]) {
+    return async (path: string, opts?: RequestInit) => {
+      if (path.includes('status=active')) {
+        return { tasks: activeTaskIds.map(id => ({ id, title: 'Open task', status: 'pending' })) };
+      }
+      // POST /api/tasks
+      return { id: NEW_TASK_ID, title: 'Fix seat accounting', priority: 5, status: 'pending' };
+    };
+  }
+
+  function buildStore(similarity: number) {
+    return {
+      nearDupeCheck: async (_ns: string, _text: string, _topK?: number) => [
+        {
+          id: `task:${EXISTING_TASK_ID}`,
+          similarity,
+          content: `# Task: Session-limited 'Waiting' workers squat concurrency seats`,
+          sourceUrl: `/app/tasks/${EXISTING_TASK_ID}`,
+        },
+      ],
+      upsert: async () => ({ superseded: 0 }),
+    };
+  }
+
+  it('surfaces similar open task in response when similarity exceeds threshold', async () => {
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Fix seat accounting: dead workers hold concurrency seats after session-limit and stale-reap',
+        description: 'Workers in terminal state still hold seat count',
+      },
+      createMockContext({ knowledgeStore: buildStore(0.87) as any }),
+    );
+
+    expect(result.content[0].text).toContain('⚠');
+    expect(result.content[0].text).toContain(EXISTING_TASK_ID);
+    expect(result.content[0].text).toContain('0.87');
+  });
+
+  it('regression: two titles from the 2026-08-15 duplicate incident surface each other', async () => {
+    const existingTitle = "Session-limited 'Waiting' workers squat concurrency seats and never auto-resume after reset";
+    const newTitle = 'Fix seat accounting: dead workers hold concurrency seats after session-limit and stale-reap';
+
+    const store = {
+      nearDupeCheck: async (_ns: string, text: string) => {
+        // Only respond when queried with the new task's text
+        if (text.includes('seat accounting') || text.includes('stale-reap')) {
+          return [{
+            id: `task:${EXISTING_TASK_ID}`,
+            similarity: 0.87,
+            content: `# Task: ${existingTitle}`,
+            sourceUrl: `/app/tasks/${EXISTING_TASK_ID}`,
+          }];
+        }
+        return [];
+      },
+      upsert: async () => ({ superseded: 0 }),
+    };
+
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: newTitle, description: 'dead workers hold seats' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).toContain(EXISTING_TASK_ID);
+  });
+
+  it('does not warn when similarity is below threshold (0.82)', async () => {
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: 'Fix seat accounting', description: 'some description' },
+      createMockContext({ knowledgeStore: buildStore(0.75) as any }),
+    );
+
+    expect(result.content[0].text).not.toContain('⚠');
+  });
+
+  it('does not warn when the candidate task is not in the active task list', async () => {
+    const result = await handleBuilddAction(
+      buildApi([]) as unknown as ApiFn, // no active tasks
+      'create_task',
+      { title: 'Fix seat accounting', description: 'some description' },
+      createMockContext({ knowledgeStore: buildStore(0.87) as any }),
+    );
+
+    expect(result.content[0].text).not.toContain('⚠');
+  });
+
+  it('does not check when no knowledge store is in context', async () => {
+    let nearDupeCheckCalled = false;
+    const api = async (path: string) => {
+      if (path.includes('status=active')) nearDupeCheckCalled = true;
+      return { id: NEW_TASK_ID, title: 'Task', priority: 5, status: 'pending' };
+    };
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'create_task',
+      { title: 'Fix seat accounting', description: 'some description' },
+      createMockContext(), // no knowledgeStore
+    );
+
+    expect(nearDupeCheckCalled).toBe(false);
+    expect(result.content[0].text).not.toContain('⚠');
+  });
+
+  it('does not check for child tasks (parentTaskId set)', async () => {
+    let nearDupeCheckCalled = false;
+    const store = {
+      nearDupeCheck: async () => { nearDupeCheckCalled = true; return []; },
+      upsert: async () => ({ superseded: 0 }),
+    };
+    await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Fix seat accounting: dead workers hold concurrency seats',
+        description: 'retry of parent task',
+        parentTaskId: 'parent-task-id',
+      },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(nearDupeCheckCalled).toBe(false);
+  });
+
+  it('does not check for CI Retry tasks', async () => {
+    let nearDupeCheckCalled = false;
+    const store = {
+      nearDupeCheck: async () => { nearDupeCheckCalled = true; return []; },
+      upsert: async () => ({ superseded: 0 }),
+    };
+    await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      {
+        title: '[CI Retry #2] Fix seat accounting: dead workers hold concurrency seats',
+        description: 'retry after CI failure',
+      },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(nearDupeCheckCalled).toBe(false);
+  });
+
+  it('does not check for reviewer tasks', async () => {
+    let nearDupeCheckCalled = false;
+    const store = {
+      nearDupeCheck: async () => { nearDupeCheckCalled = true; return []; },
+      upsert: async () => ({ superseded: 0 }),
+    };
+    await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      {
+        title: '[reviewer] Fix seat accounting: dead workers hold concurrency seats',
+        description: 'code review task',
+      },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(nearDupeCheckCalled).toBe(false);
+  });
+
+  it('does not include the just-created task in the warning (no self-match)', async () => {
+    const store = {
+      nearDupeCheck: async () => [
+        {
+          id: `task:${NEW_TASK_ID}`, // same as new task
+          similarity: 0.99,
+          content: '# Task: Fix seat accounting',
+          sourceUrl: `/app/tasks/${NEW_TASK_ID}`,
+        },
+      ],
+      upsert: async () => ({ superseded: 0 }),
+    };
+    // active tasks includes new task but NOT an older existing task
+    const api = async (path: string) => {
+      if (path.includes('status=active')) return { tasks: [{ id: NEW_TASK_ID }] };
+      return { id: NEW_TASK_ID, title: 'Fix seat accounting', priority: 5, status: 'pending' };
+    };
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'create_task',
+      { title: 'Fix seat accounting', description: 'some description' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).not.toContain('⚠');
+  });
+
+  it('indexes new task into knowledge store after creation (best-effort)', async () => {
+    const upsertCalls: Array<{ ns: string; chunks: unknown[] }> = [];
+    const store = {
+      nearDupeCheck: async () => [],
+      upsert: async (ns: string, chunks: unknown[]) => {
+        upsertCalls.push({ ns, chunks });
+        return { superseded: 0 };
+      },
+    };
+
+    await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: 'Fix seat accounting', description: 'some description' },
+      createMockContext({ workspaceId: MOCK_WORKSPACE_ID, knowledgeStore: store as any }),
+    );
+
+    expect(upsertCalls.length).toBe(1);
+    expect(upsertCalls[0].ns).toBe(`${MOCK_WORKSPACE_ID}:task`);
+    const chunk = upsertCalls[0].chunks[0] as any;
+    expect(chunk.id).toBe(`task:${NEW_TASK_ID}`);
+    expect(chunk.content).toContain('Fix seat accounting');
+  });
+});
+
 describe('create_task — fileAnywayReason support', () => {
   it('passes a trimmed explicit escape-hatch reason to task intake', async () => {
     let body: any;
