@@ -16,7 +16,7 @@
  */
 
 import { db } from '../db/index';
-import { workers, workspaces, githubInstallations } from '../db/schema';
+import { workers, workspaces, githubInstallations, githubRepos } from '../db/schema';
 import { and, isNull, isNotNull, eq } from 'drizzle-orm';
 import { createSign, createPrivateKey } from 'crypto';
 
@@ -103,17 +103,20 @@ async function main() {
   for (const [wsId, wsWorkers] of byWs) {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, wsId),
-      columns: { repo: true },
-      with: { githubInstallation: { columns: { installationId: true } } },
+      columns: { githubRepoId: true },
+      with: {
+        githubRepo: { columns: { fullName: true } },
+        githubInstallation: { columns: { installationId: true } },
+      },
     });
 
-    if (!ws?.repo || !ws.githubInstallation?.installationId) {
+    if (!ws?.githubRepo?.fullName || !ws.githubInstallation?.installationId) {
       console.log(`  workspace ${wsId}: no GitHub installation — skipping ${wsWorkers.length}`);
       counts.skipped += wsWorkers.length;
       continue;
     }
 
-    const { repo } = ws;
+    const repo = ws.githubRepo.fullName;
     const { installationId } = ws.githubInstallation;
     console.log(`workspace ${wsId} (${repo}): ${wsWorkers.length} PR(s) to check`);
 
