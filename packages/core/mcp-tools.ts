@@ -1323,7 +1323,41 @@ export async function handleBuilddAction(
       const loopInfo = params.maxLoops !== undefined
         ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
         : '';
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}`);
+
+      // Warn when a material field (title/description) is edited on a task whose
+      // worker is still in-flight — the running agent is locked to the previous brief.
+      let activeWorkerWarning = '';
+      const materialChanged = updateFields.title !== undefined || updateFields.description !== undefined;
+      if (materialChanged) {
+        try {
+          const taskData = await api(`/api/tasks/${params.taskId}?include=workers`);
+          const activeStatuses = ['running', 'assigned', 'waiting_input'];
+          const activeWorker = (taskData.workers || []).find(
+            (w: { id: string; status: string }) => activeStatuses.includes(w.status),
+          );
+          if (activeWorker) {
+            activeWorkerWarning = `\nWARNING: worker ${activeWorker.id} is currently ${activeWorker.status} on this task and is running against the PREVIOUS description. This edit did NOT reach it. To steer the running work, call send_agent_message (taskId=${params.taskId}) with the delta.`;
+            // Fire-and-forget: record the divergence on the task feed so it's visible in the UI timeline.
+            const noteEndpoint = updated.missionId
+              ? `/api/missions/${updated.missionId}/notes`
+              : `/api/tasks/${params.taskId}/notes`;
+            api(noteEndpoint, {
+              method: 'POST',
+              body: JSON.stringify({
+                type: 'warning',
+                title: 'Material edit while worker is active',
+                bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) is running against the previous description. Use send_agent_message (taskId=${params.taskId}) to redirect it.`,
+                authorType: 'system',
+                status: 'answered',
+              }),
+            }).catch(() => {});
+          }
+        } catch {
+          // Non-fatal — don't block the update response if the worker check fails
+        }
+      }
+
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}${activeWorkerWarning}`);
     }
 
     case 'create_task': {
@@ -1483,7 +1517,12 @@ export async function handleBuilddAction(
         return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
       }
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${task.startAt ? `Deferred until ${new Date(task.startAt).toISOString()}` : 'Queued — no runner has claimed it yet'}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const statusLabel = task.startAt
+        ? `Deferred until ${new Date(task.startAt).toISOString()}`
+        : task.status === 'assigned'
+          ? 'Assigned — a runner has already claimed it'
+          : 'Queued — no runner has claimed it yet';
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
     }
 
     case 'create_schedule': {
