@@ -242,4 +242,90 @@ describe('setupWorktree', () => {
     expect(addCmd?.cmd).toContain('buildd/legacy-prior-branch');
     expect(addCmd?.cmd).toContain('origin/buildd/legacy-prior-branch');
   });
+
+  // ─── Stale-branch guard tests ─────────────────────────────────────────────
+  // Regression guard: when the working tree is many commits behind origin/defaultBranch,
+  // a console.warn is emitted. The guard is non-blocking — setup still succeeds.
+
+  test('stale-branch guard: emits a warn when branch is many commits behind default', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    // Intercept the "HEAD..origin/<defaultBranch>" rev-list call to return a large count.
+    // The existing mockExecSync handles rev-list --count; we need to distinguish between
+    // the fetchBranch probe (origin/<defaultBranch>..origin/<candidate>) and the stale-branch
+    // check (HEAD..origin/<defaultBranch>). We do this by checking for "HEAD.." prefix.
+    const originalExecSync = mockExecSync;
+    const staleExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '25'; // 25 commits behind
+      return originalExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: staleExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-stale');
+      // Setup still succeeds (guard is advisory only)
+      expect(result?.path).toBe(WORKTREE_PATH);
+      // A warning was emitted mentioning the commit count
+      const staleWarn = warns.find(w => w.includes('25') && w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeTruthy();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
+  });
+
+  test('stale-branch guard: no warn when branch is within tolerance (<= 10 commits behind)', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    const freshExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '3'; // only 3 commits behind — OK
+      return mockExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: freshExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-fresh');
+      const staleWarn = warns.find(w => w.toLowerCase().includes('stale') || w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeUndefined();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
+  });
 });
