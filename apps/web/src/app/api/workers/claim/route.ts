@@ -2171,5 +2171,5 @@ export async function POST(req: NextRequest) {
       budgetResetsAt: account.budgetResetsAt,
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
-  });
+  }, undefined, { route: req.nextUrl.pathname });
 }

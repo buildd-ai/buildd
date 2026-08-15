@@ -1936,7 +1936,7 @@ export async function PATCH(
     ...updated,
     instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
-  });
+  }, undefined, { route: req.nextUrl.pathname });
 }
 
 // ── Reviewer outcome handling (BT-7, BT-8, BT-9) ────────────────────────────
