@@ -257,7 +257,7 @@ export function buildPrompt(ctx: PromptContext): string {
       }
     }
 
-    memoryContext.push('\nUse `buildd_search_memory` for more context and `buildd_save_memory` to record learnings.');
+    memoryContext.push('\nUse `recall` (memory corpus) + `recall scope=task` (recent outcomes) for full context. Use `learn` to record gotchas/patterns/decisions — NOT summaries.');
     promptParts.push(memoryContext.join('\n'));
   }
 

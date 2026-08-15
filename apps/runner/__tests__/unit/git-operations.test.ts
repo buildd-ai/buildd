@@ -35,6 +35,12 @@ let existsSyncMap: Record<string, boolean> = {};
 // and total-failure paths without re-importing the module under test.
 let failBunInstall: { frozen: boolean; unfrozen: boolean } = { frozen: false, unfrozen: false };
 
+// Controls what `git rev-list --count` returns for fetchBranch probes.
+// 'ok'      → returns a small count (branch exists, not diverged)
+// 'missing' → throws (origin/<candidate> ref not found)
+// 'diverged' → returns a large count (>50 commits ahead of default)
+let revListBehavior: 'ok' | 'missing' | 'diverged' = 'ok';
+
 function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   syncCalls.push({ cmd, opts });
   // git sparse-checkout list on a non-sparse repo exits non-zero (throws)
@@ -49,10 +55,20 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
     err.status = 1;
     throw err;
   }
+  // git rev-list --count: used by fetchBranch to verify resume candidate exists
+  if (cmd.includes('rev-list --count')) {
+    if (revListBehavior === 'missing') {
+      const err: any = new Error('unknown revision or path not in the working tree');
+      err.status = 128;
+      throw err;
+    }
+    if (revListBehavior === 'diverged') return '100';
+    return '5'; // ok — branch exists, not diverged
+  }
   return '';
 }
 
-// Node callback convention so promisify(execFile) resolves/rejects correctly.
+// Node callback convention so the new Promise wrapper resolves/rejects correctly.
 function mockExecFile(
   file: string,
   args: string[],
@@ -101,6 +117,7 @@ describe('setupWorktree', () => {
     fileCalls.length = 0;
     existsSyncMap = {};
     failBunInstall = { frozen: false, unfrozen: false };
+    revListBehavior = 'ok';
   });
 
   test('runs bun install in the worktree after git worktree add', async () => {
@@ -146,7 +163,7 @@ describe('setupWorktree', () => {
     expect(frozen).toBeTruthy();
     expect(unfrozen).toBeTruthy();
     // Setup still succeeds — the unfrozen retry created node_modules.
-    expect(result).toBe(WORKTREE_PATH);
+    expect(result?.path).toBe(WORKTREE_PATH);
   });
 
   test('returns the worktree path even if both bun installs fail (non-fatal)', async () => {
@@ -158,6 +175,167 @@ describe('setupWorktree', () => {
     expect(fileCalls.filter(c => c.file === 'bun' && c.args[0] === 'install').length).toBe(2);
     // ...and the failure is swallowed: the worktree path is still returned so the
     // worker can proceed (imports may break, but that is warned, not fatal).
-    expect(result).toBe(WORKTREE_PATH);
+    expect(result?.path).toBe(WORKTREE_PATH);
+  });
+
+  // ─── Resume-branch tests ───────────────────────────────────────────────────
+  // Regression guard for the "retry workers cut a fresh branch" defect:
+  // When context.resumeBranch is set and the branch exists on remote, the
+  // worktree must check out THAT branch — not a new one built from the retry
+  // task's own ID. Without this fix, retry workers opened duplicate PRs with
+  // only the delta commits rather than updating the original PR.
+
+  test('no resumeBranch: returns task branch and worktree path', async () => {
+    const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+
+    expect(result?.path).toBe(WORKTREE_PATH);
+    expect(result?.branch).toBe('buildd/test-branch');
+    expect(result?.fallback).toBeUndefined();
+  });
+
+  test('resumeBranch present on remote: checks out resume branch, not task branch', async () => {
+    // revListBehavior = 'ok' (default) → fetchBranch returns 'ok' → branch reused
+    const context = { resumeBranch: 'buildd/prior-task-branch' };
+
+    const result = await setupWorktree('/repo', 'buildd/retry-task-branch', 'main', 'worker-2', context);
+
+    // The returned branch must be the resume branch, not the task's own branch
+    expect(result?.branch).toBe('buildd/prior-task-branch');
+    // The worktree add command must use the resume branch name
+    const addCmd = syncCalls.find(c => c.cmd.includes('git worktree add'));
+    expect(addCmd?.cmd).toContain('buildd/prior-task-branch');
+    expect(addCmd?.cmd).toContain('origin/buildd/prior-task-branch');
+    // The task's own branch must NOT be checked out
+    expect(addCmd?.cmd).not.toContain('buildd/retry-task-branch');
+    // No fallback — resume succeeded
+    expect(result?.fallback).toBeUndefined();
+  });
+
+  test('resumeBranch missing on remote: falls back to fresh branch, populates fallback', async () => {
+    revListBehavior = 'missing'; // fetchBranch returns 'missing'
+    const context: Record<string, unknown> = {
+      resumeBranch: 'buildd/gone-branch',
+      lastCommitSha: 'abc123',
+      failureContext: 'tests failed',
+    };
+
+    const result = await setupWorktree('/repo', 'buildd/retry-task-branch', 'main', 'worker-3', context);
+
+    // Fresh start: task's own branch is used
+    expect(result?.branch).toBe('buildd/retry-task-branch');
+    // Fallback info populated so caller can surface a visible warning
+    expect(result?.fallback).toEqual({ candidate: 'buildd/gone-branch', reason: 'missing' });
+    // Resume context fields cleared so prompt-building doesn't reference the gone branch
+    expect(context.resumeBranch).toBeUndefined();
+    expect(context.lastCommitSha).toBeUndefined();
+    expect(context.failureContext).toBeUndefined();
+  });
+
+  test('resumeBranch diverged: falls back to fresh branch, populates fallback', async () => {
+    revListBehavior = 'diverged'; // fetchBranch returns 'diverged'
+    const context = { resumeBranch: 'buildd/diverged-branch' };
+
+    const result = await setupWorktree('/repo', 'buildd/retry-task-branch', 'main', 'worker-4', context);
+
+    expect(result?.branch).toBe('buildd/retry-task-branch');
+    expect(result?.fallback).toEqual({ candidate: 'buildd/diverged-branch', reason: 'diverged' });
+  });
+
+  test('baseBranch (legacy CI retry field): honored when resumeBranch absent', async () => {
+    // revListBehavior = 'ok' (default)
+    const context = { baseBranch: 'buildd/legacy-prior-branch' };
+
+    const result = await setupWorktree('/repo', 'buildd/retry-task-branch', 'main', 'worker-5', context);
+
+    expect(result?.branch).toBe('buildd/legacy-prior-branch');
+    const addCmd = syncCalls.find(c => c.cmd.includes('git worktree add'));
+    expect(addCmd?.cmd).toContain('buildd/legacy-prior-branch');
+    expect(addCmd?.cmd).toContain('origin/buildd/legacy-prior-branch');
+  });
+
+  // ─── Stale-branch guard tests ─────────────────────────────────────────────
+  // Regression guard: when the working tree is many commits behind origin/defaultBranch,
+  // a console.warn is emitted. The guard is non-blocking — setup still succeeds.
+
+  test('stale-branch guard: emits a warn when branch is many commits behind default', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    // Intercept the "HEAD..origin/<defaultBranch>" rev-list call to return a large count.
+    // The existing mockExecSync handles rev-list --count; we need to distinguish between
+    // the fetchBranch probe (origin/<defaultBranch>..origin/<candidate>) and the stale-branch
+    // check (HEAD..origin/<defaultBranch>). We do this by checking for "HEAD.." prefix.
+    const originalExecSync = mockExecSync;
+    const staleExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '25'; // 25 commits behind
+      return originalExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: staleExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-stale');
+      // Setup still succeeds (guard is advisory only)
+      expect(result?.path).toBe(WORKTREE_PATH);
+      // A warning was emitted mentioning the commit count
+      const staleWarn = warns.find(w => w.includes('25') && w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeTruthy();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
+  });
+
+  test('stale-branch guard: no warn when branch is within tolerance (<= 10 commits behind)', async () => {
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.join(' '));
+
+    const freshExecSync = (cmd: string, opts: Record<string, unknown>) => {
+      if (cmd.includes('HEAD..origin/')) return '3'; // only 3 commits behind — OK
+      return mockExecSync(cmd, opts);
+    };
+    __setGitOpsDeps({
+      execSync: freshExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+
+    try {
+      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-fresh');
+      const staleWarn = warns.find(w => w.toLowerCase().includes('stale') || w.toLowerCase().includes('behind'));
+      expect(staleWarn).toBeUndefined();
+    } finally {
+      console.warn = originalWarn;
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+      });
+    }
   });
 });
