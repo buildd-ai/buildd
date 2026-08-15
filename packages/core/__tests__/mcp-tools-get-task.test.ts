@@ -26,6 +26,18 @@ describe('get_task', () => {
     ).rejects.toThrow('taskId is required');
   });
 
+  it('throws helpful error when taskId is an 8-character UI prefix', async () => {
+    await expect(
+      handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: 'b833be4b' }, ctx()),
+    ).rejects.toThrow(/taskId must be a full UUID.*prefix/);
+  });
+
+  it('throws helpful error when taskId is a non-UUID string', async () => {
+    await expect(
+      handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: 'not-a-uuid-at-all' }, ctx()),
+    ).rejects.toThrow(/taskId must be a full UUID/);
+  });
+
   it('requests the task with include=workers,artifacts by default', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,

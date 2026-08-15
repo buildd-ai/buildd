@@ -202,11 +202,13 @@ describe('knowledge mirror — create_artifact', () => {
 });
 
 describe('knowledge mirror — approve_plan', () => {
+  const PLAN_ID = '99999999-9999-9999-9999-999999999999';
+
   it('upserts a plan card with rendered steps', async () => {
     const store = makeRecordingStore();
     const api = routedApi({
-      'POST /api/tasks/t-9/approve-plan': { tasks: ['c-1', 'c-2'] },
-      'GET /api/tasks/t-9': {
+      [`POST /api/tasks/${PLAN_ID}/approve-plan`]: { tasks: ['c-1', 'c-2'] },
+      [`GET /api/tasks/${PLAN_ID}`]: {
         title: 'Build feature',
         missionId: 'm-1',
         result: {
@@ -220,12 +222,12 @@ describe('knowledge mirror — approve_plan', () => {
       },
     });
 
-    await handleBuilddAction(api, 'approve_plan', { taskId: 't-9' }, ctxWith(store, 'admin'));
+    await handleBuilddAction(api, 'approve_plan', { taskId: PLAN_ID }, ctxWith(store, 'admin'));
 
     expect(store.upserts).toHaveLength(1);
     const { namespace, chunks } = store.upserts[0];
     expect(namespace).toBe(`${MOCK_WORKSPACE_ID}:plan`);
-    expect(chunks[0].id).toBe('plan:t-9');
+    expect(chunks[0].id).toBe(`plan:${PLAN_ID}`);
     expect(chunks[0].metadata?.phase).toBe('plan');
     expect(chunks[0].content).toContain('Build API');
     expect(chunks[0].content).toContain('Wire UI');
@@ -233,15 +235,15 @@ describe('knowledge mirror — approve_plan', () => {
 
   it('does NOT fail the action when the store throws', async () => {
     const api = routedApi({
-      'POST /api/tasks/t-9/approve-plan': { tasks: ['c-1'] },
-      'GET /api/tasks/t-9': {
+      [`POST /api/tasks/${PLAN_ID}/approve-plan`]: { tasks: ['c-1'] },
+      [`GET /api/tasks/${PLAN_ID}`]: {
         result: { structuredOutput: { plan: [{ ref: 'A', title: 'X' }] } },
       },
     });
     const res = await handleBuilddAction(
       api,
       'approve_plan',
-      { taskId: 't-9' },
+      { taskId: PLAN_ID },
       ctxWith(makeThrowingStore(), 'admin'),
     );
     expect(res.isError).toBeFalsy();
