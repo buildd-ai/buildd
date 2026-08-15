@@ -11,6 +11,7 @@ import {
   findConflictingIntents,
   postConflictWarnings,
 } from '@/lib/change-intent';
+import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
@@ -453,6 +454,42 @@ export async function PUT(req: NextRequest) {
         error: result.message,
         hint: 'GitHub App merge requires contents:write permission in addition to pull_requests:write. Update the App permissions at github.com/settings/apps and have org admins re-accept.',
       }, { status: 403 });
+    } else if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
+      // PR has conflicts — dispatch a same-branch resolution retry instead of surfacing
+      // a useless retry-the-merge button.
+      let headSha = worker.lastCommitSha ?? '';
+      if (!headSha) {
+        try {
+          const prData = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/pulls/${prNumber}`);
+          headSha = prData?.head?.sha ?? '';
+        } catch { /* non-fatal */ }
+      }
+      if (headSha && worker.taskId) {
+        const dispatchResult = await dispatchConflictRetry({
+          workerId: worker.id,
+          taskId: worker.taskId,
+          prNumber,
+          headSha,
+          repoFullName: repo.fullName,
+          workspaceId: worker.workspaceId,
+        }).catch(err => {
+          console.error(`[github/pr] conflict-retry dispatch failed for PR #${prNumber}:`, err);
+          return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
+        });
+        const message = dispatchResult.dispatched
+          ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
+          : dispatchResult.exhausted
+          ? `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Human action required.`
+          : result.message;
+        return NextResponse.json({
+          ok: false,
+          merged: false,
+          message,
+          conflictRetryDispatched: dispatchResult.dispatched,
+          conflictExhausted: dispatchResult.exhausted,
+          pr: { number: prNumber, url: worker.prUrl ?? null },
+        });
+      }
     }
 
     return NextResponse.json({

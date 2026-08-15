@@ -13,6 +13,7 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 
 const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
 
@@ -133,14 +134,15 @@ export async function evaluateAutoMergeSafety(
 
 /**
  * Enforce safety rails, then squash-merge the PR.
- * On a rail violation, notify the mission feed instead of merging.
+ * On a conflict (dirty mergeable_state), auto-dispatch a same-branch retry task.
+ * On other rail violations, notify the mission feed instead of merging.
  */
 export async function tryAutoMergeWorkerPr(params: {
   installationId: number;
   repoFullName: string;
   prNumber: number;
   headSha: string;
-  worker: { id: string; taskId: string | null };
+  worker: { id: string; taskId: string | null; workspaceId?: string };
   gitConfig: WorkspaceGitConfig | null | undefined;
 }): Promise<void> {
   const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
@@ -148,6 +150,37 @@ export async function tryAutoMergeWorkerPr(params: {
   const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, gitConfig);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
+
+    // Conflict path: dispatch a same-branch retry rather than asking the human.
+    if (classifyMergeFailure(safetyCheck.reason) === 'conflict' && worker.taskId) {
+      const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+      if (workspaceId) {
+        const dispatchResult = await dispatchConflictRetry({
+          workerId: worker.id,
+          taskId: worker.taskId,
+          prNumber,
+          headSha,
+          repoFullName,
+          workspaceId,
+        }).catch(err => {
+          console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
+          return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
+        });
+        if (dispatchResult.dispatched) return;
+        if (dispatchResult.disabled) {
+          // Feature disabled — fall through to mission notification so human sees it
+        } else if (dispatchResult.exhausted) {
+          // Cap reached — escalate to human with a real decision
+          await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
+          return;
+        } else {
+          // Duplicate dedup hit — already handling it
+          return;
+        }
+      }
+    }
+
+    // Non-conflict or disabled auto-resolve — notify the mission feed
     if (worker.taskId) {
       const task = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
@@ -172,5 +205,49 @@ export async function tryAutoMergeWorkerPr(params: {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
   } else {
     console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
+    // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
+    if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
+      const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+      if (workspaceId) {
+        await dispatchConflictRetry({
+          workerId: worker.id,
+          taskId: worker.taskId,
+          prNumber,
+          headSha,
+          repoFullName,
+          workspaceId,
+        }).catch(err => console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err));
+      }
+    }
+  }
+}
+
+async function resolveWorkspaceId(taskId: string): Promise<string | null> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { workspaceId: true },
+  });
+  return task?.workspaceId ?? null;
+}
+
+async function escalateConflictExhaustion(
+  taskId: string,
+  repoFullName: string,
+  prNumber: number,
+  headSha: string,
+): Promise<void> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { missionId: true, title: true },
+  });
+  if (task?.missionId) {
+    await notifyMissionPrReady(task.missionId, {
+      title: 'Merge conflicts — retry limit reached, human action required',
+      prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
+      prNumber,
+      headSha,
+      reason: 'auto_merge_blocked',
+      message: `${task.title} — conflict resolution retries exhausted. Human must rebase, abandon, or supersede.`,
+    });
   }
 }

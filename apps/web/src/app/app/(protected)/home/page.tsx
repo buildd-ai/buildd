@@ -204,6 +204,8 @@ export default async function HomePage({
     escalationReason: string | null;
     verdictSummary: string | null;
     waitingMinutes: number | null;
+    conflictRetryTaskId: string | null;
+    conflictRetryIteration: number | null;
   }[] = [];
 
   let resolvedEscalations: ResolvedEscalationItem[] = [];
@@ -783,6 +785,30 @@ export default async function HomePage({
 
             const agentReviewingTaskIds = new Set(reviewerLiveMap.keys());
 
+            // ── Conflict retry lease detection ──────────────────────────────────
+            // While a conflict-retry task is live for a PR, the card renders as
+            // RESOLVING rather than asking the human to merge.
+            const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
+            if (openPrWorkers.length > 0) {
+              const conflictRetryTasks = await db.query.tasks.findMany({
+                where: and(
+                  inArray(tasks.workspaceId, wsIds),
+                  sql`${tasks.creationSource} = 'conflict'`,
+                  isNotNull(tasks.conflictRetryPrNumber),
+                  inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+                ),
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
+              });
+              for (const t of conflictRetryTasks) {
+                if (t.conflictRetryPrNumber == null) continue;
+                const key = `${t.workspaceId}:${t.conflictRetryPrNumber}`;
+                const ctx = (t.context ?? {}) as Record<string, unknown>;
+                const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
+                conflictRetryMap.set(key, { taskId: t.id, iteration });
+              }
+            }
+            // ───────────────────────────────────────────────────────────────────
+
             // Build agent-reviewing cards (shown in Right Now, not in the human queue)
             agentReviewingPrs = openPrWorkers
               .filter(w => w.taskId && agentReviewingTaskIds.has(w.taskId))
@@ -811,6 +837,8 @@ export default async function HomePage({
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
                 // Exclude while under active agent-review lease
                 if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
+                // Include if a conflict retry is live (renders as RESOLVING)
+                if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
                 if (w.taskId && escalatedMap.has(w.taskId)) return true;
                 if (w.taskId && approvedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -830,6 +858,7 @@ export default async function HomePage({
                   verdictSummary ? 'agent_approved'
                   : escalationReason && policy.tier !== 'human' ? 'agent_flagged'
                   : 'pending_human';
+                const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
                 return {
                   workerId: w.id,
                   taskId: w.taskId ?? '',
@@ -843,6 +872,8 @@ export default async function HomePage({
                   escalationReason,
                   verdictSummary,
                   waitingMinutes,
+                  conflictRetryTaskId: conflictRetry?.taskId ?? null,
+                  conflictRetryIteration: conflictRetry?.iteration ?? null,
                 };
               })
               .slice(0, 10);
@@ -1135,7 +1166,9 @@ export default async function HomePage({
   const shipClause = completedLast12h > 0
     ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
     : null;
-  const waitClause = actionQueue.length > 0 ? `${actionQueue.length} waiting on you` : null;
+  // RESOLVING items are informational — agent is handling it, not the human.
+  const actionableCount = actionQueue.filter(i => i.chip !== 'RESOLVING').length;
+  const waitClause = actionableCount > 0 ? `${actionableCount} waiting on you` : null;
   const subParts = [shipClause, waitClause].filter(Boolean) as string[];
   const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
 
@@ -1178,14 +1211,17 @@ export default async function HomePage({
             {/* Durable-arc rail — above the ephemeral feed; collapses when empty. */}
             <InitiativeRail initiatives={railInitiatives} />
 
-            {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE) */}
+            {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE · RESOLVING) */}
             {actionQueue.length > 0 && (
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Waiting on You</div>
-                  <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                    {filteredActionQueue.length}
-                  </span>
+                  {/* Badge excludes RESOLVING — those are agent-handled, not human tasks */}
+                  {filteredActionQueue.filter(i => i.chip !== 'RESOLVING').length > 0 && (
+                    <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
+                      {filteredActionQueue.filter(i => i.chip !== 'RESOLVING').length}
+                    </span>
+                  )}
                 </div>
                 {/* Initiative scoping chips — SCOPE the queue, never group it. */}
                 <InitiativeFilterChips
@@ -1263,6 +1299,49 @@ export default async function HomePage({
                             {item.taskTitle}
                           </div>
                         </Link>
+                      );
+                    }
+                    if (item.chip === 'RESOLVING') {
+                      return (
+                        <div
+                          key={item.subjectKey}
+                          className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                                  <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block" />
+                                  Resolving Conflicts
+                                  {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
+                                </span>
+                              </div>
+                              {item.taskTitle && (
+                                <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
+                                  {item.conflictRetryTaskId ? (
+                                    <Link href={`/app/tasks/${item.conflictRetryTaskId}`} className="hover:underline">
+                                      {item.taskTitle}
+                                    </Link>
+                                  ) : item.taskId ? (
+                                    <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                      {item.taskTitle}
+                                    </Link>
+                                  ) : item.taskTitle}
+                                </div>
+                              )}
+                              {item.prUrl && (
+                                <a
+                                  href={item.prUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                                >
+                                  PR #{item.prNumber} ↗
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       );
                     }
                     return null;
