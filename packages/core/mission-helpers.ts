@@ -1,6 +1,35 @@
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState } from '@buildd/shared';
 export type { GoalCriterion, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState };
 
+// ─── Task type detection ───────────────────────────────────────────────────────
+
+/** Derived task subtypes for display (no schema change — derived from title prefix + parentTaskId). */
+export type TaskType = 'retry' | 'review' | 'review-retry';
+
+/**
+ * Derive a task's display type from its title prefix and parentTaskId.
+ * Returns null for primary tasks (parentTaskId IS NULL).
+ * Falls back to 'retry' for attempt tasks with unrecognized or absent prefix.
+ */
+export function deriveTaskType(task: {
+  title: string;
+  parentTaskId?: string | null;
+}): TaskType | null {
+  if (!task.parentTaskId) return null;
+  if (/^\[reviewer retry/i.test(task.title)) return 'review-retry';
+  if (/^\[reviewer\]/i.test(task.title)) return 'review';
+  if (/^\[(?:CI )?retry/i.test(task.title)) return 'retry';
+  return 'retry';
+}
+
+/**
+ * Strip a leading bracketed prefix (e.g. "[CI Retry #1]", "[reviewer]") from a task title.
+ * Used to clean up displayed titles when a TaskTypeBadge renders the type visually instead.
+ */
+export function stripTaskTypePrefix(title: string): string {
+  return title.replace(/^\[[^\]]+\]\s*/, '').trim();
+}
+
 // ─── Goal criteria evaluator ──────────────────────────────────────────────────
 
 /**

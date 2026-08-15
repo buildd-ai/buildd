@@ -9,6 +9,7 @@ import { TaskCard } from '@/components/TaskCard';
 import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
+import type { TaskType } from '@buildd/core/mission-helpers';
 
 interface GridTask {
   id: string;
@@ -40,6 +41,7 @@ interface GridTask {
   chain?: ChainPositionResult | null;
   attemptCurrent?: number | null;
   attemptTotal?: number | null;
+  taskType?: TaskType | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -96,6 +98,7 @@ function renderTaskCard(task: GridTask, missionScoped = false) {
         runnerName={task.runnerName}
         prUrl={task.prUrl}
         prNumber={task.prNumber}
+        taskType={task.taskType}
         density="row"
       />
     </SwipeableRow>
@@ -108,7 +111,7 @@ function sortByRecency(list: GridTask[]): GridTask[] {
 }
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
-type ContentFilter = 'all' | 'missions' | 'tasks';
+type ContentFilter = 'all' | 'missions' | 'tasks' | 'retries' | 'reviews';
 type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
 
 interface MissionGroup {
@@ -210,6 +213,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     // Content type filter
     if (contentFilter === 'missions') result = result.filter(t => t.missionId !== null);
     else if (contentFilter === 'tasks') result = result.filter(t => t.missionId === null);
+    else if (contentFilter === 'retries') result = result.filter(t => t.taskType === 'retry');
+    else if (contentFilter === 'reviews') result = result.filter(t => t.taskType === 'review' || t.taskType === 'review-retry');
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -414,6 +419,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 { key: 'all' as ContentFilter, label: 'All' },
                 { key: 'missions' as ContentFilter, label: 'Missions' },
                 { key: 'tasks' as ContentFilter, label: 'Tasks' },
+                { key: 'retries' as ContentFilter, label: '↻ Retries' },
+                { key: 'reviews' as ContentFilter, label: '⬡ Reviews' },
               ]).map(({ key, label }) => (
                 <button
                   key={key}
