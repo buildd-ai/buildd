@@ -185,6 +185,26 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
+    subagentSpans?: Array<{
+      taskId: string;
+      toolUseId: string;
+      agentId?: string;
+      parentAgentId?: string;
+      description: string;
+      taskType: string;
+      startedAt: number;
+      completedAt?: number;
+      status: 'running' | 'completed' | 'failed';
+      isBackground: boolean;
+      durationMs?: number;
+      toolCount?: number;
+      cumulativeUsage?: { inputTokens: number; outputTokens: number; costUsd: number };
+    }>;
+    // Total task_started events observed (may exceed subagentSpans.length if capped at 100).
+    subagentSpansObserved?: number;
+    // Sum of durationMs for isBackground=true spans.
+    backgroundAgentMs?: number;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {

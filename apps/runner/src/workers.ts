@@ -57,6 +57,7 @@ import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecre
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
+import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
   buildWorkerBwrapArgv,
@@ -1252,6 +1253,7 @@ export class WorkerManager {
       messages: [],
       checkpoints: [],
       subagentTasks: [],
+      subagentTasksObservedCount: 0,
       checkpointEvents: new Set<CheckpointEventType>(),
       pendingMcpCalls: [],
       phaseText: null,
@@ -1333,7 +1335,7 @@ export class WorkerManager {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
 
-      const worktreePath = await setupWorktree(
+      const setupResult = await setupWorktree(
         workspacePath,
         claimedWorker.branch,
         defaultBranch,
@@ -1341,9 +1343,31 @@ export class WorkerManager {
         fullTask.context,
       );
 
-      if (worktreePath) {
-        worker.worktreePath = worktreePath;
-        sessionCwd = worktreePath;
+      if (setupResult) {
+        worker.worktreePath = setupResult.path;
+        sessionCwd = setupResult.path;
+        // When the resume branch was honored, the worktree's git branch differs
+        // from the task's own branch.  Update worker.branch so pushes target the
+        // right ref and create_pr finds the existing open PR.
+        if (setupResult.branch !== claimedWorker.branch) {
+          console.log(`[Worker ${worker.id}] Resumed on branch ${setupResult.branch} (task branch: ${claimedWorker.branch})`);
+          worker.branch = setupResult.branch;
+        }
+        // Fallback warning: resume branch was missing/diverged — make it visible
+        // rather than silently starting fresh.
+        if (setupResult.fallback) {
+          const { candidate, reason } = setupResult.fallback;
+          const label = `Resume branch ${reason}: ${candidate} — starting fresh from ${defaultBranch}`;
+          console.warn(`[Worker ${worker.id}] ${label}`);
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'resume_branch_fallback',
+              excerpt: `Branch "${candidate}" was ${reason} on remote — starting fresh from "${defaultBranch}". A new PR will be opened instead of updating the existing one.`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+        }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
         // Worktree setup failed — fall back to main repo (legacy behavior)
@@ -3088,6 +3112,10 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
         }
 
+        // Build subagent spans for terminal flush (not on hot path — only at completion).
+        const subagentSpans = buildSubagentSpans(worker.subagentTasks);
+        const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
+
         await this.buildd.updateWorker(worker.id, {
           status: 'completed',
           milestones: worker.milestones,
@@ -3101,6 +3129,10 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
+          // Subagent spans — terminal-only flush
+          ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
+          subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+          backgroundAgentMs,
         });
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -3108,36 +3140,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
 
-        // Capture summary observation (non-fatal)
-        try {
-          const summary = buildSessionSummary(worker);
-          const files = extractFilesFromToolCalls(worker.toolCalls);
-
-          // Extract concepts from task title + commit messages for better searchability
-          const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it', 'be', 'as', 'by', 'with', 'from', 'this', 'that', 'not', 'are', 'was', 'has', 'have', 'do', 'does', 'did', 'will', 'would', 'can', 'could', 'should', 'task']);
-          const conceptSource = [task.title, ...worker.commits.map(c => c.message)].join(' ');
-          const concepts = [...new Set(
-            conceptSource
-              .toLowerCase()
-              .replace(/[^a-z0-9\s-]/g, ' ')
-              .split(/\s+/)
-              .filter(w => w.length > 2 && !STOPWORDS.has(w))
-          )].slice(0, 15);
-
-          await this.buildd.createObservation(task.workspaceId, {
-            type: 'summary',
-            title: `Task: ${task.title}`,
-            content: summary,
-            files,
-            concepts,
-            workerId: worker.id,
-            taskId: task.id,
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[Worker ${worker.id}] Failed to capture summary observation: ${errMsg}`);
-          // Non-fatal - task still completed successfully
-        }
+        // Task outcomes are indexed into the knowledge store via complete_task → mirrorWorkProduct (task corpus).
+        // The legacy createObservation path that wrote type:'summary' to the memory corpus has been removed:
+        // summary entries duplicated task-corpus data with worse fidelity and polluted memory recall.
       }
 
     } catch (error) {
@@ -3162,6 +3167,15 @@ If something is missing or incomplete, describe what and fix it now.`;
 
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
+      // Flush subagent spans on terminal failure (spans still running persist as-is).
+      const failSpans = buildSubagentSpans(worker.subagentTasks);
+      const failBgMs = computeBackgroundAgentMs(failSpans);
+      const spanPayload = {
+        ...(failSpans.length > 0 ? { subagentSpans: failSpans } : {}),
+        subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
+        backgroundAgentMs: failBgMs,
+      };
+
       if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
@@ -3173,6 +3187,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error || 'Session aborted',
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
+          ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
         // Unexpected error
@@ -3204,6 +3219,7 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(isBudgetError && { budgetExhausted: true }),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
+          ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
       this.emit({ type: 'worker_update', worker });
@@ -3458,6 +3474,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         ...(agentId ? { agentId } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
       };
+      worker.subagentTasksObservedCount = (worker.subagentTasksObservedCount ?? 0) + 1;
       worker.subagentTasks.push(subagentTask);
       // Keep last 100 subagent tasks
       if (worker.subagentTasks.length > 100) {

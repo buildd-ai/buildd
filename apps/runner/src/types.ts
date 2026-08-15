@@ -175,6 +175,9 @@ export interface LocalWorker {
   waitingFor?: WaitingFor;  // Set when agent asks a question
   teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
+  // Total number of task_started events observed — uncapped, unlike subagentTasks (capped at 100).
+  // When subagentTasksObservedCount > subagentTasks.length, persisted span metrics are floors.
+  subagentTasksObservedCount: number;
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired

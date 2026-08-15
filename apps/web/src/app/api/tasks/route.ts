@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
@@ -14,8 +14,10 @@ import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { pathsOverlap } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
+import { resolveAnchorInjections } from '@/lib/change-intent';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -167,6 +169,20 @@ export async function GET(req: NextRequest) {
           },
         })
       : [];
+
+    // Stale-while-revalidate: refresh stale PR state for workers in these
+    // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
+    if (workspaceIds.length > 0) {
+      try {
+        after(() =>
+          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
+            console.error('[pr-state-refresh] task list refresh failed:', err)
+          )
+        );
+      } catch {
+        // after() unavailable outside request scope (tests/build)
+      }
+    }
 
     return jsonResponse({
       tasks: allTasks,
@@ -407,6 +423,18 @@ export async function POST(req: NextRequest) {
           { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
           { status: 400 }
         );
+      }
+    }
+
+    // Sequence-namespace anchor injection (see docs/design/change-intent.md §3).
+    // If this task's pathManifest touches a sequenceNamespace directory (e.g. the
+    // Drizzle migrations dir), auto-append the anchorFile so the pathsOverlap check
+    // below can serialise on _journal.json — not on the individual migration filename,
+    // which would be invisible because distinct filenames share the integer index.
+    if (pathManifest && pathManifest.length > 0) {
+      const injections = resolveAnchorInjections(pathManifest, targetWorkspace.gitConfig ?? undefined);
+      if (injections.length > 0) {
+        pathManifest = [...pathManifest, ...injections];
       }
     }
 

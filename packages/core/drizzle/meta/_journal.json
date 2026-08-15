@@ -736,6 +736,27 @@
       "when": 1786495695314,
       "tag": "0104_curved_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1786709742463,
+      "tag": "0105_clean_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1786756028025,
+      "tag": "0106_loving_vulcan",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1786779170883,
+      "tag": "0107_absent_the_executioner",
+      "breakpoints": true
     }
   ]
 }

@@ -7,12 +7,12 @@
 import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { join } from 'path';
 
-// Clear any leaked module mocks from earlier-loaded suite files so the updater
-// (imported below) and our scaffolding both bind to the REAL fs. Only
-// child_process is mocked, so the git/bun commands are no-ops and the sole real
-// side effect is fs.rmSync on node_modules — which lets us assert the
-// clean-reinstall behaviour for real by pointing applyUpdate at a temp dir.
-mock.restore();
+// nodeFs is fetched via CommonJS require (not ES module import) so it bypasses
+// any mock.module('fs', ...) leakage from earlier-loaded test files — require
+// always returns the real module regardless of mock.module state.
+// NOTE: Do NOT call mock.restore() here — it triggers re-evaluation of
+// git-operations.ts (which also imports 'fs'), resetting its __setGitOpsDeps
+// injection and breaking setupWorktree tests in Bun 1.3.14+.
 const nodeFs = require('fs') as typeof import('fs');
 const TMP_HOME: string = nodeFs.mkdtempSync(join(require('os').tmpdir(), 'updater-home-'));
 

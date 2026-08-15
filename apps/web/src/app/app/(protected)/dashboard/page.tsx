@@ -10,6 +10,7 @@ import MobileWorkerCard from '@/components/MobileWorkerCard';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
 import { isSystemWorkspace } from '@buildd/shared';
+import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import DashboardStartTask from './DashboardStartTask';
 import OnboardingChecklist from './OnboardingChecklist';
 import RetryTaskButton from './RetryTaskButton';
@@ -169,16 +170,14 @@ export default async function DashboardPage() {
           where: inArray(missions.teamId, teamIds),
           columns: { id: true, title: true, status: true, priority: true },
           orderBy: [desc(missions.priority), desc(missions.createdAt)],
-          with: { tasks: { columns: { id: true, status: true } } },
+          with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true } } },
         });
 
         dashboardMissions = activeMissns
           .filter(obj => obj.status === 'active' || obj.status === 'paused')
           .slice(0, 5)
           .map(obj => {
-            const totalTasks = obj.tasks?.length || 0;
-            const completedTasks = obj.tasks?.filter(t => t.status === 'completed').length || 0;
-            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            const { totalTasks, completedTasks, progress } = computeMissionProgress(obj.tasks || []);
             return { id: obj.id, title: obj.title, status: obj.status, priority: obj.priority, totalTasks, completedTasks, progress };
           });
       }
