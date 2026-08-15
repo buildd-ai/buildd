@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
+const TASK_ID = '11111111-1111-1111-1111-111111111111';
+const MISSING_TASK_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
@@ -133,7 +136,7 @@ describe('GET /api/tasks/[id]', () => {
     mockAccountsFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest();
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(401);
     const data = await response.json();
@@ -142,7 +145,7 @@ describe('GET /api/tasks/[id]', () => {
 
   it('returns task for API key auth', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       description: 'Test description',
       status: 'pending',
@@ -157,17 +160,17 @@ describe('GET /api/tasks/[id]', () => {
     const request = createMockRequest({
       headers: { Authorization: 'Bearer bld_xxx' },
     });
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.id).toBe('task-123');
+    expect(data.id).toBe(TASK_ID);
     expect(data.title).toBe('Test Task');
   });
 
   it('returns task for session auth when user owns workspace', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       description: 'Test description',
       status: 'pending',
@@ -180,11 +183,11 @@ describe('GET /api/tasks/[id]', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
     const request = createMockRequest();
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.id).toBe('task-123');
+    expect(data.id).toBe(TASK_ID);
   });
 
   it('returns 404 when task not found', async () => {
@@ -192,7 +195,7 @@ describe('GET /api/tasks/[id]', () => {
     mockTasksFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest();
-    const response = await callHandler(GET, request, 'nonexistent-task');
+    const response = await callHandler(GET, request, MISSING_TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -201,7 +204,7 @@ describe('GET /api/tasks/[id]', () => {
 
   it('returns 404 when session user does not own workspace', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -213,7 +216,7 @@ describe('GET /api/tasks/[id]', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const request = createMockRequest();
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -222,7 +225,7 @@ describe('GET /api/tasks/[id]', () => {
 
   it('allows API key auth to access tasks regardless of workspace ownership', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -235,16 +238,16 @@ describe('GET /api/tasks/[id]', () => {
     const request = createMockRequest({
       headers: { Authorization: 'Bearer bld_xxx' },
     });
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data.id).toBe('task-123');
+    expect(data.id).toBe(TASK_ID);
   });
 
   it('returns workers and artifacts when include=workers,artifacts', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -263,7 +266,7 @@ describe('GET /api/tasks/[id]', () => {
       headers: { Authorization: 'Bearer bld_xxx' },
       search: '?include=workers,artifacts',
     });
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -276,7 +279,7 @@ describe('GET /api/tasks/[id]', () => {
 
   it('omits workers/artifacts when include is not requested', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -289,7 +292,7 @@ describe('GET /api/tasks/[id]', () => {
     const request = createMockRequest({
       headers: { Authorization: 'Bearer bld_xxx' },
     });
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -300,7 +303,7 @@ describe('GET /api/tasks/[id]', () => {
 
   it('prefers API key auth over session auth when both present', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -314,10 +317,35 @@ describe('GET /api/tasks/[id]', () => {
     const request = createMockRequest({
       headers: { Authorization: 'Bearer bld_xxx' },
     });
-    const response = await callHandler(GET, request, 'task-123');
+    const response = await callHandler(GET, request, TASK_ID);
 
     // Should succeed because API key auth bypasses ownership check
     expect(response.status).toBe(200);
+  });
+
+  it('returns 400 with helpful message for an 8-character ID prefix', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+
+    const request = createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } });
+    const response = await callHandler(GET, request, 'b833be4b');
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/UUID/);
+    expect(data.error).toMatch(/prefix/);
+  });
+
+  it('returns 400 for a completely invalid taskId format', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+
+    const request = createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } });
+    const response = await callHandler(GET, request, 'not-a-valid-id');
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/UUID/);
   });
 });
 
@@ -347,11 +375,28 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'Updated Title' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 400 with helpful message for an 8-character ID prefix', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+
+    const request = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { status: 'cancelled' },
+    });
+    const response = await callHandler(PATCH, request, 'b833be4b');
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/UUID/);
+    expect(data.error).toMatch(/prefix/);
   });
 
   it('returns 404 when task not found', async () => {
@@ -362,7 +407,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'Updated Title' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -371,7 +416,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('returns 404 when session user does not own workspace', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -386,7 +431,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'Updated Title' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -395,7 +440,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('updates title only', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Original Title',
       description: 'Original description',
       priority: 5,
@@ -417,7 +462,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'Updated Title' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -426,7 +471,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('links the task to an external issue (externalIssueId + url)', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -445,7 +490,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { externalIssueId: 'ISSUE-42', externalIssueUrl: 'https://tracker.example.com/ISSUE-42' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     expect(capturedSet.externalIssueId).toBe('ISSUE-42');
@@ -454,7 +499,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('unlinks the task when externalIssueId is empty', async () => {
     const mockTask = {
-      id: 'task-123', title: 'Test Task', workspaceId: 'ws-1',
+      id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
     };
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -466,7 +511,7 @@ describe('PATCH /api/tasks/[id]', () => {
     mockTasksUpdate.mockReturnValue({ set: mockSet });
 
     const request = createMockRequest({ method: 'PATCH', body: { externalIssueId: '' } });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     expect(capturedSet.externalIssueId).toBeNull();
@@ -474,7 +519,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('updates description only', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       description: 'Original description',
       workspaceId: 'ws-1',
@@ -495,7 +540,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { description: 'New description' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -504,7 +549,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('updates priority only', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       priority: 5,
       workspaceId: 'ws-1',
@@ -525,7 +570,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { priority: 10 },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -534,7 +579,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('updates multiple fields at once', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Original Title',
       description: 'Original description',
       priority: 5,
@@ -561,7 +606,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'New Title', description: 'New description', priority: 10 },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -572,7 +617,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('ignores undefined fields in update', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Original Title',
       description: 'Original description',
       priority: 5,
@@ -596,7 +641,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'New Title' }, // Only title, not description or priority
     });
-    await callHandler(PATCH, request, 'task-123');
+    await callHandler(PATCH, request, TASK_ID);
 
     // The set data should only contain title and updatedAt, not description/priority
     expect(capturedSetData.title).toBe('New Title');
@@ -607,7 +652,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('updates task project field', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       project: null,
       workspaceId: 'ws-1',
@@ -628,7 +673,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { project: '@mono/web' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -637,7 +682,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('can clear project to null', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       project: '@mono/web',
       workspaceId: 'ws-1',
@@ -662,7 +707,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { project: null },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -672,7 +717,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('omitting project does not change existing value', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Original Title',
       project: '@mono/web',
       workspaceId: 'ws-1',
@@ -695,7 +740,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { title: 'New Title' },
     });
-    await callHandler(PATCH, request, 'task-123');
+    await callHandler(PATCH, request, TASK_ID);
 
     expect(capturedSetData.title).toBe('New Title');
     expect(capturedSetData.project).toBeUndefined();
@@ -703,7 +748,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('clears claimedBy, claimedAt, and expiresAt when resetting status to pending', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'assigned',
       claimedBy: 'account-1',
@@ -730,7 +775,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { status: 'pending' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     // Regression test: claim fields must be cleared so the task is claimable again
@@ -742,7 +787,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('allows setting status to cancelled with no active worker', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'assigned',
       workspaceId: 'ws-1',
@@ -764,7 +809,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { status: 'cancelled' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -775,7 +820,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('pushes abort command to active worker on cancel', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'assigned',
       workspaceId: 'ws-1',
@@ -797,7 +842,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { status: 'cancelled' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     // Verify abort was pushed to the worker's Pusher channel
@@ -810,7 +855,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('rejects unknown status values', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
@@ -824,7 +869,7 @@ describe('PATCH /api/tasks/[id]', () => {
       method: 'PATCH',
       body: { status: 'invalid_status' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -833,7 +878,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('allows API key auth to update task', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1', teamId: 'team-1' },
@@ -855,7 +900,7 @@ describe('PATCH /api/tasks/[id]', () => {
       headers: { Authorization: 'Bearer bld_xxx' },
       body: { title: 'Updated Title' },
     });
-    const response = await callHandler(PATCH, request, 'task-123');
+    const response = await callHandler(PATCH, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -864,7 +909,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
   it('adjusts maxLoops while preserving the existing exit condition', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Loop task',
       status: 'in_progress',
       workspaceId: 'ws-1',
@@ -889,7 +934,7 @@ describe('PATCH /api/tasks/[id]', () => {
     const response = await callHandler(PATCH, createMockRequest({
       method: 'PATCH',
       body: { maxLoops: 8 },
-    }), 'task-123');
+    }), TASK_ID);
 
     expect(response.status).toBe(200);
     expect(updateData.loopConfig).toEqual({
@@ -902,7 +947,7 @@ describe('PATCH /api/tasks/[id]', () => {
   it('rejects maxLoops updates on non-looping tasks', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'task-123',
+      id: TASK_ID,
       workspaceId: 'ws-1',
       workspace: { id: 'ws-1' },
       loopConfig: null,
@@ -912,7 +957,7 @@ describe('PATCH /api/tasks/[id]', () => {
     const response = await callHandler(PATCH, createMockRequest({
       method: 'PATCH',
       body: { maxLoops: 8 },
-    }), 'task-123');
+    }), TASK_ID);
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('existing looped task');
@@ -938,7 +983,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockAccountsFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(401);
     const data = await response.json();
@@ -950,7 +995,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -959,7 +1004,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('returns 404 when session user does not own workspace', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
@@ -972,7 +1017,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -981,7 +1026,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('deletes pending task successfully', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
@@ -995,7 +1040,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksDelete.mockReturnValue({ where: mockWhere });
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -1004,7 +1049,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('deletes assigned task successfully', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'assigned',
       workspaceId: 'ws-1',
@@ -1018,7 +1063,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksDelete.mockReturnValue({ where: mockWhere });
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -1027,7 +1072,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('deletes failed task successfully', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'failed',
       workspaceId: 'ws-1',
@@ -1041,7 +1086,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksDelete.mockReturnValue({ where: mockWhere });
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -1050,7 +1095,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('returns 400 when trying to delete running task', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'running',
       workspaceId: 'ws-1',
@@ -1061,7 +1106,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksFindFirst.mockResolvedValue(mockTask);
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -1070,7 +1115,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('deletes completed task successfully', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -1084,7 +1129,7 @@ describe('DELETE /api/tasks/[id]', () => {
     mockTasksDelete.mockReturnValue({ where: mockWhere });
 
     const request = createMockRequest({ method: 'DELETE' });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -1093,7 +1138,7 @@ describe('DELETE /api/tasks/[id]', () => {
 
   it('allows API key auth to delete task', async () => {
     const mockTask = {
-      id: 'task-123',
+      id: TASK_ID,
       title: 'Test Task',
       status: 'pending',
       workspaceId: 'ws-1',
@@ -1111,7 +1156,7 @@ describe('DELETE /api/tasks/[id]', () => {
       method: 'DELETE',
       headers: { Authorization: 'Bearer bld_xxx' },
     });
-    const response = await callHandler(DELETE, request, 'task-123');
+    const response = await callHandler(DELETE, request, TASK_ID);
 
     expect(response.status).toBe(200);
     const data = await response.json();

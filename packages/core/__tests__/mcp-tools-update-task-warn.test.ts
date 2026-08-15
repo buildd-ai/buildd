@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools';
 
 const MOCK_WS_ID = '00000000-0000-0000-0000-000000000001';
+const TASK_ID = '11111111-1111-1111-1111-111111111111';
 
 const ctx: ActionContext = {
   workspaceId: MOCK_WS_ID,
@@ -10,7 +11,7 @@ const ctx: ActionContext = {
 };
 
 const UPDATED_TASK = {
-  id: 'task-1',
+  id: TASK_ID,
   title: 'My Task',
   status: 'running',
   priority: 5,
@@ -61,7 +62,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'New description' },
+      { taskId: TASK_ID, description: 'New description' },
       ctx,
     );
 
@@ -71,7 +72,7 @@ describe('update_task — active-worker warning on material edits', () => {
     expect(text).toContain('running');
     expect(text).toContain('PREVIOUS');
     expect(text).toContain('send_agent_message');
-    expect(text).toContain('taskId=task-1');
+    expect(text).toContain(`taskId=${TASK_ID}`);
   });
 
   it('warns when title is changed and worker is waiting_input', async () => {
@@ -83,7 +84,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', title: 'New Title' },
+      { taskId: TASK_ID, title: 'New Title' },
       ctx,
     );
 
@@ -103,7 +104,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'Changed' },
+      { taskId: TASK_ID, description: 'Changed' },
       ctx,
     );
 
@@ -119,7 +120,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', priority: 8 },
+      { taskId: TASK_ID, priority: 8 },
       ctx,
     );
 
@@ -135,7 +136,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', status: 'pending' },
+      { taskId: TASK_ID, status: 'pending' },
       ctx,
     );
 
@@ -149,7 +150,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', project: 'apps/web' },
+      { taskId: TASK_ID, project: 'apps/web' },
       ctx,
     );
 
@@ -165,7 +166,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'Changed' },
+      { taskId: TASK_ID, description: 'Changed' },
       ctx,
     );
 
@@ -180,7 +181,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'Changed' },
+      { taskId: TASK_ID, description: 'Changed' },
       ctx,
     );
 
@@ -196,13 +197,13 @@ describe('update_task — active-worker warning on material edits', () => {
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'New description' },
+      { taskId: TASK_ID, description: 'New description' },
       ctx,
     );
 
     // Third call should be the note POST
     const noteCalls = mockApi.mock.calls.filter(
-      ([endpoint, opts]) => endpoint === '/api/tasks/task-1/notes' && opts?.method === 'POST',
+      ([endpoint, opts]) => endpoint === `/api/tasks/${TASK_ID}/notes` && opts?.method === 'POST',
     );
     expect(noteCalls.length).toBe(1);
     const noteBody = JSON.parse(noteCalls[0][1].body);
@@ -219,7 +220,7 @@ describe('update_task — active-worker warning on material edits', () => {
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'New description' },
+      { taskId: TASK_ID, description: 'New description' },
       ctx,
     );
 
@@ -238,7 +239,7 @@ describe('update_task — active-worker warning on material edits', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'update_task',
-      { taskId: 'task-1', description: 'Changed' },
+      { taskId: TASK_ID, description: 'Changed' },
       ctx,
     );
 

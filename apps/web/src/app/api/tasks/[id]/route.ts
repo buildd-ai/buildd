@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+
+const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateTaskId(id: string): NextResponse | null {
+  if (FULL_UUID_REGEX.test(id)) return null;
+  const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
+  const error = isPrefix
+    ? `taskId must be a full UUID — "${id}" looks like an ID prefix. The web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
+    : `taskId must be a full UUID (e.g. b833be4b-1234-5678-abcd-ef0123456789) — received "${id}".`;
+  return NextResponse.json({ error }, { status: 400 });
+}
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -42,6 +53,9 @@ export async function GET(
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const idError = validateTaskId(id);
+  if (idError) return idError;
 
   try {
     const task = await db.query.tasks.findFirst({
@@ -144,6 +158,9 @@ export async function PATCH(
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const patchIdError = validateTaskId(id);
+  if (patchIdError) return patchIdError;
 
   try {
     const task = await db.query.tasks.findFirst({

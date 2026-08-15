@@ -182,12 +182,12 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
   });
 
   it('does not guard non-ambiguous actions like get_task or update_progress', async () => {
-    mockApi.mockResolvedValue({ id: 'task-1', title: 't', status: 'pending' });
+    mockApi.mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', title: 't', status: 'pending' });
 
     const getResult = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'get_task',
-      { taskId: 'task-1' },
+      { taskId: '11111111-1111-1111-1111-111111111111' },
       ctxOauth(),
     );
 

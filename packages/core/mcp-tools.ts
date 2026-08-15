@@ -97,6 +97,27 @@ export type ToolResult = {
   isError?: boolean;
 };
 
+// ── UUID Validation ───────────────────────────────────────────────────────────
+
+const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates that `id` is a full UUID and returns it. Throws with an actionable
+ * message if missing or malformed — specifically calling out 8-character UI
+ * prefixes, which are the most common mistake.
+ */
+function requireFullUuid(id: unknown, paramName: string): string {
+  if (!id || typeof id !== 'string') throw new Error(`${paramName} is required`);
+  if (!FULL_UUID_REGEX.test(id)) {
+    const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
+    const hint = isPrefix
+      ? ` "${id}" looks like an ID prefix — the web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
+      : ` Received: "${id}".`;
+    throw new Error(`${paramName} must be a full UUID (e.g. b833be4b-1234-5678-abcd-ef0123456789).${hint}`);
+  }
+  return id;
+}
+
 // ── Action Lists ─────────────────────────────────────────────────────────────
 
 // Trigger level: can create tasks and artifacts, but cannot claim or execute.
@@ -170,7 +191,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
@@ -789,7 +810,7 @@ export async function handleBuilddAction(
     }
 
     case 'get_task': {
-      if (!params.taskId) throw new Error('taskId is required');
+      const taskId = requireFullUuid(params.taskId, 'taskId');
 
       const includeParam = params.include;
       const includes = Array.isArray(includeParam)
@@ -797,7 +818,7 @@ export async function handleBuilddAction(
         : ['workers', 'artifacts'];
       const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
 
-      const task = await api(`/api/tasks/${encodeURIComponent(params.taskId as string)}${qs}`);
+      const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`);
 
       const appBase = ctx.appBaseUrl || 'https://buildd.dev';
       const taskUrl = `${appBase}/app/tasks/${task.id}`;
@@ -1291,7 +1312,7 @@ export async function handleBuilddAction(
     }
 
     case 'update_task': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const updateFields: Record<string, unknown> = {};
       if (params.title !== undefined) updateFields.title = params.title;
@@ -2610,7 +2631,7 @@ export async function handleBuilddAction(
     }
 
     case 'approve_plan': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const data = await api(`/api/tasks/${params.taskId}/approve-plan`, {
         method: 'POST',
@@ -2639,7 +2660,7 @@ export async function handleBuilddAction(
     }
 
     case 'reject_plan': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
       if (!params.feedback) throw new Error('feedback is required');
 
       const data = await api(`/api/tasks/${params.taskId}/reject-plan`, {
@@ -3401,7 +3422,7 @@ export async function handleBuilddAction(
     }
 
     case 'get_task_messages': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const data = await api(`/api/tasks/${params.taskId}/messages`);
       const messages: Array<{ type: string; message: string; timestamp: number; deliveryState?: 'pending' | 'delivered' }> = data.messages || [];
@@ -3426,7 +3447,8 @@ export async function handleBuilddAction(
     }
 
     case 'send_agent_message': {
-      if (!params.taskId || !params.message) throw new Error('taskId and message are required');
+      if (!params.message) throw new Error('taskId and message are required');
+      requireFullUuid(params.taskId, 'taskId');
 
       // Fetch task with workers so we can find the live worker by worker.status,
       // not task.status. task.status stays 'assigned' the entire time a worker is

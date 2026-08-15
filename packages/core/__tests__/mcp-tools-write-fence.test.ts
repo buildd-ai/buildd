@@ -13,7 +13,7 @@ import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools
 // worker already shows completed or has deliverables (complete-vs-abort race carve-out).
 
 const WORKER_ID = 'worker-abc123';
-const TASK_ID = 'task-xyz789';
+const TASK_ID = '33333333-3333-3333-3333-333333333333';
 const WS_ID = '00000000-0000-0000-0000-000000000001';
 
 function makeCtx(overrides: Partial<ActionContext> = {}): ActionContext {
