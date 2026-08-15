@@ -97,7 +97,7 @@ export default async function MissionsPage({
     with: {
       missions: {
         columns: { id: true, status: true },
-        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true } } },
+        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true } } },
       },
     },
   });
@@ -135,9 +135,8 @@ export default async function MissionsPage({
       workspace: { columns: { id: true, name: true, gitConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, dependsOn: true },
+        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
-        limit: 20,
         with: {
           workers: {
             columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },

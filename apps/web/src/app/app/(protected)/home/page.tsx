@@ -317,10 +317,11 @@ export default async function HomePage({
 
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
+        // Exclude attempt tasks (CI retries, reviewer runs) — they nest under parents.
         const totalResult = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(tasks)
-          .where(inArray(tasks.workspaceId, wsIds));
+          .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId)));
         totalTaskCount = totalResult[0]?.count || 0;
 
         // Count tasks completed in last 12 hours for the subheading
@@ -522,7 +523,7 @@ export default async function HomePage({
             columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
-                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, dependsOn: true },
+                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true },
                 with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true }, limit: 5 } },
               },
               schedule: { columns: { nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true } },

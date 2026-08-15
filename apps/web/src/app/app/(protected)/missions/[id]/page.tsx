@@ -278,8 +278,9 @@ export default async function MissionDetailPage({
   };
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
-  // Raw count for "View all N tasks" links — includes housekeeping and cancelled
-  const allTasksCount = mission.tasks?.length || 0;
+  // Raw count for "View all N tasks" links — includes housekeeping and cancelled,
+  // but excludes attempt tasks (parentTaskId IS NOT NULL) since they nest under parents.
+  const allTasksCount = (mission.tasks || []).filter(t => !t.parentTaskId).length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
@@ -405,8 +406,9 @@ export default async function MissionDetailPage({
       reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
     }
   }
-  // Exclude reviewer tasks from the timeline — they render as inline chips instead
-  const timelineTasks = allTasks.filter(t => t.category !== 'review');
+  // Exclude reviewer and CI-retry tasks from the timeline — reviewer tasks render
+  // as inline chips; CI-retry tasks nest under their parent task.
+  const timelineTasks = allTasks.filter(t => t.category !== 'review' && !t.parentTaskId);
 
   // Compute chain positions for mission tasks
   const chainByTaskId = new Map<string, ChainPositionResult | null>();

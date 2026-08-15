@@ -275,6 +275,9 @@ function deriveMissionSegmentState(task: {
  * - Cancelled tasks are excluded from the denominator — they're treated as
  *   "never happened" so duplicate-killing doesn't block 100% completion.
  * - Failed tasks DO count against progress; they represent unfinished intended work.
+ * - Attempt tasks (parentTaskId IS NOT NULL, e.g. CI retries) are collapsed into
+ *   their parent: the parent's effective status is the best outcome across all
+ *   attempts. Attempts do not count as separate deliverables.
  *
  * When tasks include an `id` and optional `workers`, the return value also
  * contains per-task `segments` for the projected progress bar.
@@ -286,10 +289,54 @@ export function computeMissionProgress(tasks: Array<{
   title?: string | null;
   mode?: string | null;
   creationSource?: string | null;
+  category?: string | null;
+  parentTaskId?: string | null;
   workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null }>;
 }>): { totalTasks: number; completedTasks: number; progress: number; segments: MissionSegment[] } {
-  const countable = tasks
-    .filter(isDeliverableTask)
+  // Collapse attempt tasks (parentTaskId IS NOT NULL) under their parents so
+  // a CI retry or reviewer run does not inflate the deliverable count.
+  const childrenMap = new Map<string, typeof tasks>();
+  const rootTasks = tasks.filter(t => {
+    if (t.parentTaskId) {
+      if (!childrenMap.has(t.parentTaskId)) childrenMap.set(t.parentTaskId, []);
+      childrenMap.get(t.parentTaskId)!.push(t);
+      return false;
+    }
+    return true;
+  });
+
+  // Status preference: completed > pending/assigned > failed > cancelled
+  const STATUS_RANK: Record<string, number> = {
+    completed: 0,
+    pending: 1,
+    assigned: 2,
+    failed: 3,
+    cancelled: 4,
+  };
+
+  const resolvedTasks = rootTasks.map(t => {
+    const children = childrenMap.get(t.id ?? '') ?? [];
+    if (children.length === 0) return t;
+    const allStatuses = [t.status, ...children.map(c => c.status)];
+    const bestStatus = allStatuses.reduce(
+      (best, s) => ((STATUS_RANK[s] ?? 5) < (STATUS_RANK[best] ?? 5) ? s : best),
+      allStatuses[0],
+    );
+    // Merge workers from all attempts so segment rendering sees the full picture
+    const mergedWorkers = [
+      ...(t.workers ?? []),
+      ...children.flatMap(c => c.workers ?? []),
+    ];
+    return { ...t, status: bestStatus, workers: mergedWorkers };
+  });
+
+  const countable = resolvedTasks
+    .filter(t => {
+      // Planning tasks (orchestrator) normally excluded, but count when they
+      // produced a PR — in orchestrator-only missions the plan IS the deliverable.
+      if (t.mode === 'planning' && t.workers?.some(w => w.prUrl)) return true;
+      return isDeliverableTask(t);
+    })
     .filter(t => t.status !== 'cancelled');
   const total = countable.length;
   const completed = countable.filter(t => t.status === 'completed').length;

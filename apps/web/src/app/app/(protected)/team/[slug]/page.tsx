@@ -119,6 +119,7 @@ export default async function RoleProfilePage({
     .where(and(
       eq(tasks.roleSlug, slug),
       inArray(tasks.workspaceId, wsIds),
+      isNull(tasks.parentTaskId),
     ));
 
   const completedTasks = Number(statsResult?.completedTasks ?? 0);

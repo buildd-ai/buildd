@@ -202,6 +202,90 @@ describe('computeMissionProgress', () => {
     const tasks = [makeTask('completed'), makeTask('completed'), makeTask('pending')];
     expect(computeMissionProgress(tasks).progress).toBe(67);
   });
+
+  // ── attempt collapse (parentTaskId) ──────────────────────────────────────────
+
+  it('CI retry success: parent failed + child completed → 1 completed task', () => {
+    const tasks: Task[] = [
+      { id: 'parent', status: 'failed', title: 'Implement feature' },
+      { id: 'retry', status: 'completed', title: '[CI Retry #1] Implement feature', parentTaskId: 'parent' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('CI retry failure: parent failed + child failed → 1 failed task', () => {
+    const tasks: Task[] = [
+      { id: 'parent', status: 'failed', title: 'Implement feature' },
+      { id: 'retry', status: 'failed', title: '[CI Retry #1] Implement feature', parentTaskId: 'parent' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
+
+  it('CI retry in progress: parent failed + child pending → 1 pending task', () => {
+    const tasks: Task[] = [
+      { id: 'parent', status: 'failed', title: 'Implement feature' },
+      { id: 'retry', status: 'pending', title: '[CI Retry #1] Implement feature', parentTaskId: 'parent' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
+
+  it('reviewer task does not inflate count', () => {
+    const tasks: Task[] = [
+      { id: 'original', status: 'completed', title: 'Implement feature' },
+      { id: 'reviewer', status: 'completed', category: 'review', parentTaskId: 'original' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('orphaned attempt (no parent in list) does not appear in results', () => {
+    // Parent was filtered out by caller; orphaned child should not count
+    const tasks: Task[] = [
+      { id: 'retry', status: 'completed', title: '[CI Retry #1] Feature', parentTaskId: 'missing-parent' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(0);
+    expect(result.completedTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
+
+  // ── orchestrator-completed case ───────────────────────────────────────────────
+
+  it('planning task with a PR counts as a deliverable (orchestrator mode)', () => {
+    const tasks: Task[] = [
+      {
+        id: 'plan',
+        status: 'completed',
+        title: 'Mission: Build API',
+        mode: 'planning',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/org/repo/pull/42' }],
+      },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('planning task without a PR is still excluded', () => {
+    const tasks: Task[] = [
+      { id: 'plan', status: 'completed', title: 'Mission: Build API', mode: 'planning', workers: [] },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(0);
+    expect(result.progress).toBe(0);
+  });
 });
 
 // ── computeMissionProgress — segments ────────────────────────────────────────
