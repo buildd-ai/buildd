@@ -39,7 +39,7 @@ mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
-import { reconcileStalePrWorkers } from './pr-reconcile';
+import { reconcileStalePrWorkers, refreshWorkerMergeStateIfStale } from './pr-reconcile';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,6 +49,118 @@ const ws = {
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe('refreshWorkerMergeStateIfStale', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+  });
+
+  it('returns false immediately when mergedAt is already set', async () => {
+    const result = await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 42, prUrl: 'https://github.com/owner/repo/pull/42', mergedAt: new Date() },
+      123,
+    );
+    expect(result).toBe(false);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('calls GitHub API and stamps mergedAt when PR is merged', async () => {
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' },
+      456,
+    );
+
+    expect(result).toBe(true);
+    expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/repo/pulls/55');
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'merged' }),
+    );
+  });
+
+  it('returns false when PR is open (not merged)', async () => {
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+
+    const result = await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 7, prUrl: 'https://github.com/owner/repo/pull/7' },
+      123,
+    );
+
+    expect(result).toBe(false);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('stamps prLastCheckedAt alongside mergedAt when PR is merged', async () => {
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' },
+      456,
+    );
+
+    const [setArgs] = setMock.mock.calls;
+    expect(setArgs[0]).toHaveProperty('prLastCheckedAt');
+    expect(setArgs[0].prLastCheckedAt).toBeInstanceOf(Date);
+  });
+
+  it('returns false on GitHub API error without throwing', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 404 Not Found'));
+
+    const result = await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 99, prUrl: 'https://github.com/owner/repo/pull/99' },
+      123,
+    );
+
+    expect(result).toBe(false);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('logs a warning on GitHub API error', async () => {
+    mockGithubApi.mockRejectedValue(new Error('rate limited'));
+    const logs: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { logs.push(args); };
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 99, prUrl: 'https://github.com/owner/repo/pull/99' },
+      123,
+    );
+
+    console.warn = orig;
+    expect(logs.length).toBeGreaterThan(0);
+  });
+
+  it('returns false when prUrl is not a valid GitHub URL', async () => {
+    const result = await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 1, prUrl: 'not-a-github-url' },
+      123,
+    );
+
+    expect(result).toBe(false);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('extracts owner/repo correctly from deeply nested GitHub URL', async () => {
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await refreshWorkerMergeStateIfStale(
+      { id: 'w1', prNumber: 1234, prUrl: 'https://github.com/my-org/my-repo/pull/1234' },
+      789,
+    );
+
+    expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/my-org/my-repo/pulls/1234');
+  });
+});
 
 describe('reconcileStalePrWorkers', () => {
   beforeEach(() => {

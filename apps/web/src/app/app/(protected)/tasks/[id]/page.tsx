@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
 import { deriveDisplayStatus } from '@/lib/task-timestamps';
 import { deriveTaskPhase } from '@/lib/task-presentation';
@@ -29,6 +29,7 @@ import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
+import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -117,6 +118,34 @@ export default async function TaskDetailPage({
       account: true,
     },
   });
+
+  // Read-through refresh: if the latest worker is completed with an open PR,
+  // check GitHub in case the merged webhook was missed.
+  if (task.status === 'completed' && task.workspaceId) {
+    const latestWorker = taskWorkers[0];
+    if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
+      const wsWithInstall = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, task.workspaceId),
+        columns: {},
+        with: { githubInstallation: { columns: { installationId: true } } },
+      });
+      const installId = wsWithInstall?.githubInstallation?.installationId;
+      if (installId) {
+        const refreshed = await refreshWorkerMergeStateIfStale(
+          { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl },
+          installId,
+        );
+        if (refreshed) {
+          const updatedWorkers = await db.query.workers.findMany({
+            where: eq(workers.taskId, id),
+            orderBy: desc(workers.createdAt),
+            with: { account: true },
+          });
+          taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
+        }
+      }
+    }
+  }
 
   // Fetch artifacts for all workers on this task
   const workerIds = taskWorkers.map(w => w.id);

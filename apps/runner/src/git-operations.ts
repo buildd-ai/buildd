@@ -115,13 +115,27 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
  * Set up an isolated git worktree for a worker session.
  * Worktrees live in .buildd-worktrees/ inside the repo.
  */
+export interface SetupWorktreeResult {
+  /** Absolute path to the worktree directory. */
+  path: string;
+  /** The git branch checked out in the worktree.
+   *  Equals `resumeBranch` when the prior attempt's branch was reused;
+   *  equals the task's own `branch` parameter otherwise.  The caller should
+   *  update `worker.branch` with this value so pushes target the right ref. */
+  branch: string;
+  /** Set when resume candidate was requested but not usable (missing/diverged),
+   *  causing a fresh start from the default branch.  Callers should surface
+   *  this as a visible warning rather than silently degrading. */
+  fallback?: { candidate: string; reason: 'missing' | 'diverged' };
+}
+
 export async function setupWorktree(
   repoPath: string,
   branch: string,
   defaultBranch: string,
   workerId: string,
   taskContext?: Record<string, unknown>,
-): Promise<string | null> {
+): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
   // Worktrees live in .buildd-worktrees/ inside the repo
@@ -162,12 +176,15 @@ export async function setupWorktree(
       }
     }
 
-    // Delete the branch if it already exists locally (stale from previous run)
-    try {
-      execSync(`git branch -D "${branch}"`, execOpts);
-    } catch {
-      // Branch doesn't exist locally, that's fine
-    }
+    // Determine if there is a resume candidate from prior attempt context.
+    // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry).
+    const resumeCandidate =
+      (typeof taskContext?.resumeBranch === 'string' && taskContext.resumeBranch.length > 0
+        ? taskContext.resumeBranch as string
+        : undefined) ??
+      (typeof taskContext?.baseBranch === 'string' && (taskContext.baseBranch as string).length > 0
+        ? taskContext.baseBranch as string
+        : undefined);
 
     // Warn if parent repo has sparse checkout enabled. Git worktrees get their
     // own sparse-checkout config so this doesn't directly affect the worktree,
@@ -203,6 +220,7 @@ export async function setupWorktree(
         return 'missing';
       }
     };
+    let fallback: SetupWorktreeResult['fallback'];
     const base = await resolveWorktreeBase({
       defaultBranch,
       context: taskContext,
@@ -211,10 +229,38 @@ export async function setupWorktree(
       // The resume branch is gone/diverged and we fell back to the default base —
       // strip the stale resume fields so the session starts fresh instead of
       // building "prior attempt" instructions that reference a missing branch.
-      onFallback: () => clearResumeContext(taskContext),
+      onFallback: (info) => {
+        fallback = info;
+        clearResumeContext(taskContext);
+      },
     });
-    console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${branch}, base: ${base})`);
-    execSync(`git worktree add -b "${branch}" "${worktreePath}" "${base}"`, execOpts);
+
+    // When the resume candidate was usable (no fallback), check out THAT branch
+    // directly so the worker pushes to the existing PR's branch rather than
+    // opening a new branch/PR.  On fallback, use the task's own branch (fresh).
+    const actualBranch =
+      resumeCandidate && !fallback && base === `origin/${resumeCandidate}`
+        ? resumeCandidate
+        : branch;
+
+    console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
+
+    // Delete actualBranch locally if stale from a previous run
+    try {
+      execSync(`git branch -D "${actualBranch}"`, execOpts);
+    } catch {
+      // Branch doesn't exist locally — that's fine
+    }
+    // When resuming, also clean up the task's own branch if it exists locally
+    if (actualBranch !== branch) {
+      try {
+        execSync(`git branch -D "${branch}"`, execOpts);
+      } catch {
+        // Doesn't exist locally — fine
+      }
+    }
+
+    execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, execOpts);
 
     // Register the repo's shared git hooks in this worktree. The package.json
     // `prepare` script also sets this during `bun install`, but that install is
@@ -239,7 +285,7 @@ export async function setupWorktree(
     await installWorkspaceDeps(worktreePath, workerId);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
-    return worktreePath;
+    return { path: worktreePath, branch: actualBranch, ...(fallback ? { fallback } : {}) };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
     // Clean up partial worktree

@@ -41,6 +41,7 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
+import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,7 +60,7 @@ export default async function MissionDetailPage({
 
   const teamIds = await getUserTeamIds(user.id);
 
-  const mission = await db.query.missions.findFirst({
+  let mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
     with: {
       workspace: { columns: { id: true, name: true } },
@@ -127,6 +128,70 @@ export default async function MissionDetailPage({
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
+  }
+
+  // Read-through refresh: stamp mergedAt on any completed workers whose PR
+  // webhook was missed, so the timeline renders the correct state immediately.
+  if (mission.workspaceId) {
+    const staleWorkers = (mission.tasks ?? []).flatMap(t => {
+      if (t.status !== 'completed') return [];
+      const w = (t.workers as any[])?.[0];
+      if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
+      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string }];
+    });
+    if (staleWorkers.length > 0) {
+      const wsWithInstall = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: {},
+        with: { githubInstallation: { columns: { installationId: true } } },
+      });
+      const installId = wsWithInstall?.githubInstallation?.installationId;
+      if (installId) {
+        const refreshed = await Promise.all(
+          staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId))
+        );
+        if (refreshed.some(Boolean)) {
+          const refreshedMission = await db.query.missions.findFirst({
+            where: eq(missions.id, id),
+            with: {
+              workspace: { columns: { id: true, name: true } },
+              initiative: { columns: { id: true, title: true } },
+              tasks: {
+                columns: {
+                  id: true, title: true, status: true, priority: true, createdAt: true,
+                  updatedAt: true, result: true, mode: true, roleSlug: true,
+                  creationSource: true, dependsOn: true, parentTaskId: true, category: true,
+                },
+                orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
+                with: {
+                  workers: {
+                    columns: {
+                      id: true, status: true, waitingFor: true, branch: true, prUrl: true,
+                      prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
+                      turns: true, completedAt: true, startedAt: true, currentAction: true,
+                      commitCount: true, filesChanged: true,
+                    },
+                    orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
+                    limit: 3,
+                    with: {
+                      artifacts: {
+                        columns: {
+                          id: true, type: true, title: true, key: true, shareToken: true,
+                          content: true, visibility: true, metadata: true, createdAt: true,
+                        },
+                        limit: 5,
+                      },
+                    },
+                  },
+                },
+              },
+              schedule: true,
+            },
+          });
+          if (refreshedMission) mission = refreshedMission;
+        }
+      }
+    }
   }
 
   // Query roles and workspaces for this user
@@ -697,13 +762,21 @@ export default async function MissionDetailPage({
               { label: 'Completed', value: String(completedTasks) },
               { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
               { label: 'Duration', value: (() => {
-                const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
-                const hours = Math.floor(ms / 3600000);
-                const minutes = Math.floor((ms % 3600000) / 60000);
-                if (hours > 24) {
-                  const days = Math.floor(hours / 24);
-                  return `${days}d ${hours % 24}h`;
+                // Active span: first worker start → last worker end across all tasks.
+                const allWorkers = allTasks.flatMap((t: any) => t.workers ?? []);
+                const starts = allWorkers.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
+                const ends = allWorkers.map((w: any) => (w.completedAt ?? w.updatedAt) ? new Date((w.completedAt ?? w.updatedAt) as string).getTime() : null).filter(Boolean) as number[];
+                if (starts.length === 0 || ends.length === 0) {
+                  const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
+                  const hours = Math.floor(ms / 3600000);
+                  const minutes = Math.floor((ms % 3600000) / 60000);
+                  if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
+                  return `${hours}h ${minutes}m`;
                 }
+                const spanMs = Math.max(...ends) - Math.min(...starts);
+                const hours = Math.floor(spanMs / 3600000);
+                const minutes = Math.floor((spanMs % 3600000) / 60000);
+                if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
                 return `${hours}h ${minutes}m`;
               })() },
             ].map(stat => (

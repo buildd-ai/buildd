@@ -3,8 +3,9 @@
 import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { MissionSegment } from '@buildd/core/mission-helpers';
+import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
 import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { initiativeStatusChip } from '@/lib/initiative-presentation';
 import {
@@ -104,6 +105,8 @@ export interface MissionItem {
   priority: number;
   goalCriteriaCount: number;
   goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | null;
+  skyline: MissionSkylineData | null;
+  normalizationSlots: number;
 }
 
 interface WorkspaceBucket {
@@ -856,9 +859,15 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
-        {mission.totalTasks > 0 && <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
+        {group === 'completed' && mission.skyline ? (
+          <div className="mt-2">
+            <MissionSkylineChart skyline={mission.skyline} normalizationSlots={mission.normalizationSlots} />
+          </div>
+        ) : mission.totalTasks > 0 ? (
+          <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
+        ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
-          {mission.totalTasks > 0 && (
+          {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (
             <span>{mission.completedTasks} of {mission.totalTasks} done</span>
           )}
           <>
