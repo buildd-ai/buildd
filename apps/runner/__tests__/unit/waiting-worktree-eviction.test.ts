@@ -9,9 +9,10 @@
  * Run: bun test apps/runner/__tests__/unit/waiting-worktree-eviction.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeAll, beforeEach, mock, afterAll, afterEach } from 'bun:test';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 import { WAITING_WORKTREE_TTL_MS } from '../../src/worktree-utils';
+import { __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 
 // ─── Mocks (mirror e2e-worktree-cleanup.test.ts) ─────────────────────────────
 
@@ -96,13 +97,26 @@ mock.module('../../src/worker-store', () => ({
   deleteWorker: mock(() => {}),
 }));
 
-// Capture cleanupWorktree calls (git-operations is imported by worker-sync).
+// Capture cleanupWorktree calls via dep injection spy (avoids mock.module pollution
+// that would cause git-operations.test.ts to receive the mocked setupWorktree).
 const mockCleanupWorktree = mock(async () => {});
-mock.module('../../src/git-operations', () => ({
-  cleanupWorktree: mockCleanupWorktree,
-  setupWorktree: mock(async () => null),
-  collectGitStats: mock(async () => ({})),
-}));
+
+beforeAll(() => {
+  __setGitOpsDeps({
+    cleanupSpy: mockCleanupWorktree,
+    execSync: (() => '') as any,
+    execFile: ((_f: any, _a: any, _o: any, cb: any) => cb(null, '', '')) as any,
+    existsSync: (p: string) => mockExistsSync(p),
+    mkdirSync: (() => {}) as any,
+    readFileSync: (() => '') as any,
+    appendFileSync: () => {},
+    rmSync: () => {},
+  });
+});
+
+afterAll(() => {
+  __resetGitOpsDeps();
+});
 
 mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
 mock.module('../../src/session-logger', () => ({
