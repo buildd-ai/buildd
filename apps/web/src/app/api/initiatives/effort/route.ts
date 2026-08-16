@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, missions, workspaces } from '@buildd/core/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { workspaces } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-
-const WINDOW_DAYS = 14;
+import { loadInitiativeEffort } from '@/lib/initiative-pulse';
 
 // GET /api/initiatives/effort?workspaceId=<id>
-// Aggregates token usage and task outcome counts per initiative per day over the last 14 days.
-// Workers are attributed by completedAt (falling back to updatedAt when null).
-// Missions with no initiative are grouped under the 'unassigned' key.
+// Per-initiative daily token totals and worker outcome counts over the last 14 days.
+//
+// The aggregation itself lives in lib/initiative-pulse.ts — this route is auth,
+// scoping and serialisation only, so it can never drift from the server
+// components that read the same window (spec: surface-ia-home-missions-initiatives §6.2).
+//
+// `days` is a dense 14-entry window ending today, and missions with no
+// initiative are keyed '__unassigned__'.
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -40,45 +44,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
-    const cutoff = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const byInitiative = await loadInitiativeEffort({ workspaceId });
 
-    const rows = await db
-      .select({
-        initiativeId: missions.initiativeId,
-        day: sql<string>`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
-        tokens: sql<number>`SUM(${workers.inputTokens} + ${workers.outputTokens})`,
-        merged: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'completed' AND ${workers.prUrl} IS NOT NULL)`,
-        failed: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'error')`,
-        open: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} NOT IN ('completed', 'error'))`,
-      })
-      .from(workers)
-      .innerJoin(tasks, eq(tasks.id, workers.taskId))
-      .innerJoin(missions, eq(missions.id, tasks.missionId))
-      .where(and(
-        eq(missions.workspaceId, workspaceId),
-        sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) >= ${cutoff}`,
-      ))
-      .groupBy(
-        missions.initiativeId,
-        sql`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
-      );
-
-    type DayEntry = { date: string; tokens: number; merged: number; failed: number; open: number };
-    const grouped = new Map<string, DayEntry[]>();
-
-    for (const row of rows) {
-      const key = row.initiativeId ?? 'unassigned';
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push({
-        date: row.day,
-        tokens: Number(row.tokens),
-        merged: Number(row.merged),
-        failed: Number(row.failed),
-        open: Number(row.open),
-      });
-    }
-
-    const efforts = Array.from(grouped.entries()).map(([initiativeId, days]) => ({
+    const efforts = [...byInitiative.entries()].map(([initiativeId, days]) => ({
       initiativeId,
       days,
     }));

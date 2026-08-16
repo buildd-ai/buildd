@@ -82,11 +82,12 @@ describe('GET /api/initiatives/effort', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 200 with correct shape for authenticated user', async () => {
+  it('returns 200 with a dense 14-day window for an authenticated user', async () => {
+    const today = new Date().toISOString().slice(0, 10);
     mockSelectRows.mockReturnValue([
       {
         initiativeId: 'init-1',
-        day: '2026-07-15',
+        day: today,
         tokens: '5000',
         merged: '2',
         failed: '1',
@@ -105,22 +106,26 @@ describe('GET /api/initiatives/effort', () => {
 
     const effort = body.efforts[0];
     expect(effort.initiativeId).toBe('init-1');
-    expect(Array.isArray(effort.days)).toBe(true);
-    expect(effort.days).toHaveLength(1);
-    expect(effort.days[0]).toMatchObject({
-      date: '2026-07-15',
+    // Sparse rows are back-filled to a dense window ending today, so clients
+    // never have to reconstruct the missing days themselves.
+    expect(effort.days).toHaveLength(14);
+    expect(effort.days[13]).toMatchObject({
+      date: today,
       tokens: 5000,
       merged: 2,
       failed: 1,
       open: 0,
     });
+    expect(effort.days[0].tokens).toBe(0);
   });
 
-  it('groups rows by initiativeId and maps null to "unassigned"', async () => {
+  it('groups rows by initiativeId and maps null to "__unassigned__"', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     mockSelectRows.mockReturnValue([
-      { initiativeId: 'init-1', day: '2026-07-14', tokens: '100', merged: '1', failed: '0', open: '0' },
-      { initiativeId: 'init-1', day: '2026-07-15', tokens: '200', merged: '0', failed: '0', open: '1' },
-      { initiativeId: null, day: '2026-07-15', tokens: '75', merged: '0', failed: '0', open: '1' },
+      { initiativeId: 'init-1', day: yesterday, tokens: '100', merged: '1', failed: '0', open: '0' },
+      { initiativeId: 'init-1', day: today, tokens: '200', merged: '0', failed: '0', open: '1' },
+      { initiativeId: null, day: today, tokens: '75', merged: '0', failed: '0', open: '1' },
     ]);
 
     const req = new NextRequest('http://localhost/api/initiatives/effort?workspaceId=ws-1');
@@ -131,10 +136,13 @@ describe('GET /api/initiatives/effort', () => {
     expect(body.efforts).toHaveLength(2);
 
     const init1 = body.efforts.find((e: any) => e.initiativeId === 'init-1');
-    expect(init1.days).toHaveLength(2);
+    expect(init1.days).toHaveLength(14);
+    expect(init1.days[12].tokens).toBe(100);
+    expect(init1.days[13].tokens).toBe(200);
 
-    const unassigned = body.efforts.find((e: any) => e.initiativeId === 'unassigned');
+    const unassigned = body.efforts.find((e: any) => e.initiativeId === '__unassigned__');
     expect(unassigned).toBeDefined();
-    expect(unassigned.days[0].tokens).toBe(75);
+    expect(unassigned.days[13].tokens).toBe(75);
+    expect(body.efforts.some((e: any) => e.initiativeId === 'unassigned')).toBe(false);
   });
 });
