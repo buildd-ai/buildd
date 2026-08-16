@@ -55,6 +55,7 @@ export default async function TasksPage({
     attemptCurrent: number | null;
     attemptTotal: number | null;
     taskType: TaskType | null;
+    parentTaskId: string | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -124,8 +125,37 @@ export default async function TasksPage({
             limit: 200,
           });
 
+          // Fetch child tasks (retry/reviewer) for the root tasks we loaded
+          const rootIds = recentTasks.map(t => t.id);
+          const childTasks = rootIds.length > 0
+            ? await db.query.tasks.findMany({
+                where: inArray(tasks.parentTaskId, rootIds),
+                columns: {
+                  id: true,
+                  title: true,
+                  status: true,
+                  category: true,
+                  createdAt: true,
+                  updatedAt: true,
+                  workspaceId: true,
+                  result: true,
+                  missionId: true,
+                  context: true,
+                  backend: true,
+                  dependsOn: true,
+                  startAt: true,
+                  loopConfig: true,
+                  loopIteration: true,
+                  loopState: true,
+                  parentTaskId: true,
+                },
+                limit: 500,
+              })
+            : [];
+          const allTasks = [...recentTasks, ...childTasks];
+
           // Fetch mission titles for tasks that have missionId
-          const missionIds = [...new Set(recentTasks.map(t => t.missionId).filter(Boolean))] as string[];
+          const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
           const missionTitleMap = new Map<string, string>();
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
@@ -141,7 +171,7 @@ export default async function TasksPage({
           }
 
           // Query active workers to enrich task status and timestamps
-          const taskIds = recentTasks.map(t => t.id);
+          const taskIds = allTasks.map(t => t.id);
           const activeWorkers = taskIds.length > 0
             ? await db.query.workers.findMany({
                 where: and(
@@ -172,11 +202,11 @@ export default async function TasksPage({
           }
 
           // Chain data — only for non-terminal tasks (completed rows don't need it)
-          const nonTerminalTaskIds = recentTasks
+          const nonTerminalTaskIds = allTasks
             .filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
             .map(t => t.id);
           const allDepIds = [...new Set(
-            recentTasks
+            allTasks
               .filter(t => nonTerminalTaskIds.includes(t.id))
               .flatMap(t => (t.dependsOn as string[] | null) ?? [])
           )];
@@ -210,7 +240,7 @@ export default async function TasksPage({
           }
           // Count dependents within the loaded set
           const dependentCount = new Map<string, number>();
-          for (const t of recentTasks) {
+          for (const t of allTasks) {
             if (nonTerminalTaskIds.includes(t.id)) {
               for (const depId of (t.dependsOn as string[] | null) ?? []) {
                 dependentCount.set(depId, (dependentCount.get(depId) ?? 0) + 1);
@@ -218,9 +248,9 @@ export default async function TasksPage({
             }
           }
           // Build a title map from loaded tasks for dep display
-          const taskTitleMap = new Map(recentTasks.map(t => [t.id, t.title]));
+          const taskTitleMap = new Map(allTasks.map(t => [t.id, t.title]));
 
-          gridTasks = recentTasks.map(t => {
+          gridTasks = allTasks.map(t => {
             const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
             const isTerminal = t.status === 'completed' || t.status === 'failed';
             const ctx = (t.context || {}) as Record<string, unknown>;
@@ -277,6 +307,7 @@ export default async function TasksPage({
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
               taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId }),
+              parentTaskId: t.parentTaskId ?? null,
             };
           });
         }
