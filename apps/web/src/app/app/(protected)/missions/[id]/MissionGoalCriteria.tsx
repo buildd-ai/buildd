@@ -25,7 +25,7 @@ const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; ico
   pass: { label: 'Pass', cls: 'text-status-success border-status-success/40', icon: '✓' },
   fail: { label: 'Fail', cls: 'text-status-error border-status-error/40', icon: '✗' },
   UNVERIFIED: { label: 'Unverified', cls: 'text-text-muted border-border-default', icon: '?' },
-  NOT_EVALUATED: { label: 'Pending', cls: 'text-text-muted border-border-default', icon: '…' },
+  NOT_EVALUATED: { label: 'No evaluator', cls: 'text-text-muted/50 border-border-default/50', icon: '–' },
 };
 
 function formatRelativeTime(isoString: string): string {

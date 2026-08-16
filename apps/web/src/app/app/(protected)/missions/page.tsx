@@ -334,7 +334,7 @@ export default async function MissionsPage({
       initiativeName: (obj.initiative as any)?.title || null,
       priority: obj.priority ?? 0,
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
-      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | null,
+      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null,
       skyline,
       normalizationSlots: 0, // patched below after all missions are computed
     };
