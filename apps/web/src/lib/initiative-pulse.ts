@@ -470,12 +470,16 @@ export async function loadInitiativeVerdictInputs(opts: {
       .groupBy(missions.initiativeId),
 
     // Rework: tasks created in the window, classified in TS rather than SQL so
-    // `deriveTaskType`'s prefix rules stay the single source of truth.
+    // `deriveTaskType`'s rules stay the single source of truth. `mode` is part
+    // of that classification — a spawned builder task (parentTaskId set,
+    // mode 'execution', no prefix) is a deliverable, not an attempt — so
+    // omitting it would read approve_plan children as thrash.
     db
       .select({
         initiativeId: missions.initiativeId,
         title: tasks.title,
         parentTaskId: tasks.parentTaskId,
+        mode: tasks.mode,
       })
       .from(tasks)
       .innerJoin(missions, eq(missions.id, tasks.missionId))
@@ -510,6 +514,8 @@ export interface AttemptRow {
   initiativeId: string | null;
   title: string;
   parentTaskId: string | null;
+  /** 'execution' | 'planning'. Required: it decides attempt vs. deliverable. */
+  mode: string | null;
 }
 
 /**
@@ -558,7 +564,8 @@ export function assembleVerdictRollups(input: {
   }
 
   for (const row of input.attemptRows) {
-    if (deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId }) === null) continue;
+    const type = deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId, mode: row.mode });
+    if (type === null) continue;
     bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY).attempts7d++;
   }
 
