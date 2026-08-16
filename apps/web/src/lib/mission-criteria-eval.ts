@@ -31,8 +31,10 @@ function criterionText(criterion: GoalCriterion): string {
 }
 
 function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
-  if (criteria.every(r => r.verdict === 'pass')) return 'pass';
-  if (criteria.some(r => r.verdict === 'fail')) return 'fail';
+  const evaluated = criteria.filter(r => r.verdict !== 'NOT_EVALUATED');
+  if (evaluated.length === 0) return 'UNVERIFIED';
+  if (evaluated.some(r => r.verdict === 'fail')) return 'fail';
+  if (evaluated.every(r => r.verdict === 'pass')) return 'pass';
   return 'UNVERIFIED';
 }
 
@@ -219,44 +221,66 @@ export async function autoEvaluateMissionOnCompletion(missionId: string): Promis
 
   // LLM evidence-based evaluation for UNVERIFIED criteria
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  const llmEligible = state.criteria.filter(c => c.verdict === 'UNVERIFIED' && isLlmEligible(c.type));
+  // Include NOT_EVALUATED (description) and UNVERIFIED (command/unknown) criteria for LLM
+  const llmEligible = state.criteria.filter(
+    c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
+  );
 
-  if (anthropicApiKey && llmEligible.length > 0) {
-    const completedTasks: EvidenceTask[] = missionTasks
-      .filter(t => t.status === 'completed')
-      .map(t => ({
-        id: t.id,
-        title: t.title,
-        summary: (t.result as any)?.summary as string | undefined,
+  if (llmEligible.length > 0) {
+    if (anthropicApiKey) {
+      const completedTasks: EvidenceTask[] = missionTasks
+        .filter(t => t.status === 'completed')
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          summary: (t.result as any)?.summary as string | undefined,
+        }));
+
+      const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
+        id: a.id,
+        title: a.title,
+        type: a.type,
+        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
       }));
 
-    const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
-      id: a.id,
-      title: a.title,
-      type: a.type,
-      contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
-    }));
+      const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
+        index: c.index,
+        text: criterionText(criteria[c.index]),
+      }));
 
-    const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
-      index: c.index,
-      text: criterionText(criteria[c.index]),
-    }));
+      const llmVerdicts = await judgeWithLLM(
+        llmInputs,
+        mission.title,
+        mission.description ?? null,
+        completedTasks,
+        evidenceArtifacts,
+        anthropicApiKey,
+      );
 
-    const llmVerdicts = await judgeWithLLM(
-      llmInputs,
-      mission.title,
-      mission.description ?? null,
-      completedTasks,
-      evidenceArtifacts,
-      anthropicApiKey,
-    );
+      for (const lv of llmVerdicts) {
+        const criterionState = state.criteria.find(c => c.index === lv.index);
+        if (!criterionState) continue;
+        criterionState.verdict = lv.verdict;
+        if (lv.evidence) criterionState.evidence = lv.evidence;
+        if (lv.evidenceRef) (criterionState as any).evidenceRefs = [lv.evidenceRef];
+      }
 
-    for (const lv of llmVerdicts) {
-      const criterionState = state.criteria.find(c => c.index === lv.index);
-      if (!criterionState) continue;
-      criterionState.verdict = lv.verdict;
-      if (lv.evidence) criterionState.evidence = lv.evidence;
-      if (lv.evidenceRef) (criterionState as any).evidenceRefs = [lv.evidenceRef];
+      // Any eligible criteria that the LLM didn't return a verdict for stay NOT_EVALUATED
+      for (const c of llmEligible) {
+        const cs = state.criteria.find(s => s.index === c.index);
+        if (cs && cs.verdict === 'NOT_EVALUATED') {
+          cs.evidence = 'LLM returned no verdict for this criterion';
+        }
+      }
+    } else {
+      // No API key — mark all LLM-eligible criteria as NOT_EVALUATED
+      for (const c of llmEligible) {
+        const cs = state.criteria.find(s => s.index === c.index);
+        if (cs) {
+          cs.verdict = 'NOT_EVALUATED';
+          cs.evidence = 'LLM evaluator not configured';
+        }
+      }
     }
 
     (state as any).overall = recalculateOverall(state.criteria);
