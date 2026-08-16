@@ -23,7 +23,29 @@ export interface InitiativeListItem {
   priority: number;
   workspaceId: string | null;
   workspace: { id: string; name: string } | null;
-  missions: Array<{ id: string; title: string; status: string }>;
+  missions: Array<{
+    id: string;
+    title: string;
+    status: string;
+    // The three fields below are present only under `pendingSignals: true`.
+    // `GET /api/initiatives` returns these items verbatim, and its contract is a
+    // light mission index — a task array per mission would balloon that payload.
+    isHeld?: boolean;
+    /** ISO string; feeds the 7-day "shipped this week" window. */
+    updatedAt?: string | null;
+    /** Enough per-task shape for `derivePendingCounts` and `countBlockedByPR`. */
+    tasks?: Array<{
+      id: string;
+      status: string;
+      dependsOn: string[] | null;
+      workers: Array<{
+        prUrl: string | null;
+        prNumber: number | null;
+        mergedAt: Date | string | null;
+        prLifecycleStatus: string | null;
+      }>;
+    }>;
+  }>;
   progress: InitiativeProgress;
   segments: MissionSegment[];
   /** ISO string of the most recent child-mission update, or null if no missions. */
@@ -39,8 +61,12 @@ export interface InitiativeListItem {
  *
  * - Rollup + segments come from the shared `computeInitiative*` helpers (read
  *   time; the `progressCache` column stays dormant). Tasks are loaded once to
- *   compute both; workers are NOT loaded, so ghost/half segment nuance collapses
- *   to solid/empty — the detail page carries the live nuance.
+ *   compute both.
+ * - Workers are loaded with a narrow column set — PR identity and merge state
+ *   only — because the Initiatives list is the triage host (spec §4) and
+ *   `derivePendingCounts` needs them for `awaitingVerification` and `blocked`.
+ *   They are deliberately not enough for segment nuance, so ghost/half segments
+ *   still collapse to solid/empty here; the detail page carries the live nuance.
  * - `hasLinearLink` is one batched existence query over every child mission id,
  *   never one query per card.
  * - Ordering is left to the caller (the UI sorts blocked-first, then
@@ -50,8 +76,14 @@ export async function loadInitiativeList(opts: {
   teamIds: string[];
   statusFilter?: string | null;
   workspaceIdFilter?: string | null;
+  /**
+   * Load the per-mission hold flag, timestamps, and task/worker PR state that
+   * `derivePendingCounts` and `countBlockedByPR` need. Off by default so the HTTP
+   * route keeps its light payload and pays for no worker rows.
+   */
+  pendingSignals?: boolean;
 }): Promise<InitiativeListItem[]> {
-  const { teamIds, statusFilter, workspaceIdFilter } = opts;
+  const { teamIds, statusFilter, workspaceIdFilter, pendingSignals = false } = opts;
   if (teamIds.length === 0) return [];
 
   let where = inArray(initiatives.teamId, teamIds);
@@ -66,10 +98,19 @@ export async function loadInitiativeList(opts: {
       workspace: { columns: { id: true, name: true } },
       missions: {
         // updatedAt drives the client-side motion sort + "moved 2h ago" label.
-        columns: { id: true, title: true, status: true, updatedAt: true },
+        columns: { id: true, title: true, status: true, updatedAt: true, isHeld: true },
         with: {
           tasks: {
-            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
+            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true },
+            ...(pendingSignals
+              ? {
+                  with: {
+                    workers: {
+                      columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+                    },
+                  },
+                }
+              : {}),
           },
         },
       },
@@ -116,7 +157,28 @@ export async function loadInitiativeList(opts: {
       priority: initiative.priority,
       workspaceId: initiative.workspaceId,
       workspace: (initiative as any).workspace ?? null,
-      missions: missionsRaw.map((m) => ({ id: m.id, title: m.title, status: m.status })),
+      missions: missionsRaw.map((m) => ({
+        id: m.id,
+        title: m.title,
+        status: m.status,
+        ...(pendingSignals
+          ? {
+              isHeld: Boolean(m.isHeld),
+              updatedAt: m.updatedAt ? new Date(m.updatedAt).toISOString() : null,
+              tasks: (m.tasks || []).map((t: any) => ({
+                id: t.id,
+                status: t.status,
+                dependsOn: (t.dependsOn as string[] | null) ?? null,
+                workers: (t.workers || []).map((w: any) => ({
+                  prUrl: w.prUrl ?? null,
+                  prNumber: w.prNumber ?? null,
+                  mergedAt: w.mergedAt ?? null,
+                  prLifecycleStatus: w.prLifecycleStatus ?? null,
+                })),
+              })),
+            }
+          : {}),
+      })),
       progress,
       segments,
       lastMotionAt,
