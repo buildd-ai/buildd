@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql, or } from 'drizzle-orm';
+import { and, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -111,12 +111,14 @@ export default async function HealthPage({
       .catch(() => [] as RunnerHeartbeat[]),
 
     // Usage stats (last 30 days)
+    // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate counts.
     (async (): Promise<UsageStats | null> => {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const recentTasks = await db.query.tasks.findMany({
         where: and(
           inArray(tasks.workspaceId, scopedWsIds),
           sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+          isNull(tasks.parentTaskId),
         ),
         columns: { roleSlug: true, status: true },
       });

@@ -111,12 +111,14 @@ export default async function TeamPage() {
   });
 
   // Get historical task counts per role (last 30 days)
+  // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate stats.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const recentTasks = await db.query.tasks.findMany({
     where: and(
       inArray(tasks.workspaceId, wsIds),
       sql`${tasks.roleSlug} IS NOT NULL`,
       sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+      isNull(tasks.parentTaskId),
     ),
     columns: { roleSlug: true, status: true },
   });
