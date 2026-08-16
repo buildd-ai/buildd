@@ -1,11 +1,21 @@
 ---
 title: Missions Tab — Initiative Triage Surface
-status: draft
+status: superseded
 owner: builder
 last_verified: 2026-08-13
+superseded_by: surface-ia-home-missions-initiatives
 ---
 
 # Missions Tab — Initiative Triage Surface
+
+> **Superseded by [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md).**
+> The triage surface shipped in v0.166.0 but on the wrong host: this spec places
+> it on the Missions tab, whose subject is mission state. The successor moves it
+> to `/app/initiatives`, corrects the sparkline mount size (this spec's `84×24`
+> shipped as `48×16`), replaces §3's standalone endpoint contract with one shared
+> loader, and carries §1's progress canon forward as §6.3. Kept for the progress
+> mismatch analysis below, which explains why the two shipped percentages
+> disagreed.
 
 **Capability statement**: The Missions tab MUST present each active initiative as
 a triage row that surfaces pending-action counts, 14-day activity sparklines, and a
