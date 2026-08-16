@@ -106,6 +106,8 @@ export const events = {
   TASK_UPDATED: 'task:updated',
   // Failure loop prevention
   TASK_RETRY_CAP: 'task:retry_cap',
+  // Mission reopened (completed mission got new open work)
+  MISSION_REOPENED: 'mission:reopened',
   // Mission feed events
   MISSION_NOTE_POSTED: 'mission:note_posted',
   // Connector auth expiry (mid-task 401 circuit breaker)

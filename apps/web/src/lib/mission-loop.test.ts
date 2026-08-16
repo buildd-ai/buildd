@@ -92,10 +92,11 @@ mock.module('@/lib/pusher', () => ({
     MISSION_CYCLE_STARTED: 'mission:cycle_started',
     MISSION_LOOP_COMPLETED: 'mission:loop_completed',
     MISSION_LOOP_STALLED: 'mission:loop_stalled',
+    MISSION_REOPENED: 'mission:reopened',
   },
 }));
 
-import { maybeRetriggerMission } from './mission-loop';
+import { maybeRetriggerMission, reopenCompletedMission } from './mission-loop';
 
 function resetAll() {
   missionFindFirstResult = null;
@@ -626,6 +627,30 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
+  it('regression: pending CI-retry task blocks dormancy auto-complete', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
+      result: {},
+    };
+    selectResults = [[{ count: 1 }]];
+    // CI-retry task is pending → should NOT auto-complete
+    tasksFindManyResults = [
+      [
+        { title: 'Build the API', mode: 'execution', status: 'completed' },
+        { title: '[CI Retry #1] Build the API', mode: 'execution', status: 'pending' },
+      ],
+      [{ id: 'pt1' }],
+      [{ id: 'child-1' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    // Pending attempt task blocks auto-complete → mission retriggers instead
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
   it('auto-completes heartbeat mission via dormancy when all deliverables done', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
@@ -651,6 +676,64 @@ describe('mission-loop', () => {
       'mission-m1',
       'mission:loop_completed',
       expect.objectContaining({ reason: 'dormancy_auto_complete' })
+    );
+  });
+});
+
+describe('reopenCompletedMission', () => {
+  beforeEach(resetAll);
+
+  it('flips a completed mission back to active and emits MISSION_REOPENED', async () => {
+    // Completed mission with no schedule
+    updateReturningResult = [{ id: 'm1', scheduleId: null }];
+
+    const result = await reopenCompletedMission('m1');
+
+    expect(result.reopened).toBe(true);
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1',
+      'mission:reopened',
+      expect.objectContaining({ missionId: 'm1', reason: 'task_added' })
+    );
+  });
+
+  it('re-enables the schedule when mission has one', async () => {
+    // Mission has a schedule that was paused on completion
+    updateReturningResult = [{ id: 'm1', scheduleId: 'sched-1' }];
+
+    const result = await reopenCompletedMission('m1');
+
+    expect(result.reopened).toBe(true);
+    // Pusher event emitted
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1',
+      'mission:reopened',
+      expect.objectContaining({ missionId: 'm1' })
+    );
+  });
+
+  it('returns reopened: false when mission is not in completed state (WHERE not matched)', async () => {
+    // updateReturningResult is empty → WHERE status='completed' did not match
+    updateReturningResult = [];
+
+    const result = await reopenCompletedMission('m1');
+
+    expect(result.reopened).toBe(false);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('regression: adding a task to a completed mission reopens it (latch fix)', async () => {
+    // Simulate the bug scenario: mission was auto-completed, then a new task is added.
+    // reopenCompletedMission is called from the task creation route.
+    updateReturningResult = [{ id: 'a01b3251', scheduleId: 'heartbeat-sched' }];
+
+    const result = await reopenCompletedMission('a01b3251');
+
+    expect(result.reopened).toBe(true);
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-a01b3251',
+      'mission:reopened',
+      expect.objectContaining({ missionId: 'a01b3251', reason: 'task_added' })
     );
   });
 });
