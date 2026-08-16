@@ -6,10 +6,12 @@ import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
+import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
+import type { StageCounts } from '@/components/MissionProgressBar';
 
 interface GridTask {
   id: string;
@@ -64,7 +66,12 @@ function deriveSwipeCardType(task: GridTask): SwipeCardType {
   return 'running-task';
 }
 
-function renderTaskCard(task: GridTask, missionScoped = false) {
+function renderTaskCard(
+  task: GridTask,
+  missionScoped = false,
+  groupScoped = false,
+  groupTaskIds?: ReadonlySet<string>,
+) {
   const cardType = deriveSwipeCardType(task);
   const swipePrUrl = cardType === 'blocked-task'
     ? (task.chain?.blockedBy?.[0]?.prUrl ?? task.prUrl)
@@ -101,6 +108,8 @@ function renderTaskCard(task: GridTask, missionScoped = false) {
         prNumber={task.prNumber}
         taskType={task.taskType}
         density="row"
+        groupScoped={groupScoped}
+        groupTaskIds={groupTaskIds}
       />
     </SwipeableRow>
   );
@@ -111,7 +120,9 @@ function renderTaskWithChildren(
   childrenByParentId: Map<string, GridTask[]>,
   expandedParents: Set<string>,
   onToggle: (id: string) => void,
-  missionScoped: boolean
+  missionScoped: boolean,
+  groupScoped = false,
+  groupTaskIds?: ReadonlySet<string>,
 ) {
   const children = [...(childrenByParentId.get(task.id) ?? [])].sort(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
@@ -120,9 +131,14 @@ function renderTaskWithChildren(
   const isExpanded = expandedParents.has(task.id);
   const childLabel = children.length === 1 ? 'attempt' : 'attempts';
 
+  // Elbow rail indentation for blocked tasks when blocker is in same group
+  const isBlocked = (task.chain?.blockedBy?.length ?? 0) > 0;
+  const blockerVisible = groupScoped && isBlocked && !!groupTaskIds &&
+    (task.chain?.blockedBy ?? []).every(b => groupTaskIds.has(b.id));
+
   return (
-    <div key={task.id}>
-      {renderTaskCard(task, missionScoped)}
+    <div key={task.id} className={blockerVisible ? 'ml-4 border-l border-status-warning/50' : ''}>
+      {renderTaskCard(task, missionScoped, groupScoped, groupTaskIds)}
       {hasChildren && (
         <div>
           <button
@@ -141,7 +157,7 @@ function renderTaskWithChildren(
             <div className="border-l-2 border-border-default ml-10">
               {children.map(child => (
                 <div key={child.id}>
-                  {renderTaskCard(child, missionScoped)}
+                  {renderTaskCard(child, missionScoped, groupScoped, groupTaskIds)}
                 </div>
               ))}
             </div>
@@ -159,12 +175,40 @@ function sortByRecency(list: GridTask[]): GridTask[] {
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
 type ContentFilter = 'all' | 'missions' | 'tasks' | 'retries' | 'reviews';
-type GroupBy = 'mission' | 'none' | 'status' | 'workspace';
+type GroupBy = 'mission' | 'none' | 'status' | 'workspace' | 'time';
 
 interface MissionGroup {
   id: string | null;
   title: string;
   tasks: GridTask[];
+}
+
+// ─── Stage derivation from GridTask (no new column needed) ───────────────────
+
+function deriveGridTaskStage(task: GridTask): keyof StageCounts {
+  if (task.status === 'failed') return 'FAILED';
+  if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
+      task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
+  if (task.status === 'completed') {
+    if (task.prUrl) return 'REVIEW'; // open PR (lifecycle not available in GridTask)
+    return 'DONE';
+  }
+  if (task.status === 'pending' || task.status === 'assigned') {
+    if ((task.chain?.blockedBy?.length ?? 0) > 0) return 'BLOCKED';
+    return 'QUEUED';
+  }
+  return 'QUEUED';
+}
+
+function computeStageCounts(tasks: GridTask[]): { counts: StageCounts; failedCount: number } {
+  const counts: StageCounts = { BLOCKED: 0, QUEUED: 0, RUNNING: 0, REVIEW: 0, DONE: 0, FAILED: 0 };
+  for (const t of tasks) {
+    counts[deriveGridTaskStage(t)]++;
+  }
+  const failedCount = counts.FAILED;
+  // FAILED doesn't go in the bar segments
+  counts.FAILED = 0;
+  return { counts, failedCount };
 }
 
 interface StatusGroup {
@@ -211,13 +255,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
-  // groupBy is fixed: mission grouping is the default (no user control)
-  const groupBy: GroupBy = missionFilter ? 'none' : 'mission';
+  // Default grouping is time-band; mission is a user-selectable lens
+  const [groupLens, setGroupLens] = useState<'time' | 'mission'>('time');
+  const groupBy: GroupBy = missionFilter ? 'none' : groupLens;
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  // Empty = all collapsed by default. Toggling adds a group to expandedGroups to open it.
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Focus search input when mobile search opens
   useEffect(() => {
@@ -305,7 +348,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
   const nonWaitingTasks = useMemo(() => filtered.filter(t => t.status !== 'waiting_input'), [filtered]);
 
   // Auto-flatten: when groupBy=mission but one group holds >75% of tasks, switch to flat recency list.
-  // This prevents the degenerate "No mission" single-bucket scenario from hiding all tasks behind a toggle.
+  // This prevents the degenerate "No mission" single-bucket scenario.
   const effectiveGroupBy = useMemo((): GroupBy => {
     if (groupBy !== 'mission' || nonWaitingTasks.length === 0) return groupBy;
     const groupCounts = new Map<string | null, number>();
@@ -315,6 +358,35 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     const maxCount = Math.max(...groupCounts.values());
     return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
   }, [groupBy, nonWaitingTasks]);
+
+  // ─── Time-band groups ──────────────────────────────────────────────────────
+
+  const timeBandGroups = useMemo(() => {
+    if (effectiveGroupBy !== 'time') return [];
+    const now = Date.now();
+    const todayStart   = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    const weekStart    = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
+
+    const bands: { label: string; tasks: GridTask[] }[] = [
+      { label: 'Today',     tasks: [] },
+      { label: 'Yesterday', tasks: [] },
+      { label: 'This week', tasks: [] },
+      { label: 'Older',     tasks: [] },
+    ];
+
+    for (const t of nonWaitingTasks) {
+      const ms = new Date(t.updatedAt).getTime();
+      if (ms >= todayStart.getTime())     bands[0].tasks.push(t);
+      else if (ms >= yesterdayStart.getTime()) bands[1].tasks.push(t);
+      else if (ms >= weekStart.getTime()) bands[2].tasks.push(t);
+      else                                bands[3].tasks.push(t);
+    }
+
+    return bands
+      .filter(b => b.tasks.length > 0)
+      .map(b => ({ ...b, tasks: sortByRecency(b.tasks) }));
+  }, [nonWaitingTasks, effectiveGroupBy]);
 
   // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
   const mobileRecentTasks = useMemo(() => {
@@ -408,15 +480,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     if (effectiveGroupBy !== 'none') return [];
     return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, effectiveGroupBy]);
-
-  const toggleGroup = (groupId: string) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
-  };
 
   if (rootTasks.length === 0 && !missionFilter) {
     return (
@@ -527,6 +590,19 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   ))}
                   {/* Visual divider */}
                   <span className="shrink-0 w-px h-4 bg-border-default mx-0.5" />
+                  {/* Group lens chip */}
+                  <button
+                    onClick={() => setGroupLens(g => g === 'time' ? 'mission' : 'time')}
+                    className={`shrink-0 px-2.5 py-1 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap ${
+                      groupLens === 'mission'
+                        ? 'bg-surface-3 text-text-primary'
+                        : 'text-text-muted'
+                    }`}
+                  >
+                    {groupLens === 'mission' ? '⊙ Missions' : '⊙ By time'}
+                  </button>
+                  {/* Visual divider */}
+                  <span className="shrink-0 w-px h-4 bg-border-default mx-0.5" />
                   {/* Status chips — tap active chip to deselect (returns to all) */}
                   {statusFilters.filter(f => f.key !== 'all').map((f) => (
                     <button
@@ -612,6 +688,19 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             ))}
             {/* Divider */}
             <span className="w-px h-4 bg-border-default mx-0.5" />
+            {/* Group lens chip */}
+            <button
+              onClick={() => setGroupLens(g => g === 'time' ? 'mission' : 'time')}
+              className={`px-3 py-1 text-[13px] font-medium rounded-full transition-colors ${
+                groupLens === 'mission'
+                  ? 'bg-surface-3 text-text-primary'
+                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+              }`}
+            >
+              {groupLens === 'mission' ? '⊙ By mission' : '⊙ By time'}
+            </button>
+            {/* Divider */}
+            <span className="w-px h-4 bg-border-default mx-0.5" />
             {/* Status chips — tap active chip to deselect (returns to all) */}
             {statusFilters.filter(f => f.key !== 'all').map((f) => (
               <button
@@ -695,105 +784,55 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             </div>
           )}
 
-          {/* Grouped by Mission */}
+          {/* Grouped by Time (default) */}
+          {effectiveGroupBy === 'time' && timeBandGroups.map((group) => (
+            <div key={group.label}>
+              <GroupSection
+                title={group.label}
+                taskCount={group.tasks.length}
+              />
+              {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
+            </div>
+          ))}
+
+          {/* Grouped by Mission — GroupSection sticky headers, always expanded */}
           {effectiveGroupBy === 'mission' && missionGroups.map((group) => {
             const groupId = group.id || '__no_mission__';
-            const isExpanded = expandedGroups.has(groupId);
             const isNoMission = group.id === null;
-            const latestMs = Math.max(...group.tasks.map(t => new Date(t.updatedAt).getTime()));
-            const completedInGroup = group.tasks.filter(t => t.status === 'completed').length;
+            const groupTaskIds = new Set(group.tasks.map(t => t.id));
+            const { counts, failedCount } = computeStageCounts(group.tasks);
 
             return (
               <div key={groupId}>
-                <button
-                  onClick={() => toggleGroup(groupId)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
-                >
-                  {/* Chevron: points right when collapsed, down when expanded */}
-                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
-                    &#9662;
-                  </span>
-
-                  {/* Mission icon (only for named missions) */}
-                  {!isNoMission && (
-                    <svg className="w-3 h-3 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <circle cx="12" cy="12" r="3" />
-                      <circle cx="12" cy="12" r="9" strokeDasharray="2 4" />
-                    </svg>
-                  )}
-
-                  <span className="text-[13px] font-semibold text-text-primary truncate min-w-0 flex-1">
-                    {group.title}
-                  </span>
-
-                  {/* Progress (for named missions) */}
-                  {!isNoMission && group.tasks.length > 0 && (
-                    <span className="text-[11px] text-text-muted shrink-0">
-                      {completedInGroup}/{group.tasks.length}
-                    </span>
-                  )}
-
-                  <span className="text-[12px] text-text-desc shrink-0">
-                    {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
-                  </span>
-
-                  <span className="text-[11px] text-text-muted shrink-0 w-[58px] text-right">
-                    {timeAgo(new Date(latestMs).toISOString())}
-                  </span>
-                </button>
-
-                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
+                <GroupSection
+                  title={group.title}
+                  missionId={isNoMission ? null : group.id}
+                  stageCounts={isNoMission ? null : counts}
+                  failedCount={failedCount}
+                  taskCount={group.tasks.length}
+                />
+                {group.tasks.map((task) =>
+                  renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false, !isNoMission, groupTaskIds)
+                )}
               </div>
             );
           })}
 
           {/* Grouped by Status */}
-          {effectiveGroupBy === 'status' && statusGroups.map((group) => {
-            const groupId = `status_${group.label}`;
-            const isExpanded = expandedGroups.has(groupId);
-
-            return (
-              <div key={groupId}>
-                <button
-                  onClick={() => toggleGroup(groupId)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
-                >
-                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
-                    &#9662;
-                  </span>
-                  <span className="text-[13px] font-semibold text-text-primary">{group.label}</span>
-                  <span className="text-[12px] text-text-desc ml-auto">
-                    {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
-                  </span>
-                </button>
-                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
-              </div>
-            );
-          })}
+          {effectiveGroupBy === 'status' && statusGroups.map((group) => (
+            <div key={`status_${group.label}`}>
+              <GroupSection title={group.label} taskCount={group.tasks.length} />
+              {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
+            </div>
+          ))}
 
           {/* Grouped by Workspace */}
-          {effectiveGroupBy === 'workspace' && workspaceGroups.map((group) => {
-            const groupId = `ws_${group.id}`;
-            const isExpanded = expandedGroups.has(groupId);
-
-            return (
-              <div key={groupId}>
-                <button
-                  onClick={() => toggleGroup(groupId)}
-                  className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border-default bg-surface-1 hover:bg-surface-2/50 transition-colors text-left"
-                >
-                  <span className={`text-[11px] text-text-muted transition-transform shrink-0 ${isExpanded ? '' : '-rotate-90'}`}>
-                    &#9662;
-                  </span>
-                  <span className="text-[13px] font-semibold text-text-primary">{group.title}</span>
-                  <span className="text-[12px] text-text-desc ml-auto">
-                    {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
-                  </span>
-                </button>
-                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
-              </div>
-            );
-          })}
+          {effectiveGroupBy === 'workspace' && workspaceGroups.map((group) => (
+            <div key={`ws_${group.id}`}>
+              <GroupSection title={group.title} taskCount={group.tasks.length} />
+              {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
+            </div>
+          ))}
 
           {/* Flat list (no grouping) */}
           {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}

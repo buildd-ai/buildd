@@ -7,7 +7,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionBadges } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
@@ -260,8 +261,8 @@ export default async function InitiativeDetailPage({
                 />
                 {m.totalTasks > 0 && (
                   <div className="mt-1.5">
-                    <MissionProgress
-                      missionId={m.id}
+                    <MissionProgressBar
+                      density="stacked"
                       segments={m.segments}
                       completedTasks={m.completedTasks}
                       totalTasks={m.totalTasks}

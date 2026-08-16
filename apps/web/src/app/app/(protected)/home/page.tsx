@@ -20,7 +20,8 @@ import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionBadges } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
@@ -1628,7 +1629,7 @@ export default async function HomePage({
                                       </p>
                                     )}
                                     <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} isReviewReady={groupKey === 'review'} />
-                                    {mission.totalTasks > 0 && <div className="my-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
+                                    {mission.totalTasks > 0 && <div className="my-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
                                     <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
                                       {mission.workspaceName && (
                                         <>

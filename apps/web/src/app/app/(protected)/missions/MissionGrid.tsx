@@ -4,7 +4,8 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionBadges } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { initiativeStatusChip } from '@/lib/initiative-presentation';
@@ -693,7 +694,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
-        {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
+        {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
           {mission.role && (
@@ -853,7 +854,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             <MissionSkylineChart skyline={mission.skyline} normalizationSlots={mission.normalizationSlots} />
           </div>
         ) : mission.totalTasks > 0 ? (
-          <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
+          <div className="mt-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
           {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (
