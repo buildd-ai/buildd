@@ -365,6 +365,17 @@ unauthenticated, 404 when the workspace is outside the caller's teams). No serve
 component fetches this route over HTTP; server components call the loader
 directly.
 
+Two deliberate changes to that route's response follow from the shared loader:
+`days` becomes a dense 14-entry window rather than only the days that had rows,
+and the no-initiative bucket is keyed `'__unassigned__'` rather than
+`'unassigned'`. Callers no longer back-fill the window themselves, and the two
+spellings of the bucket key are gone.
+
+The loader is split in two so that neither half forces a query the caller does
+not need: `loadInitiativeEffort` owns the SQL, and `derivePendingCounts` derives
+the four counts purely from mission rows the caller already holds. A surface that
+renders missions therefore pays nothing extra for its counts.
+
 ### 6.3 Canonical progress
 
 Initiative progress is task-weighted across **all** child missions and **all**
@@ -378,7 +389,11 @@ them.
 ### 6.4 Sparkline rendering
 
 One bar per `EffortDay`, oldest → newest, height proportional to `tokens`
-normalised within that initiative's own window. All-zero windows render 14
+normalised within that initiative's own window. The window is anchored on today:
+the rightmost bar is today even when the initiative's last activity is older.
+A renderer MUST NOT align its slots to the latest date present in its input —
+doing so drew a six-day-old burst at the right-hand edge and made a silent
+initiative read as busy. All-zero windows render 14
 minimum-height bars. Each bar is segmented `merged` (success) → `failed` (error)
 → `open` (accent) from the top; a day with tokens but no segment counts fills
 accent. Default mount size is `84×24`; the initiative detail page mounts
