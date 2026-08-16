@@ -46,6 +46,25 @@ const mockDbSelect = mock((_cols?: any) => {
   return makeSelectChain(() => mockSelectRowsResult);
 });
 
+// ── Import real implementations of pure @buildd/core packages BEFORE mock.module ──
+// These packages have no drizzle-orm runtime imports, so they're safe to import
+// for real. The real implementations are then passed into mock.module so that
+// sibling test files (route.test.ts, [id]/route.test.ts, workers/claim/route.test.ts)
+// see the real behavior rather than stubs (parseLoopConfig → undefined,
+// pathsOverlap → false, resolveSubjectPolicy → {mode:'none'}) that break those tests
+// via Bun ESM live-binding leakage.
+const _loopConfigMod = await import('@buildd/core/loop-config');
+const _pathOverlapMod = await import('@buildd/core/path-overlap');
+const _subjectAnchorObserveMod = await import('@buildd/core/subject-anchor-observe');
+const _subjectAnchorExtractorMod = await import('@buildd/core/subject-anchor-extractor');
+const _frictionManifestMod = await import('@buildd/core/friction-manifest');
+// subject-intake has only node:crypto + type imports — safe to load before any mock.module call.
+// Restoring the real module prevents the stub (intakeSubject → {task:{id:'t1'}}) from leaking
+// into route.test.ts via Bun ESM live bindings and breaking its 42 POST tests.
+const _subjectIntakeMod = await import('@/lib/subject-intake');
+// deferred-start has no imports — pure functions, safe to load before any mock.module call.
+const _deferredStartMod = await import('@/lib/deferred-start');
+
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: async (key: string | null) => key ? mockAccountsFindFirst() : null,
@@ -74,17 +93,20 @@ mock.module('@/lib/pusher', () => ({
 }));
 mock.module('@/lib/pr-state-refresh', () => ({ refreshStaleWorkersForWorkspaces: mock(() => Promise.resolve()) }));
 mock.module('@/lib/change-intent', () => ({ resolveAnchorInjections: mock(() => []) }));
-mock.module('@/lib/deferred-start', () => ({
-  resolveDeferredStart: mock(() => ({ startAt: null, resolution: null })),
-  laterStartAt: mock(() => null),
+mock.module('@/lib/deferred-start', () => _deferredStartMod);
+// Use real intakeSubject (not a stub) so the live binding in route.ts stays correct
+// when route.test.ts runs next. The paginated tests only call GET, so intakeSubject
+// is never invoked here, but the registry entry must be correct for sibling files.
+mock.module('@/lib/subject-intake', () => _subjectIntakeMod);
+// Minimal compatible repository: only createTask is needed in observe-mode fast path.
+// The real subject-intake-db.ts would also work, but would require drizzle-orm to be
+// mocked first; the delegate is simpler and sufficient for all current test paths.
+mock.module('@/lib/subject-intake-db', () => ({
+  createSubjectIntakeRepository: (createTaskFn: any) => ({ createTask: (overrides: any) => createTaskFn(overrides) }),
 }));
-// Note: @/lib/subject-intake is intentionally NOT mocked here — these tests cover
-// only GET /api/tasks (paginated). Adding a module-level mock would leak into
-// route.test.ts (POST tests) via Bun 1.3.14+ ESM live bindings.
-mock.module('@/lib/subject-anchor-observer', () => ({
-  prepareSubjectFiling: mock(() => Promise.resolve({ anchor: null, match: null, taskValues: {} })),
-  recordSubjectMatchObserved: mock(() => Promise.resolve()),
-}));
+// Do NOT mock @/lib/subject-anchor-observer here. Stubbing it would leak the no-op
+// prepareSubjectFiling/recordSubjectMatchObserved into route.test.ts, breaking
+// friction-dedup tests that check mockTasksFindFirst/mockTasksInsert call counts.
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -105,12 +127,19 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   desc: (f: any) => ({ f, type: 'desc' }),
+  asc: (f: any) => ({ f, type: 'asc' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
   inArray: (f: any, v: any[]) => ({ f, v, type: 'inArray' }),
   notInArray: (f: any, v: any[]) => ({ f, v, type: 'notInArray' }),
   gte: (f: any, v: any) => ({ f, v, type: 'gte' }),
+  lte: (f: any, v: any) => ({ f, v, type: 'lte' }),
+  gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
+  lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
+  ne: (f: any, v: any) => ({ f, v, type: 'ne' }),
+  not: (f: any) => ({ f, type: 'not' }),
   isNotNull: (f: any) => ({ f, type: 'isNotNull' }),
+  isNull: (f: any) => ({ f, type: 'isNull' }),
   like: (f: any, p: any) => ({ f, p, type: 'like' }),
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
   count: () => ({ type: 'count' }),
@@ -124,17 +153,25 @@ mock.module('@buildd/core/db/schema', () => ({
   systemCache: { key: 'key', expiresAt: 'expiresAt' },
   missions: { id: 'id' },
   workspaceSkills: { id: 'id', slug: 'slug', workspaceId: 'workspaceId', enabled: 'enabled' },
+  // taskSubjectReports is imported by @/lib/subject-anchor-observer, which loads
+  // for real (no stub mock). Without this entry Bun throws a SyntaxError on the
+  // dynamic import chain even though the runtime value is never dereferenced by
+  // the paginated GET tests.
+  taskSubjectReports: {},
 }));
 
-mock.module('@buildd/core/path-overlap', () => ({ pathsOverlap: mock(() => false) }));
-mock.module('@buildd/core/friction-manifest', () => ({ inferFrictionManifest: mock(() => []) }));
-mock.module('@buildd/core/loop-config', () => ({ parseLoopConfig: mock(() => undefined) }));
+// Re-export real implementations of pure @buildd/core packages so that mocks
+// below do NOT leak incorrect stubs into sibling test files. These packages have
+// no drizzle-orm runtime imports; the real implementations are safe here and
+// prevent Bun ESM live-binding leakage (parseLoopConfig → undefined,
+// pathsOverlap → false, resolveSubjectPolicy → {mode:'none'}) from breaking
+// route.test.ts, [id]/route.test.ts, and workers/claim/route.test.ts.
+mock.module('@buildd/core/loop-config', () => _loopConfigMod);
+mock.module('@buildd/core/path-overlap', () => _pathOverlapMod);
+mock.module('@buildd/core/subject-anchor-observe', () => _subjectAnchorObserveMod);
+mock.module('@buildd/core/subject-anchor-extractor', () => _subjectAnchorExtractorMod);
+mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
-mock.module('@buildd/core/subject-anchor-observe', () => ({
-  resolveSubjectPolicy: mock(() => ({ mode: 'none' })),
-  extractSubjectAnchor: mock(() => ({ anchor: null })),
-}));
-mock.module('@buildd/core/subject-anchor-extractor', () => ({ extractSubjectAnchor: mock(() => ({ anchor: null })) }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
 mock.module('@buildd/shared', () => ({ TaskCategory: {} }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
