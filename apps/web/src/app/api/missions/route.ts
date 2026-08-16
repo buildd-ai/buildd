@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
-          columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, updatedAt: true },
+          columns: { id: true, status: true, kind: true, title: true, mode: true, category: true, parentTaskId: true, creationSource: true, updatedAt: true },
           with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },

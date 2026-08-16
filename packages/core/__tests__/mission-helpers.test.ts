@@ -1,5 +1,60 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, computeMissionSkyline, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, computeMissionSkyline, deriveTaskType, type MissionSegmentState } from '../mission-helpers';
+
+// ── deriveTaskType ─────────────────────────────────────────────────────────────
+
+describe('deriveTaskType', () => {
+  it('returns null for a root task (no parentTaskId)', () => {
+    expect(deriveTaskType({ title: 'Build feature', parentTaskId: null })).toBeNull();
+  });
+
+  it('returns null for a root task without mode', () => {
+    expect(deriveTaskType({ title: 'Build feature' })).toBeNull();
+  });
+
+  it('returns review-retry for [reviewer retry] prefix', () => {
+    expect(deriveTaskType({ title: '[reviewer retry #1] Build feature', parentTaskId: 'parent' })).toBe('review-retry');
+  });
+
+  it('returns review for [reviewer] prefix', () => {
+    expect(deriveTaskType({ title: '[reviewer] Build feature', parentTaskId: 'parent' })).toBe('review');
+  });
+
+  it('returns retry for [CI Retry] prefix', () => {
+    expect(deriveTaskType({ title: '[CI Retry #1] Build feature', parentTaskId: 'parent' })).toBe('retry');
+  });
+
+  it('returns retry for [Retry] prefix', () => {
+    expect(deriveTaskType({ title: '[Retry #2] Build feature', parentTaskId: 'parent' })).toBe('retry');
+  });
+
+  it('returns retry fallback for parentTaskId with no recognized prefix and no mode', () => {
+    expect(deriveTaskType({ title: 'Some unlabeled task', parentTaskId: 'parent' })).toBe('retry');
+  });
+
+  // Spawned builder tasks created by approve_plan: mode='execution', no recognized prefix
+  it('returns null for mode=execution task (spawned builder, distinct deliverable)', () => {
+    expect(deriveTaskType({ title: 'feat: /api/models route', parentTaskId: 'planning-task', mode: 'execution' })).toBeNull();
+  });
+
+  it('returns null for mode=execution regardless of parentTaskId presence', () => {
+    expect(deriveTaskType({ title: 'chore: registry hygiene', parentTaskId: 'plan', mode: 'execution' })).toBeNull();
+  });
+
+  // Recognized prefix takes priority over mode
+  it('[reviewer retry] prefix takes priority even if mode=execution', () => {
+    expect(deriveTaskType({ title: '[reviewer retry #1] feat', parentTaskId: 'p', mode: 'execution' })).toBe('review-retry');
+  });
+
+  it('[CI Retry] prefix takes priority even if mode=execution', () => {
+    expect(deriveTaskType({ title: '[CI Retry #1] feat', parentTaskId: 'p', mode: 'execution' })).toBe('retry');
+  });
+
+  it('mode=planning is not treated as execution (still fallback retry if parentTaskId set)', () => {
+    // planning tasks with parentTaskId would be unusual but should not be classified as spawned
+    expect(deriveTaskType({ title: 'Mission: plan', parentTaskId: 'parent', mode: 'planning' })).toBe('retry');
+  });
+});
 
 describe('isDeliverableTask', () => {
   it('returns true for a normal task with no special kind or title', () => {
@@ -285,6 +340,76 @@ describe('computeMissionProgress', () => {
     expect(result.totalTasks).toBe(0);
     expect(result.completedTasks).toBe(0);
     expect(result.progress).toBe(0);
+  });
+
+  // ── spawned builder tasks (approve_plan) ──────────────────────────────────────
+
+  it('spawned builder tasks (mode=execution) count as separate deliverables, not attempts', () => {
+    const tasks: Task[] = [
+      { id: 'plan', status: 'completed', title: 'Mission: Build API', mode: 'planning' },
+      { id: 'b1', status: 'completed', title: 'feat: route', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'b2', status: 'completed', title: 'feat: component', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'b3', status: 'completed', title: 'chore: cleanup', mode: 'execution', parentTaskId: 'plan' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(3);
+    expect(result.completedTasks).toBe(3);
+    expect(result.progress).toBe(100);
+  });
+
+  it('regression: mission 83e86c15 shape — 3 spawned builders + 4 reviewer/retry + 2 bookkeeping → totalTasks=3', () => {
+    // Mirrors the shape of the real mission that exposed the overcorrection
+    const tasks: Task[] = [
+      // Planning/orchestrator task — bookkeeping, not a deliverable
+      { id: 'plan', status: 'completed', title: 'Mission: Tier-first model selection', mode: 'planning' },
+      // 3 spawned builder tasks via approve_plan
+      { id: 'b1', status: 'completed', title: 'feat: /api/models route', mode: 'execution', parentTaskId: 'plan',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/pr/1598', mergedAt: '2025-01-01' }] },
+      { id: 'b2', status: 'completed', title: 'feat: tier-first ModelPicker', mode: 'execution', parentTaskId: 'plan',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/pr/1599', mergedAt: '2025-01-02' }] },
+      { id: 'b3', status: 'completed', title: 'chore: registry hygiene', mode: 'execution', parentTaskId: 'plan',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/pr/1597', mergedAt: '2025-01-03' }] },
+      // 4 reviewer / retry tasks — attempts, not deliverables
+      { id: 'r1', status: 'completed', title: '[reviewer] feat: /api/models', category: 'review', parentTaskId: 'b1' },
+      { id: 'r2', status: 'completed', title: '[reviewer] feat: tier-first', category: 'review', parentTaskId: 'b2' },
+      { id: 'r3', status: 'completed', title: '[reviewer] chore: registry', category: 'review', parentTaskId: 'b3' },
+      { id: 'r4', status: 'completed', title: '[reviewer retry #1] chore: registry', category: 'review', parentTaskId: 'b3' },
+      // Aggregate results — bookkeeping
+      { id: 'agg', status: 'completed', title: 'Aggregate results: Tier-first model selection' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(3);
+    expect(result.completedTasks).toBe(3);
+    expect(result.progress).toBe(100);
+    // Each builder task gets its own segment
+    expect(result.segments).toHaveLength(3);
+    const segmentIds = result.segments.map(s => s.taskId).sort();
+    expect(segmentIds).toEqual(['b1', 'b2', 'b3'].sort());
+  });
+
+  it('spawned builder tasks retain their own workers (not merged into planning task)', () => {
+    const tasks: Task[] = [
+      { id: 'plan', status: 'completed', title: 'Mission: plan', mode: 'planning' },
+      { id: 'b1', status: 'completed', title: 'feat: route', mode: 'execution', parentTaskId: 'plan',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/pr/1', mergedAt: '2025-01-01' }] },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.segments[0].state).toBe('solid'); // has merged PR → solid
+  });
+
+  it('CI retry of a spawned builder task still collapses correctly', () => {
+    // Builder task failed, then retried via [CI Retry #1]
+    const tasks: Task[] = [
+      { id: 'plan', status: 'completed', title: 'Mission: plan', mode: 'planning' },
+      { id: 'b1', status: 'failed', title: 'feat: route', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'retry', status: 'completed', title: '[CI Retry #1] feat: route', parentTaskId: 'b1' },
+    ];
+    const result = computeMissionProgress(tasks);
+    // b1 is a spawned deliverable; retry is an attempt under b1; net: 1 task, completed
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
   });
 
   // ── orchestrator-completed case ───────────────────────────────────────────────
