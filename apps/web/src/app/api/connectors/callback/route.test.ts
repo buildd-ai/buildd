@@ -304,4 +304,45 @@ describe('GET /api/connectors/callback', () => {
     const res = await GET(req);
     expect(res.headers.get('location')).toContain('error=invalid_token_audience');
   });
+
+  it('accepts a token whose aud is the discovered resource identifier, not the endpoint URL', async () => {
+    // Real-world shape: one AS fronts several MCP endpoints under a single
+    // resource identifier, so aud = protectedResource.resource while the
+    // connector URL points at a subpath endpoint.
+    const state = 'prm-resource-state';
+    const stateCookie = await signOAuthState({
+      state,
+      connectorId: 'conn-uuid-1',
+      codeVerifier: 'verifier',
+      userId: 'user-1',
+    });
+    mockCookiesGet.mockReturnValue({ value: stateCookie });
+    mockConnectorsFindFirst.mockResolvedValue({
+      ...mockConnector,
+      url: 'https://mcp.example.com/api/mcp/finance',
+      discoveredMetadata: {
+        ...mockConnector.discoveredMetadata,
+        protectedResource: {
+          resource: 'https://mcp.example.com/api/mcp',
+          authorization_servers: ['https://auth.example.com'],
+        },
+      },
+    });
+    mockSecretsFindFirst.mockResolvedValue(null);
+
+    const payload = Buffer.from(
+      JSON.stringify({ aud: 'https://mcp.example.com/api/mcp' }),
+    ).toString('base64url');
+    const at = `h.${payload}.s`;
+
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ access_token: at, token_type: 'bearer' }), { status: 200 }),
+    );
+
+    const req = makeRequest({ code: 'code', state });
+    const res = await GET(req);
+    const loc = res.headers.get('location') ?? '';
+    expect(loc).not.toContain('error=');
+    expect(loc).toContain('connected=conn-uuid-1');
+  });
 });
