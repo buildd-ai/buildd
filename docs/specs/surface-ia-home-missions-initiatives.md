@@ -10,9 +10,8 @@ supersedes: [missions-tab-triage]
 
 **Capability statement**: Each of the three primary surfaces MUST answer exactly
 one question — Home: *what needs me right now*; Missions: *what state is every
-mission in*; Initiatives: *which arc deserves attention, and everything about one
-arc* — and a signal MUST NOT appear on a surface whose question it does not
-answer.
+mission in*; Initiatives: *are we winning, and on which arc* — and a signal MUST
+NOT appear on a surface whose question it does not answer.
 
 **Invariants**
 
@@ -41,6 +40,14 @@ Three falsifiable observations about the shipped surfaces, as of v0.168.0:
    child mission is terminal and the initiative has not been marked complete. The
    second signal on the card is a rollup percentage that moves at most once a
    day. Neither tells the reader what to do today.
+
+   The root cause is a dimension that was designed and then skipped.
+   `initiative-presentation.ts` documents three orthogonal dimensions borrowed
+   from Linear — `status` (DB lifecycle), `progress` (derived), `health`
+   (*"derived/evaluated: on mission cards, not initiative cards"*). Initiatives
+   got the first two. With health absent, an initiative can only be described by
+   its paperwork and a fraction, so a percentage became the headline by default.
+   §6.5 supplies the missing dimension.
 2. **The triage surface is hosted on the wrong tab.** `InitiativeTriage` — 14-day
    sparkline, pending-action subline, zone sorting — renders at the top of
    `/app/missions`, the surface whose subject is mission state. `/app/initiatives`,
@@ -65,6 +72,8 @@ that surface. `—` = not applicable.
 | Element | Home | Missions | Initiatives list | Initiative detail |
 |---|---|---|---|---|
 | Initiative card rail (160px cards) | MUST NOT | MUST NOT | MUST NOT | — |
+| Verdict label (§6.5) | as clause counts | MUST NOT | MUST (leads the row) | MUST (leads the page) |
+| Verdict evidence numbers | MUST NOT | MUST NOT | MUST NOT | MUST |
 | One-line initiative pulse (§2) | MUST | MUST NOT | MUST NOT | MUST NOT |
 | Arc headline (milestone crossing) | MUST | MUST NOT | MUST NOT | MUST NOT |
 | Initiative triage row (sparkline + pending counts + %) | MUST NOT | MUST NOT | MUST | MUST NOT |
@@ -93,20 +102,28 @@ the pulse line; both MAY render in the same load.
 The line is `Initiatives · <clause> · <clause> →`, or, when exactly one
 initiative contributes every clause, `<initiative title> · <clause> · … →`.
 
+Clauses count **initiatives by verdict** (§6.5) — not missions, not PRs:
+
 | Clause | Source | Copy |
 |---|---|---|
-| held missions | `sum(held)` over initiatives | `N held` |
-| PR-blocked pending tasks | `sum(blocked)` over initiatives | `N blocked` |
-| initiatives ready to close | count where display status is `awaiting_verification` | `N ready to close` |
+| losing arcs | verdict `losing` | `N losing` |
+| grinding arcs | verdict `grinding` | `N grinding` |
+| stuck arcs | verdict `stuck` | `N stuck` |
+| finished arcs nobody closed | verdict `won_unclaimed` | `N ready to close` |
 
-Clause order is fixed: held → blocked → ready to close. A clause with a zero
-count is omitted entirely. When all three are zero the line is not rendered —
-no label, no header, no "nothing to see" text.
+Clause order is fixed and is the ladder's own order: losing → grinding → stuck →
+ready to close. A clause with a zero count is omitted entirely. Arcs that are
+`winning`, `dormant` or `empty` contribute no clause, so a team that is winning
+everywhere gets **no line at all** — no label, no header, no "nothing to see"
+text.
+
+That is the whole point of the line: it fires only when the answer to *are we
+winning* is no.
 
 Link target: `/app/initiatives` when more than one initiative contributes;
 `/app/initiatives/<id>` when exactly one does.
 
-### 2.3 Why these three clauses and not merge/review counts
+### 2.3 Why verdict clauses and not merge/review counts
 
 The mockup for this line read `4 awaiting merge · 1 blocked`. `awaiting merge` is
 excluded deliberately: the Waiting-on-You queue directly below the line already
@@ -114,11 +131,12 @@ lists each of those PRs as a `MERGE` card, so the count would restate the very
 rows it sits above, and the two numbers would drift the moment the queue's
 dedup-by-`subjectKey` dropped an item the count still included.
 
-The three chosen clauses are exactly the initiative-level states that the action
-queue structurally cannot show: work that is stuck without waiting on the user
-(`held`, `blocked`), and an arc whose missions are all finished but which nobody
-has closed out (`ready to close`) — which is the real meaning of the `AWAITING`
-chip the rail was displaying.
+Every clause that survives is an initiative-level state the action queue
+structurally cannot show. `held` and `blocked` are work that is stuck *without*
+waiting on the user, so they never reach the queue — they appear here as evidence
+behind `stuck`. `grinding` is invisible to every existing surface: tokens burn,
+tasks close, the percentage climbs, nothing merges. And `ready to close` is the
+honest reading of the `AWAITING` chip the rail was displaying.
 
 **Invariant**: for every subject key in the Waiting-on-You queue, that subject
 contributes to no clause of the pulse line.
@@ -131,12 +149,12 @@ the loader MUST NOT be called per initiative.
 
 ### 2.5 Acceptance criteria
 
-- **AC-1**: GIVEN a team with 3 initiatives, 0 held missions, 0 PR-blocked
-  pending tasks and 0 initiatives in `awaiting_verification`, WHEN Home renders,
-  THEN no pulse line element is present in the DOM.
-- **AC-2**: GIVEN 2 held missions in initiative A and 1 PR-blocked pending task
-  in initiative B, WHEN Home renders, THEN the line reads
-  `Initiatives · 2 held · 1 blocked` and links to `/app/initiatives`.
+- **AC-1**: GIVEN a team whose every initiative has verdict `winning`,
+  `dormant` or `empty`, WHEN Home renders, THEN no pulse line element is present
+  in the DOM.
+- **AC-2**: GIVEN initiative A with verdict `grinding` and initiative B with
+  verdict `stuck`, WHEN Home renders, THEN the line reads
+  `Initiatives · 1 grinding · 1 stuck` and links to `/app/initiatives`.
 - **AC-3**: GIVEN every non-zero clause comes from initiative A, WHEN Home
   renders, THEN the line is prefixed with A's title and links to
   `/app/initiatives/<A.id>`.
@@ -215,10 +233,14 @@ team-level missions distinguishable when they coexist with workspace missions.
 and a separate card for the same initiative. The row carries:
 
 ```
-[ Title (truncated) ]              [ sparkline 84×24 ] [ XX% ]
+[ Verdict ] [ Title (truncated) ]  [ sparkline 84×24 ] [ XX% ]
 [ subline — only when a signal exists ]
 [ N/M missions · N/M tasks ]
 ```
+
+The verdict (§6.5) leads the row, with its confidence qualifier when
+`unverified`. The percentage stays, at the far right, as the scope meter it is —
+it MUST NOT be styled as the row's primary signal.
 
 ### 4.2 Subline
 
@@ -229,18 +251,22 @@ none hold, no subline element appears in the DOM.
 
 ### 4.3 Zones
 
-Rows are partitioned into three zones, in this order:
+Rows are partitioned by verdict, not by pending-action count — the list is
+ordered by *are we winning*, so the answer is readable top-down:
 
-- **Needs you** — `awaitingVerification > 0 || blocked > 0 || held > 0`. Sorted
-  by descending `awaitingVerification + blocked + held`, then descending
-  `progress`.
-- **Recent** — no pending action, and `effortDays.some(d => d.tokens > 0)`.
-  Sorted by descending `shippedThisWeek`, then descending 14-day token total.
-- **Dormant** — no pending action and zero tokens across the window. Collapsed
-  behind a `Show N dormant` disclosure; MUST NOT appear in either zone above.
+- **Not winning** — verdict `losing`, `grinding`, `stuck` or `won_unclaimed`,
+  sorted in exactly that ladder order. Within one verdict, sort by descending
+  `awaitingVerification + blocked + held`, then descending `progress`.
+- **Winning** — verdict `winning`. Sorted by descending `merges7d`, then
+  descending 14-day token total.
+- **Dormant** — verdict `dormant` or `empty`. Collapsed behind a
+  `Show N dormant` disclosure; MUST NOT appear in either zone above.
 
-A single visual divider renders between Needs-you and Recent, and only when both
-are non-empty.
+A single visual divider renders between Not-winning and Winning, and only when
+both are non-empty.
+
+A `losing` row MUST be reachable without scrolling whenever one exists: it is the
+first row of the first zone.
 
 ### 4.4 Dismissal
 
@@ -253,16 +279,18 @@ Needs-you or Recent zone MUST NOT be dismissible by swipe or by button.
 
 - **AC-13**: GIVEN 3 initiatives, WHEN `/app/initiatives` renders, THEN exactly 3
   initiative rows are present and each renders exactly one sparkline.
-- **AC-14**: GIVEN initiative A with `awaitingVerification: 2, blocked: 1` and
-  initiative B with all-zero pending actions but `shippedThisWeek: 3`, WHEN the
-  list renders, THEN A precedes B, a divider separates them, and A's subline
-  reads `2 awaiting merge · 1 blocked`.
+- **AC-14**: GIVEN initiative A with verdict `stuck` (`awaitingVerification: 2,
+  blocked: 1`) and initiative B with verdict `winning`, WHEN the list renders,
+  THEN A precedes B, a divider separates them, and A's subline reads
+  `2 awaiting merge · 1 blocked`.
+- **AC-14a**: GIVEN a `losing` arc and a `grinding` arc, WHEN the list renders,
+  THEN the `losing` arc is the first row on the page.
 - **AC-15**: GIVEN an initiative with zero pending actions and zero tokens across
   14 days, WHEN the list renders, THEN it is absent from both zones and a
   `Show 1 dormant` control is present.
-- **AC-16**: GIVEN a row in the Needs-you zone, WHEN a swipe-dismiss gesture is
-  performed on it, THEN the row remains visible and no `localStorage` write
-  occurs.
+- **AC-16**: GIVEN a row in the Not-winning or Winning zone, WHEN a swipe-dismiss
+  gesture is performed on it, THEN the row remains visible and no `localStorage`
+  write occurs.
 - **AC-17**: GIVEN a dismissed dormant row, WHEN the page is reloaded after the
   banner expires, THEN the row is hidden; WHEN `localStorage` is cleared and the
   page reloaded, THEN the row reappears.
@@ -277,11 +305,19 @@ Needs-you or Recent zone MUST NOT be dismissible by swipe or by button.
 ### 5.1 Composition
 
 `/app/initiatives/[id]` renders, in order: breadcrumb; title and lifecycle
-status; description; rollup (`progress %`, `n/m missions · n/m tasks`,
-`SegmentStrip`); **pending-action strip**; **14-day effort sparkline**; KPI panel
-(only when KPIs are set); missions list; artifacts (only when non-empty).
+status; **verdict and its evidence**; description; rollup (`progress %`,
+`n/m missions · n/m tasks`, `SegmentStrip`); **pending-action strip**; **14-day
+effort sparkline**; KPI panel (only when KPIs are set); missions list; artifacts
+(only when non-empty).
 
-The two new blocks:
+The three new blocks:
+
+- **Verdict and evidence** — the §6.5 verdict as the page's first claim, with its
+  confidence qualifier, followed by the numbers it was derived from:
+  `3 merged · 11 attempts · 240k tokens · 7d`. The evidence line is mandatory: a
+  verdict a reader cannot audit is a slogan. When confidence is `unverified`, the
+  block links to the KPI editor so the fix for "nothing checked this" is one
+  click from the claim.
 
 - **Pending-action strip** — one chip per non-zero count among
   `awaitingVerification`, `blocked`, `held`, `shippedThisWeek`. Each chip links to
@@ -332,16 +368,26 @@ interface EffortDay {
   open: number;    // workers in neither terminal state
 }
 
+type Verdict = 'losing' | 'grinding' | 'stuck' | 'won_unclaimed' | 'winning' | 'dormant' | 'empty';
+type Confidence = 'verified' | 'unverified';
+
 interface InitiativePulse {
   id: string;                   // initiative uuid, or '__unassigned__'
   title: string;
-  progress: number;             // 0–100, canonical (§6.3)
+  progress: number;             // 0–100, canonical (§6.3) — scope meter, not the headline
   effortDays: EffortDay[];      // exactly 14 entries, oldest first
   awaitingVerification: number; // completed tasks whose PR is open and unclosed
   blocked: number;              // pending tasks blocked on an unmerged PR
   held: number;                 // child missions with isHeld = true
   shippedThisWeek: number;      // missions shipped within 7 days
-  readyToClose: boolean;        // display status is awaiting_verification
+  // Verdict (§6.5) and the evidence it was derived from. Every surface that
+  // shows a verdict MUST also be able to show these numbers.
+  verdict: Verdict;
+  confidence: Confidence;
+  merges7d: number;
+  attempts7d: number;
+  tokens7d: number;
+  criteriaFail: number;
 }
 ```
 
@@ -399,7 +445,75 @@ minimum-height bars. Each bar is segmented `merged` (success) → `failed` (erro
 accent. Default mount size is `84×24`; the initiative detail page mounts
 `≥168×32`. A mount smaller than `84×24` is a spec violation.
 
-### 6.5 Acceptance criteria
+### 6.5 The winning verdict
+
+Progress percentage answers *how much scope is checked off*. It MUST NOT be used
+to answer *are we winning*, because task count is the one quantity an autonomous
+fleet inflates by working: more tasks closed, same outcome. The verdict below is
+the initiative-level `health` dimension §0.1 describes as missing.
+
+It has two independent parts. **Never collapse them into one word.**
+
+#### Verdict — derived from motion
+
+Inputs, per initiative, all already available:
+
+| Input | Derivation |
+|---|---|
+| `merges7d` | workers with `mergedAt >= now - 7d` on tasks under the initiative |
+| `attempts7d` | tasks created in 7d where `deriveTaskType(task) !== null` |
+| `tokens7d` | sum of the last 7 entries of `effortDays` |
+| `criteriaFail` | child missions whose `goalCriteriaState.overall === 'fail'`, plus the initiative's own `kpiState.overall === 'fail'` |
+| `held`, `blocked`, `awaitingVerification` | §6.1 |
+| `allTerminal` | every child mission is in a terminal status |
+
+`THRASH_RATIO = 3`. The ladder is evaluated top to bottom; the first match wins,
+and it is total — every initiative gets exactly one verdict:
+
+```
+totalMissions === 0                                        → 'empty'
+criteriaFail > 0                                           → 'losing'
+tokens7d > 0 && attempts7d > THRASH_RATIO * max(merges7d,1) → 'losing'
+allTerminal && status === 'active'                          → 'won_unclaimed'
+tokens7d > 0 && merges7d === 0                              → 'grinding'
+tokens7d > 0                                                → 'winning'
+held + blocked + awaitingVerification > 0                   → 'stuck'
+                                                            → 'dormant'
+```
+
+Each verdict's meaning, and the copy that MUST be used for it:
+
+| Verdict | Label | What it says |
+|---|---|---|
+| `losing` | `Losing` | A verified criterion failed, or rework is outrunning ships 3:1 |
+| `grinding` | `Grinding` | Tokens burning, tasks closing, nothing merged in 7 days |
+| `stuck` | `Stuck` | Nothing burning, but something is held, blocked, or awaiting merge |
+| `won_unclaimed` | `Ready to close` | Every mission terminal, nothing failing, initiative still open |
+| `winning` | `Winning` | Merging, nothing failing, rework within ratio |
+| `dormant` | `Dormant` | No burn, no pending action |
+| `empty` | `Empty` | No child missions |
+
+`grinding` is the state a percentage cannot express: tasks close, the bar advances,
+and nothing ships. It MUST be reachable on Home (§2.2).
+
+#### Confidence — derived from the oracle
+
+- `verified` — every child mission has goal criteria and an `overall` of `pass`
+  or `fail`, or the initiative's own KPIs have a non-`UNVERIFIED` `overall`.
+- `unverified` — otherwise: criteria absent, or present and `UNVERIFIED`.
+
+A verdict at `unverified` confidence MUST be rendered with the qualifier
+(`Winning · unverified`), never bare. This is not decoration: as of 2026-08-16 no
+initiative in the reference team has KPIs set — the KPI panel only mounts when
+`kpis.length > 0` and it does not render on any current arc — so every verdict
+starts `unverified` and gets sharper only where someone defines criteria. A
+derived verdict that hides its own missing evidence is worse than no verdict.
+
+Confidence MUST NOT change the verdict. `won_unclaimed · unverified` means
+"looks finished, nothing checked it", and that difference is the entire reason
+the `AWAITING` chip was uninformative.
+
+### 6.6 Acceptance criteria
 
 - **AC-24**: GIVEN a worker with `input_tokens=1000, output_tokens=500` attributed
   to 2026-08-10, WHEN the loader runs, THEN that initiative's `2026-08-10` entry
@@ -419,6 +533,30 @@ accent. Default mount size is `84×24`; the initiative detail page mounts
 - **AC-29**: GIVEN an initiative rendered on two surfaces in the same request
   cycle, WHEN both render, THEN both display the same `progress`,
   `awaitingVerification`, `blocked` and `held` values.
+- **AC-30**: GIVEN an initiative with `tokens7d: 40000, merges7d: 0`, WHEN the
+  verdict is derived, THEN it is `grinding` — regardless of its progress
+  percentage.
+- **AC-31**: GIVEN an initiative with `merges7d: 2, attempts7d: 9,
+  criteriaFail: 0`, WHEN the verdict is derived, THEN it is `losing`
+  (9 > 3 × 2); GIVEN `attempts7d: 6`, THEN it is `winning` (6 ≤ 3 × 2).
+- **AC-32**: GIVEN one child mission with `goalCriteriaState.overall === 'fail'`
+  and `merges7d: 5`, WHEN the verdict is derived, THEN it is `losing` — a
+  verified failure outranks every motion signal.
+- **AC-33**: GIVEN every child mission terminal, no failing criteria, and
+  initiative status `active`, WHEN the verdict is derived, THEN it is
+  `won_unclaimed` and the label reads `Ready to close`.
+- **AC-34**: GIVEN `tokens7d: 0` and `held: 1`, WHEN the verdict is derived,
+  THEN it is `stuck`; GIVEN `tokens7d: 0` and zero pending actions, THEN it is
+  `dormant`.
+- **AC-35**: GIVEN an initiative with zero child missions, WHEN the verdict is
+  derived, THEN it is `empty` and no other rule is evaluated.
+- **AC-36**: GIVEN an initiative whose child missions have no goal criteria,
+  WHEN its verdict renders on any surface, THEN the label carries the
+  `unverified` qualifier and the verdict itself is unchanged from what the motion
+  ladder produced.
+- **AC-37**: GIVEN two initiatives whose inputs differ only in `progress`, WHEN
+  verdicts are derived, THEN both verdicts are identical — progress is not an
+  input to the ladder.
 
 ---
 
@@ -426,15 +564,20 @@ accent. Default mount size is `84×24`; the initiative detail page mounts
 
 Ordered so that no intermediate commit leaves a surface without its signal:
 
-1. Extract the loader (§6.2); point the inline Missions query and the effort
-   route at it. No visible change.
-2. Add the triage rows to `/app/initiatives` at `84×24`. Triage now exists on
-   both tabs for one commit.
-3. Remove `InitiativeTriage` from `/app/missions`; apply the workspace-header
+1. ~~Extract the loader (§6.2); point the inline Missions query and the effort
+   route at it.~~ **Done** — `apps/web/src/lib/initiative-pulse.ts` (#1701).
+2. Extend the loader with the verdict inputs — `merges7d`, `attempts7d`,
+   `tokens7d`, `criteriaFail` — and add `deriveVerdict` as a pure function with
+   the §6.5 ladder. Nothing renders it yet; the ladder is unit-tested first
+   because every surface below depends on it being total.
+3. Add the verdict-led triage rows to `/app/initiatives` at `84×24`. Triage now
+   exists on both tabs for one commit.
+4. Remove `InitiativeTriage` from `/app/missions`; apply the workspace-header
    rule (§3.3); delete the dead initiative-grouping path (§3.2).
-4. Replace `InitiativeRail` on Home with the pulse line (§2). Delete
+5. Replace `InitiativeRail` on Home with the pulse line (§2). Delete
    `InitiativeRail` and its component file once no surface mounts it.
-5. Add the pending-action strip and the large sparkline to the detail page (§5).
+6. Add the verdict-and-evidence block, the pending-action strip and the large
+   sparkline to the detail page (§5).
 
 The mission-state group headers on `/app/missions` are expected to converge on
 the shared `GroupSection` primitive introduced by PR #1699 once it lands; until
@@ -476,7 +619,15 @@ swap and MUST NOT be blocked on it.
 - `apps/web/src/lib/mission-helpers.ts` — `MissionGroup`, `GROUP_ORDER`,
   `SECTION_DISPLAY`, `healthToGroup`.
 - `packages/core/mission-helpers.ts` — `computeMissionProgress`,
-  `computeInitiativeProgress`, `computeInitiativeSegments`.
+  `computeInitiativeProgress`, `computeInitiativeSegments`; also `deriveTaskType`
+  (the `attempts7d` oracle) and the `GoalCriteriaState` / `InitiativeKPIState`
+  evaluators behind `criteriaFail` and `confidence`.
+- `apps/web/src/lib/initiative-pulse.ts` — `loadInitiativeEffort`,
+  `derivePendingCounts` (#1701); gains the verdict inputs and `deriveVerdict`.
+- `apps/web/src/app/api/initiatives/[id]/evaluate/route.ts` — fills the KPI
+  verdicts that move `confidence` from `unverified` to `verified`.
+- `apps/web/src/app/app/(protected)/initiatives/[id]/InitiativeKPIPanel.tsx` —
+  KPI editor the unverified verdict block links to.
 
 **New files**
 
@@ -495,3 +646,14 @@ swap and MUST NOT be blocked on it.
 - History beyond the 14-day window, and any cost/dollar rendering.
 - Mobile swipe animation details; the gesture contract is §4.4.
 - The `GroupSection` / `MissionProgressBar` convergence tracked by PR #1699.
+- A **human-declared** health status. Linear's model has a project lead set On
+  track / At risk / Off track and write a periodic update; buildd has no such
+  lead by design, so §6.5 derives the verdict instead. If a declared override is
+  ever wanted, it belongs in its own spec and MUST NOT silently replace the
+  derived verdict — a claim nobody can audit is what §5.1's evidence line exists
+  to prevent.
+- Verdict history and trend ("winning for 3 weeks"). Nothing stores a verdict
+  time series today; `initiative_progress_seen` holds one percentage per user per
+  initiative, which is a milestone tripwire, not history.
+- Tuning `THRASH_RATIO` per workspace or per initiative. One constant, team-wide,
+  until there is evidence it misclassifies.
