@@ -234,7 +234,7 @@ describe('task-service', () => {
           id: 'ws-1',
           teamId: 'team-1',
         });
-        mockGetUserTeamIds.mockResolvedValue(['team-1']);
+        // getUserTeamIds reads from mockTeamMembersFindMany (pre-set to [{teamId:'team-1'}])
 
         const result = await resolveCreatorContext({
           userId: 'user-123',
@@ -258,7 +258,8 @@ describe('task-service', () => {
           id: 'ws-1',
           teamId: 'other-team',
         });
-        mockGetUserTeamIds.mockResolvedValue(['team-1']);
+        // getUserTeamIds reads from mockTeamMembersFindMany (pre-set to [{teamId:'team-1'}])
+        // workspace.teamId is 'other-team' which is not in ['team-1'] → rejected
 
         const result = await resolveCreatorContext({
           userId: 'user-123',
