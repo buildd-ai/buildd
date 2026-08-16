@@ -1,12 +1,14 @@
 import { db } from '@buildd/core/db';
-import { workers, tasks, missions } from '@buildd/core/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { workers, tasks, missions, initiatives } from '@buildd/core/db/schema';
+import { eq, and, sql, gte } from 'drizzle-orm';
+import { deriveTaskType } from '@buildd/core/mission-helpers';
 
 /**
  * Initiative pulse — the daily-signal half of an initiative, shared by every
  * surface that shows one (spec: docs/specs/surface-ia-home-missions-initiatives.md).
  *
- * Two halves, deliberately split:
+ * Three parts, deliberately split — the effort window, the pending counts, and
+ * the winning verdict (§6.5):
  *   - `loadInitiativeEffort` — the ONE grouped SQL aggregation over
  *     workers → tasks → missions. Before this module it existed twice: inline in
  *     the Missions page (team-scoped, bucket key `__unassigned__`) and in
@@ -15,6 +17,9 @@ import { eq, and, sql } from 'drizzle-orm';
  *   - `derivePendingCounts` — pure derivation of the four pending-action counts
  *     from mission rows the caller has already loaded. No extra query: a caller
  *     rendering missions already holds the tasks and workers this needs.
+ *   - `loadInitiativeVerdictInputs` + `deriveVerdict` — the motion evidence and
+ *     the ladder that turns it into one word. The SQL is separate from the
+ *     ladder because the ladder must be total and cheap to test.
  *
  * Progress is NOT computed here. It stays with `computeInitiativeProgress` in
  * packages/core/mission-helpers.ts, whose correctness is a property of the query
@@ -246,4 +251,355 @@ export function derivePendingCounts(
 /** Zero counts, for an initiative absent from `derivePendingCounts`. */
 export function noPendingCounts(): PendingCounts {
   return zeroCounts();
+}
+
+// ─── The winning verdict (spec §6.5) ─────────────────────────────────────────
+
+/**
+ * "Are we winning?" — the initiative-level health dimension the three-dimension
+ * model in lib/initiative-presentation.ts names but never implemented.
+ *
+ * Progress percentage is deliberately NOT an input. Task count is the one
+ * quantity an autonomous fleet inflates by working: more tasks closed, same
+ * outcome. A verdict derived from it would congratulate a fleet for churning.
+ */
+
+export type Verdict =
+  | 'losing'
+  | 'grinding'
+  | 'stuck'
+  | 'won_unclaimed'
+  | 'winning'
+  | 'dormant'
+  | 'empty';
+
+/** Whether an oracle actually checked the outcome, or nobody did. */
+export type Confidence = 'verified' | 'unverified';
+
+/** Rework may outrun ships by this factor before the arc reads as losing. */
+export const THRASH_RATIO = 3;
+
+/** The verdict looks at the last 7 days; `effortDays` holds 14 (§6.1). */
+export const VERDICT_WINDOW_DAYS = 7;
+
+/** Display copy. The spec fixes these strings; surfaces MUST NOT re-word them. */
+export const VERDICT_LABEL: Record<Verdict, string> = {
+  losing: 'Losing',
+  grinding: 'Grinding',
+  stuck: 'Stuck',
+  won_unclaimed: 'Ready to close',
+  winning: 'Winning',
+  dormant: 'Dormant',
+  empty: 'Empty',
+};
+
+export interface VerdictInputs {
+  /** Initiative lifecycle status from the DB. */
+  status: string;
+  totalMissions: number;
+  /** Every child mission in a terminal status ('completed' | 'archived'). */
+  allTerminal: boolean;
+  /** Child missions whose criteria failed, plus the initiative's own failing KPIs. */
+  criteriaFail: number;
+  merges7d: number;
+  attempts7d: number;
+  tokens7d: number;
+  held: number;
+  blocked: number;
+  awaitingVerification: number;
+}
+
+/**
+ * The §6.5 ladder: evaluated top to bottom, first match wins, total — every
+ * initiative gets exactly one verdict, so no surface needs a fallback branch.
+ *
+ * Pure. Order is the specification; do not reorder without changing the spec.
+ */
+export function deriveVerdict(i: VerdictInputs): Verdict {
+  // Nothing to judge. Evaluated first so no later rule sees a zero-mission arc.
+  if (i.totalMissions === 0) return 'empty';
+
+  // A verified failure outranks every motion signal: shipping fast in the wrong
+  // direction is the failure mode motion alone cannot see.
+  if (i.criteriaFail > 0) return 'losing';
+
+  // Rework outrunning ships. max(merges,1) so an arc burning tokens on nothing
+  // but retries is judged against a floor of one rather than dividing by zero.
+  if (i.tokens7d > 0 && i.attempts7d > THRASH_RATIO * Math.max(i.merges7d, 1)) return 'losing';
+
+  // Work finished, nobody closed the arc. The honest reading of the old
+  // `AWAITING` chip — and the one state here that is a prompt, not a problem.
+  if (i.allTerminal && i.status === 'active') return 'won_unclaimed';
+
+  // Tokens burning, tasks closing, nothing merged. The state a percentage
+  // cannot express, which is the whole reason this ladder exists.
+  if (i.tokens7d > 0 && i.merges7d === 0) return 'grinding';
+
+  if (i.tokens7d > 0) return 'winning';
+
+  // No burn, but something is waiting on a human.
+  if (i.held + i.blocked + i.awaitingVerification > 0) return 'stuck';
+
+  return 'dormant';
+}
+
+export interface ConfidenceInputs {
+  totalMissions: number;
+  /** Child missions that have criteria AND an `overall` of 'pass' or 'fail'. */
+  verifiedMissions: number;
+  /**
+   * The initiative's own `kpiState.overall`, or null when it has no KPIs.
+   * 'UNVERIFIED' and 'NOT_EVALUATED' both count as no evidence — the first
+   * means checked-but-ambiguous, the second never-checked, and neither
+   * establishes an outcome.
+   */
+  kpiOverall: string | null;
+}
+
+/**
+ * Confidence is independent of the verdict and MUST NOT change it. It says
+ * whether anything actually checked the outcome, which is why a verdict renders
+ * as `Winning · unverified` rather than silently claiming more than it knows.
+ *
+ * A zero-mission initiative is `unverified` unless its own KPIs say otherwise:
+ * "every child mission is verified" is vacuously true of no missions, and
+ * reporting an empty arc as verified would be the exact overclaim this guards.
+ */
+export function deriveConfidence(i: ConfidenceInputs): Confidence {
+  if (i.kpiOverall === 'pass' || i.kpiOverall === 'fail') return 'verified';
+  if (i.totalMissions === 0) return 'unverified';
+  return i.verifiedMissions === i.totalMissions ? 'verified' : 'unverified';
+}
+
+/**
+ * `tokens7d` — the sum of the last `windowDays` entries of an effort window.
+ *
+ * The window MUST be the team-scoped one. A workspace-narrowed window would let
+ * the sidebar filter change an initiative's verdict, the same hazard §6.3 rules
+ * out for progress.
+ */
+export function sumRecentTokens(days: EffortDay[], windowDays = VERDICT_WINDOW_DAYS): number {
+  return days.slice(-windowDays).reduce((n, d) => n + d.tokens, 0);
+}
+
+/** What the DB can tell us about an initiative's motion, per initiative id. */
+export interface VerdictRollup {
+  status: string;
+  totalMissions: number;
+  allTerminal: boolean;
+  criteriaFail: number;
+  verifiedMissions: number;
+  kpiOverall: string | null;
+  merges7d: number;
+  attempts7d: number;
+}
+
+export function emptyVerdictRollup(status = 'active'): VerdictRollup {
+  return {
+    status,
+    totalMissions: 0,
+    allTerminal: false,
+    criteriaFail: 0,
+    verifiedMissions: 0,
+    kpiOverall: null,
+    merges7d: 0,
+    attempts7d: 0,
+  };
+}
+
+/**
+ * Load every DB-derived verdict input for a team's initiatives.
+ *
+ * Team-scoped only, on purpose: unlike `loadInitiativeEffort` — which the HTTP
+ * route needs workspace-scoped — a verdict narrowed by the active workspace
+ * filter would flip as the user changed a dropdown. Callers hold mission rows
+ * already, but those are capped (the Missions page loads 50 missions with 5
+ * workers each) and workspace-filtered, so counting from them would silently
+ * under-report. These counts come from their own uncapped queries.
+ *
+ * `tokens7d` is not here: it comes from the effort window the caller already
+ * loaded, via `sumRecentTokens`.
+ */
+export async function loadInitiativeVerdictInputs(opts: {
+  teamId: string;
+  windowDays?: number;
+}): Promise<Map<string, VerdictRollup>> {
+  const { teamId } = opts;
+  if (!teamId) throw new Error('loadInitiativeVerdictInputs requires teamId');
+  const windowDays = opts.windowDays ?? VERDICT_WINDOW_DAYS;
+  const cutoff = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+  const criteriaOverall = sql`${missions.goalCriteriaState}->>'overall'`;
+
+  const [missionRollups, initiativeRows, mergeRows, attemptRows] = await Promise.all([
+    // Child-mission rollup. Uncapped and unfiltered by workspace. The terminal
+    // set ('completed', 'archived') is the one `computeInitiativeProgress` uses
+    // to reach its 'completed' rollup — the two MUST NOT diverge.
+    db
+      .select({
+        initiativeId: missions.initiativeId,
+        totalMissions: sql<number>`COUNT(*)`,
+        openMissions: sql<number>`COUNT(*) FILTER (WHERE ${missions.status} NOT IN ('completed', 'archived'))`,
+        criteriaFail: sql<number>`COUNT(*) FILTER (WHERE ${criteriaOverall} = 'fail')`,
+        verifiedMissions: sql<number>`COUNT(*) FILTER (WHERE ${criteriaOverall} IN ('pass', 'fail'))`,
+      })
+      .from(missions)
+      .where(eq(missions.teamId, teamId))
+      .groupBy(missions.initiativeId),
+
+    // The initiative's own lifecycle status and KPI verdict.
+    db
+      .select({
+        id: initiatives.id,
+        status: initiatives.status,
+        kpiOverall: sql<string | null>`${initiatives.kpiState}->>'overall'`,
+      })
+      .from(initiatives)
+      .where(eq(initiatives.teamId, teamId)),
+
+    // Ships: workers whose PR merged inside the window.
+    db
+      .select({
+        initiativeId: missions.initiativeId,
+        merges: sql<number>`COUNT(*)`,
+      })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .innerJoin(missions, eq(missions.id, tasks.missionId))
+      .where(and(eq(missions.teamId, teamId), gte(workers.mergedAt, cutoff)))
+      .groupBy(missions.initiativeId),
+
+    // Rework: tasks created in the window, classified in TS rather than SQL so
+    // `deriveTaskType`'s prefix rules stay the single source of truth.
+    db
+      .select({
+        initiativeId: missions.initiativeId,
+        title: tasks.title,
+        parentTaskId: tasks.parentTaskId,
+      })
+      .from(tasks)
+      .innerJoin(missions, eq(missions.id, tasks.missionId))
+      .where(and(eq(missions.teamId, teamId), gte(tasks.createdAt, cutoff))),
+  ]);
+
+  return assembleVerdictRollups({
+    missionRollups: missionRollups as MissionRollupRow[],
+    initiativeRows: initiativeRows as InitiativeStatusRow[],
+    mergeRows: mergeRows as MergeRow[],
+    attemptRows: attemptRows as AttemptRow[],
+  });
+}
+
+export interface MissionRollupRow {
+  initiativeId: string | null;
+  totalMissions: number | string;
+  openMissions: number | string;
+  criteriaFail: number | string;
+  verifiedMissions: number | string;
+}
+export interface InitiativeStatusRow {
+  id: string;
+  status: string;
+  kpiOverall: string | null;
+}
+export interface MergeRow {
+  initiativeId: string | null;
+  merges: number | string;
+}
+export interface AttemptRow {
+  initiativeId: string | null;
+  title: string;
+  parentTaskId: string | null;
+}
+
+/**
+ * Fold the four row sets into one rollup per initiative. Pure, and exported for
+ * tests so the assembly is checkable without a database.
+ *
+ * Every initiative the team owns gets an entry even with no missions and no
+ * motion — an arc that exists but has nothing under it must still reach the
+ * ladder, where it resolves to 'empty' rather than being absent from the map.
+ * `TERMINAL_MISSION_STATUSES` is applied in SQL; `allTerminal` here is just
+ * "no open missions, and at least one mission".
+ */
+export function assembleVerdictRollups(input: {
+  missionRollups: MissionRollupRow[];
+  initiativeRows: InitiativeStatusRow[];
+  mergeRows: MergeRow[];
+  attemptRows: AttemptRow[];
+}): Map<string, VerdictRollup> {
+  const out = new Map<string, VerdictRollup>();
+
+  for (const row of input.initiativeRows) {
+    out.set(row.id, { ...emptyVerdictRollup(row.status), kpiOverall: row.kpiOverall ?? null });
+  }
+
+  const bucket = (key: string): VerdictRollup => {
+    let rollup = out.get(key);
+    if (!rollup) {
+      rollup = emptyVerdictRollup();
+      out.set(key, rollup);
+    }
+    return rollup;
+  };
+
+  for (const row of input.missionRollups) {
+    const rollup = bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY);
+    const total = Number(row.totalMissions ?? 0);
+    const open = Number(row.openMissions ?? 0);
+    rollup.totalMissions = total;
+    rollup.allTerminal = total > 0 && open === 0;
+    rollup.criteriaFail = Number(row.criteriaFail ?? 0);
+    rollup.verifiedMissions = Number(row.verifiedMissions ?? 0);
+  }
+
+  for (const row of input.mergeRows) {
+    bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY).merges7d += Number(row.merges ?? 0);
+  }
+
+  for (const row of input.attemptRows) {
+    if (deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId }) === null) continue;
+    bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY).attempts7d++;
+  }
+
+  return out;
+}
+
+/**
+ * Compose a rollup, its effort window and its pending counts into the verdict
+ * pair every surface renders. The one place the three parts of this module meet.
+ *
+ * A failing KPI on the initiative itself counts toward `criteriaFail` alongside
+ * its missions' failing criteria (§6.5) — an arc whose own KPI failed is losing
+ * no matter how healthy the missions beneath it look.
+ */
+export function deriveInitiativeVerdict(input: {
+  rollup: VerdictRollup;
+  effortDays: EffortDay[];
+  counts: PendingCounts;
+}): { verdict: Verdict; confidence: Confidence; tokens7d: number } {
+  const { rollup, effortDays, counts } = input;
+  const tokens7d = sumRecentTokens(effortDays);
+  const criteriaFail = rollup.criteriaFail + (rollup.kpiOverall === 'fail' ? 1 : 0);
+
+  return {
+    verdict: deriveVerdict({
+      status: rollup.status,
+      totalMissions: rollup.totalMissions,
+      allTerminal: rollup.allTerminal,
+      criteriaFail,
+      merges7d: rollup.merges7d,
+      attempts7d: rollup.attempts7d,
+      tokens7d,
+      held: counts.held,
+      blocked: counts.blocked,
+      awaitingVerification: counts.awaitingVerification,
+    }),
+    confidence: deriveConfidence({
+      totalMissions: rollup.totalMissions,
+      verifiedMissions: rollup.verifiedMissions,
+      kpiOverall: rollup.kpiOverall,
+    }),
+    tokens7d,
+  };
 }
