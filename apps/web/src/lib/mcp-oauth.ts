@@ -396,13 +396,20 @@ export async function exchangeCodeForToken(
 // ─── Audience Validation ─────────────────────────────────────────────────────
 
 /**
- * Validate that the access token's `aud` claim contains the connector resource URL.
+ * Validate that the access token's `aud` claim matches an expected resource.
+ *
+ * `expected` accepts several values because the endpoint URL a user typed is
+ * not always the resource identifier the AS binds `aud` to: a server may front
+ * multiple MCP endpoints under one canonical resource (its
+ * `protectedResource.resource`), in which case the endpoint URL is a subpath of
+ * the audience. Callers should pass both.
+ *
  * Decodes without verifying signature — we only care about the claim value.
- * Throws only if an `aud` claim is present and doesn't match — many AS
- * implementations issue opaque bearer tokens (not JWTs) or omit `aud`
- * entirely, and neither is something the client can or should reject.
+ * Throws only if an `aud` claim is present and matches none of the expected
+ * values — many AS implementations issue opaque bearer tokens (not JWTs) or
+ * omit `aud` entirely, and neither is something the client can or should reject.
  */
-export function validateTokenAudience(token: string, connectorUrl: string): void {
+export function validateTokenAudience(token: string, expected: string | string[]): void {
   const parts = token.split('.');
   if (parts.length !== 3) {
     // Not a JWT (e.g. an opaque bearer token) — no claim to check.
@@ -424,15 +431,24 @@ export function validateTokenAudience(token: string, connectorUrl: string): void
     return;
   }
 
-  const normalizedUrl = connectorUrl.replace(/\/$/, '');
+  const normalize = (v: string) => v.replace(/\/$/, '');
+  const expectedList = (Array.isArray(expected) ? expected : [expected])
+    .filter((v) => typeof v === 'string' && v.trim() !== '')
+    .map(normalize);
+
+  if (!expectedList.length) {
+    // Nothing to compare against — treat like an absent aud.
+    return;
+  }
+
   const audiences = Array.isArray(aud) ? aud : [aud];
-  const match = (audiences as string[]).some(
-    (a) => typeof a === 'string' && a.replace(/\/$/, '') === normalizedUrl,
+  const match = (audiences as unknown[]).some(
+    (a) => typeof a === 'string' && expectedList.includes(normalize(a)),
   );
 
   if (!match) {
     throw new Error(
-      `Token audience mismatch: expected "${normalizedUrl}", got ${JSON.stringify(aud)}`,
+      `Token audience mismatch: expected one of ${JSON.stringify(expectedList)}, got ${JSON.stringify(aud)}`,
     );
   }
 }
