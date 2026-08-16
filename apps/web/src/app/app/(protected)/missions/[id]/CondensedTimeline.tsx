@@ -396,7 +396,8 @@ export default function CondensedTimeline({
   allTasksCount,
   missionCompleted,
 }: CondensedTimelineProps) {
-  const [doneExpanded, setDoneExpanded] = useState(false);
+  // Completed missions auto-expand done so spawned builder tasks are immediately visible.
+  const [doneExpanded, setDoneExpanded] = useState(missionCompleted);
   const [moreQueuedExpanded, setMoreQueuedExpanded] = useState(false);
   const [blockedExpanded, setBlockedExpanded] = useState(false);
 

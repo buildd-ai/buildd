@@ -107,6 +107,7 @@ export default async function TasksPage({
               id: true,
               title: true,
               status: true,
+              mode: true,
               category: true,
               createdAt: true,
               updatedAt: true,
@@ -135,6 +136,7 @@ export default async function TasksPage({
                   id: true,
                   title: true,
                   status: true,
+                  mode: true,
                   category: true,
                   createdAt: true,
                   updatedAt: true,
@@ -326,7 +328,7 @@ export default async function TasksPage({
               chain,
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
-              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId }),
+              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }),
               parentTaskId: t.parentTaskId ?? null,
             };
           });
