@@ -315,9 +315,12 @@ function deriveMissionSegmentState(task: {
  * - Cancelled tasks are excluded from the denominator — they're treated as
  *   "never happened" so duplicate-killing doesn't block 100% completion.
  * - Failed tasks DO count against progress; they represent unfinished intended work.
- * - Attempt tasks (parentTaskId IS NOT NULL, e.g. CI retries) are collapsed into
- *   their parent: the parent's effective status is the best outcome across all
- *   attempts. Attempts do not count as separate deliverables.
+ * - Attempt tasks (CI retries, reviewer runs — parentTaskId IS NOT NULL and
+ *   mode !== 'execution') are collapsed into their parent. The parent's effective
+ *   status is the best outcome across all attempts. Attempts do not count as
+ *   separate deliverables.
+ * - Execution-mode tasks (approve_plan children, mode === 'execution') ARE counted
+ *   as separate deliverables even when they carry a parentTaskId.
  *
  * When tasks include an `id` and optional `workers`, the return value also
  * contains per-task `segments` for the projected progress bar.
@@ -333,11 +336,12 @@ export function computeMissionProgress(tasks: Array<{
   parentTaskId?: string | null;
   workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null }>;
 }>): { totalTasks: number; completedTasks: number; progress: number; segments: MissionSegment[] } {
-  // Collapse attempt tasks (parentTaskId IS NOT NULL) under their parents so
-  // a CI retry or reviewer run does not inflate the deliverable count.
+  // Collapse attempt tasks (CI retries, reviewer runs) under their parent so
+  // they don't inflate the deliverable count.
+  // Execution-mode tasks (approve_plan children) are separate deliverables — not collapsed.
   const childrenMap = new Map<string, typeof tasks>();
   const rootTasks = tasks.filter(t => {
-    if (t.parentTaskId) {
+    if (t.parentTaskId && t.mode !== 'execution') {
       if (!childrenMap.has(t.parentTaskId)) childrenMap.set(t.parentTaskId, []);
       childrenMap.get(t.parentTaskId)!.push(t);
       return false;

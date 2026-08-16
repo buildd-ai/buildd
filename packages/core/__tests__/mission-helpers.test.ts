@@ -249,6 +249,33 @@ describe('computeMissionProgress', () => {
     expect(result.progress).toBe(100);
   });
 
+  it('approve_plan execution tasks count as separate deliverables even with parentTaskId', () => {
+    // Orchestrator creates a planning task, then approve_plan spawns execution-mode builders.
+    // All builders have parentTaskId=planningTaskId but must count individually.
+    const tasks: Task[] = [
+      { id: 'plan', status: 'completed', title: 'Mission: Build the feature', mode: 'planning' },
+      { id: 'b1', status: 'completed', title: 'Build auth module', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'b2', status: 'completed', title: 'Build API layer', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'b3', status: 'pending', title: 'Write tests', mode: 'execution', parentTaskId: 'plan' },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(3);
+    expect(result.completedTasks).toBe(2);
+    expect(result.progress).toBe(67);
+  });
+
+  it('retry of an execution task is still collapsed (parentTaskId + no execution mode)', () => {
+    const tasks: Task[] = [
+      { id: 'b1', status: 'failed', title: 'Build auth module', mode: 'execution', parentTaskId: 'plan' },
+      { id: 'b1-retry', status: 'completed', title: '[CI Retry #1] Build auth module', parentTaskId: 'b1' },
+    ];
+    const result = computeMissionProgress(tasks);
+    // b1 is execution → counts; b1-retry has no mode=execution → collapsed into b1
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
   it('orphaned attempt (no parent in list) does not appear in results', () => {
     // Parent was filtered out by caller; orphaned child should not count
     const tasks: Task[] = [
