@@ -18,9 +18,18 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
   and: (...args: any[]) => ({ _op: 'and', args }),
-  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ _op: 'sql' }),
+  or: (...args: any[]) => ({ _op: 'or', args }),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: any[]) => ({ _op: 'sql', strings, values }),
+    { join: (items: any[], sep: any) => ({ _op: 'sql.join', items, sep }) },
+  ),
   desc: (col: any) => ({ _op: 'desc', col }),
   gt: (col: any, val: any) => ({ _op: 'gt', col, val }),
+  inArray: (col: any, vals: any[]) => ({ _op: 'inArray', col, vals }),
+  isNull: (col: any) => ({ _op: 'isNull', col }),
+  lte: (col: any, val: any) => ({ _op: 'lte', col, val }),
+  ne: (col: any, val: any) => ({ _op: 'ne', col, val }),
+  asc: (col: any) => ({ _op: 'asc', col }),
 }));
 
 // Mock schema types (used only as keys into mocked db calls)

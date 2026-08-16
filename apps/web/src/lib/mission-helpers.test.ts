@@ -156,6 +156,53 @@ describe('deriveMissionHealth — manual orchestrationMode', () => {
   });
 });
 
+describe('deriveMissionHealth — pendingUserScheduledAt (Defect 3)', () => {
+  const base = {
+    status: 'active',
+    activeAgents: 0,
+    cronExpression: null as string | null,
+    lastRunAt: null as string | null,
+    nextRunAt: null as string | null,
+  };
+
+  it('returns on-schedule when a future user-scheduled task is pending', () => {
+    const futureDate = new Date(Date.now() + 6 * 3600_000);
+    const h = deriveMissionHealth({ ...base, pendingUserScheduledAt: futureDate });
+    expect(h).toBe('on-schedule');
+    expect(healthToGroup(h, 50)).toBe('scheduled');
+  });
+
+  it('returns idle when pendingUserScheduledAt is in the past', () => {
+    const pastDate = new Date(Date.now() - 60_000);
+    const h = deriveMissionHealth({ ...base, pendingUserScheduledAt: pastDate });
+    expect(h).toBe('idle');
+  });
+
+  it('returns idle when pendingUserScheduledAt is null', () => {
+    const h = deriveMissionHealth({ ...base, pendingUserScheduledAt: null });
+    expect(h).toBe('idle');
+  });
+
+  it('cron takes precedence over pendingUserScheduledAt when cron is present', () => {
+    const futureDate = new Date(Date.now() + 6 * 3600_000);
+    const h = deriveMissionHealth({
+      ...base,
+      cronExpression: '0 */6 * * *',
+      lastRunAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      nextRunAt: futureDate.toISOString(),
+      pendingUserScheduledAt: futureDate,
+    });
+    // Should still be on-schedule (from cron path, not pendingUserScheduledAt path)
+    expect(h).toBe('on-schedule');
+  });
+
+  it('paused status takes priority over pendingUserScheduledAt', () => {
+    const futureDate = new Date(Date.now() + 6 * 3600_000);
+    const h = deriveMissionHealth({ ...base, status: 'paused', pendingUserScheduledAt: futureDate });
+    expect(h).toBe('paused');
+  });
+});
+
 describe('tab count reconciliation', () => {
   it('paused missions are counted in "all" but not in "completed" group', () => {
     // Simulate a bucket of missions: 1 paused, 1 shipped, 1 active

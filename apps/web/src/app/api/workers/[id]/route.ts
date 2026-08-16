@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, connectors, secrets, missions } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { eq, and, or, desc, gte, inArray, isNull, not, sql } from 'drizzle-orm';
+import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -439,7 +439,7 @@ export async function PATCH(
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1382,6 +1382,47 @@ export async function PATCH(
         await resolveCompletedTask(taskId, worker.workspaceId);
       });
 
+      // Re-arm any schedule that was deferred by its per-schedule concurrent cap
+      // if the cap is now freed because this task just completed.
+      await runStep('rearm-cap-deferred-schedules', async () => {
+        const taskScheduleId = terminalTaskRow[0]?.scheduleId ?? null;
+        if (!taskScheduleId || !worker.workspaceId) return;
+
+        // Find the schedule only if it is currently cap-deferred with a future nextRunAt.
+        const [schedule] = await db
+          .select({
+            id: taskSchedules.id,
+            maxConcurrentFromSchedule: taskSchedules.maxConcurrentFromSchedule,
+          })
+          .from(taskSchedules)
+          .where(and(
+            eq(taskSchedules.id, taskScheduleId),
+            eq(taskSchedules.lastDeferralReason, 'concurrent_cap'),
+            gt(taskSchedules.nextRunAt, new Date()),
+          ))
+          .limit(1);
+
+        if (!schedule) return;
+
+        // Count tasks still active from this schedule after the current completion.
+        const [countRow] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(tasks)
+          .where(and(
+            eq(tasks.workspaceId, worker.workspaceId),
+            inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+            eq(tasks.scheduleId, taskScheduleId),
+          ));
+
+        const remaining = countRow?.count ?? 0;
+        if (remaining < schedule.maxConcurrentFromSchedule) {
+          await db
+            .update(taskSchedules)
+            .set({ nextRunAt: new Date(), updatedAt: new Date() })
+            .where(eq(taskSchedules.id, taskScheduleId));
+        }
+      });
+
       // Auto-evaluate mission goalCriteria when all tasks reach terminal state.
       // Only fires when the mission has criteria and autoVerify != false.
       // Idempotent — skips if an evaluation already exists.
@@ -1895,7 +1936,7 @@ export async function PATCH(
     ...updated,
     instructions: allInstructions,
     ...(outputWarning ? { outputWarning } : {}),
-  });
+  }, undefined, { route: req.nextUrl.pathname });
 }
 
 // ── Reviewer outcome handling (BT-7, BT-8, BT-9) ────────────────────────────

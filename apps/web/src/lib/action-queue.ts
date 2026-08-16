@@ -1,4 +1,4 @@
-export type ActionChip = 'MERGE' | 'REVIEW' | 'QUESTION' | 'APPROVE';
+export type ActionChip = 'MERGE' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'RESOLVING';
 
 export interface ResolvedEscalationItem {
   workerId: string;
@@ -60,6 +60,9 @@ export interface EscalationRawItem {
   policyTier: string;
   escalationReason: string | null;
   waitingMinutes: number | null;
+  /** Set when an agent is actively resolving conflicts for this PR. */
+  conflictRetryTaskId?: string | null;
+  conflictRetryIteration?: number | null;
 }
 
 export interface ActionQueueItem {
@@ -83,10 +86,14 @@ export interface ActionQueueItem {
   escalationReason?: string | null;
   workerId?: string;
   question?: string;
+  /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
+  conflictRetryTaskId?: string | null;
+  conflictRetryIteration?: number | null;
 }
 
-// Chip display order: lower index = shown first
-const CHIP_ORDER: ActionChip[] = ['MERGE', 'REVIEW', 'QUESTION', 'APPROVE'];
+// Chip display order: lower index = shown first.
+// RESOLVING is last — it is informational (agent is handling it), not action-required.
+const CHIP_ORDER: ActionChip[] = ['MERGE', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
 
 /**
  * Merges waitingOnYou items and escalationInbox items into a single
@@ -108,7 +115,11 @@ export function buildActionQueue(
   // Escalation items carry task links, workspace context, and merge buttons — add first
   for (const item of escalationInbox) {
     const key = item.prUrl ?? `task:${item.taskId}`;
-    const chip: ActionChip = item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
+    // RESOLVING: conflict retry is live — agent is handling it, not the human.
+    // Otherwise: human-gate = MERGE, agent-review = REVIEW.
+    const chip: ActionChip = item.conflictRetryTaskId
+      ? 'RESOLVING'
+      : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
     map.set(key, {
       subjectKey: key,
       chip,
@@ -119,6 +130,8 @@ export function buildActionQueue(
       workspaceName: item.workspaceName || undefined,
       waitingMinutes: item.waitingMinutes,
       escalationReason: item.escalationReason,
+      conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
+      conflictRetryIteration: item.conflictRetryIteration ?? undefined,
     });
   }
 

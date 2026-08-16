@@ -241,6 +241,8 @@ export function deriveMissionHealth(opts: {
   nextRunAt: string | Date | null;
   orchestrationMode?: string | null;
   isHeld?: boolean;
+  /** Earliest future startAt of pending tasks created by the user (loopIteration=0). */
+  pendingUserScheduledAt?: Date | null;
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
@@ -267,6 +269,12 @@ export function deriveMissionHealth(opts: {
     // Has schedule but never ran
     if (opts.nextRunAt) return 'on-schedule';
     return 'stalled';
+  }
+
+  // No cron — if a user deliberately scheduled a task for a future time, treat
+  // the mission as on-schedule rather than idle/attention.
+  if (opts.pendingUserScheduledAt && opts.pendingUserScheduledAt.getTime() > Date.now()) {
+    return 'on-schedule';
   }
 
   return 'idle';

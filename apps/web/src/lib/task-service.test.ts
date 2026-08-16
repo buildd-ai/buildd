@@ -4,7 +4,9 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 const mockAccountsFindFirst = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
-const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
+// teamMembers.findMany and teams.findFirst back getUserTeamIds without mocking @/lib/team-access
+const mockTeamMembersFindMany = mock(async () => [{ teamId: 'team-1' }] as any[]);
+const mockTeamsFindFirst = mock(async () => null as any);
 
 // Mock the database module
 mock.module('@buildd/core/db', () => ({
@@ -19,12 +21,14 @@ mock.module('@buildd/core/db', () => ({
       workspaces: {
         findFirst: mockWorkspacesFindFirst,
       },
+      teamMembers: {
+        findMany: mockTeamMembersFindMany,
+      },
+      teams: {
+        findFirst: mockTeamsFindFirst,
+      },
     },
   },
-}));
-
-mock.module('@/lib/team-access', () => ({
-  getUserTeamIds: mockGetUserTeamIds,
 }));
 
 import { resolveCreatorContext, resolveCreationSource } from './task-service';
@@ -34,8 +38,10 @@ describe('task-service', () => {
     mockAccountsFindFirst.mockReset();
     mockWorkersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    mockGetUserTeamIds.mockReset();
-    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockTeamMembersFindMany.mockReset();
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-1' }]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
   });
 
   describe('resolveCreationSource', () => {
@@ -228,7 +234,7 @@ describe('task-service', () => {
           id: 'ws-1',
           teamId: 'team-1',
         });
-        mockGetUserTeamIds.mockResolvedValue(['team-1']);
+        // getUserTeamIds reads from mockTeamMembersFindMany (pre-set to [{teamId:'team-1'}])
 
         const result = await resolveCreatorContext({
           userId: 'user-123',
@@ -252,7 +258,8 @@ describe('task-service', () => {
           id: 'ws-1',
           teamId: 'other-team',
         });
-        mockGetUserTeamIds.mockResolvedValue(['team-1']);
+        // getUserTeamIds reads from mockTeamMembersFindMany (pre-set to [{teamId:'team-1'}])
+        // workspace.teamId is 'other-team' which is not in ['team-1'] → rejected
 
         const result = await resolveCreatorContext({
           userId: 'user-123',

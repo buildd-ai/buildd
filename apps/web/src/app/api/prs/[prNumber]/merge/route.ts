@@ -14,10 +14,11 @@ import { workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
-import { mergePullRequest } from '@/lib/github';
+import { mergePullRequest, githubApi } from '@/lib/github';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 
 export async function POST(
   _req: NextRequest,
@@ -57,6 +58,7 @@ export async function POST(
       prUrl: true,
       prNumber: true,
       prLifecycleStatus: true,
+      lastCommitSha: true,
     },
     with: {
       task: {
@@ -128,9 +130,73 @@ export async function POST(
     console.error(
       `[pr-merge] GitHub rejected merge of PR #${prNumber} on ${repoFullName}: ${rawMessage}`,
     );
+
+    const failureClass = classifyMergeFailure(rawMessage);
+
+    if (failureClass === 'conflict' && worker.taskId) {
+      // Fetch the current head SHA for dedup key
+      let headSha = worker.lastCommitSha ?? '';
+      if (!headSha) {
+        try {
+          const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+          headSha = prData?.head?.sha ?? '';
+        } catch {
+          headSha = '';
+        }
+      }
+
+      if (headSha) {
+        const dispatchResult = await dispatchConflictRetry({
+          workerId: worker.id,
+          taskId: worker.taskId,
+          prNumber,
+          headSha,
+          repoFullName,
+          workspaceId: worker.workspaceId,
+        }).catch(err => {
+          console.error(`[pr-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
+          return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
+        });
+
+        if (dispatchResult.dispatched) {
+          return NextResponse.json(
+            {
+              error: `PR #${prNumber} has merge conflicts. A conflict-resolution task has been dispatched automatically.`,
+              conflictRetryDispatched: true,
+              conflictRetryTaskId: dispatchResult.taskId,
+            },
+            { status: 409 },
+          );
+        }
+        if (dispatchResult.exhausted) {
+          return NextResponse.json(
+            {
+              error: `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Manual action required: rebase onto the base branch, resolve conflicts, or abandon this PR.`,
+              conflictExhausted: true,
+            },
+            { status: 409 },
+          );
+        }
+        if (dispatchResult.disabled) {
+          // Feature disabled — fall through to standard error
+        } else {
+          // Duplicate dedup hit — already handling it
+          return NextResponse.json(
+            {
+              error: `PR #${prNumber} has merge conflicts. A conflict-resolution task is already in progress.`,
+              conflictRetryDispatched: false,
+            },
+            { status: 409 },
+          );
+        }
+      }
+    }
+
     // Map GitHub's opaque errors to actionable copy; keep raw message in server log only.
     const userMessage = /not found/i.test(rawMessage)
       ? 'GitHub could not find the repo or the buildd App lacks access — verify the App is installed on this repo with contents: write permission'
+      : failureClass === 'conflict'
+      ? `GitHub rejected the merge: PR has merge conflicts. Use "Resolve conflicts" to dispatch an auto-fix, or manually rebase and push.`
       : /method not allowed|405/i.test(rawMessage)
       ? 'PR is not in a mergeable state — check CI status and branch protection rules'
       : `GitHub rejected the merge: ${rawMessage}`;

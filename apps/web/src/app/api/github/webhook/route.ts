@@ -29,6 +29,7 @@ import {
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { closeIntentsForPr } from '@/lib/change-intent';
+import { detectDarkChecksForClosedPr } from './dark-check-detection';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -551,6 +552,19 @@ async function handlePullRequestEvent(event: {
     }
   } catch (err) {
     console.error('[knowledge-ingest] enqueue failed (non-fatal):', err);
+  }
+
+  // Dark-check detection: track required checks that consistently report
+  // 'skipped', alerting the workspace owner when N consecutive PRs show the
+  // pattern. Fire-and-forget — never blocks the webhook response path.
+  if (event.installation) {
+    detectDarkChecksForClosedPr(
+      event.installation.id,
+      repository.full_name,
+      pr.head.sha,
+    ).catch(e =>
+      console.error(`[webhook] dark-check detection failed for ${repository.full_name}:`, e),
+    );
   }
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)

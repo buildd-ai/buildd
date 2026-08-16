@@ -12,7 +12,8 @@ import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
-import type { MissionSegment } from '@buildd/core/mission-helpers';
+import type { MissionSegment, TaskType } from '@buildd/core/mission-helpers';
+import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ export type CondensedTimelineTask = {
   roleColor: string;
   chain: ChainPositionResult | null;
   latestWorker: CondensedTimelineWorker | null;
+  taskType: TaskType | null;
   reviewerNote: {
     type: string;
     title: string;
@@ -115,6 +117,27 @@ function PrStatusLine({
   );
 }
 
+// ─── Task type badge ──────────────────────────────────────────────────────────
+
+const TYPE_BADGE_CONFIG: Record<TaskType, { glyph: string; cls: string; label: string }> = {
+  retry:          { glyph: '↻', cls: 'text-status-warning',   label: 'CI Retry' },
+  review:         { glyph: '⬡', cls: 'text-status-info',      label: 'Review' },
+  'review-retry': { glyph: '↻', cls: 'text-[#8B5CF6]',        label: 'Review Retry' },
+};
+
+function TaskTypeBadge({ type }: { type: TaskType }) {
+  const cfg = TYPE_BADGE_CONFIG[type];
+  return (
+    <span
+      className={`font-mono text-[9px] shrink-0 select-none pointer-events-none leading-none ${cfg.cls}`}
+      title={cfg.label}
+      aria-label={cfg.label}
+    >
+      {cfg.glyph}
+    </span>
+  );
+}
+
 // ─── Section label ────────────────────────────────────────────────────────────
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -171,6 +194,9 @@ function TaskRow({
           <span className="w-2 h-px bg-border-default" />
           <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: task.roleColor }} />
         </span>
+        {task.taskType && (
+          <TaskTypeBadge type={task.taskType} />
+        )}
         <SwipeableRow
           cardType={swipeCardType}
           taskTitle={task.title}
@@ -181,7 +207,7 @@ function TaskRow({
           <TaskCard
             density="inline"
             id={task.id}
-            title={task.title}
+            title={task.taskType ? stripTaskTypePrefix(task.title) : task.title}
             taskStatus={task.status}
             workerStatus={latestWorker?.status ?? null}
             chain={task.chain ?? null}

@@ -4,11 +4,12 @@ import { useState } from 'react';
 import Link from 'next/link';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
+
 interface WaitingOnYouReviewCardProps {
   item: ActionQueueItem;
 }
 
-type MergeState = 'idle' | 'confirming' | 'merging' | 'merged' | 'error';
+type MergeState = 'idle' | 'confirming' | 'merging' | 'merged' | 'error' | 'conflict_dispatched' | 'conflict_exhausted';
 
 /**
  * Escalation card for REVIEW-chip items on the Home page.
@@ -18,6 +19,7 @@ type MergeState = 'idle' | 'confirming' | 'merging' | 'merged' | 'error';
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [mergeState, setMergeState] = useState<MergeState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [conflictRetryTaskId, setConflictRetryTaskId] = useState<string | null>(null);
 
   const handleMerge = async () => {
     setMergeState('merging');
@@ -28,6 +30,15 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
+        if (data.conflictRetryDispatched) {
+          setConflictRetryTaskId(data.conflictRetryTaskId ?? null);
+          setMergeState('conflict_dispatched');
+          return;
+        }
+        if (data.conflictExhausted) {
+          setMergeState('conflict_exhausted');
+          return;
+        }
         setErrorMsg(data.error || 'Merge failed');
         setMergeState('error');
         return;
@@ -142,6 +153,67 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           >
             Retry
           </button>
+        </div>
+      )}
+
+      {/* Conflict dispatched strip */}
+      {mergeState === 'conflict_dispatched' && (
+        <div className="mt-2 pt-2 border-t border-status-error/20">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block flex-shrink-0" />
+            <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {conflictRetryTaskId && (
+              <Link
+                href={`/app/tasks/${conflictRetryTaskId}`}
+                className="text-[12px] font-medium text-primary hover:underline"
+              >
+                View task
+              </Link>
+            )}
+            {item.prUrl && (
+              <a
+                href={item.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[12px] text-text-muted hover:text-text-secondary underline"
+              >
+                Abandon PR
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Conflict exhausted strip */}
+      {mergeState === 'conflict_exhausted' && (
+        <div className="mt-2 pt-2 border-t border-status-error/20">
+          <p className="text-[11px] text-status-error mb-1.5">
+            Conflict resolution retries exhausted. Manual action required.
+          </p>
+          <div className="flex items-center gap-3">
+            {item.prUrl && (
+              <a
+                href={item.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[12px] font-medium text-primary hover:underline"
+              >
+                Resolve conflicts on GitHub
+              </a>
+            )}
+            {item.prUrl && (
+              <a
+                href={item.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[12px] text-text-muted hover:text-text-secondary underline"
+              >
+                Abandon PR
+              </a>
+            )}
+          </div>
         </div>
       )}
     </div>

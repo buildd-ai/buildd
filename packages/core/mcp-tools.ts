@@ -97,6 +97,27 @@ export type ToolResult = {
   isError?: boolean;
 };
 
+// ── UUID Validation ───────────────────────────────────────────────────────────
+
+const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates that `id` is a full UUID and returns it. Throws with an actionable
+ * message if missing or malformed — specifically calling out 8-character UI
+ * prefixes, which are the most common mistake.
+ */
+function requireFullUuid(id: unknown, paramName: string): string {
+  if (!id || typeof id !== 'string') throw new Error(`${paramName} is required`);
+  if (!FULL_UUID_REGEX.test(id)) {
+    const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
+    const hint = isPrefix
+      ? ` "${id}" looks like an ID prefix — the web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
+      : ` Received: "${id}".`;
+    throw new Error(`${paramName} must be a full UUID (e.g. b833be4b-1234-5678-abcd-ef0123456789).${hint}`);
+  }
+  return id;
+}
+
 // ── Action Lists ─────────────────────────────────────────────────────────────
 
 // Trigger level: can create tasks and artifacts, but cannot claim or execute.
@@ -170,7 +191,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
@@ -760,50 +781,36 @@ export async function handleBuilddAction(
   switch (action) {
     case 'list_tasks': {
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
-      // Scope the fetch server-side to shrink the payload: only active
-      // (non-terminal) tasks, and this workspace when we know it. The
-      // client-side filter below still narrows to the exact statuses.
-      const query = new URLSearchParams({ status: 'active' });
-      if (wsId) query.set('workspaceId', wsId);
-      const data = await api(`/api/tasks?${query.toString()}`);
-      const allTasks = data.tasks || [];
-      // Include pending + assigned + in_progress so planners see all ongoing work,
-      // not just tasks waiting to be claimed. This prevents duplicate task creation
-      // when a planner checks existing work before creating new tasks.
-      let active = allTasks.filter((t: any) => ['pending', 'assigned', 'in_progress'].includes(t.status));
-      if (wsId) {
-        active = active.filter((t: any) => t.workspaceId === wsId);
-      }
-      // Pending tasks first (claimable), then assigned/in_progress (already running)
-      active.sort((a: any, b: any) => {
-        const statusOrder: Record<string, number> = { pending: 0, assigned: 1, in_progress: 2 };
-        const statusDiff = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
-        if (statusDiff !== 0) return statusDiff;
-        return (b.priority || 0) - (a.priority || 0);
-      });
-
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
-      const paginated = active.slice(offset, offset + limit);
-      const hasMore = offset + limit < active.length;
+      // Server handles status filter, workspace scoping, sort (pending-first /
+      // priority-desc), and pagination — no client-side fan-out needed.
+      const query = new URLSearchParams({ status: 'active', limit: String(limit), offset: String(offset) });
+      if (wsId) query.set('workspaceId', wsId);
+      const data = await api(`/api/tasks?${query.toString()}`);
+      const paginated: any[] = data.tasks || [];
 
-      if (paginated.length === 0) return text('No active tasks found.');
+      if (paginated.length === 0 && offset === 0) return text('No active tasks found.');
+
+      const total: number = data.total ?? paginated.length;
+      const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
+      const hasMore: boolean = data.hasMore ?? false;
 
       const summary = paginated.map((t: any) => {
         const catPrefix = t.category ? `[${t.category}] ` : '';
         const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
-        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${t.description?.slice(0, 100) || 'No description'}...`;
+        const desc = t.descriptionPreview || 'No description';
+        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
       }).join('\n\n');
 
-      const pendingCount = active.filter((t: any) => t.status === 'pending').length;
-      const header = `${active.length} active task${active.length === 1 ? '' : 's'} (${pendingCount} pending, ${active.length - pendingCount} in progress):`;
+      const header = `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
     case 'get_task': {
-      if (!params.taskId) throw new Error('taskId is required');
+      const taskId = requireFullUuid(params.taskId, 'taskId');
 
       const includeParam = params.include;
       const includes = Array.isArray(includeParam)
@@ -811,7 +818,7 @@ export async function handleBuilddAction(
         : ['workers', 'artifacts'];
       const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
 
-      const task = await api(`/api/tasks/${encodeURIComponent(params.taskId as string)}${qs}`);
+      const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`);
 
       const appBase = ctx.appBaseUrl || 'https://buildd.dev';
       const taskUrl = `${appBase}/app/tasks/${task.id}`;
@@ -1305,7 +1312,7 @@ export async function handleBuilddAction(
     }
 
     case 'update_task': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const updateFields: Record<string, unknown> = {};
       if (params.title !== undefined) updateFields.title = params.title;
@@ -1337,7 +1344,41 @@ export async function handleBuilddAction(
       const loopInfo = params.maxLoops !== undefined
         ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
         : '';
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}`);
+
+      // Warn when a material field (title/description) is edited on a task whose
+      // worker is still in-flight — the running agent is locked to the previous brief.
+      let activeWorkerWarning = '';
+      const materialChanged = updateFields.title !== undefined || updateFields.description !== undefined;
+      if (materialChanged) {
+        try {
+          const taskData = await api(`/api/tasks/${params.taskId}?include=workers`);
+          const activeStatuses = ['running', 'assigned', 'waiting_input'];
+          const activeWorker = (taskData.workers || []).find(
+            (w: { id: string; status: string }) => activeStatuses.includes(w.status),
+          );
+          if (activeWorker) {
+            activeWorkerWarning = `\nWARNING: worker ${activeWorker.id} is currently ${activeWorker.status} on this task and is running against the PREVIOUS description. This edit did NOT reach it. To steer the running work, call send_agent_message (taskId=${params.taskId}) with the delta.`;
+            // Fire-and-forget: record the divergence on the task feed so it's visible in the UI timeline.
+            const noteEndpoint = updated.missionId
+              ? `/api/missions/${updated.missionId}/notes`
+              : `/api/tasks/${params.taskId}/notes`;
+            api(noteEndpoint, {
+              method: 'POST',
+              body: JSON.stringify({
+                type: 'warning',
+                title: 'Material edit while worker is active',
+                bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) is running against the previous description. Use send_agent_message (taskId=${params.taskId}) to redirect it.`,
+                authorType: 'system',
+                status: 'answered',
+              }),
+            }).catch(() => {});
+          }
+        } catch {
+          // Non-fatal — don't block the update response if the worker check fails
+        }
+      }
+
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}${activeWorkerWarning}`);
     }
 
     case 'create_task': {
@@ -1355,6 +1396,26 @@ export async function handleBuilddAction(
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
+
+      // Similarity check: run BEFORE creating the task so we don't find our own task.
+      // Skip for child tasks, retry tasks, reviewer tasks, and friction tasks — they
+      // legitimately share a subject with their parent and generate constant false positives.
+      const SIMILAR_TASK_WARN_THRESHOLD = 0.82;
+      const suppressedTitlePattern = /^\[(CI Retry|reviewer retry|reviewer|friction)\b/i;
+      const isChildOrRetryTask =
+        !!params.parentTaskId ||
+        suppressedTitlePattern.test(String(params.title));
+
+      type SimilarCandidate = { id: string; similarity: number; content: string };
+      let priorSimilarCandidates: SimilarCandidate[] = [];
+      if (!isChildOrRetryTask && ctx.knowledgeStore?.nearDupeCheck && wsId) {
+        const taskNs = buildNamespace(wsId, 'task');
+        const queryText = [params.title, params.description]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join('\n')
+          .slice(0, 2000);
+        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, queryText, 5).catch(() => []);
+      }
 
       const taskBody: Record<string, unknown> = {
         workspaceId: wsId,
@@ -1490,6 +1551,54 @@ export async function handleBuilddAction(
         body: JSON.stringify(taskBody),
       });
 
+      // Index the new (pending) task into the knowledge store so future create_task
+      // calls can find it via nearDupeCheck. Best-effort — never fail task creation.
+      // Uses the same source_id format as buildTaskCard so complete_task overwrites
+      // the placeholder with the full outcome when the task finishes.
+      if (!isChildOrRetryTask && ctx.knowledgeStore && task?.id && task?.title) {
+        const pendingContent = [
+          `# Task: ${task.title}`,
+          task.description ? `## Description\n${task.description}` : null,
+        ].filter((s): s is string => s !== null).join('\n\n');
+        mirrorWorkProduct(ctx, 'task', {
+          id: `task:${task.id}`,
+          content: pendingContent,
+          lexicalText: [task.title, task.description].filter(Boolean).join('\n'),
+          sourceType: 'task',
+          sourceUrl: `/app/tasks/${task.id}`,
+          metadata: { phase: 'pending', taskId: task.id },
+        }).catch(() => {});
+      }
+
+      // Cross-reference priorSimilarCandidates against currently-open tasks to build
+      // the warning. Only call the active-tasks endpoint when there are candidates
+      // above the threshold (avoids a needless round-trip on clean filings).
+      let similarTasksWarning = '';
+      const aboveThreshold = priorSimilarCandidates.filter(c => c.similarity >= SIMILAR_TASK_WARN_THRESHOLD);
+      if (aboveThreshold.length > 0 && task?.id) {
+        let activeTaskIds = new Set<string>();
+        try {
+          const activePage = await api(`/api/tasks?status=active&workspaceId=${wsId}&limit=100`);
+          for (const t of (activePage?.tasks ?? [])) {
+            if (t?.id) activeTaskIds.add(t.id);
+          }
+        } catch { /* best-effort */ }
+
+        const openSimilar = aboveThreshold.filter(c => {
+          const candidateTaskId = c.id.startsWith('task:') ? c.id.slice(5) : c.id;
+          return candidateTaskId !== task.id && activeTaskIds.has(candidateTaskId);
+        });
+
+        if (openSimilar.length > 0) {
+          const lines = openSimilar.map(c => {
+            const candidateTaskId = c.id.startsWith('task:') ? c.id.slice(5) : c.id;
+            const titleLine = c.content.split('\n')[0].replace(/^#+ Task: /, '').replace(/^#+ Task /, '').trim();
+            return `  - ${candidateTaskId} — "${titleLine}" (similarity ${c.similarity.toFixed(2)})`;
+          });
+          similarTasksWarning = `\n\n⚠ ${openSimilar.length} open task(s) with a similar subject:\n${lines.join('\n')}\nIf filing a genuinely distinct task, pass fileAnywayReason to create_task.`;
+        }
+      }
+
       const createAppBase = ctx.appBaseUrl || 'https://buildd.dev';
       const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
 
@@ -1497,7 +1606,12 @@ export async function handleBuilddAction(
         return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
       }
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${task.startAt ? `Deferred until ${new Date(task.startAt).toISOString()}` : 'Queued — no runner has claimed it yet'}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}`);
+      const statusLabel = task.startAt
+        ? `Deferred until ${new Date(task.startAt).toISOString()}`
+        : task.status === 'assigned'
+          ? 'Assigned — a runner has already claimed it'
+          : 'Queued — no runner has claimed it yet';
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${similarTasksWarning}`);
     }
 
     case 'create_schedule': {
@@ -2517,7 +2631,7 @@ export async function handleBuilddAction(
     }
 
     case 'approve_plan': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const data = await api(`/api/tasks/${params.taskId}/approve-plan`, {
         method: 'POST',
@@ -2546,7 +2660,7 @@ export async function handleBuilddAction(
     }
 
     case 'reject_plan': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
       if (!params.feedback) throw new Error('feedback is required');
 
       const data = await api(`/api/tasks/${params.taskId}/reject-plan`, {
@@ -3308,7 +3422,7 @@ export async function handleBuilddAction(
     }
 
     case 'get_task_messages': {
-      if (!params.taskId) throw new Error('taskId is required');
+      requireFullUuid(params.taskId, 'taskId');
 
       const data = await api(`/api/tasks/${params.taskId}/messages`);
       const messages: Array<{ type: string; message: string; timestamp: number; deliveryState?: 'pending' | 'delivered' }> = data.messages || [];
@@ -3333,7 +3447,8 @@ export async function handleBuilddAction(
     }
 
     case 'send_agent_message': {
-      if (!params.taskId || !params.message) throw new Error('taskId and message are required');
+      if (!params.message) throw new Error('taskId and message are required');
+      requireFullUuid(params.taskId, 'taskId');
 
       // Fetch task with workers so we can find the live worker by worker.status,
       // not task.status. task.status stays 'assigned' the entire time a worker is

@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces as workspacesTable, missions } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
+import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -13,9 +14,9 @@ import TaskGrid from './TaskGrid';
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string }>;
 }) {
-  const { mission: missionId, workspace: wsFilter } = await searchParams;
+  const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = await searchParams;
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
@@ -53,9 +54,13 @@ export default async function TasksPage({
     chain: ChainPositionResult | null;
     attemptCurrent: number | null;
     attemptTotal: number | null;
+    taskType: TaskType | null;
+    parentTaskId: string | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+  let initiativeTitle: string | null = null;
+  let initiativeMissionIds: string[] = [];
 
   if (!isDev && user) {
     try {
@@ -63,6 +68,17 @@ export default async function TasksPage({
       const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
 
       if (activeTeamId) {
+        // Resolve initiative title early (independent of workspace/task queries)
+        if (initiativeId) {
+          try {
+            const init = await db.query.initiatives.findFirst({
+              where: eq(initiatives.id, initiativeId),
+              columns: { title: true },
+            });
+            initiativeTitle = init?.title || null;
+          } catch {}
+        }
+
         const teamWsIds = await getTeamWorkspaceIds(activeTeamId);
 
         // Load team workspaces for filter dropdown + name lookup
@@ -103,26 +119,59 @@ export default async function TasksPage({
               loopConfig: true,
               loopIteration: true,
               loopState: true,
+              parentTaskId: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
           });
 
+          // Fetch child tasks (retry/reviewer) for the root tasks we loaded
+          const rootIds = recentTasks.map(t => t.id);
+          const childTasks = rootIds.length > 0
+            ? await db.query.tasks.findMany({
+                where: inArray(tasks.parentTaskId, rootIds),
+                columns: {
+                  id: true,
+                  title: true,
+                  status: true,
+                  category: true,
+                  createdAt: true,
+                  updatedAt: true,
+                  workspaceId: true,
+                  result: true,
+                  missionId: true,
+                  context: true,
+                  backend: true,
+                  dependsOn: true,
+                  startAt: true,
+                  loopConfig: true,
+                  loopIteration: true,
+                  loopState: true,
+                  parentTaskId: true,
+                },
+                limit: 500,
+              })
+            : [];
+          const allTasks = [...recentTasks, ...childTasks];
+
           // Fetch mission titles for tasks that have missionId
-          const missionIds = [...new Set(recentTasks.map(t => t.missionId).filter(Boolean))] as string[];
+          const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
           const missionTitleMap = new Map<string, string>();
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
               where: inArray(missions.id, missionIds),
-              columns: { id: true, title: true },
+              columns: { id: true, title: true, initiativeId: true },
             });
             for (const m of misns) {
               missionTitleMap.set(m.id, m.title);
+              if (initiativeId && m.initiativeId === initiativeId) {
+                initiativeMissionIds.push(m.id);
+              }
             }
           }
 
           // Query active workers to enrich task status and timestamps
-          const taskIds = recentTasks.map(t => t.id);
+          const taskIds = allTasks.map(t => t.id);
           const activeWorkers = taskIds.length > 0
             ? await db.query.workers.findMany({
                 where: and(
@@ -153,11 +202,11 @@ export default async function TasksPage({
           }
 
           // Chain data — only for non-terminal tasks (completed rows don't need it)
-          const nonTerminalTaskIds = recentTasks
+          const nonTerminalTaskIds = allTasks
             .filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
             .map(t => t.id);
           const allDepIds = [...new Set(
-            recentTasks
+            allTasks
               .filter(t => nonTerminalTaskIds.includes(t.id))
               .flatMap(t => (t.dependsOn as string[] | null) ?? [])
           )];
@@ -191,7 +240,7 @@ export default async function TasksPage({
           }
           // Count dependents within the loaded set
           const dependentCount = new Map<string, number>();
-          for (const t of recentTasks) {
+          for (const t of allTasks) {
             if (nonTerminalTaskIds.includes(t.id)) {
               for (const depId of (t.dependsOn as string[] | null) ?? []) {
                 dependentCount.set(depId, (dependentCount.get(depId) ?? 0) + 1);
@@ -199,9 +248,9 @@ export default async function TasksPage({
             }
           }
           // Build a title map from loaded tasks for dep display
-          const taskTitleMap = new Map(recentTasks.map(t => [t.id, t.title]));
+          const taskTitleMap = new Map(allTasks.map(t => [t.id, t.title]));
 
-          gridTasks = recentTasks.map(t => {
+          gridTasks = allTasks.map(t => {
             const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
             const isTerminal = t.status === 'completed' || t.status === 'failed';
             const ctx = (t.context || {}) as Record<string, unknown>;
@@ -257,6 +306,8 @@ export default async function TasksPage({
               chain,
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
+              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId }),
+              parentTaskId: t.parentTaskId ?? null,
             };
           });
         }
@@ -285,6 +336,9 @@ export default async function TasksPage({
       missionTitle={missionTitle}
       workspaces={teamWorkspaces}
       selectedWorkspaceId={wsFilter ?? null}
+      initiativeFilter={initiativeId || null}
+      initiativeTitle={initiativeTitle}
+      initiativeMissionIds={initiativeMissionIds}
     />
   );
 }
