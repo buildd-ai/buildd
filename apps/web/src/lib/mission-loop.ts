@@ -110,6 +110,9 @@ export async function maybeRetriggerMission(
   ) {
     // Heartbeat missions skip evaluation — the heartbeat IS the evaluation.
     // Trust it and auto-complete directly.
+    // NOTE: The heartbeat organizer (an LLM) is trusted to have assessed ALL
+    // pending work including attempt/CI-retry tasks before setting missionComplete=true.
+    // If the organizer misses pending tasks, add explicit task-count checks to its prompt.
     if (isHeartbeat) {
       await db
         .update(missions)
@@ -123,6 +126,15 @@ export async function maybeRetriggerMission(
           .where(eq(taskSchedules.id, mission.scheduleId));
       }
 
+      await db.insert(missionNotes).values({
+        missionId,
+        authorType: 'system',
+        type: 'update',
+        title: 'Mission completed via heartbeat',
+        body: `Heartbeat organizer reported missionComplete=true. Completing without verifying individual task states — the heartbeat is trusted as the evaluation authority. Predicate: task ${completedPlanningTaskId} result.missionComplete=true.`,
+        status: 'open',
+      });
+
       await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
         console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
       );
@@ -130,7 +142,7 @@ export async function maybeRetriggerMission(
       await triggerEvent(
         channels.mission(missionId),
         events.MISSION_LOOP_COMPLETED,
-        { missionId, reason: 'heartbeat_complete' }
+        { missionId, reason: 'heartbeat_complete', planningTaskId: completedPlanningTaskId }
       );
       return { action: 'completed' };
     }
@@ -167,6 +179,20 @@ export async function maybeRetriggerMission(
           .where(eq(taskSchedules.id, m.scheduleId));
       }
 
+      const workStatusCounts: Record<string, number> = {};
+      for (const t of workTasks) workStatusCounts[t.status] = (workStatusCounts[t.status] ?? 0) + 1;
+      const workStatusSummary = Object.entries(workStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
+      console.log(`[mission-loop] Mission ${missionId} auto-completed (missionComplete signal): ${workStatusSummary}`);
+
+      await db.insert(missionNotes).values({
+        missionId,
+        authorType: 'system',
+        type: 'update',
+        title: 'Mission auto-completed',
+        body: `Planning task signaled missionComplete=true and all work tasks are terminal. Mission auto-completed.\n\nWork task breakdown: ${workStatusSummary}`,
+        status: 'open',
+      });
+
       await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
         console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
       );
@@ -174,7 +200,7 @@ export async function maybeRetriggerMission(
       await triggerEvent(
         channels.mission(missionId),
         events.MISSION_LOOP_COMPLETED,
-        { missionId, reason: 'auto_complete_all_done' }
+        { missionId, reason: 'auto_complete_all_done', taskStatusCounts: workStatusCounts }
       );
       return { action: 'completed' };
     }
@@ -222,12 +248,17 @@ export async function maybeRetriggerMission(
         .where(eq(taskSchedules.id, mission.scheduleId));
     }
 
+    const deliverableStatusCounts: Record<string, number> = {};
+    for (const t of deliverableTasks) deliverableStatusCounts[t.status] = (deliverableStatusCounts[t.status] ?? 0) + 1;
+    const deliverableStatusSummary = Object.entries(deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
+    console.log(`[mission-loop] Mission ${missionId} auto-completed (dormancy): ${deliverableStatusSummary}`);
+
     await db.insert(missionNotes).values({
       missionId,
       authorType: 'system',
       type: 'update',
       title: 'Mission auto-completed',
-      body: 'All deliverable tasks complete. Mission auto-completed.',
+      body: `All deliverable tasks are terminal. Mission auto-completed.\n\nDeliverable task breakdown: ${deliverableStatusSummary}`,
       status: 'open',
     });
 
@@ -238,7 +269,7 @@ export async function maybeRetriggerMission(
     await triggerEvent(
       channels.mission(missionId),
       events.MISSION_LOOP_COMPLETED,
-      { missionId, reason: 'dormancy_auto_complete' }
+      { missionId, reason: 'dormancy_auto_complete', taskStatusCounts: deliverableStatusCounts }
     );
 
     return { action: 'completed' };
@@ -383,6 +414,53 @@ export async function maybeRetriggerMission(
   );
 
   return { action: 'retriggered' };
+}
+
+/**
+ * Reopen a completed mission when new open work is added to it.
+ *
+ * Atomically flips status completed → active only when the mission is currently
+ * completed (WHERE clause). Re-enables the schedule so the heartbeat resumes.
+ * Writes a mission note and emits a Pusher event for real-time dashboard updates.
+ *
+ * This is idempotent and fire-and-forget safe: if the mission isn't completed
+ * the update matches nothing and returns { reopened: false }.
+ *
+ * Call sites: POST /api/tasks (task creation), PATCH /api/tasks/[id] (un-cancel / link).
+ */
+export async function reopenCompletedMission(missionId: string): Promise<{ reopened: boolean }> {
+  const [updated] = await db
+    .update(missions)
+    .set({ status: 'active', updatedAt: new Date() })
+    .where(and(eq(missions.id, missionId), eq(missions.status, 'completed')))
+    .returning({ id: missions.id, scheduleId: missions.scheduleId });
+
+  if (!updated) return { reopened: false };
+
+  // Restore heartbeat: re-enable the schedule that was paused on completion
+  if (updated.scheduleId) {
+    await db
+      .update(taskSchedules)
+      .set({ enabled: true, updatedAt: new Date() })
+      .where(eq(taskSchedules.id, updated.scheduleId));
+  }
+
+  await db.insert(missionNotes).values({
+    missionId,
+    authorType: 'system',
+    type: 'update',
+    title: 'Mission reopened',
+    body: 'A new open task was added to a completed mission. Mission reset to active and orchestration resumed.',
+    status: 'open',
+  });
+
+  await triggerEvent(
+    channels.mission(missionId),
+    events.MISSION_REOPENED,
+    { missionId, reason: 'task_added' }
+  ).catch(e => console.error(`[mission-loop] pusher failed for reopened mission ${missionId}:`, e));
+
+  return { reopened: true };
 }
 
 /** Max failed planning tasks within the retry window before giving up */
