@@ -51,16 +51,42 @@ export async function GET(req: NextRequest) {
   const strategy = resolution.ok ? resolution.strategy : null;
 
   // Choose sensible source/target refs for the compare, overridable via query.
-  const ref =
-    sp.get('ref') ??
-    (strategy?.kind === 'workflow_dispatch'
-      ? strategy.ref
-      : strategy?.kind === 'script'
-        ? strategy.ref ?? target.defaultBranch
-        : target.defaultBranch);
-  const prodBranch =
-    sp.get('prodBranch') ??
-    (strategy?.kind === 'branch_merge' ? strategy.prodBranch : target.defaultBranch);
+  // Resolution order: explicit param → releaseConfig field → gitConfig.defaultBranch.
+  // Deliberately does not use the resolved strategy shape — a workflow_dispatch
+  // workspace may also carry prodBranch for preflight comparison purposes.
+  const refParam = sp.get('ref');
+  const prodBranchParam = sp.get('prodBranch');
+  const ref = refParam ?? target.releaseConfig?.ref ?? target.defaultBranch;
+  const prodBranch = prodBranchParam ?? target.releaseConfig?.prodBranch ?? target.defaultBranch;
+
+  // Comparing a branch to itself is always 0 commits ahead — a silent false negative
+  // that makes it look like nothing needs shipping when the config is wrong.
+  if (ref === prodBranch) {
+    const refSource = refParam
+      ? 'explicit param'
+      : target.releaseConfig?.ref
+        ? 'releaseConfig.ref'
+        : 'gitConfig.defaultBranch';
+    const prodBranchSource = prodBranchParam
+      ? 'explicit param'
+      : target.releaseConfig?.prodBranch
+        ? 'releaseConfig.prodBranch'
+        : 'gitConfig.defaultBranch';
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          `ref and prodBranch both resolved to "${ref}" ` +
+          `(ref from ${refSource}, prodBranch from ${prodBranchSource}). ` +
+          `This comparison is meaningless and would always show nothing to ship — ` +
+          `update releaseConfig.prodBranch to the production branch (e.g., "main").`,
+        ref,
+        prodBranch,
+        repo: target.repoFullName,
+      },
+      { status: 422 },
+    );
+  }
 
   try {
     const preflight = await releasePreflight(target.installationId, target.owner, target.name, {
