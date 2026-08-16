@@ -42,6 +42,7 @@ interface GridTask {
   attemptCurrent?: number | null;
   attemptTotal?: number | null;
   taskType?: TaskType | null;
+  parentTaskId?: string | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -105,6 +106,52 @@ function renderTaskCard(task: GridTask, missionScoped = false) {
   );
 }
 
+function renderTaskWithChildren(
+  task: GridTask,
+  childrenByParentId: Map<string, GridTask[]>,
+  expandedParents: Set<string>,
+  onToggle: (id: string) => void,
+  missionScoped: boolean
+) {
+  const children = [...(childrenByParentId.get(task.id) ?? [])].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+  const hasChildren = children.length > 0;
+  const isExpanded = expandedParents.has(task.id);
+  const childLabel = children.length === 1 ? 'attempt' : 'attempts';
+
+  return (
+    <div key={task.id}>
+      {renderTaskCard(task, missionScoped)}
+      {hasChildren && (
+        <div>
+          <button
+            onClick={() => onToggle(task.id)}
+            className="flex items-center gap-1.5 pl-10 pr-4 py-1 text-[11px] font-medium text-text-muted hover:text-text-secondary transition-colors w-full text-left border-b border-border-default"
+          >
+            <span className={`text-[9px] leading-none transition-transform duration-150 ${isExpanded ? 'rotate-0' : '-rotate-90'}`}>
+              &#9662;
+            </span>
+            {isExpanded
+              ? `${children.length} ${childLabel}`
+              : `+${children.length} ${childLabel}`
+            }
+          </button>
+          {isExpanded && (
+            <div className="border-l-2 border-border-default ml-10">
+              {children.map(child => (
+                <div key={child.id}>
+                  {renderTaskCard(child, missionScoped)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Sort strictly by recency — status is never a sort key
 function sortByRecency(list: GridTask[]): GridTask[] {
   return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -147,7 +194,22 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return tasks;
   }, [tasks, missionFilter, initiativeMissionIds]);
 
+  // Split tasks into roots (no parent) and children (retry/reviewer tasks with parentTaskId)
+  const rootTasks = useMemo(() => visibleTasks.filter(t => !t.parentTaskId), [visibleTasks]);
+  const childrenByParentId = useMemo(() => {
+    const map = new Map<string, GridTask[]>();
+    for (const t of visibleTasks) {
+      if (t.parentTaskId) {
+        const existing = map.get(t.parentTaskId) ?? [];
+        existing.push(t);
+        map.set(t.parentTaskId, existing);
+      }
+    }
+    return map;
+  }, [visibleTasks]);
+
   const [filter, setFilter] = useState<FilterStatus>('all');
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
   const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
   // groupBy is fixed: mission grouping is the default (no user control)
   const groupBy: GroupBy = missionFilter ? 'none' : 'mission';
@@ -202,14 +264,23 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     router.push(`/app/tasks${qs ? `?${qs}` : ''}`);
   }, [router]);
 
-  // Counts from unfiltered tasks
-  const allCount = visibleTasks.length;
-  const activeCount = visibleTasks.filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
-  const completedCount = visibleTasks.filter(t => t.status === 'completed').length;
-  const failedCount = visibleTasks.filter(t => t.status === 'failed').length;
+  const toggleParent = useCallback((taskId: string) => {
+    setExpandedParents(prev => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }, []);
+
+  // Counts from root tasks only (children are shown nested)
+  const allCount = rootTasks.length;
+  const activeCount = rootTasks.filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status)).length;
+  const completedCount = rootTasks.filter(t => t.status === 'completed').length;
+  const failedCount = rootTasks.filter(t => t.status === 'failed').length;
 
   const filtered = useMemo(() => {
-    let result = visibleTasks;
+    let result = rootTasks;
 
     if (filter === 'active') result = result.filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status));
     else if (filter === 'completed') result = result.filter(t => t.status === 'completed');
@@ -227,7 +298,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     }
 
     return result;
-  }, [visibleTasks, filter, contentFilter, search]);
+  }, [rootTasks, filter, contentFilter, search]);
 
   // Needs-input tasks pinned at top regardless of grouping
   const needsInputTasks = useMemo(() => filtered.filter(t => t.status === 'waiting_input'), [filtered]);
@@ -245,14 +316,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
   }, [groupBy, nonWaitingTasks]);
 
-  // Mobile recent strip: top 5 non-completed tasks by recency, always visible regardless of filter
+  // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
   const mobileRecentTasks = useMemo(() => {
     if (missionFilter) return [];
-    return [...visibleTasks]
+    return [...rootTasks]
       .filter(t => ['running', 'in_progress', 'assigned', 'waiting_input', 'pending'].includes(t.status))
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 5);
-  }, [visibleTasks, missionFilter]);
+  }, [rootTasks, missionFilter]);
 
   const missionGroups = useMemo((): MissionGroup[] => {
     if (effectiveGroupBy !== 'mission') return [];
@@ -347,7 +418,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     });
   };
 
-  if (visibleTasks.length === 0 && !missionFilter) {
+  if (rootTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
         <div className="max-w-md text-center">
@@ -619,7 +690,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                 <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
               </div>
               <div className="px-2">
-                {needsInputTasks.map((task) => renderTaskCard(task, !!missionFilter))}
+                {needsInputTasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             </div>
           )}
@@ -671,7 +742,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                   </span>
                 </button>
 
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
+                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             );
           })}
@@ -695,7 +766,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
+                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             );
           })}
@@ -719,13 +790,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
                     {group.tasks.length} {group.tasks.length === 1 ? 'task' : 'tasks'}
                   </span>
                 </button>
-                {isExpanded && group.tasks.map((task) => renderTaskCard(task, !!missionFilter))}
+                {isExpanded && group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
               </div>
             );
           })}
 
           {/* Flat list (no grouping) */}
-          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskCard(task, !!missionFilter))}
+          {effectiveGroupBy === 'none' && flatSorted.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}
 
           {/* Empty filtered state */}
           {filtered.length === 0 && visibleTasks.length > 0 && (
