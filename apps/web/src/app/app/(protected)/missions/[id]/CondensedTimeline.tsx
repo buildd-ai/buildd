@@ -7,7 +7,7 @@ import ExternalLink from '@/components/ExternalLink';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
-import { SegmentStrip } from '@/components/SegmentStrip';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
@@ -513,7 +513,7 @@ export default function CondensedTimeline({
                   {moreQueuedExpanded ? 'Show less' : `${queuedOverflow.length} more queued`}
                   {!moreQueuedExpanded && (
                     <span className="ml-auto flex-shrink-0">
-                      <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments(queuedOverflow)} />
+                      <MissionProgressBar density="mini" segments={getGroupSegments(queuedOverflow)} maxWidth={80} />
                     </span>
                   )}
                 </button>
@@ -560,7 +560,7 @@ export default function CondensedTimeline({
                   {blockedExpanded ? 'Hide blocked' : `${blocked.length} waiting on dependencies`}
                   {!blockedExpanded && (
                     <span className="ml-auto flex-shrink-0">
-                      <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments(blocked)} />
+                      <MissionProgressBar density="mini" segments={getGroupSegments(blocked)} maxWidth={80} />
                     </span>
                   )}
                 </button>
@@ -619,7 +619,7 @@ export default function CondensedTimeline({
               </span>
               {!doneExpanded && (
                 <span className="ml-auto flex-shrink-0">
-                  <SegmentStrip continuous height={4} maxWidth={80} segments={getGroupSegments([...done, ...failed])} />
+                  <MissionProgressBar density="mini" segments={getGroupSegments([...done, ...failed])} maxWidth={80} />
                 </span>
               )}
             </button>

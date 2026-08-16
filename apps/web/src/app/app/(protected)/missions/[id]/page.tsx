@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveTaskType } from '@buildd/core/mission-helpers';
-import { MissionProgress } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
@@ -644,7 +644,7 @@ export default async function MissionDetailPage({
                 {progress}%
               </span>
             </div>
-            <MissionProgress missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
+            <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
             {/* BT-13: 'awaiting merge' count in progress display */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
               {mission.status === 'completed'
