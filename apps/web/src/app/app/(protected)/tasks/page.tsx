@@ -34,6 +34,7 @@ export default async function TasksPage({
     workspaceName: string;
     prUrl: string | null;
     prNumber: number | null;
+    prLifecycleStatus: string | null;
     summary: string | null;
     hasArtifact: boolean;
     filesChanged: number | null;
@@ -201,6 +202,24 @@ export default async function TasksPage({
             }
           }
 
+          // Fetch prLifecycleStatus for completed tasks that have a prUrl (to distinguish merged vs open PRs)
+          const completedPrTaskIds = allTasks
+            .filter(t => t.status === 'completed' && (t.result as { prUrl?: string } | null)?.prUrl)
+            .map(t => t.id);
+          const prLifecycleByTaskId = new Map<string, string | null>();
+          if (completedPrTaskIds.length > 0) {
+            const lastWorkers = await db.query.workers.findMany({
+              where: inArray(workers.taskId, completedPrTaskIds),
+              columns: { taskId: true, prLifecycleStatus: true },
+              orderBy: [desc(workers.startedAt)],
+            });
+            for (const w of lastWorkers) {
+              if (w.taskId && !prLifecycleByTaskId.has(w.taskId)) {
+                prLifecycleByTaskId.set(w.taskId, w.prLifecycleStatus ?? null);
+              }
+            }
+          }
+
           // Chain data — only for non-terminal tasks (completed rows don't need it)
           const nonTerminalTaskIds = allTasks
             .filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
@@ -286,6 +305,7 @@ export default async function TasksPage({
               workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
               prUrl: result?.prUrl || null,
               prNumber: result?.prNumber || null,
+              prLifecycleStatus: result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null,
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,

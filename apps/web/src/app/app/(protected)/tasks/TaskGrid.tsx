@@ -23,6 +23,7 @@ interface GridTask {
   workspaceName: string;
   prUrl: string | null;
   prNumber: number | null;
+  prLifecycleStatus?: string | null;
   summary: string | null;
   hasArtifact: boolean;
   filesChanged: number | null;
@@ -190,7 +191,8 @@ function deriveGridTaskStage(task: GridTask): keyof StageCounts {
   if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
       task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
   if (task.status === 'completed') {
-    if (task.prUrl) return 'REVIEW'; // open PR (lifecycle not available in GridTask)
+    const merged = task.prLifecycleStatus === 'merged';
+    if (task.prUrl && !merged) return 'REVIEW';
     return 'DONE';
   }
   if (task.status === 'pending' || task.status === 'assigned') {
