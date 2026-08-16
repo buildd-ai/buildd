@@ -103,7 +103,7 @@ export function evaluateGoalCriteria(
 
     switch (criterion.type) {
       case 'all_prs_merged': {
-        const requireBranchDeleted = criterion.requireBranchDeleted !== false;
+        const requireBranchDeleted = criterion.requireBranchDeleted === true;
         const deliverableWorkers = context.workers.filter(w => w.prUrl);
         if (deliverableWorkers.length === 0) {
           verdict = 'fail';
@@ -179,11 +179,11 @@ export function evaluateGoalCriteria(
       }
 
       case 'description': {
-        // Free-form criteria require LLM evaluation against mission evidence.
-        // The pure evaluator returns UNVERIFIED; the evaluate route upgrades
-        // verdicts with an LLM call when ANTHROPIC_API_KEY is available.
-        verdict = 'UNVERIFIED';
-        evidence = `Pending evidence-based evaluation: "${criterion.description}"`;
+        // Free-form criteria are evaluated by LLM in the evaluate route.
+        // The pure evaluator marks NOT_EVALUATED so the route can distinguish
+        // "never checked" from UNVERIFIED ("checked, ambiguous evidence").
+        verdict = 'NOT_EVALUATED';
+        evidence = 'Awaiting LLM evaluation';
         break;
       }
 
@@ -206,9 +206,14 @@ export function evaluateGoalCriteria(
     });
   }
 
+  // NOT_EVALUATED criteria (e.g. description types awaiting LLM) are excluded from
+  // the overall verdict so they don't permanently block a passing mission.
+  const evaluated = results.filter(r => r.verdict !== 'NOT_EVALUATED');
   const overall: CriterionVerdict =
-    results.every(r => r.verdict === 'pass') ? 'pass'
-    : results.some(r => r.verdict === 'fail') ? 'fail'
+    results.length === 0 ? 'pass'             // no criteria at all → pass
+    : evaluated.length === 0 ? 'UNVERIFIED'   // all criteria NOT_EVALUATED → ambiguous
+    : evaluated.some(r => r.verdict === 'fail') ? 'fail'
+    : evaluated.every(r => r.verdict === 'pass') ? 'pass'
     : 'UNVERIFIED';
 
   return { evaluatedAt, evaluatedBy: context.evaluatedBy, overall, criteria: results };
