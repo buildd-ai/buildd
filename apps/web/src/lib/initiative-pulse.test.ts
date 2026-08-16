@@ -8,7 +8,7 @@ import { describe, it, expect, mock } from 'bun:test';
 mock.module('@buildd/core/db', () => ({ db: { select: () => { throw new Error('not used'); } } }));
 mock.module('@buildd/core/db/schema', () => ({
   workers: { completedAt: 'completedAt', updatedAt: 'updatedAt', inputTokens: 'inputTokens', outputTokens: 'outputTokens', status: 'status', prUrl: 'prUrl', taskId: 'taskId', mergedAt: 'mergedAt' },
-  tasks: { id: 'id', missionId: 'missionId', title: 'title', parentTaskId: 'parentTaskId', createdAt: 'createdAt' },
+  tasks: { id: 'id', missionId: 'missionId', title: 'title', parentTaskId: 'parentTaskId', createdAt: 'createdAt', mode: 'mode' },
   missions: { id: 'id', teamId: 'teamId', workspaceId: 'workspaceId', initiativeId: 'initiativeId', status: 'status', goalCriteriaState: 'goalCriteriaState' },
   initiatives: { id: 'id', teamId: 'teamId', status: 'status', kpiState: 'kpiState' },
 }));
@@ -401,14 +401,36 @@ describe('assembleVerdictRollups', () => {
       ...base,
       initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
       attemptRows: [
-        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null },            // primary → not counted
-        { initiativeId: 'init-1', title: '[CI Retry #2] Add pagination', parentTaskId: 'p' }, // retry
-        { initiativeId: 'init-1', title: '[reviewer] Add pagination', parentTaskId: 'p' },    // review
-        { initiativeId: 'init-1', title: 'follow-up', parentTaskId: 'p' },                    // attempt → retry
+        // primary task → not an attempt
+        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null, mode: 'execution' },
+        // CI retry
+        { initiativeId: 'init-1', title: '[CI Retry #2] Add pagination', parentTaskId: 'p', mode: 'execution' },
+        // reviewer run
+        { initiativeId: 'init-1', title: '[reviewer] Add pagination', parentTaskId: 'p', mode: 'execution' },
+        // unlabelled planning child → legacy attempt
+        { initiativeId: 'init-1', title: 'follow-up', parentTaskId: 'p', mode: 'planning' },
       ],
     });
 
     expect(out.get('init-1')!.attempts7d).toBe(3);
+  });
+
+  it('does not count spawned builder tasks as thrash', () => {
+    // approve_plan children carry a parentTaskId with mode 'execution' and no
+    // prefix. They are distinct deliverables (#1706) — counting them as attempts
+    // would read a planned mission's own build-out as rework and call it losing.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: 'Wire the API client', parentTaskId: 'plan-1', mode: 'execution' },
+        { initiativeId: 'init-1', title: 'Add the migration', parentTaskId: 'plan-1', mode: 'execution' },
+        // A prefixed retry is still an attempt, execution mode or not.
+        { initiativeId: 'init-1', title: '[CI Retry #1] Add the migration', parentTaskId: 'plan-1', mode: 'execution' },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(1);
   });
 
   it('sums merges and buckets initiative-less rows under __unassigned__', () => {
