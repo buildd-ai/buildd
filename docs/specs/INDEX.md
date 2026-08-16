@@ -22,8 +22,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (1)
 
-- [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-08-16
 
-## Superseded (0)
+## Superseded (1)
 
-_none_
+- [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13 → replaced by `surface-ia-home-missions-initiatives`
