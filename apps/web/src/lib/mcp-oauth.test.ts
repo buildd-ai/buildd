@@ -416,6 +416,30 @@ describe('validateTokenAudience', () => {
     );
   });
 
+  it('accepts any of several expected audiences', () => {
+    // A server whose MCP endpoint is a subpath of its canonical resource
+    // identifier: the AS mints aud = the resource, not the endpoint URL.
+    const token = makeJwt({ aud: 'https://mcp.example.com/api/mcp' });
+    expect(() =>
+      validateTokenAudience(token, [
+        'https://mcp.example.com/api/mcp',
+        'https://mcp.example.com/api/mcp/finance',
+      ]),
+    ).not.toThrow();
+  });
+
+  it('throws when aud matches none of several expected audiences', () => {
+    const token = makeJwt({ aud: 'https://wrong.example.com' });
+    expect(() =>
+      validateTokenAudience(token, ['https://mcp.example.com/api/mcp', 'https://mcp.example.com']),
+    ).toThrow('Token audience mismatch');
+  });
+
+  it('ignores empty/blank expected audiences', () => {
+    const token = makeJwt({ aud: 'https://mcp.example.com' });
+    expect(() => validateTokenAudience(token, ['', 'https://mcp.example.com'])).not.toThrow();
+  });
+
   it('does not throw when aud is absent (permissive)', () => {
     const token = makeJwt({ sub: 'user' });
     expect(() => validateTokenAudience(token, 'https://mcp.example.com')).not.toThrow();

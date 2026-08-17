@@ -10,8 +10,9 @@ import {
   type IntensityResult,
   type IntensityTier,
 } from '@/lib/task-presentation';
+import { StageChip, deriveStage } from '@/components/StageChip';
+import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
-import { LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
@@ -62,6 +63,18 @@ export interface TaskCardProps {
   taskType?: TaskType | null;
 
   density: 'full' | 'row' | 'inline';
+
+  /**
+   * True when the row is rendered inside a GroupSection — suppresses the
+   * missionTitle subtitle (the section header already carries the identity)
+   * and enables the elbow-rail indentation for blocked tasks.
+   */
+  groupScoped?: boolean;
+  /**
+   * When groupScoped=true, the set of task IDs in the same group.
+   * Used to determine whether the blocker is visible (elbow rail) or off-screen (chip).
+   */
+  groupTaskIds?: ReadonlySet<string>;
 }
 
 // ─── Chain strip ─────────────────────────────────────────────────────────────
@@ -77,61 +90,6 @@ function ChainStrip({ chain }: { chain: ChainPositionResult }) {
         step {chain.index}/{chain.total}
       </span>
     </div>
-  );
-}
-
-// ─── Status pill ─────────────────────────────────────────────────────────────
-
-const STATUS_PILL: Record<string, { label: string; cls: string; pulse?: boolean }> = {
-  running:       { label: 'Running',       cls: 'text-status-running border-status-running',    pulse: true },
-  waiting_input: { label: 'Needs Input',   cls: 'text-status-warning border-status-warning' },
-  completed:     { label: 'Done',          cls: 'text-status-success border-status-success' },
-  failed:        { label: 'Failed',        cls: 'text-status-error border-status-error' },
-  cancelled:     { label: 'Cancelled',     cls: 'text-text-muted border-border-default' },
-  pending:       { label: 'Queued',        cls: 'text-text-muted border-border-default' },
-  assigned:      { label: 'Assigned',      cls: 'text-status-info border-status-info' },
-};
-
-function StatusPill({
-  displayStatus,
-  startAt,
-  loopIteration,
-  loopState,
-  loopMaxLoops,
-}: {
-  displayStatus: string;
-  startAt?: string | null;
-  loopIteration?: number | null;
-  loopState?: LoopState | null;
-  loopMaxLoops?: number | null;
-}) {
-  if (loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted') {
-    return (
-      <LoopStatusChip
-        loopIteration={loopIteration ?? 0}
-        maxLoops={loopMaxLoops}
-        loopState={loopState ?? null}
-        startAt={startAt}
-      />
-    );
-  }
-  if (displayStatus === 'pending' && startAt && new Date(startAt).getTime() > Date.now()) {
-    return (
-      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border text-status-info border-status-info shrink-0">
-        Starts {new Date(startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-      </span>
-    );
-  }
-  const config = STATUS_PILL[displayStatus] ?? { label: displayStatus, cls: 'text-text-muted border-border-default' };
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border ${config.cls} shrink-0`}
-    >
-      {config.pulse && (
-        <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />
-      )}
-      {config.label}
-    </span>
   );
 }
 
@@ -246,10 +204,24 @@ export function TaskCard({
   currentAction,
   taskType,
   density,
+  groupScoped = false,
+  groupTaskIds,
 }: TaskCardProps) {
   const now = useNow();
   const displayStatus = deriveDisplayStatus(taskStatus, workerStatus);
   const stale = isStaleWorker(workerStatus, workerUpdatedAt, now);
+
+  const isBlocked = (chain?.blockedBy?.length ?? 0) > 0;
+  const stage = deriveStage({
+    taskStatus,
+    workerStatus,
+    prUrl,
+    prLifecycleStatus,
+    isBlocked,
+  });
+  // Blocker is visible in same group when groupScoped and all blockers are in groupTaskIds
+  const blockerVisible = groupScoped && isBlocked && !!groupTaskIds &&
+    (chain?.blockedBy ?? []).every(b => groupTaskIds.has(b.id));
 
   const timestampLabel = deriveTimestampLabel({
     taskStatus,
@@ -306,7 +278,7 @@ export function TaskCard({
         {/* T3 — chip only for active non-default states */}
         {showChip && (
           <div className="pointer-events-none shrink-0">
-            <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+            <StageChip stage={stage} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
           </div>
         )}
 
@@ -364,34 +336,31 @@ export function TaskCard({
             <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
           </div>
 
-          {/* T1 — mission + workspace */}
-          {(missionTitle || workspaceName) && (
+          {/* T1 — mission + workspace (suppressed inside GroupSection) */}
+          {(!groupScoped && (missionTitle || workspaceName)) && (
             <div className="text-[11px] text-text-muted mt-0.5 truncate">
               {missionTitle && <span>{missionTitle}</span>}
               {missionTitle && workspaceName && <span className="mx-1">·</span>}
               {workspaceName && <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>}
             </div>
           )}
-
-          {/* T2 — blocked-by text */}
-          {chain && chain.blockedBy.length > 0 && (
-            <div className="text-[10px] text-status-warning mt-0.5">
-              {'← blocked on '}
-              {chain.blockedBy.map((b, i) => (
-                <span key={b.id}>
-                  {i > 0 && ', '}
-                  {b.prNumber ? `#${b.prNumber}` : b.title}
-                  {b.prUrl ? ' (open)' : ''}
-                </span>
-              ))}
+          {/* workspace only when inside group (missionTitle suppressed) */}
+          {groupScoped && workspaceName && (
+            <div className="text-[11px] text-text-muted mt-0.5 truncate">
+              <span className="font-mono uppercase tracking-wide text-[9px]">{workspaceName}</span>
             </div>
+          )}
+
+          {/* T2 — DependencyRail (replaces prose blocked-on div) */}
+          {chain && chain.blockedBy.length > 0 && (
+            <DependencyRail blockedBy={chain.blockedBy} blockerVisible={blockerVisible} />
           )}
 
         </div>
 
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
-          <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+          <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
 
           {/* T3 — elapsed */}
           <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
@@ -441,7 +410,7 @@ export function TaskCard({
           {taskType && <TaskTypeBadge type={taskType} />}
           <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
         </div>
-        <StatusPill displayStatus={displayStatus} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+        <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
       </div>
 
       {/* T1 — mission + workspace (second row) */}
@@ -462,16 +431,7 @@ export function TaskCard({
         <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 mb-1.5 pointer-events-none">
           <ChainStrip chain={chain} />
           {chain.blockedBy.length > 0 && (
-            <span className="text-[10px] text-status-warning truncate">
-              {'← blocked on '}
-              {chain.blockedBy.map((b, i) => (
-                <span key={b.id}>
-                  {i > 0 && ', '}
-                  {b.prNumber ? `#${b.prNumber}` : b.title}
-                  {b.prUrl ? ' (open)' : ''}
-                </span>
-              ))}
-            </span>
+            <DependencyRail blockedBy={chain.blockedBy} blockerVisible={blockerVisible} />
           )}
           {chain.unblocks > 0 && chain.blockedBy.length === 0 && (
             <span className="text-[10px] text-text-muted">

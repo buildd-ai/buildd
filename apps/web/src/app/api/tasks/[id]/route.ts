@@ -302,6 +302,16 @@ export async function PATCH(
       }
     }
 
+    // When a task transitions to a non-terminal status (un-cancel, re-open, or new
+    // missionId link), reopen the mission if it's currently completed. Idempotent.
+    const isNowOpen = status !== undefined && !['completed', 'failed', 'cancelled'].includes(status as string);
+    const missionLinkAdded = missionId !== undefined && updated?.missionId && updated.missionId !== task.missionId;
+    if (updated?.missionId && (isNowOpen || missionLinkAdded)) {
+      import('@/lib/mission-loop').then(m => m.reopenCompletedMission(updated.missionId!)).catch((err) =>
+        console.error('[task-patch] mission reopen check failed:', err)
+      );
+    }
+
     return NextResponse.json(updated);
   } catch (error) {
     console.error('Update task error:', error);

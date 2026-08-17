@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives, tasks } from '@buildd/core/db/schema';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -12,6 +12,7 @@ import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { MissionGrid } from './MissionGrid';
+import { loadInitiativeEffort, derivePendingCounts, noPendingCounts, zeroEffortWindow } from '@/lib/initiative-pulse';
 import { InitiativeTriage } from './InitiativeTriage';
 import type { InitiativeTriageItem } from './triage-types';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
@@ -148,43 +149,10 @@ export default async function MissionsPage({
     },
   });
 
-  // Effort data for InitiativeTriage sparklines — 14-day token aggregation per initiative (team-scoped).
-  const EFFORT_WINDOW_DAYS = 14;
-  const effortCutoff = new Date(Date.now() - EFFORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const effortRows = await db
-    .select({
-      initiativeId: missions.initiativeId,
-      day: sql<string>`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
-      tokens: sql<number>`SUM(${workers.inputTokens} + ${workers.outputTokens})`,
-      merged: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'completed' AND ${workers.prUrl} IS NOT NULL)`,
-      failed: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} = 'error')`,
-      open: sql<number>`COUNT(*) FILTER (WHERE ${workers.status} NOT IN ('completed', 'error'))`,
-    })
-    .from(workers)
-    .innerJoin(tasks, eq(tasks.id, workers.taskId))
-    .innerJoin(missions, eq(missions.id, tasks.missionId))
-    .where(and(
-      eq(missions.teamId, activeTeamId),
-      sql`COALESCE(${workers.completedAt}, ${workers.updatedAt}) >= ${effortCutoff}`,
-    ))
-    .groupBy(
-      missions.initiativeId,
-      sql`DATE(COALESCE(${workers.completedAt}, ${workers.updatedAt}) AT TIME ZONE 'UTC')`,
-    );
-
-  type EffortDayEntry = { date: string; tokens: number; merged: number; failed: number; open: number };
-  const effortByInitiative = new Map<string, EffortDayEntry[]>();
-  for (const row of effortRows) {
-    const key = row.initiativeId ?? '__unassigned__';
-    if (!effortByInitiative.has(key)) effortByInitiative.set(key, []);
-    effortByInitiative.get(key)!.push({
-      date: row.day,
-      tokens: Number(row.tokens),
-      merged: Number(row.merged),
-      failed: Number(row.failed),
-      open: Number(row.open),
-    });
-  }
+  // Effort data for InitiativeTriage sparklines — the shared 14-day aggregation
+  // (lib/initiative-pulse.ts), which every initiative surface reads. Returns a
+  // dense 14-entry window per initiative, anchored on today.
+  const effortByInitiative = await loadInitiativeEffort({ teamId: activeTeamId });
 
   const POLICY_TIER_LABEL: Record<string, string> = {
     'auto-threshold': 'Auto',
@@ -366,7 +334,7 @@ export default async function MissionsPage({
       initiativeName: (obj.initiative as any)?.title || null,
       priority: obj.priority ?? 0,
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
-      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | null,
+      goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null,
       skyline,
       normalizationSlots: 0, // patched below after all missions are computed
     };
@@ -400,41 +368,21 @@ export default async function MissionsPage({
     }
   }
 
-  // Build triage items for InitiativeTriage surface.
-  // awaitingVerification: completed tasks with an open (unmerged, unclosed) PR.
-  const awaitingByInitiative = new Map<string, number>();
-  for (const m of allMissions) {
-    if (!m.initiativeId) continue;
-    let count = 0;
-    for (const t of (m.tasks || []) as any[]) {
-      if (t.status !== 'completed') continue;
-      const hasOpenPR = (t.workers || []).some(
-        (w: any) => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed',
-      );
-      if (hasOpenPR) count++;
-    }
-    awaitingByInitiative.set(m.initiativeId, (awaitingByInitiative.get(m.initiativeId) ?? 0) + count);
-  }
-
-  // blocked (PR-blocked pending tasks), held missions, and shipped-this-week from missionsList.
-  const NOW_MS = Date.now();
-  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-  const blockedByInitiative = new Map<string, number>();
-  const heldByInitiative = new Map<string, number>();
-  const shippedThisWeekByInitiative = new Map<string, number>();
-  for (const m of missionsList) {
-    if (!m.initiativeId) continue;
-    blockedByInitiative.set(m.initiativeId, (blockedByInitiative.get(m.initiativeId) ?? 0) + m.blockedPRCount);
-    if (m.isHeld) {
-      heldByInitiative.set(m.initiativeId, (heldByInitiative.get(m.initiativeId) ?? 0) + 1);
-    }
-    if (m.health === 'shipped' && m.lastActivityAt) {
-      const age = NOW_MS - new Date(m.lastActivityAt).getTime();
-      if (age <= SEVEN_DAYS_MS) {
-        shippedThisWeekByInitiative.set(m.initiativeId, (shippedThisWeekByInitiative.get(m.initiativeId) ?? 0) + 1);
-      }
-    }
-  }
+  // Pending-action counts per initiative — one shared derivation
+  // (lib/initiative-pulse.ts) over rows already in memory, no extra query.
+  // `awaitingVerification` needs each task's workers, which only `allMissions`
+  // carries; the other three come from the derived mission rows.
+  const workersByMissionId = new Map(allMissions.map((m) => [m.id, m.tasks || []]));
+  const pendingByInitiative = derivePendingCounts(
+    missionsList.map((m) => ({
+      initiativeId: m.initiativeId,
+      isHeld: m.isHeld,
+      health: m.health,
+      lastActivityAt: m.lastActivityAt,
+      blockedPRCount: m.blockedPRCount,
+      tasks: workersByMissionId.get(m.id) as any,
+    })),
+  );
 
   // Use teamInitiatives for accurate progress (all missions, no 50-mission cap).
   const triageItems: InitiativeTriageItem[] = teamInitiatives.map((init) => {
@@ -443,15 +391,16 @@ export default async function MissionsPage({
       return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
     });
     const rollup = computeInitiativeProgress(children);
+    const pending = pendingByInitiative.get(init.id) ?? noPendingCounts();
     return {
       id: init.id,
       title: init.title,
       progress: rollup.progress,
-      effortDays: effortByInitiative.get(init.id) ?? [],
-      awaitingVerification: awaitingByInitiative.get(init.id) ?? 0,
-      blocked: blockedByInitiative.get(init.id) ?? 0,
-      held: heldByInitiative.get(init.id) ?? 0,
-      shippedThisWeek: shippedThisWeekByInitiative.get(init.id) ?? 0,
+      effortDays: effortByInitiative.get(init.id) ?? zeroEffortWindow(),
+      awaitingVerification: pending.awaitingVerification,
+      blocked: pending.blocked,
+      held: pending.held,
+      shippedThisWeek: pending.shippedThisWeek,
     };
   });
 

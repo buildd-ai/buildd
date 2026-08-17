@@ -115,9 +115,19 @@ export async function GET(req: NextRequest) {
     return errorRedirect(req, 'token_exchange_failed');
   }
 
-  // Validate audience — connector URL is the resource URL
+  // Validate audience. The AS binds `aud` to the canonical resource identifier
+  // the resource server advertises (RFC 9728 `resource`), which is not always
+  // the endpoint URL stored on the connector — a server can front several MCP
+  // endpoints under one resource. Accept either.
+  const prMetadata = meta?.['protectedResource'] as Record<string, unknown> | undefined;
+  const declaredResource = prMetadata?.['resource'];
+  const expectedAudiences = [
+    typeof declaredResource === 'string' ? declaredResource : '',
+    connector.url,
+  ];
+
   try {
-    validateTokenAudience(tokenResponse.access_token, connector.url);
+    validateTokenAudience(tokenResponse.access_token, expectedAudiences);
   } catch (err) {
     console.error('[connectors/callback] Audience validation failed:', err);
     return errorRedirect(req, 'invalid_token_audience');

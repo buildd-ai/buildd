@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveTaskType } from '@buildd/core/mission-helpers';
-import { MissionProgress } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
@@ -279,13 +279,25 @@ export default async function MissionDetailPage({
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
   // Raw count for "View all N tasks" links — includes housekeeping and cancelled,
-  // but excludes attempt tasks (parentTaskId IS NOT NULL) since they nest under parents.
-  const allTasksCount = (mission.tasks || []).filter(t => !t.parentTaskId).length;
+  // but excludes attempt tasks (CI retries, reviewer runs) since they nest under parents.
+  // Spawned builder tasks (mode='execution') have parentTaskId but ARE distinct deliverables
+  // and must be counted — deriveTaskType returns null for them.
+  const allTasksCount = (mission.tasks || []).filter(
+    t => deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }) === null,
+  ).length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
   // Completed missions always show 100% regardless of individual task outcomes.
   const progress = mission.status === 'completed' ? 100 : progressPct;
+  // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
+  // filter is still overcollapsing or the PR counter is double-counting.
+  if (process.env.NODE_ENV === 'development' && totalTasks > 0) {
+    const prCount = (mission.tasks ?? []).flatMap(t => (t.workers as any[] ?? [])).filter(w => w.prUrl).length;
+    if (prCount > totalTasks) {
+      console.error(`[mission-invariant] mission ${id}: PRS (${prCount}) > TASKS (${totalTasks}) — check attempt-filter logic in computeMissionProgress.`);
+    }
+  }
 
   const activeAgents = mission.tasks
     ?.flatMap((t) => t.workers || [])
@@ -502,7 +514,7 @@ export default async function MissionDetailPage({
       roleColor: role?.color ?? '#8A8478',
       chain: chainByTaskId.get(task.id) ?? null,
       latestWorker: condensedTask.workers[0] ?? null,
-      taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId }),
+      taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
       reviewerNote: reviewerNote
         ? {
             type: reviewerNote.type,
@@ -644,7 +656,7 @@ export default async function MissionDetailPage({
                 {progress}%
               </span>
             </div>
-            <MissionProgress missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
+            <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
             {/* BT-13: 'awaiting merge' count in progress display */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
               {mission.status === 'completed'

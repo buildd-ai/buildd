@@ -4,7 +4,8 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
-import { MissionBadges, MissionProgress } from '@/components/MissionProgress';
+import { MissionBadges } from '@/components/MissionProgress';
+import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { initiativeStatusChip } from '@/lib/initiative-presentation';
@@ -104,7 +105,7 @@ export interface MissionItem {
   initiativeName: string | null;
   priority: number;
   goalCriteriaCount: number;
-  goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | null;
+  goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null;
   skyline: MissionSkylineData | null;
   normalizationSlots: number;
 }
@@ -547,7 +548,7 @@ function FilterTabBar({
 }
 
 /* ── Verification pill — compact indicator for goal criteria state ── */
-function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | null }) {
+function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null }) {
   if (criteriaCount === 0) return null;
   if (overall === 'pass') {
     return (
@@ -560,6 +561,13 @@ function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; o
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-error/40 text-status-error font-mono text-[10px] rounded-sm" title="Goal criteria not met">
         ✗ Not met
+      </span>
+    );
+  }
+  if (overall === 'NOT_EVALUATED') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted/60 font-mono text-[10px] rounded-sm" title="Criteria set — no evaluator available">
+        – No evaluator
       </span>
     );
   }
@@ -693,7 +701,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
         </div>
-        {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
+        {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
           {mission.role && (
@@ -853,7 +861,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             <MissionSkylineChart skyline={mission.skyline} normalizationSlots={mission.normalizationSlots} />
           </div>
         ) : mission.totalTasks > 0 ? (
-          <div className="mt-2"><MissionProgress missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
+          <div className="mt-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
           {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (

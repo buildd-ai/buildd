@@ -132,13 +132,24 @@ describe('evaluateGoalCriteria — all_prs_merged', () => {
     expect(state.criteria[0].verdict).toBe('pass');
   });
 
-  it('returns UNVERIFIED when branch deleted status is unknown (requireBranchDeleted=true default)', () => {
+  it('passes when all PRs merged and requireBranchDeleted not set (default false)', () => {
     const workers = [
       { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x' },
     ];
     const criterion: GoalCriterion = { type: 'all_prs_merged' };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
-    // branchDeleted is undefined → UNVERIFIED
+    // branchDeleted is undefined but requireBranchDeleted defaults to false — pass on mergedAt alone
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.overall).toBe('pass');
+  });
+
+  it('returns UNVERIFIED when branch deleted status is unknown and requireBranchDeleted=true', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x' },
+    ];
+    const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    // branchDeleted is undefined → UNVERIFIED (explicitly required branch deletion)
     expect(state.criteria[0].verdict).toBe('UNVERIFIED');
     expect(state.overall).toBe('UNVERIFIED');
   });
@@ -183,11 +194,12 @@ describe('evaluateGoalCriteria — metric criterion', () => {
 });
 
 describe('evaluateGoalCriteria — description criterion', () => {
-  it('returns UNVERIFIED pending LLM evaluation', () => {
+  it('returns NOT_EVALUATED awaiting LLM evaluation', () => {
     const criterion: GoalCriterion = { type: 'description', description: 'Scorecard artifact produced covering all retrieval layers' };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx());
-    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
-    expect(state.criteria[0].evidence).toContain('Pending evidence-based evaluation');
+    expect(state.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state.criteria[0].evidence).toContain('Awaiting LLM evaluation');
+    // NOT_EVALUATED does not drag overall down — no evaluated criteria → UNVERIFIED
     expect(state.overall).toBe('UNVERIFIED');
   });
 
@@ -197,15 +209,27 @@ describe('evaluateGoalCriteria — description criterion', () => {
     expect(state.criteria[0].label).toBe('Gaps resolved');
   });
 
-  it('overall=UNVERIFIED when mixed with a passing structural criterion', () => {
+  it('overall=pass when structural criterion passes and description is NOT_EVALUATED', () => {
     const criteria: GoalCriterion[] = [
       { type: 'no_open_tasks' },
       { type: 'description', description: 'BM25 lexical search is functional' },
     ];
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
     expect(state.criteria[0].verdict).toBe('pass');
-    expect(state.criteria[1].verdict).toBe('UNVERIFIED');
-    expect(state.overall).toBe('UNVERIFIED');
+    expect(state.criteria[1].verdict).toBe('NOT_EVALUATED');
+    // NOT_EVALUATED excluded from overall — only no_open_tasks (pass) counts
+    expect(state.overall).toBe('pass');
+  });
+
+  it('overall=fail when structural criterion fails even with description NOT_EVALUATED', () => {
+    const criteria: GoalCriterion[] = [
+      { type: 'artifact_exists', artifactType: 'report' }, // fails (no artifacts)
+      { type: 'description', description: 'BM25 lexical search is functional' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
+    expect(state.criteria[0].verdict).toBe('fail');
+    expect(state.criteria[1].verdict).toBe('NOT_EVALUATED');
+    expect(state.overall).toBe('fail');
   });
 });
 
@@ -237,6 +261,29 @@ describe('evaluateGoalCriteria — overall verdict logic', () => {
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
     expect(state.criteria[0].verdict).toBe('pass');
     expect(state.criteria[1].verdict).toBe('UNVERIFIED');
+    expect(state.overall).toBe('UNVERIFIED');
+  });
+
+  it('overall=pass when all evaluated criteria pass (NOT_EVALUATED excluded)', () => {
+    const criteria: GoalCriterion[] = [
+      { type: 'no_open_tasks' },   // pass
+      { type: 'description', description: 'some free-form check' }, // NOT_EVALUATED
+    ];
+    const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[1].verdict).toBe('NOT_EVALUATED');
+    // NOT_EVALUATED excluded → overall determined by no_open_tasks alone
+    expect(state.overall).toBe('pass');
+  });
+
+  it('overall=UNVERIFIED when all criteria are NOT_EVALUATED', () => {
+    const criteria: GoalCriterion[] = [
+      { type: 'description', description: 'criterion one' },
+      { type: 'description', description: 'criterion two' },
+    ];
+    const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
+    expect(state.criteria.every(c => c.verdict === 'NOT_EVALUATED')).toBe(true);
+    // No evaluated criteria → UNVERIFIED (conservative)
     expect(state.overall).toBe('UNVERIFIED');
   });
 

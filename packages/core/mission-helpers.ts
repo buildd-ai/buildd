@@ -7,24 +7,34 @@ export type { GoalCriterion, GoalCriteriaState, CriterionVerdict, InitiativeKPI,
 export type TaskType = 'retry' | 'review' | 'review-retry';
 
 /**
- * Derive a task's display type from its title prefix and parentTaskId.
- * Recognized prefixes ([CI Retry], [reviewer], [reviewer retry]) are detected
- * regardless of parentTaskId — this covers legacy attempt tasks that predate the
- * parentTaskId column and therefore have parentTaskId IS NULL despite being retries.
- * Falls back to 'retry' for attempt tasks (parentTaskId IS NOT NULL) with an
- * unrecognized or absent prefix. Returns null for plain primary tasks.
+ * Derive a task's display type from its title prefix, parentTaskId, and mode.
+ *
+ * Taxonomy:
+ * - prefix match ([CI Retry], [reviewer], [reviewer retry]) → attempt, regardless of mode
+ * - parentTaskId IS NOT NULL + mode='execution' + no prefix → spawned builder (distinct deliverable) → null
+ * - parentTaskId IS NOT NULL + no prefix + any other mode → legacy/unlabeled retry attempt → 'retry'
+ * - parentTaskId IS NULL → root task → null
+ *
+ * Recognized prefixes are detected regardless of parentTaskId — this covers legacy
+ * attempt tasks that predate the parentTaskId column and therefore have
+ * parentTaskId IS NULL despite being retries.
  */
 export function deriveTaskType(task: {
-  title: string;
+  title?: string | null;
   parentTaskId?: string | null;
+  mode?: string | null;
 }): TaskType | null {
-  // Check recognized prefixes first — applies to both legacy tasks (parentTaskId IS NULL
-  // with an old-style title prefix) and current attempt tasks (parentTaskId IS NOT NULL).
-  if (/^\[reviewer retry/i.test(task.title)) return 'review-retry';
-  if (/^\[reviewer\]/i.test(task.title)) return 'review';
-  if (/^\[(?:CI )?retry/i.test(task.title)) return 'retry';
-  // No recognized prefix: primary tasks stay untyped; attempt tasks fall back to 'retry'.
+  const title = task.title ?? '';
+  // Check recognized prefixes first — these always classify the task as an attempt.
+  if (/^\[reviewer retry/i.test(title)) return 'review-retry';
+  if (/^\[reviewer\]/i.test(title)) return 'review';
+  if (/^\[(?:CI )?retry/i.test(title)) return 'retry';
+  // No recognized prefix.
   if (!task.parentTaskId) return null;
+  // Spawned execution children (created by approve_plan) are distinct units of work.
+  // They must be counted separately, not collapsed under their planning-task parent.
+  if (task.mode === 'execution') return null;
+  // Any other task with parentTaskId is a legacy/unlabeled retry attempt.
   return 'retry';
 }
 
@@ -93,7 +103,7 @@ export function evaluateGoalCriteria(
 
     switch (criterion.type) {
       case 'all_prs_merged': {
-        const requireBranchDeleted = criterion.requireBranchDeleted !== false;
+        const requireBranchDeleted = criterion.requireBranchDeleted === true;
         const deliverableWorkers = context.workers.filter(w => w.prUrl);
         if (deliverableWorkers.length === 0) {
           verdict = 'fail';
@@ -169,11 +179,11 @@ export function evaluateGoalCriteria(
       }
 
       case 'description': {
-        // Free-form criteria require LLM evaluation against mission evidence.
-        // The pure evaluator returns UNVERIFIED; the evaluate route upgrades
-        // verdicts with an LLM call when ANTHROPIC_API_KEY is available.
-        verdict = 'UNVERIFIED';
-        evidence = `Pending evidence-based evaluation: "${criterion.description}"`;
+        // Free-form criteria are evaluated by LLM in the evaluate route.
+        // The pure evaluator marks NOT_EVALUATED so the route can distinguish
+        // "never checked" from UNVERIFIED ("checked, ambiguous evidence").
+        verdict = 'NOT_EVALUATED';
+        evidence = 'Awaiting LLM evaluation';
         break;
       }
 
@@ -196,9 +206,14 @@ export function evaluateGoalCriteria(
     });
   }
 
+  // NOT_EVALUATED criteria (e.g. description types awaiting LLM) are excluded from
+  // the overall verdict so they don't permanently block a passing mission.
+  const evaluated = results.filter(r => r.verdict !== 'NOT_EVALUATED');
   const overall: CriterionVerdict =
-    results.every(r => r.verdict === 'pass') ? 'pass'
-    : results.some(r => r.verdict === 'fail') ? 'fail'
+    results.length === 0 ? 'pass'             // no criteria at all → pass
+    : evaluated.length === 0 ? 'UNVERIFIED'   // all criteria NOT_EVALUATED → ambiguous
+    : evaluated.some(r => r.verdict === 'fail') ? 'fail'
+    : evaluated.every(r => r.verdict === 'pass') ? 'pass'
     : 'UNVERIFIED';
 
   return { evaluatedAt, evaluatedBy: context.evaluatedBy, overall, criteria: results };
@@ -310,9 +325,12 @@ function deriveMissionSegmentState(task: {
  * - Cancelled tasks are excluded from the denominator — they're treated as
  *   "never happened" so duplicate-killing doesn't block 100% completion.
  * - Failed tasks DO count against progress; they represent unfinished intended work.
- * - Attempt tasks (parentTaskId IS NOT NULL, e.g. CI retries) are collapsed into
- *   their parent: the parent's effective status is the best outcome across all
- *   attempts. Attempts do not count as separate deliverables.
+ * - Attempt tasks (deriveTaskType returns non-null) are collapsed into their parent:
+ *   the parent's effective status is the best outcome across all attempts.
+ *   Attempts do not count as separate deliverables.
+ * - Spawned builder tasks (parentTaskId IS NOT NULL AND mode='execution') are NOT
+ *   attempts — they are distinct units of work created by approve_plan and count
+ *   as separate deliverables even though they carry a parentTaskId.
  *
  * When tasks include an `id` and optional `workers`, the return value also
  * contains per-task `segments` for the projected progress bar.
@@ -328,11 +346,13 @@ export function computeMissionProgress(tasks: Array<{
   parentTaskId?: string | null;
   workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null }>;
 }>): { totalTasks: number; completedTasks: number; progress: number; segments: MissionSegment[] } {
-  // Collapse attempt tasks (parentTaskId IS NOT NULL) under their parents so
-  // a CI retry or reviewer run does not inflate the deliverable count.
+  // Collapse attempt tasks under their parents. An attempt is identified by
+  // deriveTaskType returning non-null — this covers CI retries and reviewer runs
+  // while correctly preserving spawned builder tasks (mode='execution') as
+  // separate deliverables even though they carry a parentTaskId.
   const childrenMap = new Map<string, typeof tasks>();
   const rootTasks = tasks.filter(t => {
-    if (t.parentTaskId) {
+    if (t.parentTaskId && deriveTaskType(t) !== null) {
       if (!childrenMap.has(t.parentTaskId)) childrenMap.set(t.parentTaskId, []);
       childrenMap.get(t.parentTaskId)!.push(t);
       return false;

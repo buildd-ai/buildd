@@ -1174,7 +1174,7 @@ export type GoalCriterionType =
   | 'metric'
   | 'description';
 
-export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED';
+export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED';
 
 export type GoalCriterion =
   | {

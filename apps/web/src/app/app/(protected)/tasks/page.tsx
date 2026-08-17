@@ -34,6 +34,7 @@ export default async function TasksPage({
     workspaceName: string;
     prUrl: string | null;
     prNumber: number | null;
+    prLifecycleStatus: string | null;
     summary: string | null;
     hasArtifact: boolean;
     filesChanged: number | null;
@@ -106,6 +107,7 @@ export default async function TasksPage({
               id: true,
               title: true,
               status: true,
+              mode: true,
               category: true,
               createdAt: true,
               updatedAt: true,
@@ -134,6 +136,7 @@ export default async function TasksPage({
                   id: true,
                   title: true,
                   status: true,
+                  mode: true,
                   category: true,
                   createdAt: true,
                   updatedAt: true,
@@ -198,6 +201,24 @@ export default async function TasksPage({
                 updatedAt: w.updatedAt?.toISOString() ?? null,
                 name: w.name,
               });
+            }
+          }
+
+          // Fetch prLifecycleStatus for completed tasks that have a prUrl (to distinguish merged vs open PRs)
+          const completedPrTaskIds = allTasks
+            .filter(t => t.status === 'completed' && (t.result as { prUrl?: string } | null)?.prUrl)
+            .map(t => t.id);
+          const prLifecycleByTaskId = new Map<string, string | null>();
+          if (completedPrTaskIds.length > 0) {
+            const lastWorkers = await db.query.workers.findMany({
+              where: inArray(workers.taskId, completedPrTaskIds),
+              columns: { taskId: true, prLifecycleStatus: true },
+              orderBy: [desc(workers.startedAt)],
+            });
+            for (const w of lastWorkers) {
+              if (w.taskId && !prLifecycleByTaskId.has(w.taskId)) {
+                prLifecycleByTaskId.set(w.taskId, w.prLifecycleStatus ?? null);
+              }
             }
           }
 
@@ -286,6 +307,7 @@ export default async function TasksPage({
               workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
               prUrl: result?.prUrl || null,
               prNumber: result?.prNumber || null,
+              prLifecycleStatus: result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null,
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,
@@ -306,7 +328,7 @@ export default async function TasksPage({
               chain,
               attemptCurrent: typeof ctx.iteration === 'number' ? ctx.iteration + 1 : null,
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
-              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId }),
+              taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }),
               parentTaskId: t.parentTaskId ?? null,
             };
           });

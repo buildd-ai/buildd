@@ -822,6 +822,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Reopen a completed mission when a new open task is added to it.
+    // Fire-and-forget — idempotent; no-op when the mission is not completed.
+    if (task.missionId) {
+      import('@/lib/mission-loop').then(m => m.reopenCompletedMission(task.missionId!)).catch(err =>
+        console.error('[task-create] mission reopen check failed:', err)
+      );
+    }
+
     return NextResponse.json({ ...task, subjectIntakeOutcome: intake.outcome });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
