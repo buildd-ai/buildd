@@ -70,12 +70,6 @@ export type CondensedTimelineProps = {
   missionCompleted: boolean;
   /** Bookkeeping tasks (retry, review, planning) collapsed to footer (§3.6). */
   bookkeepingTasks: BookkeepingTask[];
-  /** Summary default for missions > N_small (§3.5). */
-  defaultView: 'summary' | 'timeline';
-  /** Merged PR count for Summary view roll-up (§3.5). */
-  prsMerged: number;
-  /** Open (not yet merged) PR count for Summary view roll-up (§3.5). */
-  prsOpen: number;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -482,36 +476,21 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
 }
 
 // ─── Summary view — §3.5 ──────────────────────────────────────────────────────
+// Exported so page.tsx can compose MissionProgressBar + WOY band at the tab level.
 
-function SummaryView({
+export function SummaryView({
   groups,
-  segments,
   effectivePolicyTier,
   policyLabel,
-  prsMerged,
-  prsOpen,
 }: {
   groups: CondensedTimelineGroups;
-  segments: MissionSegment[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
-  prsMerged: number;
-  prsOpen: number;
 }) {
   const { waitingOnYou } = groups;
 
   return (
     <div className="space-y-4">
-      {/* PR roll-up */}
-      {(prsMerged > 0 || prsOpen > 0) && (
-        <div className="text-[12px] text-text-muted font-mono">
-          {[
-            prsMerged > 0 ? `${prsMerged} PR${prsMerged !== 1 ? 's' : ''} merged` : null,
-            prsOpen > 0 ? `${prsOpen} open` : null,
-          ].filter(Boolean).join(' · ')}
-        </div>
-      )}
-
       {/* Waiting-on-you band — always visible in Summary (above fold) */}
       {waitingOnYou.length > 0 && (
         <div>
@@ -888,48 +867,12 @@ export default function CondensedTimeline({
   allTasksCount,
   missionCompleted,
   bookkeepingTasks,
-  defaultView,
-  prsMerged,
-  prsOpen,
 }: CondensedTimelineProps) {
-  const [view, setView] = useState<'summary' | 'timeline'>(defaultView);
-
-  const isLarge = defaultView === 'summary';
-
   return (
     <div className="mb-6">
-      {/* Header row: title + optional Summary/Timeline sub-tabs (§3.5) */}
+      {/* Header row */}
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1">
-          {isLarge ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setView('summary')}
-                className={`px-2.5 py-1 rounded text-[12px] font-medium transition-colors ${
-                  view === 'summary'
-                    ? 'bg-surface-3 text-text-primary'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                }`}
-              >
-                Summary
-              </button>
-              <button
-                type="button"
-                onClick={() => setView('timeline')}
-                className={`px-2.5 py-1 rounded text-[12px] font-medium transition-colors ${
-                  view === 'timeline'
-                    ? 'bg-surface-3 text-text-primary'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                }`}
-              >
-                Timeline
-              </button>
-            </>
-          ) : (
-            <h2 className="section-label">Timeline</h2>
-          )}
-        </div>
+        <h2 className="section-label">Timeline</h2>
         {missionCompleted && allTasksCount > 0 && (
           <Link
             href={`/app/tasks?mission=${missionId}`}
@@ -940,31 +883,19 @@ export default function CondensedTimeline({
         )}
       </div>
 
-      {/* Content: Summary or Timeline view */}
-      {view === 'summary' ? (
-        <SummaryView
-          groups={groups}
-          segments={segments}
-          effectivePolicyTier={effectivePolicyTier}
-          policyLabel={policyLabel}
-          prsMerged={prsMerged}
-          prsOpen={prsOpen}
-        />
-      ) : (
-        <TimelineView
-          groups={groups}
-          segments={segments}
-          effectivePolicyTier={effectivePolicyTier}
-          policyLabel={policyLabel}
-          missionId={missionId}
-          allTasksCount={allTasksCount}
-          missionCompleted={missionCompleted}
-          bookkeepingTasks={bookkeepingTasks}
-        />
-      )}
+      <TimelineView
+        groups={groups}
+        segments={segments}
+        effectivePolicyTier={effectivePolicyTier}
+        policyLabel={policyLabel}
+        missionId={missionId}
+        allTasksCount={allTasksCount}
+        missionCompleted={missionCompleted}
+        bookkeepingTasks={bookkeepingTasks}
+      />
 
       {/* View all tasks link for active missions */}
-      {allTasksCount > 0 && !missionCompleted && view === 'timeline' && (
+      {allTasksCount > 0 && !missionCompleted && (
         <div className="mt-4">
           <Link
             href={`/app/tasks?mission=${missionId}`}

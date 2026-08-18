@@ -1,13 +1,14 @@
 /**
  * CondensedTimeline test suite — covers:
  * I-8:  SegmentStrip in collapsed disclosure rows (§3.4)
+ * §3.5: SummaryView exported component (WOY band)
  * §3.6: Bookkeeping footer
  * §3.7: Approved verdict collapses to chip
  * §3.8: Wave-banded done section
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CondensedTimeline from './CondensedTimeline';
+import CondensedTimeline, { SummaryView } from './CondensedTimeline';
 import type { CondensedTimelineProps, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -49,9 +50,6 @@ const baseProps: CondensedTimelineProps = {
   allTasksCount: 0,
   missionCompleted: false,
   bookkeepingTasks: [],
-  defaultView: 'timeline',
-  prsMerged: 0,
-  prsOpen: 0,
 };
 
 // ─── I-8: SegmentStrip in collapsed disclosure rows ───────────────────────────
@@ -167,60 +165,43 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
   });
 });
 
-// ─── §3.5: Density tiers — Summary vs Timeline ───────────────────────────────
+// ─── §3.5: SummaryView export — WOY band ─────────────────────────────────────
 
-describe('CondensedTimeline — §3.5 density tiers', () => {
-  it('renders Summary and Timeline sub-tabs when defaultView=summary', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        defaultView="summary"
-        allTasksCount={10}
-        prsMerged={5}
-        prsOpen={2}
-      />,
-    );
-    expect(html).toContain('Summary');
-    expect(html).toContain('Timeline');
-  });
-
-  it('renders PR roll-up in Summary view', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        defaultView="summary"
-        allTasksCount={10}
-        prsMerged={5}
-        prsOpen={2}
-      />,
-    );
-    expect(html).toContain('5 PRs merged');
-    expect(html).toContain('2 open');
-  });
-
-  it('shows Waiting on you section in Summary view', () => {
+describe('SummaryView — §3.5 exported WOY band', () => {
+  it('shows Waiting on you section when WOY tasks exist', () => {
     const waitingTask = makeTask('w1', { status: 'completed' });
     const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        defaultView="summary"
-        allTasksCount={10}
+      <SummaryView
         groups={{ ...emptyGroups, waitingOnYou: [waitingTask] }}
+        effectivePolicyTier="human"
+        policyLabel="Human Gate"
       />,
     );
     expect(html).toContain('Waiting on you');
     expect(html).toContain('Task w1');
   });
 
-  it('does NOT render Summary/Timeline sub-tabs when defaultView=timeline', () => {
+  it('shows no-actions message when WOY is empty', () => {
+    const html = renderToStaticMarkup(
+      <SummaryView
+        groups={emptyGroups}
+        effectivePolicyTier="human"
+        policyLabel="Human Gate"
+      />,
+    );
+    expect(html).toContain('No actions needed');
+    expect(html).not.toContain('Waiting on you');
+  });
+
+  it('CondensedTimeline always renders in timeline mode (no sub-tab buttons)', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="timeline"
         allTasksCount={3}
       />,
     );
-    // Small mission — no sub-tab buttons, just "Timeline" section label
+    // Timeline mode — only "Timeline" label, no tab toggle buttons
+    expect(html).toContain('Timeline');
     expect(html).not.toContain('bg-surface-3 text-text-primary');
   });
 });

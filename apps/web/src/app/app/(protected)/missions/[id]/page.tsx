@@ -31,6 +31,7 @@ import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
+import { SummaryView } from './CondensedTimeline';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionGoalCriteria from './MissionGoalCriteria';
@@ -567,11 +568,6 @@ export default async function MissionDetailPage({
   const N_SMALL = 8;
   const defaultView = timelineTasks.length > N_SMALL ? 'summary' : 'timeline';
 
-  // PR roll-up counts for Summary view (§3.5)
-  const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
-  const prsMerged = allWorkers.filter(w => w.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged')).length;
-  const prsOpen = allWorkers.filter(w => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'merged' && w.prLifecycleStatus !== 'closed').length;
-
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
     t.workers?.flatMap((w) =>
@@ -879,6 +875,19 @@ export default async function MissionDetailPage({
 
       {/* ── Timeline / Feed Tabs — PRIMARY CONTENT ── */}
       <MissionTabs
+        defaultTab={defaultView}
+        summaryContent={defaultView === 'summary' ? (
+          <div className="space-y-4">
+            {totalTasks > 0 && (
+              <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
+            )}
+            <SummaryView
+              groups={timelineGroups}
+              effectivePolicyTier={effectivePolicy.tier}
+              policyLabel={policyLabel}
+            />
+          </div>
+        ) : undefined}
         timelineContent={(<CondensedTimeline
           groups={timelineGroups}
           segments={segments}
@@ -888,9 +897,6 @@ export default async function MissionDetailPage({
           allTasksCount={allTasksCount}
           missionCompleted={mission.status === 'completed'}
           bookkeepingTasks={bookkeepingTasks}
-          defaultView={defaultView}
-          prsMerged={prsMerged}
-          prsOpen={prsOpen}
         />)}
         feedContent={<MissionFeed missionId={id} />}
       />
