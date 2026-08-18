@@ -1,6 +1,6 @@
 # Change-Intent Announcements
 
-**Status:** implementing  
+**Status:** Implemented — §1–7 deployed (schema, API, anchor injection, conflict detection, migration-slot, stale-branch guard, webhook close). §8 remains explicitly deferred.  
 **Scope:** conflict-surface serialization, stale-branch guard, migration-slot reservation  
 **Priority surfaces:** `packages/core/db/schema.ts`, `packages/core/drizzle/` (migrations), `bun.lock`, role prompt files
 
