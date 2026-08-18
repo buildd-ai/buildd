@@ -891,6 +891,8 @@ export default async function MissionDetailPage({
           defaultView={defaultView}
           prsMerged={prsMerged}
           prsOpen={prsOpen}
+          completedTasks={completedTasks}
+          totalTasks={totalTasks}
         />)}
         feedContent={<MissionFeed missionId={id} />}
       />

@@ -76,6 +76,9 @@ export type CondensedTimelineProps = {
   prsMerged: number;
   /** Open (not yet merged) PR count for Summary view roll-up (§3.5). */
   prsOpen: number;
+  /** Non-cancelled deliverable task counts for Summary MissionProgressBar (§3.5). */
+  completedTasks: number;
+  totalTasks: number;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -490,6 +493,9 @@ function SummaryView({
   policyLabel,
   prsMerged,
   prsOpen,
+  missionId,
+  completedTasks,
+  totalTasks,
 }: {
   groups: CondensedTimelineGroups;
   segments: MissionSegment[];
@@ -497,11 +503,25 @@ function SummaryView({
   policyLabel: string;
   prsMerged: number;
   prsOpen: number;
+  missionId: string;
+  completedTasks: number;
+  totalTasks: number;
 }) {
   const { waitingOnYou } = groups;
 
   return (
     <div className="space-y-4">
+      {/* Progress bar — §3.5 spec: MissionProgressBar density="full" with labels */}
+      {totalTasks > 0 && (
+        <MissionProgressBar
+          density="full"
+          missionId={missionId}
+          segments={segments}
+          completedTasks={completedTasks}
+          totalTasks={totalTasks}
+        />
+      )}
+
       {/* PR roll-up */}
       {(prsMerged > 0 || prsOpen > 0) && (
         <div className="text-[12px] text-text-muted font-mono">
@@ -891,6 +911,8 @@ export default function CondensedTimeline({
   defaultView,
   prsMerged,
   prsOpen,
+  completedTasks,
+  totalTasks,
 }: CondensedTimelineProps) {
   const [view, setView] = useState<'summary' | 'timeline'>(defaultView);
 
@@ -949,6 +971,9 @@ export default function CondensedTimeline({
           policyLabel={policyLabel}
           prsMerged={prsMerged}
           prsOpen={prsOpen}
+          missionId={missionId}
+          completedTasks={completedTasks}
+          totalTasks={totalTasks}
         />
       ) : (
         <TimelineView

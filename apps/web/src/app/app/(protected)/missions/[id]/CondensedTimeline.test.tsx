@@ -52,6 +52,8 @@ const baseProps: CondensedTimelineProps = {
   defaultView: 'timeline',
   prsMerged: 0,
   prsOpen: 0,
+  completedTasks: 0,
+  totalTasks: 0,
 };
 
 // ─── I-8: SegmentStrip in collapsed disclosure rows ───────────────────────────
@@ -222,6 +224,36 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
     );
     // Small mission — no sub-tab buttons, just "Timeline" section label
     expect(html).not.toContain('bg-surface-3 text-text-primary');
+  });
+
+  it('renders MissionProgressBar (SegmentStrip) in Summary view when totalTasks > 0', () => {
+    const seg = makeSeg('t1', 'solid');
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        defaultView="summary"
+        allTasksCount={5}
+        completedTasks={3}
+        totalTasks={5}
+        segments={[seg]}
+      />,
+    );
+    // SegmentStrip from MissionProgressBar density="full" renders a height style
+    expect(html).toContain('3/5');
+  });
+
+  it('does NOT render MissionProgressBar in Summary view when totalTasks=0', () => {
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        defaultView="summary"
+        allTasksCount={0}
+        completedTasks={0}
+        totalTasks={0}
+      />,
+    );
+    // Guard: totalTasks=0 → no progress bar, no completed/total count
+    expect(html).not.toContain('0/0');
   });
 });
 
