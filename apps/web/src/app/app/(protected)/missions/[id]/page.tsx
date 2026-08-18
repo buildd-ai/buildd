@@ -562,8 +562,10 @@ export default async function MissionDetailPage({
   };
 
   // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
+  // Use timelineTasks.length (exactly what renders in the timeline) instead of allTasksCount
+  // (which inflates the count by including planning tasks that don't appear as rows).
   const N_SMALL = 8;
-  const defaultView = allTasksCount > N_SMALL ? 'summary' : 'timeline';
+  const defaultView = timelineTasks.length > N_SMALL ? 'summary' : 'timeline';
 
   // PR roll-up counts for Summary view (§3.5)
   const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);

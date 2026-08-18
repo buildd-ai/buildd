@@ -8,6 +8,7 @@ import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
+import { deriveBandKey } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
@@ -361,33 +362,15 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
   }, [groupBy, nonWaitingTasks]);
 
-  // ─── Time-band groups ──────────────────────────────────────────────────────
+  // ─── Time-band groups — §3.8: shared deriveBandKey (gap-clustered bands) ────
 
   const timeBandGroups = useMemo(() => {
     if (effectiveGroupBy !== 'time') return [];
-    const now = Date.now();
-    const todayStart   = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-    const weekStart    = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
-
-    const bands: { label: string; tasks: GridTask[] }[] = [
-      { label: 'Today',     tasks: [] },
-      { label: 'Yesterday', tasks: [] },
-      { label: 'This week', tasks: [] },
-      { label: 'Older',     tasks: [] },
-    ];
-
-    for (const t of nonWaitingTasks) {
-      const ms = new Date(t.updatedAt).getTime();
-      if (ms >= todayStart.getTime())     bands[0].tasks.push(t);
-      else if (ms >= yesterdayStart.getTime()) bands[1].tasks.push(t);
-      else if (ms >= weekStart.getTime()) bands[2].tasks.push(t);
-      else                                bands[3].tasks.push(t);
-    }
-
-    return bands
-      .filter(b => b.tasks.length > 0)
-      .map(b => ({ ...b, tasks: sortByRecency(b.tasks) }));
+    const withTs = nonWaitingTasks.map(t => ({
+      ...t,
+      completionTs: new Date(t.updatedAt).getTime(),
+    }));
+    return deriveBandKey(withTs, new Date());
   }, [nonWaitingTasks, effectiveGroupBy]);
 
   // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
@@ -786,14 +769,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             </div>
           )}
 
-          {/* Grouped by Time (default) */}
-          {effectiveGroupBy === 'time' && timeBandGroups.map((group) => (
-            <div key={group.label}>
+          {/* Grouped by Time (default) — §3.8: gap-clustered via deriveBandKey */}
+          {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
+            <div key={band.label}>
               <GroupSection
-                title={group.label}
-                taskCount={group.tasks.length}
+                title={band.label}
+                taskCount={band.items.length}
               />
-              {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
+              {band.items.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
             </div>
           ))}
 

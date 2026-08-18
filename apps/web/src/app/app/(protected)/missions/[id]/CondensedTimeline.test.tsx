@@ -307,6 +307,43 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(html).not.toContain('Merging automatically');
   });
 
+  it('suppresses PR status line for approved verdicts (chip is the only affordance)', () => {
+    const approvedWithPr = makeTask('t1-pr', {
+      status: 'completed',
+      latestWorker: {
+        id: 'w1',
+        status: 'completed',
+        prUrl: 'https://github.com/repo/pull/42',
+        prNumber: 42,
+        prLifecycleStatus: 'pr_open',
+        mergedAt: null,
+        completedAt: null,
+        startedAt: null,
+        currentAction: null,
+        branch: 'my-branch',
+        waitingFor: null,
+      },
+      reviewerNote: {
+        type: 'reviewer_approved',
+        title: 'Approved (confidence 0.88)',
+        body: 'LGTM',
+        status: 'active',
+        supersededByPrNumber: null,
+      },
+      reviewerTaskHref: null,
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [approvedWithPr] }}
+        allTasksCount={1}
+      />,
+    );
+    // Chip shows; PR line (#42) should not appear as a separate element
+    expect(html).toContain('✓');
+    expect(html).not.toContain('#42');
+  });
+
   it('renders Changes Requested verdict fully expanded (not collapsed)', () => {
     const changesTask = makeTask('t2', {
       status: 'completed',

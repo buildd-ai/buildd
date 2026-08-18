@@ -8,6 +8,7 @@ import MergeConfirmButton from '@/components/MergeConfirmButton';
 import InlineTaskRetry from './InlineTaskRetry';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
+import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveBandKey } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
@@ -224,7 +225,8 @@ function TaskRow({
     latestWorker.prLifecycleStatus !== 'merged' &&
     !latestWorker.mergedAt &&
     latestWorker.prLifecycleStatus !== 'closed' &&
-    task.reviewerNote?.type !== 'reviewer_escalated';
+    task.reviewerNote?.type !== 'reviewer_escalated' &&
+    task.reviewerNote?.type !== 'reviewer_approved';
 
   return (
     <div className="animate-timeline-enter">
@@ -585,36 +587,40 @@ function WaveBandedDone({
 
         return (
           <div key={band.label}>
-            {isOpen && (
+            {isOpen ? (
               <div className="overflow-hidden">
-                <SectionLabel>{band.label}</SectionLabel>
+                <GroupSection title={band.label} taskCount={band.items.length} />
                 <TaskList
                   tasks={band.items}
                   effectivePolicyTier={effectivePolicyTier}
                   policyLabel={policyLabel}
                 />
+                <button
+                  type="button"
+                  onClick={() => toggleBand(band.label)}
+                  className="flex items-center gap-2 w-full text-left px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors rounded mt-0.5"
+                >
+                  <span className="text-[9px] rotate-90 inline-block">▶</span>
+                  <span>Collapse</span>
+                </button>
               </div>
-            )}
-            <button
-              type="button"
-              onClick={() => toggleBand(band.label)}
-              className="flex items-center gap-2 w-full text-left px-2 py-1.5 mt-0.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
-            >
-              <span
-                className="text-[10px] transition-transform duration-200"
-                style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }}
+            ) : (
+              <button
+                type="button"
+                onClick={() => toggleBand(band.label)}
+                className="flex items-center gap-2 w-full text-left px-2 py-1.5 mt-0.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
               >
-                ▶
-              </span>
-              <span>{band.label}</span>
-              <span className="text-[10px]">· {band.items.length} {band.items.length === 1 ? 'task' : 'tasks'}</span>
-              {prCount > 0 && <span className="text-[10px]">· {prCount} PR{prCount !== 1 ? 's' : ''}</span>}
-              {!isOpen && bandSegs.length > 0 && (
-                <span className="ml-auto flex-shrink-0">
-                  <MissionProgressBar density="mini" segments={bandSegs} maxWidth={80} />
-                </span>
-              )}
-            </button>
+                <span className="text-[10px]">▶</span>
+                <span>{band.label}</span>
+                <span className="text-[10px]">· {band.items.length} {band.items.length === 1 ? 'task' : 'tasks'}</span>
+                {prCount > 0 && <span className="text-[10px]">· {prCount} PR{prCount !== 1 ? 's' : ''}</span>}
+                {bandSegs.length > 0 && (
+                  <span className="ml-auto flex-shrink-0">
+                    <MissionProgressBar density="mini" segments={bandSegs} maxWidth={80} />
+                  </span>
+                )}
+              </button>
+            )}
           </div>
         );
       })}
