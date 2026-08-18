@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos, missions } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull } from 'drizzle-orm';
+import { workers, githubRepos, missions, tasks } from '@buildd/core/db/schema';
+import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -152,6 +152,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const taskContext = worker.task?.context as Record<string, unknown> | null;
+    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
+    const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
+    const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
+
     // Dedup: check if a PR already exists for this head branch
     try {
       const existingPrs = await githubApi(
@@ -184,6 +189,27 @@ export async function POST(req: NextRequest) {
         await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
+        // Stamp retry attempt on the existing PR body so the attempt count is
+        // visible on the PR itself (not just the reviewer task).
+        if (retryIteration > 0) {
+          try {
+            const currentBody: string = prDetail.body ?? existing.body ?? '';
+            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — retry task \`${worker.taskId}\`._`;
+            // Replace an existing attempt line or append a new one.
+            const attemptPattern = /_Attempt \d+\/\d+ — retry task `[^`]+`\._/;
+            const updatedBody = attemptPattern.test(currentBody)
+              ? currentBody.replace(attemptPattern, attemptLine)
+              : `${currentBody}\n\n---\n${attemptLine}`;
+            await githubApi(
+              repo.installation.installationId,
+              `/repos/${repo.fullName}/pulls/${existing.number}`,
+              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: updatedBody }) },
+            );
+          } catch {
+            // Non-fatal — attempt stamp is best-effort
+          }
+        }
+
         return NextResponse.json({
           ok: true,
           pr: {
@@ -199,16 +225,12 @@ export async function POST(req: NextRequest) {
       // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
     }
 
-    const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
-
     // Stamp retry lineage into the PR body when this is a fresh fallback PR
     // (resume branch was gone/diverged and a new branch was opened instead of
     // updating the existing one).  Lets humans disambiguate duplicate-looking
     // PRs in the list without reading the diff.
-    const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const lineageSuffix = retryIteration > 0
-      ? `\n\n---\n_Retry attempt ${retryIteration} — task \`${worker.taskId}\`._`
+      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — retry task \`${worker.taskId}\`. Resume branch was unavailable; new PR opened._`
       : '';
     const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
 
@@ -253,6 +275,18 @@ export async function POST(req: NextRequest) {
 
     await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
+
+    // Guaranteed supersede: when a fallback creates a new PR (resume branch was
+    // unavailable), close any open ancestor PRs so at most one PR is mergeable.
+    // This is platform-enforced — not left to agent initiative.
+    if (retryIteration > 0 && worker.task?.parentTaskId && repo.installation?.installationId) {
+      closeAncestorRetryPrs({
+        parentTaskId: worker.task.parentTaskId,
+        successorPrNumber: prData.number,
+        installationId: repo.installation.installationId,
+        repoFullName: repo.fullName,
+      }).catch(err => console.error('[create_pr] closeAncestorRetryPrs failed (non-fatal):', err));
+    }
 
     // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
     try {
@@ -648,4 +682,76 @@ async function persistMissionPrIfFirst(
     .update(missions)
     .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })
     .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
+}
+
+/**
+ * Close open PRs from ancestor retry tasks when a fallback opens a new PR.
+ *
+ * Walk the parentTaskId chain, collect all ancestor task IDs, find workers
+ * with open PRs on those tasks, and close each via GitHub API with a comment
+ * linking the successor. Best-effort — errors are logged but not fatal.
+ */
+async function closeAncestorRetryPrs(opts: {
+  parentTaskId: string;
+  successorPrNumber: number;
+  installationId: number;
+  repoFullName: string;
+}): Promise<void> {
+  const { parentTaskId, successorPrNumber, installationId, repoFullName } = opts;
+
+  // Walk task ancestry to collect all ancestor task IDs
+  const ancestorTaskIds: string[] = [];
+  const visited = new Set<string>();
+  let taskId: string | null = parentTaskId;
+  while (taskId && !visited.has(taskId)) {
+    visited.add(taskId);
+    ancestorTaskIds.push(taskId);
+    const currentId: string = taskId;
+    const parent = await db.query.tasks.findFirst({
+      where: eq(tasks.id, currentId),
+      columns: { parentTaskId: true },
+    });
+    taskId = parent?.parentTaskId ?? null;
+  }
+
+  if (ancestorTaskIds.length === 0) return;
+
+  // Find workers with open PRs on ancestor tasks
+  const ancestorWorkers = await db.query.workers.findMany({
+    where: and(
+      inArray(workers.taskId, ancestorTaskIds),
+      isNotNull(workers.prNumber),
+    ),
+    columns: { prNumber: true, prUrl: true },
+  });
+
+  const prNumbers = [...new Set(
+    ancestorWorkers
+      .map(w => w.prNumber)
+      .filter((n): n is number => typeof n === 'number' && n !== successorPrNumber),
+  )];
+
+  for (const prNumber of prNumbers) {
+    try {
+      // Post supersession comment
+      const comment =
+        `This pull request has been superseded by #${successorPrNumber} ` +
+        `(resume branch was unavailable; new attempt opened a fresh PR). ` +
+        `Closing to prevent accidental merge of a rejected attempt.`;
+      await githubApi(installationId, `/repos/${repoFullName}/issues/${prNumber}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: comment }),
+      });
+      // Close the PR
+      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'closed' }),
+      });
+      console.log(`[create_pr] Closed ancestor retry PR #${prNumber} superseded by #${successorPrNumber}`);
+    } catch (err) {
+      console.error(`[create_pr] Failed to close ancestor PR #${prNumber}:`, err);
+    }
+  }
 }
