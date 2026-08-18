@@ -145,3 +145,72 @@ export function groupTimelineTasks<T extends CondensedTask>(
 export function gateChipCollapsed(mergedAt: string | null | undefined): boolean {
   return !!mergedAt;
 }
+
+// ─── Wave banding — §3.8 ─────────────────────────────────────────────────────
+
+export type BandedGroup<T> = {
+  label: string;
+  items: T[];
+};
+
+/** Derive a human-readable time-band label for a UTC timestamp relative to now. */
+export function deriveBandLabel(ts: number, now: Date): string {
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - 7);
+
+  if (ts >= todayStart.getTime()) return 'Today';
+  if (ts >= yesterdayStart.getTime()) return 'Yesterday';
+  if (ts >= weekStart.getTime()) return new Date(ts).toLocaleDateString('en-US', { weekday: 'long' });
+
+  const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+  if (ts >= yearStart) return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/**
+ * Gap-cluster items by completionTs into wave bands for §3.8.
+ *
+ * Items are sorted ascending by completionTs; any gap ≥ 4 h opens a new band.
+ * The band label derives from the first item's timestamp relative to now.
+ * Duplicate labels (e.g. two "Yesterday" bands) get ordinal suffixes.
+ * Bands are returned newest-first for display.
+ */
+export function deriveBandKey<T extends { id: string; completionTs: number }>(
+  items: T[],
+  now: Date,
+): BandedGroup<T>[] {
+  if (items.length === 0) return [];
+
+  const sorted = [...items].sort((a, b) => a.completionTs - b.completionTs);
+  const GAP_MS = 4 * 60 * 60 * 1000;
+
+  const rawBands: Array<{ firstTs: number; items: T[] }> = [];
+  let currentBand: { firstTs: number; items: T[] } | null = null;
+  let prevTs = 0;
+
+  for (const item of sorted) {
+    if (!currentBand || item.completionTs - prevTs >= GAP_MS) {
+      currentBand = { firstTs: item.completionTs, items: [] };
+      rawBands.push(currentBand);
+    }
+    currentBand.items.push(item);
+    prevTs = item.completionTs;
+  }
+
+  // Assign labels, appending ordinals for duplicate label strings
+  const labelCounts = new Map<string, number>();
+  const labeled = rawBands.map(band => {
+    const base = deriveBandLabel(band.firstTs, now);
+    const seen = labelCounts.get(base) ?? 0;
+    labelCounts.set(base, seen + 1);
+    const label = seen === 0 ? base : `${base} (${seen + 1})`;
+    return { label, items: [...band.items].reverse() };
+  });
+
+  // Return newest band first
+  return labeled.reverse();
+}
