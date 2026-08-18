@@ -1,7 +1,15 @@
 import { drizzle } from 'drizzle-orm/neon-http';
-import { neon, NeonQueryFunction } from '@neondatabase/serverless';
+import { neon, neonConfig, NeonQueryFunction } from '@neondatabase/serverless';
 import * as schema from './schema';
 import { config } from '../config';
+
+// In Bun-based Next.js dev server, the global fetch gets patched by Next.js's
+// request deduplication layer in ways that break the Neon HTTP driver (response
+// body consumed before the driver reads it → "Unexpected EOF"). Use Bun's native
+// fetch directly to bypass the patch.
+if (typeof (globalThis as any).Bun !== 'undefined') {
+  neonConfig.fetchFunction = (globalThis as any).Bun.fetch;
+}
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
