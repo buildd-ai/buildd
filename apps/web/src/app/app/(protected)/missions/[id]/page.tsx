@@ -18,7 +18,7 @@ import MissionInitiativeSelector, { type InitiativeOption } from './MissionIniti
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import CondensedTimeline from './CondensedTimeline';
-import type { CondensedTimelineGroups, CondensedTimelineTask } from './CondensedTimeline';
+import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
 import { groupTimelineTasks } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker } from '@/lib/condensed-timeline';
 import TaskPanelWrapper from './TaskPanelWrapper';
@@ -418,9 +418,29 @@ export default async function MissionDetailPage({
       reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
     }
   }
-  // Exclude reviewer tasks — they surface as inline verdict chips on the reviewed task.
-  // Attempt tasks (parentTaskId IS NOT NULL) are included and rendered with a type badge.
-  const timelineTasks = allTasks.filter(t => t.category !== 'review');
+
+  // §3.6: Deliverable tasks appear in the timeline; bookkeeping tasks (attempts,
+  // reviewer runs, orchestration planning) collapse to the expandable footer.
+  // Discriminator: deriveTaskType() returns non-null for attempts/review tasks.
+  // Additionally exclude planning tasks (mode='planning') — these are orchestrator
+  // coordination rows (e.g. "Mission: …", "Aggregate results:…") not deliverables.
+  const isBookkeeping = (t: typeof allTasks[0]): boolean =>
+    deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }) !== null ||
+    t.mode === 'planning';
+
+  const timelineTasks = allTasks.filter(t => !isBookkeeping(t));
+
+  // Collect bookkeeping tasks for the expandable footer
+  const bookkeepingTasksRaw = allTasks.filter(t => isBookkeeping(t));
+  const bookkeepingTasks: BookkeepingTask[] = bookkeepingTasksRaw.map(t => {
+    const lw = (t.workers as any[])?.[0];
+    return {
+      id: t.id,
+      title: t.title,
+      taskUpdatedAt: t.updatedAt.toISOString(),
+      latestWorker: lw ? { prUrl: lw.prUrl ?? null, mergedAt: lw.mergedAt ? String(lw.mergedAt) : null } : null,
+    };
+  });
 
   // Compute chain positions for mission tasks
   const chainByTaskId = new Map<string, ChainPositionResult | null>();
@@ -478,12 +498,16 @@ export default async function MissionDetailPage({
 
   // Build CondensedTask objects for the grouping function
   const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => {
-    // Under agent-review policy, human action is only needed when reviewer approved/escalated.
+    // Under agent-review policy: approved, escalated, and request_changes all require
+    // human awareness — place them in Waiting-on-you (§3.7: Changes Requested never buried).
     // Under other policies (auto-threshold, human), any open PR awaits human merge.
     let humanActionPending: boolean;
     if (effectivePolicy.tier === 'agent-review') {
       const note = reviewerNoteMap.get(task.id);
-      humanActionPending = note?.type === 'reviewer_approved' || note?.type === 'reviewer_escalated';
+      humanActionPending =
+        note?.type === 'reviewer_approved' ||
+        note?.type === 'reviewer_escalated' ||
+        note?.type === 'reviewer_request_changes';
     } else {
       humanActionPending = true;
     }
@@ -536,6 +560,15 @@ export default async function MissionDetailPage({
     done: rawGroups.done.map(toTimelineTask),
     failed: rawGroups.failed.map(toTimelineTask),
   };
+
+  // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
+  const N_SMALL = 8;
+  const defaultView = allTasksCount > N_SMALL ? 'summary' : 'timeline';
+
+  // PR roll-up counts for Summary view (§3.5)
+  const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
+  const prsMerged = allWorkers.filter(w => w.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged')).length;
+  const prsOpen = allWorkers.filter(w => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'merged' && w.prLifecycleStatus !== 'closed').length;
 
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
@@ -852,6 +885,10 @@ export default async function MissionDetailPage({
           missionId={id}
           allTasksCount={allTasksCount}
           missionCompleted={mission.status === 'completed'}
+          bookkeepingTasks={bookkeepingTasks}
+          defaultView={defaultView}
+          prsMerged={prsMerged}
+          prsOpen={prsOpen}
         />)}
         feedContent={<MissionFeed missionId={id} />}
       />
