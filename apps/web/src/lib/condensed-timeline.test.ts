@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupTimelineTasks, gateChipCollapsed } from './condensed-timeline';
+import { groupTimelineTasks, gateChipCollapsed, deriveBandKey, deriveBandLabel } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -379,6 +379,103 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
     const groups = groupTimelineTasks([task], new Map([['t1', task]]));
     expect(groups.waitingOnYou.map(t => t.id)).toContain('t1');
     expect(groups.done).toHaveLength(0);
+  });
+});
+
+// ─── deriveBandLabel — §3.8 ──────────────────────────────────────────────────
+
+describe('deriveBandLabel', () => {
+  const now = new Date('2026-08-18T14:00:00Z');
+
+  it('returns Today for a timestamp earlier today', () => {
+    const ts = new Date('2026-08-18T08:00:00Z').getTime();
+    expect(deriveBandLabel(ts, now)).toBe('Today');
+  });
+
+  it('returns Yesterday for yesterday', () => {
+    const ts = new Date('2026-08-17T10:00:00Z').getTime();
+    expect(deriveBandLabel(ts, now)).toBe('Yesterday');
+  });
+
+  it('returns weekday name for within last 7 days', () => {
+    const ts = new Date('2026-08-14T10:00:00Z').getTime(); // Friday
+    const label = deriveBandLabel(ts, now);
+    expect(label).toBe('Friday');
+  });
+
+  it('returns Mon D format for within current year', () => {
+    const ts = new Date('2026-01-05T10:00:00Z').getTime();
+    expect(deriveBandLabel(ts, now)).toBe('Jan 5');
+  });
+
+  it('returns Mon D, Year for prior year', () => {
+    const ts = new Date('2025-03-15T10:00:00Z').getTime();
+    expect(deriveBandLabel(ts, now)).toBe('Mar 15, 2025');
+  });
+});
+
+// ─── deriveBandKey — §3.8 ────────────────────────────────────────────────────
+
+describe('deriveBandKey', () => {
+  const now = new Date('2026-08-18T14:00:00Z');
+  const mk = (id: string, iso: string) => ({ id, completionTs: new Date(iso).getTime() });
+
+  it('returns empty array for empty input', () => {
+    expect(deriveBandKey([], now)).toHaveLength(0);
+  });
+
+  it('returns one band for a single item', () => {
+    const bands = deriveBandKey([mk('t1', '2026-08-18T10:00:00Z')], now);
+    expect(bands).toHaveLength(1);
+    expect(bands[0].label).toBe('Today');
+    expect(bands[0].items.map(i => i.id)).toEqual(['t1']);
+  });
+
+  it('groups two items < 4h apart into the same band', () => {
+    const bands = deriveBandKey([
+      mk('t1', '2026-08-18T08:00:00Z'),
+      mk('t2', '2026-08-18T09:00:00Z'),
+    ], now);
+    expect(bands).toHaveLength(1);
+    expect(bands[0].items).toHaveLength(2);
+  });
+
+  it('splits two items exactly 4h apart into separate bands', () => {
+    const bands = deriveBandKey([
+      mk('t1', '2026-08-17T06:00:00Z'),
+      mk('t2', '2026-08-17T10:00:00Z'),
+    ], now);
+    expect(bands).toHaveLength(2);
+  });
+
+  it('returns bands newest-first', () => {
+    const bands = deriveBandKey([
+      mk('old', '2026-08-16T10:00:00Z'),
+      mk('new', '2026-08-18T10:00:00Z'),
+    ], now);
+    expect(bands[0].label).toBe('Today');
+    expect(bands[1].label).toBe('Sunday');
+  });
+
+  it('within a band items are newest-first', () => {
+    const bands = deriveBandKey([
+      mk('t1', '2026-08-18T08:00:00Z'),
+      mk('t2', '2026-08-18T09:00:00Z'),
+    ], now);
+    expect(bands[0].items[0].id).toBe('t2');
+    expect(bands[0].items[1].id).toBe('t1');
+  });
+
+  it('appends ordinal suffix to duplicate band labels', () => {
+    // Two bands, both "Yesterday", separated by >= 4h
+    const bands = deriveBandKey([
+      mk('t1', '2026-08-17T01:00:00Z'),
+      mk('t2', '2026-08-17T06:00:00Z'),
+    ], now);
+    expect(bands).toHaveLength(2);
+    const labels = bands.map(b => b.label);
+    expect(labels).toContain('Yesterday');
+    expect(labels).toContain('Yesterday (2)');
   });
 });
 
