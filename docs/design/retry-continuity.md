@@ -1,6 +1,8 @@
 # Retry Continuity Design Spec
 
-> **Status:** draft — awaiting approval before implementation begins.
+> **Status:** partially shipped — §§1–5 describe the original design. §8 (added later) documents the
+> `worker.branch` persistence bug found in production (#1714–#1717) and the targeted fix shipped in
+> the same PR. The full §§2–5 design remains in-flight.
 >
 > **Scope:** End-to-end design for preserving prior-attempt git work across all
 > retry paths — auto-requeue, CI retry (`ci-retry.ts`), and reviewer-loop retry
@@ -491,3 +493,73 @@ An integration test simulating two task attempts should verify:
 - **Rollout order:** §2 (failure capture) → §3 (retry propagation) → §4 (runner
   branch selection) → §5 (prompt injection). Each section is independently
   shippable; the continuity benefit accumulates with each addition.
+
+---
+
+## 8. Production Bug Fix — worker.branch Persistence (shipped)
+
+> Observed in production as PRs #1714–#1717: one build task produced four open PRs because each
+> reviewer retry opened a fresh PR instead of pushing to the existing one.
+
+### 8.1 Root Cause
+
+`setupWorktree` in `apps/runner/src/git-operations.ts` (PR #1667) correctly sets
+`actualBranch = resumeCandidate` when the resume branch is valid. However, `updateWorker`
+in `apps/runner/src/buildd.ts` lacked a `branch` field, so this in-memory change was never
+persisted to the DB.
+
+The cascade:
+
+1. Task T1 claims worker W1. DB sets `workers.branch = "buildd/T1-slug"`. PR opens on that branch.
+2. Reviewer gives request-changes. `createReviewerTask` reads `openWorker.branch` from DB
+   (`"buildd/T1-slug"`), stores it as `context.workerBranch`.
+3. Retry task T2 claims worker W2. DB sets `workers.branch = "buildd/T2-slug"`.
+   Runner sees `resumeBranch = "buildd/T1-slug"` in context, correctly uses that branch in-memory.
+   But PATCH body never includes `branch`, so DB still stores `"buildd/T2-slug"`.
+4. Next reviewer cycle reads `openWorker.branch = "buildd/T2-slug"` from DB.
+   `"buildd/T2-slug"` doesn't exist on remote → `fetchBranch` returns `'missing'` → fallback fires
+   → new branch `"buildd/T3-slug"` → new PR → repeat.
+
+### 8.2 Fix
+
+Three files changed:
+
+**`apps/runner/src/buildd.ts`** — added `branch?: string` to `updateWorker` params so the
+runner can report the actual checkout branch.
+
+**`apps/runner/src/workers.ts`** — after `setupWorktree` returns and `setupResult.branch`
+differs from the claim-time `claimedWorker.branch`, calls
+`this.buildd.updateWorker(worker.id, { branch: setupResult.branch })` (fire-and-forget with
+error logging — non-fatal so a network blip doesn't abort the task).
+
+**`apps/web/src/app/api/workers/[id]/route.ts`** — added `branch` to the PATCH body destructure
+and to the `updates` object: `if (typeof branch === 'string' && branch.length > 0) updates.branch = branch`.
+
+### 8.3 Guaranteed PR Supersession (fallback path)
+
+Even with §8.2, if `fetchBranch` returns `'missing'` (e.g. branch was force-pushed or
+deleted), the runner falls back and a new PR opens. To enforce the one-open-PR invariant:
+
+**`apps/web/src/app/api/github/pr/route.ts`** — the `closeAncestorRetryPrs` function walks
+the `parentTaskId` chain when a retry task opens a fallback PR (`retryIteration > 0`). It
+finds all ancestor workers with open `prNumber`s and closes them via GitHub PATCH
+`{ state: 'closed' }`, posting a comment linking the successor PR. Called as a non-blocking
+`.catch()`-guarded promise after the new PR is created.
+
+### 8.4 Attempt Number Stamping
+
+**Dedup path (branch reuse):** When the GitHub API head-branch dedup finds an existing PR
+and `retryIteration > 0`, the handler patches the PR body to replace (or append) an attempt
+line: `_Attempt N/M — retry task \`<taskId>\`._` This makes the attempt number legible in
+the PR without reopening it.
+
+**Fallback path (new PR):** The new PR body includes a lineage suffix:
+`_Attempt N/M — retry task \`<taskId>\`. Resume branch was unavailable; new PR opened._`
+
+### 8.5 Regression Test Coverage
+
+`apps/web/src/app/api/workers/[id]/route.test.ts` — three new tests in the
+`branch field persistence (resume-branch cascade fix)` describe block:
+- Branch is persisted when the runner reports a different checkout branch.
+- Branch is omitted from the DB update when the field is absent from the request body.
+- Branch is omitted from the DB update when the field is an empty string.

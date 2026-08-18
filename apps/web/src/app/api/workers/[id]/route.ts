@@ -267,6 +267,10 @@ export async function PATCH(
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
+    // Actual branch checked out in worktree (may differ from claim-time branch
+    // when setupWorktree honors a resumeBranch). Persisted so reviewer/CI retry
+    // dispatch reads the correct branch from the DB for the next retry's context.
+    branch,
     // Git stats
     lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
     // SDK result metadata
@@ -348,6 +352,8 @@ export async function PATCH(
       }
     }
   }
+  // Branch: persist actual checkout branch when resume branch was used
+  if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;

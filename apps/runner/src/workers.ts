@@ -1352,6 +1352,11 @@ export class WorkerManager {
         if (setupResult.branch !== claimedWorker.branch) {
           console.log(`[Worker ${worker.id}] Resumed on branch ${setupResult.branch} (task branch: ${claimedWorker.branch})`);
           worker.branch = setupResult.branch;
+          // Persist so reviewer/CI retry dispatch reads the correct branch from
+          // the DB when building the next retry's resumeBranch context.
+          this.buildd.updateWorker(worker.id, { branch: setupResult.branch }).catch(err =>
+            console.error(`[Worker ${worker.id}] Failed to persist resume branch:`, err)
+          );
         }
         // Fallback warning: resume branch was missing/diverged — make it visible
         // rather than silently starting fresh.
