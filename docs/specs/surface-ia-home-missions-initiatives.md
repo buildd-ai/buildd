@@ -566,14 +566,18 @@ Ordered so that no intermediate commit leaves a surface without its signal:
 
 1. ~~Extract the loader (§6.2); point the inline Missions query and the effort
    route at it.~~ **Done** — `apps/web/src/lib/initiative-pulse.ts` (#1701).
-2. Extend the loader with the verdict inputs — `merges7d`, `attempts7d`,
+2. ~~Extend the loader with the verdict inputs — `merges7d`, `attempts7d`,
    `tokens7d`, `criteriaFail` — and add `deriveVerdict` as a pure function with
    the §6.5 ladder. Nothing renders it yet; the ladder is unit-tested first
-   because every surface below depends on it being total.
-3. Add the verdict-led triage rows to `/app/initiatives` at `84×24`. Triage now
-   exists on both tabs for one commit.
-4. Remove `InitiativeTriage` from `/app/missions`; apply the workspace-header
-   rule (§3.3); delete the dead initiative-grouping path (§3.2).
+   because every surface below depends on it being total.~~ **Done** — #1707,
+   with #1709 threading `mode` into the `attempts7d` classifier.
+3. ~~Add the verdict-led triage rows to `/app/initiatives` at `84×24`.~~
+   **Done** — #1710. The triage components moved out of `missions/` in the same
+   commit rather than living on both tabs for one, because the move is what
+   makes them verdict-shaped; the Missions page therefore already lost its
+   triage mount.
+4. Apply the workspace-header rule (§3.3); delete the dead initiative-grouping
+   path (§3.2).
 5. Replace `InitiativeRail` on Home with the pulse line (§2). Delete
    `InitiativeRail` and its component file once no surface mounts it.
 6. Add the verdict-and-evidence block, the pending-action strip and the large
@@ -591,23 +595,24 @@ swap and MUST NOT be blocked on it.
 - `apps/web/src/app/app/(protected)/home/page.tsx` — Home; currently mounts the
   rail and builds `actionQueue`.
 - `apps/web/src/components/InitiativeRail.tsx` — the rail to be removed (§2.1).
-- `apps/web/src/app/app/(protected)/missions/page.tsx` — Missions; holds the
-  inline effort query and mounts `InitiativeTriage`.
+- `apps/web/src/app/app/(protected)/missions/page.tsx` — Missions; no longer
+  mounts triage or loads effort (#1710).
 - `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` — mission grouping,
   workspace buckets, the dead initiative-group path.
-- `apps/web/src/app/app/(protected)/missions/InitiativeTriage.tsx` — zone
-  partition, dismissal state; moves to the Initiatives list.
-- `apps/web/src/app/app/(protected)/missions/InitiativeTriageRow.tsx` — row
+- `apps/web/src/app/app/(protected)/initiatives/InitiativeTriage.tsx` — zone
+  partition, dismissal state; relocated from `missions/` in #1710.
+- `apps/web/src/app/app/(protected)/initiatives/InitiativeTriageRow.tsx` — row
   anatomy; sparkline mount size lives here.
-- `apps/web/src/app/app/(protected)/missions/triage-types.ts` — `EffortDay`,
-  `InitiativeTriageItem`; superseded by `InitiativePulse`.
+- `apps/web/src/lib/verdict-presentation.ts` — `Verdict`, `Confidence`,
+  `VERDICT_LABEL`, `verdictChip`, `InitiativePulse`,
+  `partitionInitiativeZones`. The client-safe half of §6.5: client components
+  need the labels, and `initiative-pulse.ts` imports the database. Supersedes
+  `missions/triage-types.ts` and its `InitiativeTriageItem`.
 - `apps/web/src/components/SparklineBar.tsx` — presentational sparkline (§6.4).
 - `apps/web/src/app/app/(protected)/initiatives/page.tsx` — Initiatives list; the
-  new triage host.
+  triage host.
 - `apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx` — detail; gains
   the pending-action strip and the large sparkline.
-- `apps/web/src/components/InitiativeCard.tsx` — current list row, folded into
-  the triage row.
 - `apps/web/src/app/api/initiatives/effort/route.ts` — HTTP effort endpoint;
   delegates to the loader.
 - `apps/web/src/lib/initiative-list.ts` — `loadInitiativeList`,
@@ -631,11 +636,12 @@ swap and MUST NOT be blocked on it.
 
 **New files**
 
-- `apps/web/src/lib/initiative-pulse.ts` — `loadInitiativePulse`,
-  `InitiativePulse` (§6.2).
+- ~~`apps/web/src/lib/initiative-pulse.ts`~~ — done (#1701, #1707). The
+  `InitiativePulse` shape itself lives in `verdict-presentation.ts`, so client
+  components can import it without reaching the database.
 - `apps/web/src/components/InitiativePulseLine.tsx` — the Home line (§2).
-- `apps/web/src/app/app/(protected)/initiatives/InitiativeTriage.tsx` — the
-  relocated zone list (moved, not copied).
+- ~~`apps/web/src/app/app/(protected)/initiatives/InitiativeTriage.tsx`~~ — done
+  (#1710); moved, not copied.
 
 **Out of scope**
 

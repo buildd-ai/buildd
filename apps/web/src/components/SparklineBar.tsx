@@ -21,19 +21,23 @@ export function SparklineBar({ days, width = 48, height = 16, className }: Spark
   const H = height;
   const barW = Math.max(2, (width - (SLOTS - 1) * GAP) / SLOTS);
 
-  // Build 14-slot array aligned to the latest date in the input
+  // Slots are positional: the last entry of `days` is the rightmost bar.
+  //
+  // This deliberately does NOT align to the latest date present in the input —
+  // spec §6.4 forbids it. That alignment drew a six-day-old burst at the
+  // right-hand edge, so an initiative that had been silent all week read as busy.
+  // The loader now supplies a dense 14-entry window anchored on today
+  // (`buildEffortWindow`), which is what makes positional slots correct.
+  //
+  // A short input is padded on the left, so the newest entry stays at the edge
+  // and a caller passing fewer than 14 days under-claims rather than shifting
+  // history sideways.
   const slots: (EffortDay | null)[] = Array.from({ length: SLOTS }, () => null);
-
-  if (days.length > 0) {
-    const sorted = [...days].sort((a, b) => a.date.localeCompare(b.date));
-    const dateMap = new Map(sorted.map(d => [d.date, d]));
-    const endDate = new Date(sorted[sorted.length - 1].date + 'T00:00:00Z');
-    for (let i = 0; i < SLOTS; i++) {
-      const d = new Date(endDate);
-      d.setUTCDate(endDate.getUTCDate() - (SLOTS - 1 - i));
-      slots[i] = dateMap.get(d.toISOString().slice(0, 10)) ?? null;
-    }
-  }
+  // Sorted by date so "oldest → newest" holds even for an unordered caller, but
+  // the slot a day lands in comes from its position, never from its date.
+  const recent = [...days].sort((a, b) => a.date.localeCompare(b.date)).slice(-SLOTS);
+  const offset = SLOTS - recent.length;
+  for (let i = 0; i < recent.length; i++) slots[offset + i] = recent[i];
 
   const maxTokens = Math.max(...slots.map(s => s?.tokens ?? 0), 1);
 
