@@ -1,6 +1,6 @@
 # Mobile Decision Flow — Design Spec
 
-**Status:** Proposed — awaiting Max's approval before any implementation begins  
+**Status:** Partially Implemented — I-7, I-8, I-11, I-13–I-16 shipped (condensed timeline default-open hierarchy, SegmentStrip in disclosure rows, gate-chip collapse, density tiers, bookkeeping footer, verdict collapse, wave banding). I-1–I-6, I-9, I-10, I-12 pending (initiative grouping, live-state card collapse, gesture grammar).  
 **Related:**
 - `docs/design/review-gate-ux.md` (Waiting-on-you queue, StatusChip, gate chips, §5.2.1 merge CTA, §8 Activity list)
 - `docs/design/task-subject-anchors.md` §5–6 (prLifecycleStatus, reconciliation sweep, subjectStillLive)
