@@ -743,4 +743,61 @@ describe('computeMissionSkyline', () => {
     );
     expect(result!.reviewTailMin).toBeNull();
   });
+
+  // ── sub-slot sequential worker bug (regression) ───────────────────────────────
+  // Workers shorter than one 15-minute slot all collapse to slot [0,1) in the
+  // quantizer. Before the fix, the sweep-line and greedy packer would see all
+  // three as concurrent, reporting peakConcurrency=3 and peakLanes=3.
+
+  it('3 sequential sub-slot workers: peakConcurrency=1, peakLanes=1', () => {
+    // Mirrors the failing mission: orchestrator, builder, reviewer ran back-to-back
+    // in ~7 minutes total, never overlapping.
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 2)] },   // 0–2 min
+      { workers: [makeWorker(2, 5)] },   // 2–5 min
+      { workers: [makeWorker(5, 7)] },   // 5–7 min
+    ]);
+    expect(result!.peakConcurrency).toBe(1);
+    expect(result!.peakLanes).toBe(1);
+    expect(result!.parallelFactor).toBeCloseTo(1.0, 1);
+  });
+
+  it('3 sequential sub-slot workers produce a single merged render block in lane 0', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 2)] },
+      { workers: [makeWorker(2, 5)] },
+      { workers: [makeWorker(5, 7)] },
+    ]);
+    // All 3 quantize to slot [0,1) in the same lane — should be merged into 1 block
+    const lane0Blocks = result!.blocks.filter((b) => b.lane === 0);
+    expect(lane0Blocks).toHaveLength(1);
+    expect(lane0Blocks[0]).toMatchObject({ lane: 0, startSlot: 0, endSlot: 1 });
+  });
+
+  it('3 genuinely overlapping sub-slot workers: peakConcurrency=3, peakLanes=3', () => {
+    // All three run simultaneously (all start at 0, end at 2 min)
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 2)] },
+      { workers: [makeWorker(0, 2)] },
+      { workers: [makeWorker(0, 2)] },
+    ]);
+    expect(result!.peakConcurrency).toBe(3);
+    expect(result!.peakLanes).toBe(3);
+    // agentTime=6m (3×2m), activeSpan=2m → parallelFactor=3.0
+    expect(result!.parallelFactor).toBeCloseTo(3.0, 1);
+  });
+
+  it('multi-slot overlapping workers: block geometry preserved (render regression)', () => {
+    // Two workers spanning multiple slots, overlapping — geometry should be unchanged
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 30)] },  // slots [0,2)
+      { workers: [makeWorker(15, 45)] }, // slots [1,3)
+    ]);
+    expect(result!.peakLanes).toBe(2);
+    expect(result!.peakConcurrency).toBe(2);
+    const block0 = result!.blocks.find((b) => b.lane === 0);
+    const block1 = result!.blocks.find((b) => b.lane === 1);
+    expect(block0).toMatchObject({ startSlot: 0, endSlot: 2 });
+    expect(block1).toMatchObject({ startSlot: 1, endSlot: 3 });
+  });
 });
