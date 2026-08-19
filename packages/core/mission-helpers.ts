@@ -585,51 +585,96 @@ export function computeMissionSkyline(
   const agentTimeMin = spans.reduce((acc, s) => acc + (s.endMs - s.startMs) / 60_000, 0);
   const totalSlots = Math.max(1, Math.ceil((lastEndMs - missionStartMs) / SKYLINE_SLOT_MS));
 
-  // Convert each span to slot coordinates
-  const slotSpans = spans.map((s) => {
-    const startSlot = Math.floor((s.startMs - missionStartMs) / SKYLINE_SLOT_MS);
-    const rawEnd = Math.ceil((s.endMs - missionStartMs) / SKYLINE_SLOT_MS);
-    const endSlot = Math.max(startSlot + 1, rawEnd); // minimum 1 slot
-    return { startSlot, endSlot, state: s.state };
-  });
+  // ── Lane assignment from raw ms spans ─────────────────────────────────────
+  // Using raw milliseconds (not quantized slots) avoids the sub-slot artifact
+  // where multiple sequential workers all collapse to [0,1) and appear concurrent.
+  // Sort by startMs then endMs for stable greedy packing.
+  const sortedByMs = spans
+    .map((s, i) => ({ ...s, originalIdx: i }))
+    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 
-  // Sort by start, then end (ascending) for stable greedy packing
-  slotSpans.sort((a, b) => a.startSlot - b.startSlot || a.endSlot - b.endSlot);
-
-  // Greedy lane packing
-  const laneEndSlot: number[] = [];
-  const blocks: SkylineBlock[] = [];
-  for (const span of slotSpans) {
-    let lane = laneEndSlot.findIndex((end) => end <= span.startSlot);
+  const laneEndMs: number[] = [];
+  const spanLanes = new Array<number>(spans.length);
+  for (const span of sortedByMs) {
+    // A lane is free when its last occupant ended at or before this span's start.
+    // end <= start means abutting sequential workers go to the same lane (not concurrent).
+    let lane = laneEndMs.findIndex((end) => end <= span.startMs);
     if (lane === -1) {
-      lane = laneEndSlot.length;
-      laneEndSlot.push(0);
+      lane = laneEndMs.length;
+      laneEndMs.push(0);
     }
-    laneEndSlot[lane] = span.endSlot;
-    blocks.push({ lane, startSlot: span.startSlot, endSlot: span.endSlot, state: span.state });
+    laneEndMs[lane] = span.endMs;
+    spanLanes[span.originalIdx] = lane;
   }
 
-  const peakLanes = laneEndSlot.length;
+  const peakLanes = laneEndMs.length;
   const foldedLanes = Math.max(0, peakLanes - SKYLINE_MAX_LANES);
 
-  // Peak concurrency via sweep-line over slot events.
-  // Encode end=slot*2, start=slot*2+1 so end events sort before start events
-  // at the same slot boundary — sequential workers (A ends at slot N, B starts
-  // at slot N) are NOT counted as concurrent.
-  const events: Array<[number, number]> = [];
-  for (const s of slotSpans) {
-    events.push([s.endSlot * 2, -1]); // end before any start at same slot
-    events.push([s.startSlot * 2 + 1, +1]); // start after any end at same slot
+  // ── Peak concurrency via sweep-line over raw ms events ────────────────────
+  // Encode end=ms*2, start=ms*2+1 so end events sort before start events at
+  // equal timestamps — abutting sequential workers (A ends at T, B starts at T)
+  // are NOT counted as concurrent.
+  const msEvents: Array<[number, number]> = [];
+  for (const s of spans) {
+    msEvents.push([s.endMs * 2, -1]);
+    msEvents.push([s.startMs * 2 + 1, +1]);
   }
-  events.sort((a, b) => a[0] - b[0]);
+  msEvents.sort((a, b) => a[0] - b[0]);
   let concurrent = 0;
   let peakConcurrency = 0;
-  for (const [, delta] of events) {
+  for (const [, delta] of msEvents) {
     concurrent += delta;
     if (concurrent > peakConcurrency) peakConcurrency = concurrent;
   }
 
   const parallelFactor = activeSpanMin > 0 ? agentTimeMin / activeSpanMin : 1;
+
+  // Invariant: real concurrency implies parallel factor above 1.0.
+  // A violation means the ms-based and duration-based math have diverged.
+  if (process.env.NODE_ENV !== 'production' && peakConcurrency > 1 && parallelFactor <= 1) {
+    console.error(
+      '[mission-invariant] peakConcurrency=%d but parallelFactor=%f — concurrency and duration math have diverged',
+      peakConcurrency,
+      parallelFactor,
+    );
+  }
+
+  // ── Slot quantization (rendering only) ───────────────────────────────────
+  // Slots drive block geometry; the 1-slot minimum keeps short blocks visible.
+  // Lane comes from the ms-derived assignment above.
+  const slottedSpans = spans.map((s, i) => {
+    const startSlot = Math.floor((s.startMs - missionStartMs) / SKYLINE_SLOT_MS);
+    const rawEnd = Math.ceil((s.endMs - missionStartMs) / SKYLINE_SLOT_MS);
+    const endSlot = Math.max(startSlot + 1, rawEnd);
+    return { startSlot, endSlot, state: s.state, lane: spanLanes[i] };
+  });
+
+  // ── Build blocks, merging overlapping rects within each lane ─────────────
+  // Sequential sub-slot workers share a lane and quantize to the same slot
+  // interval (e.g. all map to [0,1)). Merge strictly-overlapping slot ranges
+  // within each lane so they don't produce stacked render rects.
+  const spansByLane = new Map<number, typeof slottedSpans>();
+  for (const s of slottedSpans) {
+    if (!spansByLane.has(s.lane)) spansByLane.set(s.lane, []);
+    spansByLane.get(s.lane)!.push(s);
+  }
+
+  const blocks: SkylineBlock[] = [];
+  for (const [lane, laneSpans] of spansByLane) {
+    laneSpans.sort((a, b) => a.startSlot - b.startSlot || a.endSlot - b.endSlot);
+    let cur = { lane, startSlot: laneSpans[0].startSlot, endSlot: laneSpans[0].endSlot, state: laneSpans[0].state };
+    for (let i = 1; i < laneSpans.length; i++) {
+      const next = laneSpans[i];
+      if (next.startSlot < cur.endSlot) {
+        // Overlapping slots — merge, taking the last block's state as the most recent outcome
+        cur = { lane, startSlot: cur.startSlot, endSlot: Math.max(cur.endSlot, next.endSlot), state: next.state };
+      } else {
+        blocks.push(cur);
+        cur = { lane, startSlot: next.startSlot, endSlot: next.endSlot, state: next.state };
+      }
+    }
+    blocks.push(cur);
+  }
 
   // Review tail: time from last worker end to mission close (or now)
   const missionEndMs = opts?.missionCompletedAt
