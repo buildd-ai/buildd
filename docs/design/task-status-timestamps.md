@@ -1,6 +1,6 @@
 # Task Status & Timestamp Semantics
 
-> **Status:** Implemented — PR TBD
+> **Status:** Implemented — PR #1184 (Release v0.131.0)
 
 Defines how task status chips and timestamp strings are derived across all surfaces (Activity list rows, task detail page header, mission timeline rows). All logic lives in `apps/web/src/lib/task-timestamps.ts`; callers pass data and never compute display state themselves.
 

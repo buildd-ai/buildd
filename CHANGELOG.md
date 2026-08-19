@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Activity grouping model — StageChip, GroupSection, DependencyRail, MissionProgressBar components (#1699)
+- Initiative verdict derivation — motion ladder + confidence for surface IA (#1707)
+- Auto-dispatch conflict-resolution task when PR has merge conflicts (#1689)
+- Dark-check detection — alert when required CI check consistently skips and bypasses merge gates (#1688)
+- Near-duplicate open task surface in MCP create_task response (#1692)
+- Concurrency cap UX — queue messaging, one-time cap override, raise-limit stepper, MCP exposure (#1675)
+- Task type badge glyph replacing title-prefix convention (#1684)
+- MCP warning when update_task material edit lands on active worker (#1686)
+- Execution attempt nesting — CI retries and reviewer runs nest under parent task in Activity and mission progress (#1674)
+- Change-intent mechanism — pre-flight lock on shared surfaces (schema, migrations, lockfiles) to prevent concurrent PR collisions (#1671)
+- Read-through PR merge-state reconciliation, no cron needed (#1657, #1659, #1664)
+- Mission skyline chart replacing progress bar on completed mission cards (#1660, #1661)
+- Subagent span persistence at worker completion; expose backgroundAgentMs for mission agent-time (#1656)
+- Initiative triage surface refinements (#1654)
 - Initiative triage surface with effort sparklines: SparklineBar component, /api/initiatives/effort endpoint, InitiativeTriageRow and InitiativeTriage components (#1647, #1648, #1649, #1650)
 - Tier-first ModelPicker replacing hardcoded model selects (#1599)
 - LLM-based goalCriteria evaluation — evidence assembly + description type (#1592)
@@ -71,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Initiative effort loader consolidated into single shared path (#1701)
+- Activity IA controls consolidated — single chip row with initiative scope, Group dropdown removed (#1685)
+- Memory recall unified across memory and task corpus; legacy summary corpus cleaned (#1670)
 - Replace InitiativesStrip double-render with InitiativeTriage surface (#1650)
 - Health page signal-first restructure, remove Watched Projects section (#1578)
 - Remove server-side claim-gate refresh; runner is now sole credential refresh origin (#1622)
@@ -78,6 +95,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initiative thrash count: pass task mode to deriveTaskType correctly (#1709)
+- Spawned builder tasks count as deliverables, not attempts (#1706)
+- NOT_EVALUATED verdict for description criteria; fix all_prs_merged default (#1705)
+- Reopen completed mission when open work is added (latch fix) (#1704)
+- Connector token aud validated against declared resource identifier (#1703)
+- computeMissionProgress no longer collapses execution-mode tasks (#1702)
+- Attempt tasks excluded from team role stats and health usage counts (#1695)
+- MCP validates UUID format on taskId parameters (#1694)
+- Activity Re-runs/Reviews chips match legacy attempt tasks (#1693)
+- Mission card status collapsed to one pill; removed redundant progress% and task count (#1691)
+- Dedupe large-payload alert via reportOps; server-side pagination on GET /api/tasks (#1687)
+- Deferral reasons sticky — stale badge, no re-arm, wrong mission grouping all fixed (#1683)
+- Runner writes .credentials.json in the shape Claude Code expects (#1682)
+- Budget reset-time parser honours timezone and stops rollover overshoot (#1681)
+- Task page crash on label-stripped milestones (#1680)
+- Release activeSessions seat on every terminal worker transition (#1678)
+- Replace 30s countdown with optimistic start handshake on task claim (#1677)
+- Retry workers resume existing branch instead of cutting a fresh one (#1667)
+- PR live-refresh: stamp prLastCheckedAt, log errors, cap and dedup concurrent refreshes (#1665)
 - Promote task to completed when heartbeat-expired worker has delivered a PR (#1594)
 - Exclude revoked Codex credentials from fallback candidate check (#1640)
 - Register lease-expiry-guard in vercel.json + await notifyTeam (#1638)
@@ -151,6 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 
+- Surface IA spec — Home, Missions, Initiatives (#1700)
 - Add Missions section to CLAUDE.md
 
 ## [0.36.2] - 2026-03-11

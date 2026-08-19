@@ -13,6 +13,15 @@ const day = (date: string, tokens: number, merged = 0, failed = 0, open = 0): Ef
 
 const countRects = (html: string) => (html.match(/<rect/g) ?? []).length;
 
+/** x coordinate of the first merged-segment rect, used to locate its slot. */
+function successX(html: string): number {
+  const tag = html.match(/<rect[^>]*fill="var\(--status-success\)"[^>]*>/);
+  if (!tag) throw new Error('no merged-segment rect rendered');
+  const x = tag[0].match(/x="([\d.]+)"/);
+  if (!x) throw new Error('merged-segment rect has no x');
+  return Number(x[1]);
+}
+
 describe('SparklineBar', () => {
   it('renders exactly 14 bar slots when given an empty days array', () => {
     const html = renderToStaticMarkup(<SparklineBar days={[]} />);
@@ -129,6 +138,39 @@ describe('SparklineBar', () => {
     expect(countRects(html)).toBeGreaterThan(14);
     const opacityCount = (html.match(/opacity="0\.25"/g) ?? []).length;
     expect(opacityCount).toBe(12);
+  });
+
+  // Spec §6.4: a renderer MUST NOT align its slots to the latest date present.
+  // Aligning drew a six-day-old burst at the right-hand edge, so an initiative
+  // that had been silent all week read as busy.
+  it('places a day at its position in the window, not at the edge nearest its date', () => {
+    const dense: EffortDay[] = Array.from({ length: 14 }, (_, i) => ({
+      date: `2026-08-${String(i + 3).padStart(2, '0')}`,
+      tokens: i === 7 ? 900 : 0,
+      merged: i === 7 ? 3 : 0,
+      failed: 0,
+      open: 0,
+    }));
+
+    const width = 84;
+    const html = renderToStaticMarkup(<SparklineBar days={dense} width={width} height={24} />);
+
+    const barW = Math.max(2, (width - 13) / 14);
+    const slotOf = (x: number) => Math.round(x / (barW + 1));
+
+    expect(slotOf(successX(html))).toBe(7);
+    // Not parked at the right-hand edge, which is where the old code drew it.
+    expect(slotOf(successX(html))).not.toBe(13);
+  });
+
+  it('keeps the newest entry at the right edge when given fewer than 14 days', () => {
+    // Short input pads on the left: a caller supplying 3 days under-claims
+    // history rather than shifting it sideways.
+    const days = [day('2026-08-14', 100, 0, 1, 0), day('2026-08-15', 100), day('2026-08-16', 100, 2, 0, 0)];
+    const html = renderToStaticMarkup(<SparklineBar days={days} width={84} height={24} />);
+
+    const barW = Math.max(2, (84 - 13) / 14);
+    expect(Math.round(successX(html) / (barW + 1))).toBe(13);
   });
 
   it('sorts days by date so oldest renders left (earliest index) and newest renders right', () => {
