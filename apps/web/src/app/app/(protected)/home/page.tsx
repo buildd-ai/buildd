@@ -484,7 +484,7 @@ export default async function HomePage({
         recentActivity = recentWorkers
           .filter((w: any) => {
             const task = w.task;
-            if (task && task.taskClass === 'attempt') return false;
+            if (task && (task.taskClass === 'attempt' || task.taskClass === 'bookkeeping')) return false;
             const key = task?.id || w.id;
             if (seenTasks.has(key)) return false;
             seenTasks.add(key);
