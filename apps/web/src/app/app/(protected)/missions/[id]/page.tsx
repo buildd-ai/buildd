@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveTaskType } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -81,6 +81,10 @@ export default async function MissionDetailPage({
           parentTaskId: true,
           category: true,
           taskClass: true,
+          loopConfig: true,
+          loopState: true,
+          loopIteration: true,
+          startAt: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -162,7 +166,7 @@ export default async function MissionDetailPage({
                   id: true, title: true, status: true, priority: true, createdAt: true,
                   updatedAt: true, result: true, mode: true, roleSlug: true,
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
-                  taskClass: true,
+                  taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -533,6 +537,11 @@ export default async function MissionDetailPage({
       chain: chainByTaskId.get(task.id) ?? null,
       latestWorker: condensedTask.workers[0] ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
+      loopState: task.loopState ?? null,
+      loopMaxLoops: task.loopConfig ? ((task.loopConfig as any).maxLoops ?? 5) : null,
+      loopIteration: task.loopConfig ? task.loopIteration : null,
+      startAt: task.startAt?.toISOString() ?? null,
+      loopExitConditionType: (task.loopConfig as any)?.exitCondition?.type ?? null,
       reviewerNote: reviewerNote
         ? {
             type: reviewerNote.type,
@@ -783,54 +792,89 @@ export default async function MissionDetailPage({
 
         {/* Completion Summary — only for completed missions */}
         {mission.status === 'completed' && (() => {
-          const lastPlanningTask = allTasks
-            .filter(t => t.mode === 'planning' && t.status === 'completed')
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-          const summary = (lastPlanningTask?.result as any)?.summary;
+          // Priority: orchestrator (planning) summaries first, then work tasks.
+          // Within each group, prefer non-reaper completions so the agent's own
+          // retrospective wins over the reaper's artifact extraction.
+          const candidateTasks = allTasks.filter(t => t.status === 'completed' && (t.result as any)?.summary);
+          const planningWithSummary = candidateTasks
+            .filter(t => t.mode === 'planning')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          const workWithSummary = candidateTasks
+            .filter(t => t.mode !== 'planning')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          const bestTask =
+            planningWithSummary.find(t => !(t.result as any)?.reaperAutoCompleted) ??
+            workWithSummary.find(t => !(t.result as any)?.reaperAutoCompleted) ??
+            planningWithSummary[0] ??
+            workWithSummary[0];
+          const summary = (bestTask?.result as any)?.summary as string | undefined;
           if (!summary) return null;
+          const reaperAutoCompleted = (bestTask?.result as any)?.reaperAutoCompleted === true;
           return (
             <div className="card p-4 mt-4 border-l-2 border-status-success/40">
-              <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase mb-2">
-                Completion Summary
-              </h3>
+              <div className="flex items-center gap-2 mb-2">
+                <h3 className="text-[10px] font-semibold tracking-wider text-text-muted uppercase">
+                  Completion Summary
+                </h3>
+                {reaperAutoCompleted && (
+                  <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+                    auto-completed · reaper
+                  </span>
+                )}
+              </div>
               <p className="text-[13px] text-text-secondary leading-relaxed">{summary}</p>
             </div>
           );
         })()}
 
         {/* Stats row — only for completed missions */}
-        {mission.status === 'completed' && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-            {[
-              { label: 'Tasks', value: String(totalTasks) },
-              { label: 'Completed', value: String(completedTasks) },
-              { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
-              { label: 'Duration', value: (() => {
-                // Active span: first worker start → last worker end across all tasks.
-                const allWorkers = allTasks.flatMap((t: any) => t.workers ?? []);
-                const starts = allWorkers.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
-                const ends = allWorkers.map((w: any) => (w.completedAt ?? w.updatedAt) ? new Date((w.completedAt ?? w.updatedAt) as string).getTime() : null).filter(Boolean) as number[];
-                if (starts.length === 0 || ends.length === 0) {
-                  const ms = new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime();
-                  const hours = Math.floor(ms / 3600000);
-                  const minutes = Math.floor((ms % 3600000) / 60000);
-                  if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
-                  return `${hours}h ${minutes}m`;
-                }
-                const spanMs = Math.max(...ends) - Math.min(...starts);
-                const hours = Math.floor(spanMs / 3600000);
-                const minutes = Math.floor((spanMs % 3600000) / 60000);
-                if (hours > 24) { const days = Math.floor(hours / 24); return `${days}d ${hours % 24}h`; }
-                return `${hours}h ${minutes}m`;
-              })() },
-            ].map(stat => (
-              <div key={stat.label} className="card p-3">
-                <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
-                <div className="font-display text-lg text-text-primary mt-1">{stat.value}</div>
+        {mission.status === 'completed' && (() => {
+          function fmtMin(min: number): string {
+            const h = Math.floor(min / 60);
+            const m = Math.round(min % 60);
+            if (h === 0) return `${m}m`;
+            if (m === 0) return `${h}h`;
+            if (h >= 24) { const d = Math.floor(h / 24); return `${d}d ${h % 24}h`; }
+            return `${h}h ${m}m`;
+          }
+          // Reuse the skyline computation from the mission card (do not re-derive).
+          // agentTimeMin = Σ worker wall-clock spans; activeSpanMin = first-start → last-end.
+          const skyline = computeMissionSkyline(allTasks);
+          const agentLabel = skyline ? fmtMin(skyline.agentTimeMin) : null;
+          const wallLabel = skyline ? fmtMin(skyline.activeSpanMin) : (() => {
+            const ws = allTasks.flatMap((t: any) => t.workers ?? []);
+            const starts = ws.map((w: any) => w.startedAt ? new Date(w.startedAt).getTime() : null).filter(Boolean) as number[];
+            const ends = ws.map((w: any) => w.completedAt ? new Date(w.completedAt).getTime() : null).filter(Boolean) as number[];
+            if (starts.length === 0 || ends.length === 0) {
+              return fmtMin((new Date(mission.updatedAt).getTime() - new Date(mission.createdAt).getTime()) / 60_000);
+            }
+            return fmtMin((Math.max(...ends) - Math.min(...starts)) / 60_000);
+          })();
+          // Show wall-clock secondary only when it meaningfully differs from agent time (>1 min gap).
+          const showWall = agentLabel && wallLabel && agentLabel !== wallLabel &&
+            skyline && Math.abs(skyline.activeSpanMin - skyline.agentTimeMin) > 1;
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+              {[
+                { label: 'Tasks', value: String(totalTasks) },
+                { label: 'Completed', value: String(completedTasks) },
+                { label: 'PRs', value: String(allTasks.flatMap(t => t.workers || []).filter(w => w.prUrl).length) },
+              ].map(stat => (
+                <div key={stat.label} className="card p-3">
+                  <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">{stat.label}</div>
+                  <div className="font-display text-lg text-text-primary mt-1">{stat.value}</div>
+                </div>
+              ))}
+              <div className="card p-3">
+                <div className="text-[11px] md:text-[10px] text-text-muted uppercase tracking-wider">Duration</div>
+                <div className="font-display text-lg text-text-primary mt-1">{agentLabel ?? wallLabel ?? '—'}</div>
+                {showWall && (
+                  <div className="text-[10px] text-text-muted mt-0.5 font-mono">{wallLabel} wall</div>
+                )}
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Review outcome summary — shown when mission is ready for human sign-off */}

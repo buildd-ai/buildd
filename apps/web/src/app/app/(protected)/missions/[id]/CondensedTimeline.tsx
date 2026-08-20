@@ -32,6 +32,11 @@ export type CondensedTimelineTask = {
   chain: ChainPositionResult | null;
   latestWorker: CondensedTimelineWorker | null;
   taskType: TaskType | null;
+  loopState?: string | null;
+  loopMaxLoops?: number | null;
+  loopIteration?: number | null;
+  startAt?: string | null;
+  loopExitConditionType?: string | null;
   reviewerNote: {
     type: string;
     title: string;
@@ -260,6 +265,11 @@ function TaskRow({
             chain={task.chain ?? null}
             taskCreatedAt={task.taskCreatedAt}
             taskUpdatedAt={task.taskUpdatedAt}
+            startAt={task.startAt ?? null}
+            loopState={task.loopState as any ?? null}
+            loopMaxLoops={task.loopMaxLoops ?? null}
+            loopIteration={task.loopIteration ?? null}
+            loopExitConditionType={task.loopExitConditionType ?? null}
             workerStartedAt={latestWorker?.startedAt ?? null}
             workerUpdatedAt={null}
             prUrl={latestWorker?.prUrl ?? null}

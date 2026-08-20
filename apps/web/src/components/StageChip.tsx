@@ -96,13 +96,15 @@ export interface StageChipProps {
   loopIteration?: number | null;
   loopState?: LoopState | null;
   loopMaxLoops?: number | null;
+  /** Exit condition type from loopConfig — used to show 'WAITING · MERGE' for pr_merged waits. */
+  loopExitConditionType?: string | null;
 }
 
 /**
  * Canonical stage chip — the only chip implementation for task status.
  * Outlined = has a PR artifact. Filled = pre-PR, active. Muted = terminal.
  */
-export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops }: StageChipProps) {
+export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType }: StageChipProps) {
   // Loop chip overrides stage chip when the loop is in flight
   if (loopMaxLoops && loopState !== 'satisfied' && loopState !== 'exhausted') {
     return (
@@ -111,6 +113,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
         maxLoops={loopMaxLoops}
         loopState={loopState ?? null}
         startAt={startAt}
+        exitConditionType={loopExitConditionType}
       />
     );
   }
