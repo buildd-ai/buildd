@@ -91,9 +91,11 @@ const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
 const mockCheckWorkerDeliverables = mock(() => ({
   hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
 }));
+const mockGetLatestWorkerArtifactWithStructuredOutput = mock(() => Promise.resolve(null));
 mock.module('@/lib/worker-deliverables', () => ({
   checkWorkerDeliverables: mockCheckWorkerDeliverables,
   getWorkerArtifactCount: mockGetWorkerArtifactCount,
+  getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from './stale-workers';
@@ -1196,5 +1198,222 @@ describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
     await cleanupStuckWaitingInput();
 
     expect(mockAccountsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStaleWorkers — pr_merged reaper exemption (B.3)', () => {
+  // Simulates the de0357c2 scenario: worker declares pr_merged wait (condition_unmet),
+  // 15+ minutes of silence, reaper leaves task alone. After expiry ceiling, reaper fails.
+  const PR_MERGED_LOOP_CONFIG = {
+    exitCondition: { type: 'pr_merged' },
+    maxLoops: 6,
+    waitExpiryMinutes: 240,
+  };
+
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue(null);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('leaves a pr_merged condition_unmet task as pending when within the wait window', async () => {
+    // Worker went stale (no update for 15+ min) but task is condition_unmet with pr_merged
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 1, branch: 'buildd/feat', error: null }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+
+    // Task is condition_unmet with pr_merged; updatedAt is 2h ago (within 4h window)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'pending',
+        context: {},
+        category: null,
+        loopConfig: PR_MERGED_LOOP_CONFIG,
+        loopState: 'condition_unmet',
+        updatedAt: twoHoursAgo,
+      })
+      .mockResolvedValueOnce({ parentTaskId: null }); // resolveCompletedTask dep resolution
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdates.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task must NOT be failed or set to pending with a retry — reaper exemption applies
+    expect(taskUpdates.filter(u => u.status === 'failed' || u.status === 'pending')).toHaveLength(0);
+  });
+
+  it('fails a pr_merged condition_unmet task when the wait ceiling is exceeded', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 1, branch: 'buildd/feat', error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+
+    // updatedAt is 5h ago — past the 240-min ceiling
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'pending',
+        context: {},
+        category: null,
+        loopConfig: PR_MERGED_LOOP_CONFIG,
+        loopState: 'condition_unmet',
+        updatedAt: fiveHoursAgo,
+      })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let failedTaskUpdate: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        if (vals.status === 'failed') failedTaskUpdate = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task must be failed after expiry
+    expect(failedTaskUpdate).not.toBeNull();
+    expect(failedTaskUpdate.status).toBe('failed');
+    expect(JSON.stringify(failedTaskUpdate.result)).toContain('PR merge wait expired');
+  });
+
+  it('does not exempt a task with pr_checks_green condition from normal staleness', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: 42, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([]);  // failed workers for cap check
+    mockWorkersFindMany.mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'pending',
+        context: {},
+        category: null,
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 },
+        loopState: 'condition_unmet',
+        updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      })
+      .mockResolvedValueOnce([]) // failed workers
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdates.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // pr_checks_green tasks are NOT exempt — they go through normal stale handling
+    expect(taskUpdates.some(u => u.status === 'pending' || u.status === 'failed')).toBe(true);
+  });
+});
+
+describe('cleanupStaleWorkers — outcome-first summaries (B.5)', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(1);
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue(null);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '1 artifact',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('uses structuredOutput.summary from artifact when present', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {}, category: null, loopConfig: null, loopState: null, updatedAt: new Date() })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const OUTCOME_SUMMARY = 'PR #1721 merged via squash into dev';
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue({
+      metadata: { structuredOutput: { summary: OUTCOME_SUMMARY } },
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result.summary).toBe(OUTCOME_SUMMARY);
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+    expect(taskUpdateSet.result.reaperForensics).toContain('1 artifact');
+  });
+
+  it('falls back to reaper forensics summary when no structuredOutput on artifact', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {}, category: null, loopConfig: null, loopState: null, updatedAt: new Date() })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    // Artifact exists but has no structuredOutput.summary
+    mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue(null);
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result.summary).toContain('stale-worker reaper');
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+    expect(taskUpdateSet.result.reaperForensics).toBeDefined();
   });
 });
