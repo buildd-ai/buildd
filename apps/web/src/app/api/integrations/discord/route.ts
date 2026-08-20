@@ -156,6 +156,7 @@ async function handleSlashCommand(interaction: any) {
         description: `Created from Discord by <@${interaction.member?.user?.id || 'unknown'}> in <#${interaction.channel_id || 'unknown'}>`,
         status: 'pending',
         mode: 'planning',
+        taskClass: 'bookkeeping',
         priority: 0,
         runnerPreference: 'any',
         requiredCapabilities: [],

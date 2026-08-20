@@ -67,6 +67,7 @@ export async function POST(
         title: task.title + ' (revised)',
         description: task.description,
         mode: 'planning',
+        taskClass: 'bookkeeping',
         status: 'pending',
         creationSource: 'api',
         parentTaskId: task.parentTaskId,

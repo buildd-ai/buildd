@@ -185,6 +185,7 @@ export async function handleLinearIssueEvent(
       externalIssueId: event.issueId,
       externalIssueUrl: event.issueUrl,
       creationSource: 'webhook',
+      taskClass: 'work',
     })
     .returning();
 

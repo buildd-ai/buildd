@@ -288,6 +288,7 @@ export async function dispatchConflictRetry(
       missionId: retryTask.missionId,
       context: retryTask.context,
       creationSource: retryTask.creationSource,
+      taskClass: 'attempt',
       conflictRetryPrNumber: retryTask.conflictRetryPrNumber,
       conflictRetryHeadSha: retryTask.conflictRetryHeadSha,
       status: 'pending',
