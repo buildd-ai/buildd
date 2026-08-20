@@ -58,6 +58,7 @@ export default async function TasksPage({
     taskType: TaskType | null;
     parentTaskId: string | null;
     taskClass: string | null;
+    loopExitConditionType: string | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -334,6 +335,7 @@ export default async function TasksPage({
               taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }),
               parentTaskId: t.parentTaskId ?? null,
               taskClass: t.taskClass ?? null,
+              loopExitConditionType: (t.loopConfig as any)?.exitCondition?.type ?? null,
             };
           });
         }

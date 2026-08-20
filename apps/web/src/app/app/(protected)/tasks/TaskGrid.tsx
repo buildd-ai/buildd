@@ -48,6 +48,7 @@ interface GridTask {
   taskType?: TaskType | null;
   taskClass?: string | null;
   parentTaskId?: string | null;
+  loopExitConditionType?: string | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -102,6 +103,7 @@ function renderTaskCard(
         loopIteration={task.loopIteration}
         loopState={task.loopState}
         loopMaxLoops={task.loopMaxLoops}
+        loopExitConditionType={task.loopExitConditionType}
         workerStartedAt={task.workerStartedAt}
         workerUpdatedAt={task.workerUpdatedAt}
         attemptCurrent={task.attemptCurrent}
@@ -132,7 +134,16 @@ function renderTaskWithChildren(
   );
   const hasChildren = children.length > 0;
   const isExpanded = expandedParents.has(task.id);
-  const childLabel = children.length === 1 ? 'attempt' : 'attempts';
+  // Derive attempt label from children's taskType so 'Retry', 'Review', etc. render
+  // instead of the generic 'attempt'. Mixed-type children fall back to 'attempt'.
+  const childTypes = new Set(children.map(c => c.taskType).filter(Boolean));
+  const hasReview = childTypes.has('review') || childTypes.has('review-retry');
+  const hasRetry = childTypes.has('retry');
+  const childLabel = hasReview && !hasRetry
+    ? (children.length === 1 ? 'review' : 'reviews')
+    : hasRetry && !hasReview
+      ? (children.length === 1 ? 'retry' : 'retries')
+      : (children.length === 1 ? 'attempt' : 'attempts');
 
   // Elbow rail indentation for blocked tasks when blocker is in same group
   const isBlocked = (task.chain?.blockedBy?.length ?? 0) > 0;
