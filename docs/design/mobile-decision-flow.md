@@ -408,6 +408,7 @@ Which of §3.5–3.8 apply to each surface, and at which density:
 | `missions/[id]/CondensedTimeline.tsx` | ✓ implements Summary + Timeline views | ✓ footer accumulator replaces row render | ✓ chip replaces body prose for approved verdicts | ✓ done group replaced by banded `GroupSection` list |
 | `home/page.tsx` (Right-now card) | ✗ always top-3 compact; no count gate | ✓ bookkeeping rows excluded (show top 3 non-bookkeeping) | ✓ chip only — compact card has no space for verdict prose | ✗ no history; compact card shows running tasks only |
 | `tasks/TaskGrid.tsx` (Activity) | ✗ Activity is always a flat/grouped list; no summary tier | ✓ bookkeeping rows already excluded via `parentTaskId IS NULL` DB filter; no change needed | ✗ Activity does not render reviewer verdict notes | replaces ad-hoc inline `deriveTimeBandLabel` with shared `deriveBandKey` from condensed-timeline.ts |
+| `home/page.tsx` (ACTIVITY feed) | ✗ fixed 6-row feed, no count gate | ✓ **real change** — feed is derived from workers (last 12 terminal, deduped by task), never filtered by `parentTaskId IS NULL`; `deriveTaskType({ title, parentTaskId, mode })` applied in post-processing; excluded rows are dropped (6-row feed does not warrant an expandable footer) | ✗ feed query does not fetch reviewer verdict notes | ✗ 6-row window is too narrow to span meaningful time bands |
 | `missions/MissionGrid.tsx` | ✗ mission card surface; no timeline | ✗ | ✗ | ✗ |
 | `initiatives/[id]/page.tsx` | ✗ shows mission list, not task timeline | ✗ | ✗ | ✗ |
 
@@ -415,8 +416,11 @@ Which of §3.5–3.8 apply to each surface, and at which density:
 
 - §3.5 does not apply to Home or Activity because neither is a mission detail timeline — they have fixed layouts.
 - §3.6 already satisfied in Activity (`parentTaskId IS NULL` DB filter, per PR #1674). Applying it again would be a no-op.
+- §3.6 on the Home ACTIVITY feed is a real change: this feed is derived from workers, not from a task query with a `parentTaskId IS NULL` guard. Without the fix a reviewer-retry row and its parent both appear in the same 6-slot feed. Excluded rows are simply dropped; the feed is too narrow for an expandable footer.
 - §3.7 does not apply to Activity because `TaskGrid` rows do not render reviewer verdict notes — that data is not fetched for the Activity list query.
+- §3.7 does not apply to the Home ACTIVITY feed for the same reason.
 - §3.8 wave banding replaces (not supplements) `TaskGrid`'s existing time-band grouping, sharing the new helper. Per spec 13551a50 §7: duplicated jobs are the bug.
+- §3.8 does not apply to the Home ACTIVITY feed because a 6-row window rarely spans a 4-hour gap and the feed has no existing band UI to replace.
 
 **Delete-list** — sites that will be superseded by this spec:
 

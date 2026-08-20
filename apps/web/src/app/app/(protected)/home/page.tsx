@@ -19,7 +19,7 @@ import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
-import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveTaskType, crossedMilestone } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { InterruptReviewButton } from './InterruptReviewButton';
@@ -29,7 +29,6 @@ import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
 import { sortInitiatives } from '@/lib/initiative-presentation';
-import { crossedMilestone } from '@buildd/core/mission-helpers';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -468,7 +467,7 @@ export default async function HomePage({
           limit: 12,
           with: {
             task: {
-              columns: { id: true, title: true, missionId: true, roleSlug: true },
+              columns: { id: true, title: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true },
               with: {
                 mission: {
                   columns: { title: true },
@@ -480,11 +479,13 @@ export default async function HomePage({
         });
 
         // One row per task (a retried task can have several terminal workers —
-        // keep only the newest) and cap at 6 for the feed.
+        // keep only the newest), skip bookkeeping rows (§3.6), and cap at 6 for the feed.
         const seenTasks = new Set<string>();
         recentActivity = recentWorkers
           .filter((w: any) => {
-            const key = w.task?.id || w.id;
+            const task = w.task;
+            if (task && deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }) !== null) return false;
+            const key = task?.id || w.id;
             if (seenTasks.has(key)) return false;
             seenTasks.add(key);
             return true;
