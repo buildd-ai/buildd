@@ -510,6 +510,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
         missionId: originalTask.missionId,
         runnerPreference: originalTask.runnerPreference,
         mode: originalTask.mode,
+        taskClass: (originalTask.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,

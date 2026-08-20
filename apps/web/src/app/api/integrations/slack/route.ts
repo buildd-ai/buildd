@@ -82,6 +82,7 @@ export async function POST(req: NextRequest) {
           description: `Created via Slack by @${userName}`,
           status: 'pending',
           mode: 'planning',
+          taskClass: 'bookkeeping',
           creationSource: 'api',
           context: {
             slack: {

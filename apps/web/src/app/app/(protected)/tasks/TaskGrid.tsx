@@ -46,6 +46,7 @@ interface GridTask {
   attemptCurrent?: number | null;
   attemptTotal?: number | null;
   taskType?: TaskType | null;
+  taskClass?: string | null;
   parentTaskId?: string | null;
 }
 
@@ -241,12 +242,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return tasks;
   }, [tasks, missionFilter, initiativeMissionIds]);
 
-  // Split tasks into roots (no parent) and children (retry/reviewer tasks with parentTaskId)
-  const rootTasks = useMemo(() => visibleTasks.filter(t => !t.parentTaskId), [visibleTasks]);
+  // Split tasks: roots are 'work' tasks (genuine deliverables), children are 'attempt' tasks
+  // (CI retries, reviewer runs) that nest under their parent work task.
+  const rootTasks = useMemo(() => visibleTasks.filter(t => t.taskClass === 'work'), [visibleTasks]);
   const childrenByParentId = useMemo(() => {
     const map = new Map<string, GridTask[]>();
     for (const t of visibleTasks) {
-      if (t.parentTaskId) {
+      if (t.taskClass === 'attempt' && t.parentTaskId) {
         const existing = map.get(t.parentTaskId) ?? [];
         existing.push(t);
         map.set(t.parentTaskId, existing);

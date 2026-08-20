@@ -2125,6 +2125,7 @@ async function handleReviewerOutcomeIfNeeded(
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
+          taskClass: 'attempt',
           context: {
             iteration: currentIteration + 1,
             maxIterations,

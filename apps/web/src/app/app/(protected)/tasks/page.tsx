@@ -57,6 +57,7 @@ export default async function TasksPage({
     attemptTotal: number | null;
     taskType: TaskType | null;
     parentTaskId: string | null;
+    taskClass: string | null;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -122,6 +123,7 @@ export default async function TasksPage({
               loopIteration: true,
               loopState: true,
               parentTaskId: true,
+              taskClass: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
@@ -151,6 +153,7 @@ export default async function TasksPage({
                   loopIteration: true,
                   loopState: true,
                   parentTaskId: true,
+                  taskClass: true,
                 },
                 limit: 500,
               })
@@ -330,6 +333,7 @@ export default async function TasksPage({
               attemptTotal: typeof ctx.maxIterations === 'number' ? ctx.maxIterations : null,
               taskType: deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }),
               parentTaskId: t.parentTaskId ?? null,
+              taskClass: t.taskClass ?? null,
             };
           });
         }

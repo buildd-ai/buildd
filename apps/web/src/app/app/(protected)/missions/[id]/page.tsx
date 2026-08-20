@@ -80,6 +80,7 @@ export default async function MissionDetailPage({
           dependsOn: true,
           parentTaskId: true,
           category: true,
+          taskClass: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -161,6 +162,7 @@ export default async function MissionDetailPage({
                   id: true, title: true, status: true, priority: true, createdAt: true,
                   updatedAt: true, result: true, mode: true, roleSlug: true,
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
+                  taskClass: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -278,13 +280,9 @@ export default async function MissionDetailPage({
   };
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
-  // Raw count for "View all N tasks" links — includes housekeeping and cancelled,
+  // Raw count for "View all N tasks" links — includes bookkeeping and cancelled,
   // but excludes attempt tasks (CI retries, reviewer runs) since they nest under parents.
-  // Spawned builder tasks (mode='execution') have parentTaskId but ARE distinct deliverables
-  // and must be counted — deriveTaskType returns null for them.
-  const allTasksCount = (mission.tasks || []).filter(
-    t => deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }) === null,
-  ).length;
+  const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
@@ -421,12 +419,8 @@ export default async function MissionDetailPage({
 
   // §3.6: Deliverable tasks appear in the timeline; bookkeeping tasks (attempts,
   // reviewer runs, orchestration planning) collapse to the expandable footer.
-  // Discriminator: deriveTaskType() returns non-null for attempts/review tasks.
-  // Additionally exclude planning tasks (mode='planning') — these are orchestrator
-  // coordination rows (e.g. "Mission: …", "Aggregate results:…") not deliverables.
-  const isBookkeeping = (t: typeof allTasks[0]): boolean =>
-    deriveTaskType({ title: t.title, parentTaskId: t.parentTaskId, mode: t.mode }) !== null ||
-    t.mode === 'planning';
+  // taskClass='work' → timeline; 'attempt'|'bookkeeping' → housekeeping footer.
+  const isBookkeeping = (t: typeof allTasks[0]): boolean => t.taskClass !== 'work';
 
   const timelineTasks = allTasks.filter(t => !isBookkeeping(t));
 

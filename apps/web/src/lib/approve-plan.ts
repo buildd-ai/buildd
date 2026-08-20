@@ -79,6 +79,7 @@ export async function approvePlan(
         parentTaskId: planningTaskId,
         missionId: task.missionId,
         mode: 'execution',
+        taskClass: 'work',
         creationSource: options?.autoApproved ? 'orchestrator' : 'api',
         status: 'pending',
         priority: step.priority ?? 0,

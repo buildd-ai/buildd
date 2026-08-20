@@ -201,6 +201,7 @@ async function createTaskFromIssue(
         ? { externalIssueId: String(issue.number), externalIssueUrl: issue.html_url }
         : {}),
       status: 'pending',
+      taskClass: 'work',
       context: {
         github: { issueNumber: issue.number, issueId: issue.id, repoFullName: repository.full_name },
       },
@@ -908,6 +909,7 @@ async function handleCheckSuiteFailure(
           missionId: retryTask.missionId,
           context: retryTask.context,
           creationSource: retryTask.creationSource,
+          taskClass: retryTask.taskClass,
           status: 'pending',
           priority: 7, // CI fix is urgent
           ...subjectObservation.taskValues,

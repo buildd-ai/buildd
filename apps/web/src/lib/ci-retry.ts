@@ -40,6 +40,7 @@ export interface CIRetryTask {
   workspaceId: string;
   parentTaskId: string;
   creationSource: 'webhook';
+  taskClass: 'attempt';
   missionId: string | null;
   context: Record<string, unknown>;
 }
@@ -77,6 +78,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
+    taskClass: 'attempt' as const,
     // Inherit missionId so the retry stays attached to the mission loop.
     missionId: originalTask.missionId ?? null,
     context: {
