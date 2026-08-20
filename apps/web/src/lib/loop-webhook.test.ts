@@ -57,7 +57,11 @@ mock.module('@buildd/core/loop-config', () => ({
 }));
 
 mock.module('@/lib/deferred-start', () => ({
-  laterStartAt: (a: Date | null, b: Date | null) => a ?? b,
+  laterStartAt: (a: Date | null | undefined, b: Date | null | undefined): Date | null => {
+    if (!a) return b ?? null;
+    if (!b) return a;
+    return a >= b ? a : b;
+  },
 }));
 
 import { evaluateAndAdvanceLoopOnMerge } from './loop-webhook';
