@@ -137,6 +137,94 @@ describe('evaluateExitCondition — pr_checks_green', () => {
   });
 });
 
+describe('evaluateExitCondition — pr_merged', () => {
+  it('is satisfied when workerMergedAt is non-null', () => {
+    const result = evaluateExitCondition({
+      exitCondition: { type: 'pr_merged' },
+      workerId: 'w1',
+      iteration: 0,
+      verificationEvidence: null,
+      structuredOutput: null,
+      prLifecycleStatus: 'merged',
+      prNumber: 99,
+      workerMergedAt: new Date(),
+    });
+    expect(result.satisfied).toBe(true);
+    expect(result.summary).toContain('99');
+    expect(result.summary).toContain('merged');
+  });
+
+  it('is not satisfied when workerMergedAt is null', () => {
+    const result = evaluateExitCondition({
+      exitCondition: { type: 'pr_merged' },
+      workerId: 'w1',
+      iteration: 0,
+      verificationEvidence: null,
+      structuredOutput: null,
+      prLifecycleStatus: 'ci_green',
+      prNumber: 99,
+      workerMergedAt: null,
+    });
+    expect(result.satisfied).toBe(false);
+    expect(result.summary).toContain('not yet merged');
+  });
+
+  it('is not satisfied when workerMergedAt is undefined', () => {
+    const result = evaluateExitCondition({
+      exitCondition: { type: 'pr_merged' },
+      workerId: 'w1',
+      iteration: 0,
+      verificationEvidence: null,
+      structuredOutput: null,
+      prLifecycleStatus: null,
+      prNumber: null,
+    });
+    expect(result.satisfied).toBe(false);
+  });
+
+  it('dispatchLoopIteration returns satisfied for pr_merged when mergedAt is set', () => {
+    const result = dispatchLoopIteration({
+      loopConfig: { exitCondition: { type: 'pr_merged' }, maxLoops: 6 },
+      currentIteration: 0,
+      existingHistory: [],
+      existingStartAt: null,
+      workerId: 'w1',
+      workerBranch: 'buildd/feature',
+      workerLastCommitSha: 'abc123',
+      verificationEvidence: null,
+      structuredOutput: null,
+      prLifecycleStatus: 'merged',
+      prNumber: 42,
+      workerMergedAt: new Date(),
+    });
+    expect(result.kind).toBe('satisfied');
+    if (result.kind !== 'satisfied') throw new Error('expected satisfied');
+    expect(result.loopIteration).toBe(1);
+    expect(result.loopHistory[0].satisfied).toBe(true);
+    expect(result.loopHistory[0].conditionType).toBe('pr_merged');
+  });
+
+  it('dispatchLoopIteration returns requeue for pr_merged when mergedAt is null', () => {
+    const result = dispatchLoopIteration({
+      loopConfig: { exitCondition: { type: 'pr_merged' }, maxLoops: 6 },
+      currentIteration: 0,
+      existingHistory: [],
+      existingStartAt: null,
+      workerId: 'w1',
+      workerBranch: 'buildd/feature',
+      workerLastCommitSha: 'abc123',
+      verificationEvidence: null,
+      structuredOutput: null,
+      prLifecycleStatus: 'ci_green',
+      prNumber: 42,
+      workerMergedAt: null,
+    });
+    expect(result.kind).toBe('requeue');
+    if (result.kind !== 'requeue') throw new Error('expected requeue');
+    expect(result.loopState).toBe('condition_unmet');
+  });
+});
+
 describe('evaluateExitCondition — structured_predicate', () => {
   it('eq operator: satisfied when values match', () => {
     const result = evaluateExitCondition({

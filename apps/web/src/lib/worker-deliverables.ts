@@ -60,6 +60,35 @@ export function checkWorkerDeliverables(
 }
 
 /**
+ * Fetch the most recent artifact for a worker that has structuredOutput in its metadata.
+ * Returns null when none exists or on DB error.
+ */
+export async function getLatestWorkerArtifactWithStructuredOutput(
+  workerId: string,
+): Promise<{ metadata: Record<string, unknown> } | null> {
+  try {
+    const { db } = await import('@buildd/core/db');
+    const { artifacts } = await import('@buildd/core/db/schema');
+    const { eq, desc } = await import('drizzle-orm');
+    const rows = await db
+      .select({ metadata: artifacts.metadata })
+      .from(artifacts)
+      .where(eq(artifacts.workerId, workerId))
+      .orderBy(desc(artifacts.createdAt))
+      .limit(10);
+    const match = rows.find(r => {
+      const meta = r.metadata as Record<string, unknown> | null | undefined;
+      const so = meta?.structuredOutput;
+      return so && typeof so === 'object' && 'summary' in (so as Record<string, unknown>);
+    });
+    if (!match) return null;
+    return { metadata: (match.metadata as Record<string, unknown>) ?? {} };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Query artifact count for a worker from the database.
  * Non-fatal — returns 0 on error.
  */

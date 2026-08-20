@@ -482,6 +482,8 @@ export interface TaskResult {
   lastQuestion?: string;
   /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
   reaperAutoCompleted?: boolean;
+  /** Reaper audit trail moved here so result.summary carries the outcome, not forensics. See spec B.5. */
+  reaperForensics?: string;
 }
 
 // Per-model token usage from SDK result
