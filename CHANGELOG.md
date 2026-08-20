@@ -95,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Filter bookkeeping rows from ACTIVITY feed via deriveTaskType (#1721)
 - Initiative thrash count: pass task mode to deriveTaskType correctly (#1709)
 - Spawned builder tasks count as deliverables, not attempts (#1706)
 - NOT_EVALUATED verdict for description criteria; fix all_prs_merged default (#1705)
