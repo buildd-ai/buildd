@@ -10,6 +10,9 @@ const mockAllCheckSuitesPassed = mock(() => Promise.resolve(true));
 const mockHasCheckSuites = mock(() => Promise.resolve(false));
 const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'ok' }));
 const mockNotifyMissionPrReady = mock(() => Promise.resolve());
+const mockSyncInstallationReposById = mock(() =>
+  Promise.resolve({ synced: 0, linked: 0, linkedWorkspaceIds: [] as string[] })
+);
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -41,6 +44,10 @@ mock.module('@/lib/github', () => ({
 
 mock.module('@/lib/mission-notifications', () => ({
   notifyMissionPrReady: mockNotifyMissionPrReady,
+}));
+
+mock.module('@/lib/github-repo-link', () => ({
+  syncInstallationReposById: mockSyncInstallationReposById,
 }));
 
 mock.module('@/lib/pushover', () => ({
@@ -334,6 +341,10 @@ function resetAll() {
   mockHasCheckSuites.mockReset();
   mockMergePullRequest.mockReset();
   mockNotifyMissionPrReady.mockReset();
+  mockSyncInstallationReposById.mockReset();
+  mockSyncInstallationReposById.mockReturnValue(
+    Promise.resolve({ synced: 0, linked: 0, linkedWorkspaceIds: [] })
+  );
   mockDispatchNewTask.mockReset();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -418,7 +429,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   // ── Installation events ─────────────────────────────────────────────────
-  it('handles installation created - inserts installation only', async () => {
+  it('handles installation created - upserts the installation', async () => {
     const payload = { action: 'created', installation: makeInstallation() };
     const req = createWebhookRequest('installation', payload);
     const res = await POST(req);
@@ -427,6 +438,42 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls.length).toBe(1);
     expect(insertCalls[0].values.installationId).toBe(12345);
     expect(insertCalls[0].conflict).toBe('update');
+  });
+
+  // Regression: a fresh install used to leave every matching workspace with a
+  // null githubRepoId until someone clicked "Sync" in Settings — and Settings
+  // only lists installations a workspace already points at, so a brand-new
+  // installation was unreachable from the UI. The webhook must back-link.
+  it('handles installation created - back-links workspaces for the new installation', async () => {
+    mockSyncInstallationReposById.mockReturnValue(
+      Promise.resolve({ synced: 3, linked: 1, linkedWorkspaceIds: ['ws-moa-ops'] })
+    );
+    const payload = { action: 'created', installation: makeInstallation() };
+    const res = await POST(createWebhookRequest('installation', payload));
+
+    expect(res.status).toBe(200);
+    expect(mockSyncInstallationReposById).toHaveBeenCalledWith(12345);
+  });
+
+  it('still returns 200 when back-linking a new installation fails', async () => {
+    mockSyncInstallationReposById.mockImplementation(() =>
+      Promise.reject(new Error('GitHub API error: 503'))
+    );
+    const payload = { action: 'created', installation: makeInstallation() };
+    const res = await POST(createWebhookRequest('installation', payload));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+  });
+
+  it('does not back-link on installation deleted / suspend / unsuspend', async () => {
+    for (const action of ['deleted', 'suspend', 'unsuspend']) {
+      const res = await POST(
+        createWebhookRequest('installation', { action, installation: makeInstallation() })
+      );
+      expect(res.status).toBe(200);
+    }
+    expect(mockSyncInstallationReposById).not.toHaveBeenCalled();
   });
 
   it('handles installation deleted', async () => {
@@ -459,6 +506,22 @@ describe('POST /api/github/webhook', () => {
   });
 
   // ── Installation repositories ───────────────────────────────────────────
+  it('handles installation_repositories added - back-links newly granted repos', async () => {
+    mockSyncInstallationReposById.mockReturnValue(
+      Promise.resolve({ synced: 4, linked: 1, linkedWorkspaceIds: ['ws-1'] })
+    );
+    const payload = {
+      action: 'added',
+      installation: { id: 5000 },
+      repositories_added: [{ id: 400, full_name: 'maxjacu/moa-ops' }],
+    };
+    const res = await POST(createWebhookRequest('installation_repositories', payload));
+
+    expect(res.status).toBe(200);
+    expect(mockSyncInstallationReposById).toHaveBeenCalledWith(5000);
+    expect(deleteCalls.length).toBe(0);
+  });
+
   it('handles installation_repositories removed', async () => {
     const payload = {
       action: 'removed',
@@ -470,6 +533,7 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(deleteCalls.length).toBe(1);
+    expect(mockSyncInstallationReposById).not.toHaveBeenCalled();
   });
 
   // ── Issues events ───────────────────────────────────────────────────────
