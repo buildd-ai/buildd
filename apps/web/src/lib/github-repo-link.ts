@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { listInstallationRepos } from '@/lib/github';
+import { GITHUB_HOST_PREFIX_RE, GIT_SUFFIX_RE } from '@/lib/repo-scope';
 
 export interface SyncInstallationReposResult {
   synced: number;
@@ -21,12 +22,8 @@ const EMPTY_RESULT: SyncInstallationReposResult = { synced: 0, linked: 0, linked
  */
 const NORMALIZED_WORKSPACE_REPO = sql`lower(
   regexp_replace(
-    regexp_replace(
-      coalesce(w.repo, ''),
-      '^(https?://(www\\.)?github\\.com/|git@github\\.com:|ssh://git@github\\.com/)',
-      ''
-    ),
-    '(\\.git)?/*$',
+    regexp_replace(coalesce(w.repo, ''), ${GITHUB_HOST_PREFIX_RE}, ''),
+    ${GIT_SUFFIX_RE},
     ''
   )
 )`;
