@@ -15,6 +15,8 @@ import type { CbmMetrics } from '../../src/types';
 function buildCbmMetrics(worker: {
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  cbmBootstrapResult?: 'ok' | 'failed';
+  cbmBootstrapFailReason?: string;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
 }): CbmMetrics | undefined {
@@ -24,6 +26,8 @@ function buildCbmMetrics(worker: {
   return {
     outcome: worker.cbmOutcome,
     ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
+    ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
+    ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
     toolCalls: cbmCounts,
     totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
     readCount: fileAccess.read,
@@ -86,6 +90,41 @@ describe('CBM outcome classification', () => {
   test('returns undefined when cbmOutcome was never set', () => {
     const metrics = buildCbmMetrics({});
     expect(metrics).toBeUndefined();
+  });
+});
+
+describe('CBM bootstrap observability', () => {
+  test('bootstrapResult ok is recorded in metrics when bootstrap succeeds', () => {
+    const metrics = buildCbmMetrics({
+      cbmOutcome: 'enforced',
+      cbmBootstrapResult: 'ok',
+      cbmToolCounts: {},
+      cbmFileAccessCounts: { read: 0, grep: 0, glob: 0 },
+    });
+    expect(metrics?.bootstrapResult).toBe('ok');
+    expect(metrics?.bootstrapFailReason).toBeUndefined();
+  });
+
+  test('bootstrapResult failed and reason are recorded when bootstrap fails', () => {
+    const metrics = buildCbmMetrics({
+      cbmOutcome: 'enforced',
+      cbmBootstrapResult: 'failed',
+      cbmBootstrapFailReason: 'timeout after 30000ms',
+      cbmToolCounts: {},
+      cbmFileAccessCounts: { read: 0, grep: 0, glob: 0 },
+    });
+    expect(metrics?.bootstrapResult).toBe('failed');
+    expect(metrics?.bootstrapFailReason).toBe('timeout after 30000ms');
+  });
+
+  test('bootstrapResult absent when CBM was disabled (binary absent)', () => {
+    const metrics = buildCbmMetrics({
+      cbmOutcome: 'disabled',
+      cbmDisableReason: 'binary_absent',
+      cbmToolCounts: {},
+      cbmFileAccessCounts: { read: 0, grep: 0, glob: 0 },
+    });
+    expect(metrics?.bootstrapResult).toBeUndefined();
   });
 });
 
