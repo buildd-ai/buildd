@@ -31,6 +31,7 @@ import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
+import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 
 export async function POST(req: NextRequest) {
@@ -274,7 +275,7 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 
   // Find the workspace linked to this repo by full name
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.repo, repository.full_name),
+    where: workspaceRepoMatches(repository.full_name),
   });
 
   if (!workspace) {
@@ -337,7 +338,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   if (action === 'requested' || action === 'rerequested') {
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: eq(workers.prNumber, pr.number),
+        where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true },
       });
       if (worker) {
@@ -364,7 +365,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     // Mark worker PRs as ci_failed before handling retries
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: eq(workers.prNumber, pr.number),
+        where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true },
       });
       if (worker) {
@@ -391,7 +392,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     try {
       // Find workspaces linked to this repo with autoMergePR enabled
       const linkedWorkspaces = await db.query.workspaces.findMany({
-        where: eq(workspaces.repo, repository.full_name),
+        where: workspaceRepoMatches(repository.full_name),
       });
 
       for (const workspace of linkedWorkspaces) {
@@ -406,7 +407,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         const worker = await db.query.workers.findFirst({
           where: and(
             eq(workers.workspaceId, workspace.id),
-            eq(workers.prNumber, pr.number),
+            workerOwnsPr(repository.full_name, pr.number),
           ),
         });
 
@@ -498,7 +499,7 @@ async function handlePullRequestEvent(event: {
     (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize')
   ) {
     const openWorker = await db.query.workers.findFirst({
-      where: eq(workers.prNumber, pr.number),
+      where: workerOwnsPr(repository.full_name, pr.number),
       columns: { id: true, workspaceId: true, taskId: true, branch: true },
     });
     if (openWorker) {
@@ -617,9 +618,7 @@ async function handlePullRequestEvent(event: {
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)
   const worker = await db.query.workers.findFirst({
-    where: and(
-      eq(workers.prNumber, pr.number),
-    ),
+    where: workerOwnsPr(repository.full_name, pr.number),
     with: { task: true },
   });
 
@@ -865,7 +864,7 @@ async function handleCheckSuiteFailure(
   for (const pr of checkSuite.pull_requests) {
     try {
       const worker = await db.query.workers.findFirst({
-        where: eq(workers.prNumber, pr.number),
+        where: workerOwnsPr(repository.full_name, pr.number),
         with: { task: true },
       });
       if (!worker?.task) {
@@ -1215,7 +1214,7 @@ async function maybeAutoMergeNoCiPr(
   pr: { number: number; head: { sha: string } },
 ): Promise<void> {
   const linkedWorkspaces = await db.query.workspaces.findMany({
-    where: eq(workspaces.repo, repoFullName),
+    where: workspaceRepoMatches(repoFullName),
   });
 
   for (const workspace of linkedWorkspaces) {
@@ -1227,7 +1226,7 @@ async function maybeAutoMergeNoCiPr(
     const worker = await db.query.workers.findFirst({
       where: and(
         eq(workers.workspaceId, workspace.id),
-        eq(workers.prNumber, pr.number),
+        workerOwnsPr(repoFullName, pr.number),
       ),
     });
     if (!worker) {
@@ -1479,7 +1478,7 @@ async function maybePostWorkTrackerIssueUpdate(
   merged: boolean,
 ): Promise<void> {
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.prNumber, prNumber),
+    where: workerOwnsPrUrl(prUrl, prNumber),
     with: { task: true },
   });
   const task = worker?.task;

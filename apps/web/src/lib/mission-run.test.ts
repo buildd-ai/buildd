@@ -13,6 +13,7 @@ const mockPrepareSubjectFiling = mock(() => Promise.resolve({
   warnings: [],
 }) as any);
 const mockRecordSubjectMatchObserved = mock(() => Promise.resolve());
+const mockTriggerEvent = mock(() => Promise.resolve());
 
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
@@ -95,10 +96,12 @@ const deps = {
   exhaustMissionBudget: mockExhaustMissionBudget as any,
   prepareSubjectFiling: mockPrepareSubjectFiling as any,
   recordSubjectMatchObserved: mockRecordSubjectMatchObserved as any,
+  triggerEvent: mockTriggerEvent as any,
 };
 
 describe('runMission', () => {
   beforeEach(() => {
+    mockTriggerEvent.mockClear();
     mockMissionsFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
@@ -200,6 +203,52 @@ describe('runMission', () => {
 
     // Verify dispatch was called
     expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
+  });
+
+  // Regression: the manual run path emitted nothing on the mission channel, so a
+  // client that triggered a run had no signal to render against and the
+  // orchestrator appeared to do nothing for minutes.
+  it('announces the cycle on the mission channel after dispatching', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      schedule: null,
+    });
+    mockBuildMissionContext.mockResolvedValue({ description: 'd', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', mode: 'planning' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    const [channel, event, payload] = mockTriggerEvent.mock.calls[0] as any[];
+    expect(channel).toBe('mission-obj-1');
+    expect(event).toBe('mission:cycle_started');
+    expect(payload).toMatchObject({
+      missionId: 'obj-1',
+      triggerSource: 'manual',
+      planningTaskId: 'task-1',
+    });
+  });
+
+  it('does not announce a cycle when the run is deduped', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'My Mission',
+      schedule: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-existing', mode: 'planning' });
+
+    const result = await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
   it('runs the planning task on the mission default backend when set', async () => {
