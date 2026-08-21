@@ -1212,11 +1212,18 @@ export const githubInstallations = pgTable('github_installations', {
   permissions: jsonb('permissions').default({}).$type<Record<string, string>>(),
   repositorySelection: text('repository_selection').$type<'all' | 'selected'>(),
   suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  // Who ran the install flow. Without this, an installation is only reachable
+  // through workspaces that already point at it — so a user who installs the
+  // App before creating any workspace can never select it. Set by
+  // /api/github/callback (the only place with a session); null for installs
+  // that predate the column.
+  installedByUserId: uuid('installed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   installationIdIdx: uniqueIndex('github_installations_installation_id_idx').on(t.installationId),
   accountLoginIdx: index('github_installations_account_login_idx').on(t.accountLogin),
+  installedByIdx: index('github_installations_installed_by_idx').on(t.installedByUserId),
 }));
 
 export const githubRepos = pgTable('github_repos', {
