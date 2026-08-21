@@ -1,6 +1,6 @@
 # Release Handoff Workflow — Design Spec
 
-> **Status:** Proposed — review artifact before implementation begins.
+> **Status:** Implemented — Phase 1 (resolveReleaseStrategy) and Phase 2 (handleWorkflowRunEvent webhook loop + release-handoff.yml) both deployed. Open gap: pending_ci tasks do not auto-complete when CI on the release PR resolves (no check_suite.completed handler that matches by release PR number).
 
 ---
 

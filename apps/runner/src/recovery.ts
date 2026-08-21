@@ -12,7 +12,10 @@ import { sessionLog } from './session-logger';
 interface RecoverySession {
   inputStream: { end(): void };
   abortController: AbortController;
-  queryInstance?: { rewindFiles(uuid: string, opts: { dryRun: boolean }): Promise<any> };
+  queryInstance?: {
+    rewindFiles(uuid: string, opts: { dryRun: boolean }): Promise<any>;
+    interrupt(): Promise<unknown>;
+  };
 }
 
 /**
@@ -38,9 +41,21 @@ export interface RecoveryDeps {
 export class RecoveryManager {
   constructor(private deps: RecoveryDeps) {}
 
-  async abort(workerId: string, reason?: string) {
+  async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
     const session = this.deps.sessions.get(workerId);
     if (session) {
+      // cancel_queued: send SDK interrupt before aborting so the CLI clears its
+      // message queue. Queued messages would otherwise execute on the next turn
+      // even after the abort signal fires. Fire-and-forget — the abort follows.
+      //
+      // SDK 0.3.238: interrupt() hardcodes request({subtype:'interrupt'}) and
+      // never forwards opts, so calling interrupt({cancel_queued:true}) is a
+      // no-op. The CLI honours cancel_queued on the wire protocol
+      // (interrupt_cancel_queued_v1 capability). Call request() directly until
+      // the SDK exposes interrupt(opts?: {cancel_queued?: boolean}).
+      if (cancelQueued && session.queryInstance) {
+        (session.queryInstance as any).request({ subtype: 'interrupt', cancel_queued: true }).catch(() => {});
+      }
       // Abort the query and end the input stream
       session.abortController.abort();
       session.inputStream.end();

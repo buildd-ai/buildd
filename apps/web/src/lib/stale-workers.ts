@@ -2,9 +2,10 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
+import type { LoopConfig } from '@buildd/shared';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -36,11 +37,39 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { status: true, context: true, category: true },
+    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true },
   });
   if (currentTask?.status === 'cancelled') {
     await resolveCompletedTask(taskId, workspaceId);
     return;
+  }
+
+  // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
+  // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
+  // until the wait expires or the webhook fires and advances the loop.
+  if (currentTask?.loopState === 'condition_unmet') {
+    const loopCfg = currentTask.loopConfig as LoopConfig | null;
+    if (loopCfg?.exitCondition?.type === 'pr_merged') {
+      const waitExpiryMinutes = loopCfg.waitExpiryMinutes ?? 240;
+      const waitExpiryMs = waitExpiryMinutes * 60 * 1000;
+      const elapsed = Date.now() - (currentTask.updatedAt?.getTime() ?? 0);
+      if (elapsed < waitExpiryMs) {
+        // Within the wait window — leave the task as pending for the webhook to advance.
+        await resolveCompletedTask(taskId, workspaceId);
+        return;
+      }
+      // Wait expired — fail the task so the mission can move forward.
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          result: { error: `PR merge wait expired after ${waitExpiryMinutes} minutes` } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+      await resolveCompletedTask(taskId, workspaceId);
+      return;
+    }
   }
 
   // Reviewer timeout: when a reviewer worker goes stale, post a note on the
@@ -103,6 +132,17 @@ async function resolveStaleTask(
   const hasDeliverables = !!deliverables?.hasAny;
 
   if (hasDeliverables && staleWorker) {
+    // B.5: Outcome-first summaries — use structuredOutput.summary when present.
+    const reaperForensics = `worker delivered ${deliverables!.details} before going offline.`;
+    let outcomeSummary: string = `Completed by stale-worker reaper: ${reaperForensics}`;
+    try {
+      const artifact = await getLatestWorkerArtifactWithStructuredOutput(staleWorker.id);
+      const so = artifact?.metadata?.structuredOutput as Record<string, unknown> | undefined;
+      if (typeof so?.summary === 'string' && so.summary.trim()) {
+        outcomeSummary = so.summary.trim();
+      }
+    } catch { /* non-fatal — fall back to reaper forensics string */ }
+
     await db
       .update(tasks)
       .set({
@@ -110,14 +150,15 @@ async function resolveStaleTask(
         updatedAt: new Date(),
         // Populate result so mission/review state sees a real completion, not a blank row.
         result: {
-          summary: `Completed by stale-worker reaper: worker delivered ${deliverables!.details} before going offline.`,
+          summary: outcomeSummary,
+          reaperAutoCompleted: true,
+          reaperForensics,
           ...(staleWorker.prUrl ? { prUrl: staleWorker.prUrl } : {}),
           ...(staleWorker.prNumber ? { prNumber: staleWorker.prNumber } : {}),
           ...(staleWorker.branch ? { branch: staleWorker.branch } : {}),
           ...(typeof staleWorker.commitCount === 'number' && staleWorker.commitCount > 0
             ? { commits: staleWorker.commitCount }
             : {}),
-          reaperAutoCompleted: true,
         },
       })
       .where(eq(tasks.id, taskId));
@@ -510,6 +551,7 @@ export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: numbe
         missionId: originalTask.missionId,
         runnerPreference: originalTask.runnerPreference,
         mode: originalTask.mode,
+        taskClass: (originalTask.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,

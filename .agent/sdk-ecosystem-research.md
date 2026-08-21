@@ -1,34 +1,195 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-08-10
-**Previous scan**: 2026-08-03
-**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.226)
-**Python SDK**: v0.2.134 (bundled with CLI v2.1.226)
-**Claude Code CLI**: v2.1.226 (released August 8, 2026)
+**Last updated**: 2026-08-17
+**Previous scan**: 2026-08-10
+**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.231)
+**Python SDK**: v0.2.135 (bundled with CLI v2.1.231)
+**Claude Code CLI**: v2.1.232 (released August 13–14, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
 ---
 
-## ⚠️ URGENT: Two Deadlines Still Active
+## ⚠️ URGENT: One Deadline Remaining
 
 ### ~~August 5, 2026: Claude Opus 4.1 API Retirement~~ — DONE
 
-`claude-opus-4-1-20250805` is retired. Verify `packages/core/model-aliases.ts` contains no hardcoded reference (the audit was flagged last week).
+### ~~August 17, 2026: Legacy Workbench + Experimental Prompt APIs Retired~~ — DONE TODAY
 
-### August 17, 2026: Legacy Workbench + Experimental Prompt APIs Retired
+Legacy Workbench (`platform.claude.com/workbench`) access ended permanently today. Any prompts/variables/eval configs not exported are permanently gone — Anthropic confirmed no recovery path. The new Workbench is stateless and browser-only (no server-side prompt storage). Three experimental prompt tools APIs also retired with no replacement: `POST /v1/experimental/generate_prompt`, `POST /v1/experimental/improve_prompt`, `POST /v1/experimental/templatize_prompt`.
 
-**7 days away.** Two items retire on the same date:
+### August 31, 2026: Claude Sonnet 5 Introductory Pricing Ends ⚠️ 14 DAYS
 
-1. **Legacy Workbench** (`platform.claude.com/workbench`) — access ends permanently.
-2. **Experimental prompt tools APIs** — three endpoints retired with no replacement:
-   - `POST /v1/experimental/generate_prompt`
-   - `POST /v1/experimental/improve_prompt`
-   - `POST /v1/experimental/templatize_prompt`
+Sonnet 5 reverts from $2/$10 → $3/$15 per MTok on September 1. **Update cost estimates and billing alerts before month-end.**
 
-### August 31, 2026: Claude Sonnet 5 Introductory Pricing Ends
+---
 
-Sonnet 5 reverts from $2/$10 → $3/$15 per MTok on September 1. Update cost estimates and billing alerts.
+## SDK Releases (August 10 – August 17, 2026)
+
+6 CLI releases, 5 TypeScript SDK releases, 1 Python SDK release this week.
+
+### TypeScript SDK v0.3.227 – v0.3.231
+
+| Version | Key Changes |
+|---------|-------------|
+| **v0.3.227** | Added `terminal_slash_commands` to `system/init` message — Remote Control clients can hide terminal-oriented slash commands from their UI; conversations whose messages alone exceed the API's 32 MB limit now end with `terminal_reason: "api_error"` instead of `"image_error"`; various CLI v2.1.227 parity fixes |
+| **v0.3.228** | Parity with CLI v2.1.228 (visual-freeze and Windows bug fixes) |
+| **v0.3.229** | Parity with CLI v2.1.229; `remote-control --continue` resume plumbing; SSE keepalive pings for gateway streaming |
+| **v0.3.230** | Parity update (CLI v2.1.230 not published to npm) |
+| **v0.3.231** | Fixed MCP OAuth sign-in failing with redirect URI mismatch for pre-registered OAuth clients (Slack, etc.); parity with CLI v2.1.231 |
+
+### Python SDK v0.2.135
+
+- CLI bundle bump to v2.1.231; no functional changes.
+
+### CLI v2.1.227 – v2.1.232
+
+| Version | Key Changes |
+|---------|-------------|
+| **v2.1.227** (Aug 10) | Fixed critical subscription verification bug; fixed Bash command execution regression; easier slash-command menu navigation; parity base for TS SDK v0.3.227 |
+| **v2.1.228** (Aug 11) | Fixed interactive sessions freezing visually while still running in background; Windows session management fixes |
+| **v2.1.229** (Aug 12) | **New**: `claude remote-control --continue` — resumes the most recent Remote Control session without needing a session ID; **New**: server-supplied Claude Code hook support for self-hosted runner sessions (matches managed-environment behavior); **New**: SSE keepalive pings during long thinking pauses for gateway deployments (Vertex, Bedrock — prevents idle-timeout disconnects); **New**: plugin marketplace command sources (local IDE command prints plugin directory, re-resolved each session) |
+| **v2.1.230** | Not published to npm registry |
+| **v2.1.231** (Aug 13) | Fixed MCP OAuth sign-in redirect URI mismatch for pre-registered OAuth clients (Slack, GitHub, etc.) |
+| **v2.1.232** (Aug 13–14) | **New**: Cross-session @name mentions, `/hold`, `/refuse` commands — interactive sessions can now reference and message peers by name; **New**: `subagent_type: "fork"` now **on by default** — fork subagents inherit full conversation and prompt cache; non-teammate agent spawns in interactive sessions run in background by default; **New**: Unique session name enforcement (duplicate names get a `name-word-word` variant); **New**: GitLab merge request URL support for `--worktree` flag and `claude agents` view (MRs shown as `!N`); **New**: Faster self-hosted runner starts; Fixed: self-hosted runners no longer fail when checkout hook fails on a repo the session doesn't push to (skipped with warning instead); **Security**: 12 security fixes including Windows permission-bypass patches; 49 total changes |
+
+---
+
+## New Platform Features (August 10–17, 2026)
+
+### Text Watermarking for EU AI Act Compliance (August 11)
+
+Anthropic announced that all Claude models released on or after **August 2, 2026** now embed invisible watermarks in generated text. Models released before August 2 will gain support over coming months.
+
+**Technical approach**: Adaptation of Google DeepMind's SynthID-Text (Nature 2024) — changes the source of randomness used to select the next word, embedding an imperceptible signal that survives copy-paste. Files carry signed C2PA provenance information.
+
+**Regulatory trigger**: EU AI Act Article 50, enforceable August 2, 2026 for newly launched AI systems. Anthropic applied the requirement globally (not EU-only).
+
+**Coverage**: Claude Platform API, claude.ai, Claude Code, Claude Cowork, Claude Tag, AWS Bedrock, Google Cloud, Microsoft Foundry.
+
+**Detection API**: Announced as forthcoming — implementation details not yet finalized.
+
+**Relevance for Buildd**: Workers' generated code and text now carry invisible watermarks. For enterprise customers subject to EU AI Act obligations, this is a compliance feature that can be surfaced positively. For customers building AI-content detection pipelines, the upcoming detection API is worth tracking. No action required today.
+
+### ~~Legacy Workbench Retirement~~ (August 17 — Completed Today)
+
+See URGENT section above.
+
+### Compliance API Expansion to Cowork and Claude Code (Enterprise Beta)
+
+The Claude Compliance API now covers:
+- **Claude Cowork**: desktop app, web, and mobile sessions
+- **Claude Code**: CLI and desktop app sessions
+
+Security and compliance teams can pull session content and metadata through the same Compliance API interface already used for Claude chats. The new endpoints are additive — no changes to existing data flows.
+
+**Current gaps** (not yet covered): Claude Code on web, Claude Code via Claude Platform API, Bedrock sessions, Vertex AI sessions.
+
+**Relevance for Buildd**: Enterprise Buildd workspaces could close a compliance gap here. If Buildd ever ships a compliance/audit dashboard for enterprise customers, the Compliance API (now covering Cowork + CLI Code) is the data source to integrate. Coordinate with existing `PATCH /api/workers/[id]` audit trail.
+
+### GitLab Merge Request Support (CLI v2.1.232)
+
+The `--worktree` flag and `claude agents` view now accept GitLab merge request URLs. MRs are displayed as `!N` notation (matching GitLab convention vs GitHub's `#N`).
+
+**Relevance for Buildd**: Workspaces with GitLab-backed repos can now pass the MR URL directly in task context instead of constructing a branch name. Update `apps/web/src/lib/git-context.ts` (or equivalent) to detect GitLab MR URLs and pass them directly to `--worktree` when available.
+
+### Self-Hosted Runner Improvements (CLI v2.1.229/v2.1.232)
+
+- Faster startup times (reduced init overhead)
+- Server-supplied hook support — self-hosted runner sessions now execute hooks defined by the self-hosted-runner environment, matching managed-environment behavior
+- Checkout hook failure handling: if the checkout hook fails for a repository the session doesn't push to, it is now skipped with a warning instead of failing the runner
+
+**Relevance for Buildd**: For enterprise customers evaluating `claude self-hosted-runner` as an alternative to Buildd's workers, these improvements reduce friction. Buildd's coordination and observability layer remains differentiated.
+
+---
+
+## Anthropic Business News (August 10–17, 2026)
+
+### IPO: Public S-1 Expected Any Day
+
+Confidential S-1 was filed June 1. The SEC review window (typically 30–60 days post-submission) is closing. Public S-1 filing expected August–September, with institutional roadshow starting shortly after. Nasdaq listing targeting October 2026; prediction market median is November 30. Offering expected to raise $60B+.
+
+### Sonnet 5 Pricing Sunset: 14 Days Left
+
+Standard pricing ($3/$15/MTok) takes effect September 1. Any Buildd workspace budget forecast, role card cost estimate, or billing alert set against the $2/$10 intro rate needs updating before August 31.
+
+---
+
+## New Ecosystem Projects (Since August 10, 2026)
+
+| Project | Stars | Description |
+|---------|-------|-------------|
+| **cc-switch** (farion1231) | Growing | Cross-platform desktop assistant unifying Claude Code, Codex, OpenCode, Grok Build, and Hermes Agent in one UI — "switcher" for multi-agent workflows |
+| **PrimeIntellect-ai/prime-agent** | Growing | Self-improving RLM agent built for coding workflows and long-running autonomous tasks |
+| **TencentCloud/TencentDB-Agent-Memory** | Growing | Team-level memory hub: converts conversations, docs, and code into four reusable memory assets for AI agents |
+| **OpenClaw** (sst) | 210K+ | Still the fastest-growing open-source project in ecosystem (was 188K last week); 565+ community skills, persistent memory, Google Workspace integration |
+
+**Ecosystem trend**: Agent infrastructure tooling (memory, governance, multi-agent routing) is now outpacing raw agent frameworks in GitHub velocity. The ecosystem is maturing from demos to production deployments.
+
+---
+
+## Recommendations for Buildd
+
+### This Week (August 17, 2026)
+
+**#0 — Bump SDK to ^0.3.231 / Python to ^0.2.135**
+Five TS SDK releases this week. Most are CLI parity bumps, but v0.3.227 adds `terminal_slash_commands` to system/init and corrects the `terminal_reason` for oversized conversations. Location: `packages/core/package.json`. Effort: Trivial.
+
+**#1 — Use `terminal_slash_commands` to filter Remote Control command display (TS SDK v0.3.227)**
+The `system/init` message now includes a `terminal_slash_commands` field listing commands that are terminal-only. Remote Control clients (including future Buildd mobile/web workers) should hide these commands rather than surface them as available options. Location: any Buildd component that reads `system/init` plugin/command data. Effort: Low.
+
+**#2 — Wire cross-session @mentions and /hold//refuse for peer worker messaging (CLI v2.1.232)**
+With v2.1.232, cross-session messaging has a richer protocol: `@name` addressing, `/hold` (queue message for approval), and `/refuse` (decline a held message). Buildd's `send_agent_message` action operates at the API level — consider whether peer-to-peer worker messaging (bypassing Buildd's routing) should be surfaced or restricted in the role config. Add `crossSessionInbound` and `dialogExpiry` to role schema (already recommended last week — bump to high priority). Location: `packages/shared/src/types.ts`, `apps/web/src/lib/role-config.ts`. Effort: Low.
+
+**#3 — Enable `subagent_type: "fork"` for context-aware retry workers (CLI v2.1.232 default)**
+Fork-type subagents now inherit full conversation history and prompt cache by default — making them nearly free to spawn (no cold-start context injection cost). Buildd's retry workers currently re-claim tasks with fresh context. A forked retry could resume exactly where the prior worker left off, with full context intact, at significantly lower token cost. Evaluate: modify the retry dispatch path in `packages/core/worker-runner.ts` to use `subagent_type: "fork"` when retrying a task with an existing session. Effort: Medium.
+
+**#4 — Pass GitLab MR URLs directly to `--worktree` for GitLab workspaces (CLI v2.1.232)**
+Claude Code now natively accepts GitLab MR URLs in `--worktree`. Buildd workspaces with GitLab integration can simplify task context: pass the MR URL directly instead of computing the branch name. Detect `gitlab.com/.../merge_requests/N` pattern in workspace gitConfig. Effort: Low.
+
+**#5 — Use `claude remote-control --continue` for session resume in runner (CLI v2.1.229)**
+When a Buildd worker's Remote Control session is interrupted, the runner can now resume it with `claude remote-control --continue` instead of tracking session IDs. Simplifies the reconnection flow in `apps/runner/src/workers.ts`. Effort: Low.
+
+**#6 — Fix SSE keepalive for Vertex/Bedrock gateway deployments (CLI v2.1.229)**
+If any Buildd worker deployment routes through a custom gateway on Vertex or Bedrock, v2.1.229's SSE keepalive pings prevent idle-timeout disconnects during long thinking pauses. Verify all production worker deployments are on v2.1.229+. Effort: Trivial (version check).
+
+**#7 — ⚠️ FINAL CALL: Update Sonnet 5 billing before August 31**
+14 days remain. Sonnet 5 pricing reverts from $2/$10 to $3/$15/MTok on September 1. Update `apps/web/src/components/HealthClient.tsx` (budget forecast card), role cards showing Sonnet 5 cost estimates, and any workspace billing alert thresholds. Effort: Low. Deadline: **August 31**.
+
+**#8 — Track Compliance API beta for enterprise audit dashboard (new)**
+The Compliance API now covers Cowork and Claude Code (CLI + desktop) for Enterprise customers. If Buildd plans an enterprise audit/compliance view, this is the API to integrate. File as a product backlog item; no immediate engineering action. Effort: Investigation.
+
+**#9 — Surface text watermarking as enterprise compliance feature**
+Claude-generated text now carries invisible watermarks per EU AI Act Article 50. For enterprise Buildd customers under EU regulation, this is a compliance story to surface in the product. Add a note to the role config UI or workspace settings: "AI-generated text from workers meets EU AI Act Article 50 watermarking requirements." When Anthropic's detection API launches, consider adding a verification endpoint. Effort: Low (copy/UI only until detection API available).
+
+### Still Relevant (From August 10, 2026)
+
+**#10 — Fix Python SDK skill-name injection (v0.2.129 security fix)** — still critical
+**#11 — Use `system/permission_denied` events for task timeline (TS SDK v0.3.223)**
+**#12 — Add `resumeDropsTurn` to interrupt/resume flow (TS SDK v0.3.223)**
+**#13 — Investigate `claude self-hosted-runner` as Buildd Enterprise deployment mode**
+**#14 — Add `crossSessionInbound`/`dialogExpiry` to role config schema** (now #2 above — promoted)
+**#15 — Expose `sandbox.filesystem.disabled` in role configuration**
+**#16 — Surface `api_error_status: 529` in task error UI**
+**#17 — Add archive-source plugin install to skill setup**
+
+### Still Relevant (Older)
+
+**#18 — Use `tool_result_meta` for denied/interrupted tool classification** (SDK v0.3.216)
+**#19 — Wire `cancel_queued` to interrupt endpoint** (SDK v0.3.219)
+**#20 — Fix billing accuracy with `canonicalModel` + `provider`** (SDK v0.3.218)
+**#21 — Surface `fast_mode_disabled_reason` in role/task UI** (SDK v0.3.219)
+**#22 — Add `terminal_reason` to task completion payload** (Python v0.2.126)
+**#23 — Expose subagent depth and concurrency caps in mission/role config** (SDK v0.3.217)
+**#24 — Adopt `sandbox.network.strictAllowlist` for locked-down roles** (SDK v0.3.219)
+**#25 — Evaluate `codebase-memory-mcp` for token reduction** (32K-star project)
+**#26 — Adopt mid-conversation tool changes beta** (Fable 5/Opus 5)
+**#27 — Use `agentProgressSummaries` for live task visibility** (v0.3.162+)
+**#28 — OpenTelemetry worker observability**
+**#29 — `SessionStore` for transcript persistence** (alpha)
+**#30 — Dynamic Workflows compatibility decision** (unbounded — cap removed)
+
+---
 
 ---
 
@@ -1183,6 +1344,7 @@ Managed Agents now support up to 50 seed events per session — eliminates separ
 
 | Date | SDK Versions (TS) | SDK Versions (Py) | CLI Versions | Key Changes |
 |------|-------------------|-------------------|-------------|-------------|
+| 2026-08-17 | 0.3.227-0.3.231 | 0.2.135 | 2.1.227-2.1.232 | **Legacy Workbench retired today** + experimental prompt APIs (generate/improve/templatize) gone permanently; **text watermarking** GA (EU AI Act Article 50, SynthID-Text-style, Aug 2+ models globally, detection API coming); **Compliance API** expanded to Cowork + Claude Code CLI/desktop (Enterprise beta); **cross-session @mentions, /hold, /refuse** (v2.1.232); **`subagent_type: "fork"` on by default** (inherits full conv + prompt cache); **GitLab MR URL** support for `--worktree` + agents view; `claude remote-control --continue` for session resume; SSE keepalive pings for Vertex/Bedrock gateways; server-supplied hooks for self-hosted runners; MCP OAuth redirect-URI fix; `terminal_slash_commands` in system/init; OpenClaw 210K+ stars; cc-switch multi-agent switcher |
 | 2026-08-10 | 0.3.221-0.3.226 | 0.2.129-0.2.134 | 2.1.221-2.1.226 | **`claude self-hosted-runner`** public beta (Aug 6, Team/Enterprise) — own-compute cloud sessions; cross-session messaging native (SendMessage peer-to-peer with crossSessionInbound/dialogExpiry security model); **inference hooks Enterprise DLP** beta (real-time allow/deny per prompt, Zscaler/Palo Alto/Netskope); **200-subagent cap removed** (Dynamic Workflows now unbounded); system/permission_denied events in bare headless; resumeDropsTurn for cleaner interrupt-resume; sandbox.filesystem.disabled setting; archive-source plugin install (HTTPS zip + SHA-256 pin); Python v0.2.129 skill-name injection security fix (breaking: malformed names now ValueError); ultraplan feature removed; Focus view for VS Code; prompt-audit subcommand; gateway spend-limit notifications in CLI |
 | 2026-08-03 | 0.3.220 (no new) | 0.2.128 (no new) | 2.1.220 (no new) | **Opus 4.1 retired (Aug 5)**, Workbench+experimental prompt APIs retire Aug 17, Sonnet 5 intro pricing ends Aug 31, agent-memory-2026-07-22 header in effect, Anthropic cybersecurity eval incident (Opus 4.7/Mythos 5 accessed real systems via misconfigured harness), ACP (Agent Client Protocol) reaches 38 agents/12+ editors, OpenCode 161K stars, OpenClaw 188K stars, Anthropic IPO roadshow underway |
 | 2026-07-27 | 0.3.216-0.3.220 | 0.2.124-0.2.128 | 2.1.216-2.1.220 | **Claude Opus 5** (Jul 24, $5/$25/MTok, 1M ctx, near-Fable-5 perf), tool_result_meta sidecar, cancel_queued interrupt, fast_mode_disabled_reason, DirectoryAdded hook, canonicalModel+provider on modelUsage, terminal_reason typed, subagent depth cap (default 3, env override), concurrent subagent cap (20), sandbox.network.strictAllowlist, /code-review as background subagent, mid-conversation tool changes beta, server-side fallback beta, Python stdin-closure bug fix (critical: prevented background MCP calls), codebase-memory-mcp (32K stars), grok-build (xAI competitor) |

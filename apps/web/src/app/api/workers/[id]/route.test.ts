@@ -4588,6 +4588,105 @@ describe('PATCH /api/workers/[id]', () => {
       expect(failedUpdate).toBeDefined();
     });
   });
+
+  describe('branch field persistence (resume-branch cascade fix)', () => {
+    // Regression: setupWorktree reuses the ancestor PR branch in-memory but
+    // the DB kept the claim-time branch. Webhook handlers reading DB branch for
+    // reviewer/CI retry context saw the stale value and triggered fallback→new PR.
+    // Fix: runner sends `branch` in PATCH body; route persists it to workers.branch.
+
+    const baseWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      branch: 'buildd/abc123-original-task',
+      pendingInstructions: null,
+      milestones: null,
+    };
+
+    it('persists branch to DB when runner reports a different checkout branch', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ ...baseWorker, branch: 'buildd/abc123-original-task' }]),
+            })),
+          };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', branch: 'buildd/abc123-original-task' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet).not.toBeNull();
+      expect(capturedSet.branch).toBe('buildd/abc123-original-task');
+    });
+
+    it('does not set branch in update when branch field is absent', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ ...baseWorker }]),
+            })),
+          };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet).not.toBeNull();
+      expect('branch' in capturedSet).toBe(false);
+    });
+
+    it('does not set branch in update when branch is an empty string', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ ...baseWorker }]),
+            })),
+          };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', branch: '' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet).not.toBeNull();
+      expect('branch' in capturedSet).toBe(false);
+    });
+  });
 });
 
 describe('PATCH /api/workers/[id] — activeSessions seat release', () => {

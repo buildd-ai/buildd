@@ -56,7 +56,7 @@ import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycl
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
-import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
+import { runCbmBootstrap } from './cbm-bootstrap.js';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -432,7 +432,7 @@ export class WorkerManager {
       getWorkers: () => this.workers,
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
-      abort: (workerId) => this.abort(workerId),
+      abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
@@ -1352,6 +1352,11 @@ export class WorkerManager {
         if (setupResult.branch !== claimedWorker.branch) {
           console.log(`[Worker ${worker.id}] Resumed on branch ${setupResult.branch} (task branch: ${claimedWorker.branch})`);
           worker.branch = setupResult.branch;
+          // Persist so reviewer/CI retry dispatch reads the correct branch from
+          // the DB when building the next retry's resumeBranch context.
+          this.buildd.updateWorker(worker.id, { branch: setupResult.branch }).catch(err =>
+            console.error(`[Worker ${worker.id}] Failed to persist resume branch:`, err)
+          );
         }
         // Fallback warning: resume branch was missing/diverged — make it visible
         // rather than silently starting fresh.
@@ -2234,31 +2239,35 @@ export class WorkerManager {
         cbmCacheDir = cbmActivation.cbmCacheDir;
         mkdirSync(cbmCacheDir!, { recursive: true });
         console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
-      } else {
-        // Legacy: detect CBM from .mcp.json for backward compat with manually-configured roles.
-        const cbmDetectPaths = [...new Set([join(cwd, '.mcp.json'), join(repoPath, '.mcp.json')])];
-        for (const mcpJsonPath of cbmDetectPaths) {
-          if (!existsSync(mcpJsonPath)) continue;
-          try {
-            const mcpData = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
-              mcpServers?: Record<string, unknown>;
-            };
-            if (mcpData.mcpServers?.['codebase-memory']) {
-              cbmBinaryPath = CBM_BINARY_PATH;
-              cbmCacheDir = `/tmp/cbm-${worker.id}`;
-              mkdirSync(cbmCacheDir, { recursive: true });
-              console.log(`[Worker ${worker.id}] CBM detected from .mcp.json — cache dir: ${cbmCacheDir}`);
-              break;
-            }
-          } catch { /* non-fatal — proceed without CBM mounts */ }
+
+        // Pre-index the worktree so the graph is warm on turn one.
+        // 30-second hard timeout; bootstrap failure is non-fatal — CBM is still
+        // mounted but without a warm cache; the agent can index on demand.
+        worker.currentAction = 'Indexing codebase (CBM)...';
+        this.emit({ type: 'worker_update', worker });
+        console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
+        const cbmBootstrapResult = await runCbmBootstrap({
+          worktreePath: cwd,
+          workerId: worker.id,
+          serverConfig: { command: cbmActivation.cbmBinaryPath!, args: [], env: {} },
+        });
+        if (cbmBootstrapResult.ok) {
+          const durS = (cbmBootstrapResult.durationMs / 1000).toFixed(1);
+          console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
+          this.addMilestone(worker, { type: 'status', label: `graph_index_success durationMs=${cbmBootstrapResult.durationMs}`, ts: Date.now() });
+          worker.cbmBootstrapResult = 'ok';
+        } else {
+          const reason = cbmBootstrapResult.reason;
+          console.warn(`[Worker ${worker.id}] CBM: bootstrap failed (${reason}) — CBM mounted without warm cache`);
+          this.addMilestone(worker, { type: 'status', label: `graph_index_failed reason=${reason.slice(0, 80)}`, ts: Date.now() });
+          worker.cbmBootstrapResult = 'failed';
+          worker.cbmBootstrapFailReason = reason;
         }
       }
 
       // CBM observability: record activation outcome and initialize per-task counters.
       if (cbmEnforced) {
         worker.cbmOutcome = 'enforced';
-      } else if (cbmBinaryPath) {
-        worker.cbmOutcome = 'legacy_mcp_json';
       } else {
         worker.cbmOutcome = 'disabled';
         if (isCodexTask) worker.cbmDisableReason = 'codex_task';
@@ -2373,7 +2382,7 @@ export class WorkerManager {
           if (cfg.type === 'stdio' && cfg.env && Object.keys(cfg.env).length > 0) {
             queryOptions.mcpServers[name] = {
               ...cfg,
-              env: resolveMcpEnvTokens(cfg.env, { workerId: worker.id, worktreePath: sessionCwd }),
+              env: resolveMcpEnvTokens(cfg.env, { workerId: worker.id, worktreePath: cwd }),
             };
           } else {
             queryOptions.mcpServers[name] = cfg;
@@ -2459,8 +2468,8 @@ export class WorkerManager {
       // Enforce CBM as default MCP for repo-backed tasks.
       // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
       if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
-        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(sessionCwd, cbmCacheDir!);
-        console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${sessionCwd})`);
+        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!);
+        console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
 
       // Block CBM tools that write to the repo or delete indexes — enforced for any
@@ -2508,60 +2517,6 @@ export class WorkerManager {
         }
         console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
         this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
-      }
-
-      // CBM (codebase-memory-mcp) bootstrap — Claude tasks only.
-      // If the role's .mcp.json declares a "codebase-memory" stdio server, run
-      // index_repository BEFORE the agent loop so the graph is warm on turn one.
-      // 30-second hard timeout: on timeout or any error, log + emit fallback event
-      // and proceed WITHOUT CBM. Indexing failure must never fail the task.
-      if (!isCodexTask) {
-        // Prefer the role dir's .mcp.json (written by syncRoleToLocal) as the
-        // authoritative source; fall back to cwd for repos that commit it directly.
-        const cbmMcpJsonPaths = [
-          ...(worker.roleConfig ? [join(getRoleDir(worker.roleConfig.slug), '.mcp.json')] : []),
-          join(cwd, '.mcp.json'),
-        ];
-        let cbmServerConfig = null;
-        for (const p of cbmMcpJsonPaths) {
-          cbmServerConfig = detectCbmConfig(p);
-          if (cbmServerConfig) break;
-        }
-
-        if (cbmServerConfig) {
-          worker.currentAction = 'Indexing codebase (CBM)...';
-          this.emit({ type: 'worker_update', worker });
-
-          console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
-          const cbmResult = await runCbmBootstrap({
-            worktreePath: cwd,
-            workerId: worker.id,
-            serverConfig: cbmServerConfig,
-          });
-
-          if (cbmResult.ok) {
-            const durS = (cbmResult.durationMs / 1000).toFixed(1);
-            console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
-            this.addMilestone(worker, {
-              type: 'status',
-              label: `graph_index_success durationMs=${cbmResult.durationMs}`,
-              ts: Date.now(),
-            });
-            queryOptions.mcpServers['codebase-memory'] = buildCbmBootstrapMcpEntry(
-              cbmServerConfig,
-              cbmResult.cbmCacheDir,
-              cwd,
-            );
-            console.log(`[Worker ${worker.id}] CBM: mounted codebase-memory MCP server (cache=${cbmResult.cbmCacheDir})`);
-          } else {
-            console.warn(`[Worker ${worker.id}] CBM: index failed (${cbmResult.reason}), proceeding without CBM`);
-            this.addMilestone(worker, {
-              type: 'status',
-              label: `graph_index_fallback reason=${cbmResult.reason.slice(0, 80)}`,
-              ts: Date.now(),
-            });
-          }
-        }
       }
 
       // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
@@ -3046,6 +3001,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           const cbmMetrics = {
             outcome: worker.cbmOutcome,
             ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
+            ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
+            ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
             toolCalls: cbmCounts,
             totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
             readCount: fileAccess.read,
@@ -3843,6 +3800,40 @@ If something is missing or incomplete, describe what and fix it now.`;
               .map((b: any) => b.text)
               .join('\n');
           }
+
+          // tool_result_meta sidecar (SDK 0.3.216+): typed classification of
+          // denied/cancelled/interrupted tool calls. Replaces string-matching on
+          // tool result prose — non_execution_kind is authoritative.
+          // Non-executions are permission decisions, not errors — skip the scanner
+          // entirely so they never emit a false permission_denied trace.
+          const nonExecMeta = (block as any).tool_result_meta;
+          const nonExecKind = nonExecMeta?.non_execution_kind as string | undefined;
+          if (nonExecKind) {
+            const feedback = nonExecMeta?.user_feedback as string | undefined;
+            // Resolve source tool for the milestone label (best-effort).
+            const toolUseId = block.tool_use_id as string | undefined;
+            let nonExecSource: string | undefined;
+            if (toolUseId) {
+              for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
+                const tc: any = worker.toolCalls[i];
+                if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
+                  nonExecSource = tc.name;
+                  break;
+                }
+              }
+            }
+            const label = feedback
+              ? `Tool not run (${nonExecKind}): "${feedback.slice(0, 80)}"`
+              : `Tool not run: ${nonExecKind}`;
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+            console.log(
+              `[Worker ${worker.id}] tool non-execution: kind=${nonExecKind} ` +
+              `tool=${nonExecSource ?? '?'}` +
+              (feedback ? ` feedback="${feedback.slice(0, 60)}"` : ''),
+            );
+            continue; // Permission decision — not a tool error; skip scanner
+          }
+
           if (!text) continue;
 
           // Source tool: look up the originating tool_use_id in recent tool calls.
@@ -3987,6 +3978,28 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
         sessionLog(worker.id, 'error', 'result_error', `subtype=${result.subtype} stopReason=${result.stop_reason}`, worker.taskId);
+      }
+
+      // terminal_reason (SDK 0.3.216+): surface distinguishable outcomes for
+      // max_turns and aborted_tools so they're visible in milestones, not
+      // collapsed into the same generic "completed" terminal state.
+      const terminalReason = result.terminal_reason as string | undefined;
+      if (terminalReason === 'max_turns') {
+        this.addMilestone(worker, {
+          type: 'status',
+          label: 'Max turns reached — consider raising maxTurns for this task',
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_max_turns', `turns=${result.num_turns ?? '?'}`, worker.taskId);
+      } else if (terminalReason === 'aborted_tools') {
+        const blocked = (result.permission_denials as Array<{ tool_name?: string; tool?: string }> | undefined)?.[0];
+        const blockedTool = blocked?.tool_name || blocked?.tool || 'a tool';
+        this.addMilestone(worker, {
+          type: 'status',
+          label: `Session blocked: "${blockedTool}" was denied — grant permission or switch approach`,
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_aborted_tools', `blocked_tool=${blockedTool}`, worker.taskId);
       }
 
       // Capture SDK result metadata for server sync
@@ -4167,8 +4180,8 @@ If something is missing or incomplete, describe what and fix it now.`;
     });
   }
 
-  async abort(workerId: string, reason?: string) {
-    return this.recoveryManager.abort(workerId, reason);
+  async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
+    return this.recoveryManager.abort(workerId, reason, cancelQueued);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {

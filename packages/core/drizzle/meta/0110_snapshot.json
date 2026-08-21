@@ -1,5 +1,5 @@
 {
-  "id": "c9e5a288-a46b-4f13-a62f-18e97e229c42",
+  "id": "07c2da72-2914-40f9-82b6-7e12bac7107d",
   "prevId": "abb58cc4-5e39-4928-94ca-3505d9222bb1",
   "version": "7",
   "dialect": "postgresql",
@@ -1964,12 +1964,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "installed_by_user_id": {
-          "name": "installed_by_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2015,38 +2009,9 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "github_installations_installed_by_idx": {
-          "name": "github_installations_installed_by_idx",
-          "columns": [
-            {
-              "expression": "installed_by_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
-      "foreignKeys": {
-        "github_installations_installed_by_user_id_users_id_fk": {
-          "name": "github_installations_installed_by_user_id_users_id_fk",
-          "tableFrom": "github_installations",
-          "tableTo": "users",
-          "columnsFrom": [
-            "installed_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "github_installations_installation_id_unique": {
@@ -6139,6 +6104,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "task_class": {
+          "name": "task_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'work'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -6325,6 +6297,21 @@
           "columns": [
             {
               "expression": "start_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tasks_task_class_idx": {
+          "name": "tasks_task_class_idx",
+          "columns": [
+            {
+              "expression": "task_class",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

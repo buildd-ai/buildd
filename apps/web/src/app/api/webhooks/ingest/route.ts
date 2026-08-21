@@ -135,6 +135,7 @@ export async function POST(req: NextRequest) {
             externalId,
             externalUrl: data.issue.url,
             status: 'pending',
+            taskClass: 'work',
             context: {
               webhook: {
                 issueId: data.issue.id,

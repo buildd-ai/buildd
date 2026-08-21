@@ -6,6 +6,9 @@
  * reported $0. Token counts are always reported regardless of auth, so pricing
  * them at list rates matches how the Agent SDK credit pool is billed.
  *
+ * Source: platform.claude.com/docs/en/about-claude/pricing
+ * Last verified: 2026-08-21
+ *
  * Update these numbers when Anthropic changes list pricing.
  */
 import type { ModelUsage } from './db/schema';
@@ -22,32 +25,26 @@ interface TokenPrice {
 }
 
 // Keyed by tier; model IDs are matched to a tier by substring in priceForModel.
-const TIER_PRICES: Record<'opus' | 'sonnet' | 'haiku', TokenPrice> = {
+const TIER_PRICES: Record<'opus' | 'sonnet5' | 'sonnet' | 'haiku', TokenPrice> = {
   opus: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  // Sonnet 5 is flat at $2/$10. The previously scheduled Sep 1 2026 increase to $3/$15 was
+  // cancelled on Aug 10–11 2026. Official confirmation:
+  // platform.claude.com/docs/en/about-claude/pricing — Note id="claude-sonnet-5-introductory-pricing"
+  sonnet5: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   sonnet: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 };
 
-// Sonnet 5 intro pricing: $2/$10 per MTok through Aug 31 2026; standard $3/$15 from Sep 1 2026.
-const SONNET_5_INTRO_CUTOFF = new Date('2026-09-01T00:00:00Z');
-const SONNET_5_INTRO: TokenPrice = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
-const SONNET_5_STANDARD: TokenPrice = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-
-function sonnet5Price(atDate: Date): TokenPrice {
-  return atDate < SONNET_5_INTRO_CUTOFF ? SONNET_5_INTRO : SONNET_5_STANDARD;
-}
-
 /**
  * Resolve list pricing for a model ID (e.g. "claude-opus-4-8"). Defaults to sonnet.
  *
- * @param atDate - Reference date for date-based tiers (defaults to now). Pass a
- *   fixed date in tests to make assertions deterministic.
+ * No date-based tiers exist — the only one (Sonnet 5 Sep 1 step-up) was cancelled.
  */
-export function priceForModel(modelId: string, atDate: Date = new Date()): TokenPrice {
+export function priceForModel(modelId: string): TokenPrice {
   const id = modelId.toLowerCase();
   if (id.includes('opus')) return TIER_PRICES.opus;
-  // sonnet-5 has its own intro/standard date-gated pricing (checked before generic 'sonnet')
-  if (id.includes('sonnet-5')) return sonnet5Price(atDate);
+  // sonnet-5 is checked before generic 'sonnet' to avoid shadowing by the Sonnet 4.x tier.
+  if (id.includes('sonnet-5')) return TIER_PRICES.sonnet5;
   if (id.includes('haiku')) return TIER_PRICES.haiku;
   return TIER_PRICES.sonnet;
 }

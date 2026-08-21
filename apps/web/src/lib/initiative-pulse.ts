@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, missions, initiatives } from '@buildd/core/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { deriveTaskType } from '@buildd/core/mission-helpers';
+import type { Verdict, Confidence } from './verdict-presentation';
 
 /**
  * Initiative pulse — the daily-signal half of an initiative, shared by every
@@ -253,6 +254,48 @@ export function noPendingCounts(): PendingCounts {
   return zeroCounts();
 }
 
+/** What `countBlockedByPR` needs of a task it may be blocked *on*. */
+export interface BlockingTask {
+  status: string;
+  workers?: Array<{
+    prNumber?: number | null;
+    mergedAt?: unknown;
+    prLifecycleStatus?: string | null;
+  }> | null;
+}
+
+/**
+ * Count a mission's pending tasks that are blocked on a dependency whose PR is
+ * open — the `blocked` half of `PendingCounts`.
+ *
+ * `taskIndex` must span every mission the caller loaded, not just this one:
+ * `dependsOn` crosses mission boundaries, and an index built per mission would
+ * silently score cross-mission dependencies as unblocked. A task with several
+ * blocking deps counts once.
+ *
+ * Pure. Shared by the Missions page and the Initiatives list so the two cannot
+ * disagree about what "blocked" means.
+ */
+export function countBlockedByPR(
+  missionTasks: Array<{ status: string; dependsOn?: string[] | null }>,
+  taskIndex: Map<string, BlockingTask>,
+): number {
+  let count = 0;
+  for (const task of missionTasks) {
+    if (task.status !== 'pending') continue;
+    for (const depId of task.dependsOn ?? []) {
+      const dep = taskIndex.get(depId);
+      if (!dep || dep.status !== 'completed') continue;
+      const worker = dep.workers?.[0];
+      if (worker?.prNumber && !worker.mergedAt && worker.prLifecycleStatus !== 'closed') {
+        count++;
+        break;
+      }
+    }
+  }
+  return count;
+}
+
 // ─── The winning verdict (spec §6.5) ─────────────────────────────────────────
 
 /**
@@ -264,34 +307,19 @@ export function noPendingCounts(): PendingCounts {
  * outcome. A verdict derived from it would congratulate a fleet for churning.
  */
 
-export type Verdict =
-  | 'losing'
-  | 'grinding'
-  | 'stuck'
-  | 'won_unclaimed'
-  | 'winning'
-  | 'dormant'
-  | 'empty';
-
-/** Whether an oracle actually checked the outcome, or nobody did. */
-export type Confidence = 'verified' | 'unverified';
+/**
+ * The verdict vocabulary lives in `verdict-presentation.ts` — client components
+ * need the labels, and this module imports the database. Re-exported here so a
+ * server caller has one import for the whole contract.
+ */
+export type { Verdict, Confidence, InitiativePulse } from './verdict-presentation';
+export { VERDICT_LABEL } from './verdict-presentation';
 
 /** Rework may outrun ships by this factor before the arc reads as losing. */
 export const THRASH_RATIO = 3;
 
 /** The verdict looks at the last 7 days; `effortDays` holds 14 (§6.1). */
 export const VERDICT_WINDOW_DAYS = 7;
-
-/** Display copy. The spec fixes these strings; surfaces MUST NOT re-word them. */
-export const VERDICT_LABEL: Record<Verdict, string> = {
-  losing: 'Losing',
-  grinding: 'Grinding',
-  stuck: 'Stuck',
-  won_unclaimed: 'Ready to close',
-  winning: 'Winning',
-  dormant: 'Dormant',
-  empty: 'Empty',
-};
 
 export interface VerdictInputs {
   /** Initiative lifecycle status from the DB. */

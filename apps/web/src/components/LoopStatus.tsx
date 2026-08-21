@@ -19,17 +19,34 @@ export function LoopStatusChip({
   maxLoops,
   loopState,
   startAt,
+  exitConditionType,
 }: {
   loopIteration: number;
   maxLoops: number;
   loopState: LoopState | null;
   startAt?: string | null;
+  exitConditionType?: string | null;
 }) {
   const attempt = Math.min(loopIteration + 1, maxLoops);
   const deferred = loopState === 'condition_unmet'
     && !!startAt
     && new Date(startAt).getTime() > Date.now();
   const terminal = loopState === 'satisfied' || loopState === 'exhausted';
+
+  // pr_merged + condition_unmet: task is waiting for a webhook, not actively looping.
+  // Show a distinct "WAITING · MERGE" chip so the task never looks stalled or dead.
+  if (exitConditionType === 'pr_merged' && loopState === 'condition_unmet') {
+    return (
+      <span
+        data-loop-status="waiting-merge"
+        className="inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide border text-status-info border-status-info shrink-0"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-status-pulse" />
+        Waiting · merge
+      </span>
+    );
+  }
+
   const color = loopState === 'exhausted'
     ? 'text-status-error border-status-error bg-status-error/8'
     : loopState === 'satisfied'

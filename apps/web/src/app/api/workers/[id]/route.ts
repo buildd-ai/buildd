@@ -267,6 +267,10 @@ export async function PATCH(
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
+    // Actual branch checked out in worktree (may differ from claim-time branch
+    // when setupWorktree honors a resumeBranch). Persisted so reviewer/CI retry
+    // dispatch reads the correct branch from the DB for the next retry's context.
+    branch,
     // Git stats
     lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
     // SDK result metadata
@@ -348,6 +352,8 @@ export async function PATCH(
       }
     }
   }
+  // Branch: persist actual checkout branch when resume branch was used
+  if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
   if (lastCommitSha !== undefined) updates.lastCommitSha = lastCommitSha;
   if (typeof commitCount === 'number') updates.commitCount = commitCount;
@@ -1022,7 +1028,7 @@ export async function PATCH(
         if (loopConfig) {
           const freshWorkerForLoop = await db.query.workers.findFirst({
             where: eq(workers.id, id),
-            columns: { prLifecycleStatus: true, prNumber: true },
+            columns: { prLifecycleStatus: true, prNumber: true, mergedAt: true },
           });
           const existingLoopCtx = ((loopData?.context ?? {}) as Record<string, unknown>);
           const existingHistory = (existingLoopCtx.loopHistory as LoopHistoryEntry[] | undefined) ?? [];
@@ -1039,6 +1045,7 @@ export async function PATCH(
             structuredOutput: body.structuredOutput,
             prLifecycleStatus: freshWorkerForLoop?.prLifecycleStatus ?? null,
             prNumber: freshWorkerForLoop?.prNumber ?? null,
+            workerMergedAt: freshWorkerForLoop?.mergedAt ?? null,
           });
 
           // condition_unmet is expected control flow — does NOT consume retry attempts.
@@ -2119,6 +2126,7 @@ async function handleReviewerOutcomeIfNeeded(
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
+          taskClass: 'attempt',
           context: {
             iteration: currentIteration + 1,
             maxIterations,

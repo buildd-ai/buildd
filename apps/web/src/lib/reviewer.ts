@@ -185,6 +185,7 @@ export async function createReviewerTask(
       outputSchema: REVIEWER_TASK_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
       missionId: originalTask.missionId,
       parentTaskId: originalTaskId,
+      taskClass: 'attempt',
       context: {
         reviewerFor: originalTaskId,
         prNumber,

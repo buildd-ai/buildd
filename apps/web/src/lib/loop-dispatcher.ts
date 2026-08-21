@@ -48,6 +48,7 @@ export function evaluateExitCondition(opts: {
   structuredOutput: unknown;
   prLifecycleStatus: string | null | undefined;
   prNumber: number | null | undefined;
+  workerMergedAt?: Date | null;
 }): ConditionResult {
   const { exitCondition, workerId, iteration } = opts;
 
@@ -57,6 +58,10 @@ export function evaluateExitCondition(opts: {
 
   if (exitCondition.type === 'pr_checks_green') {
     return evaluatePrChecksGreen(opts.prLifecycleStatus, opts.prNumber);
+  }
+
+  if (exitCondition.type === 'pr_merged') {
+    return evaluatePrMerged(opts.workerMergedAt ?? null, opts.prNumber ?? null);
   }
 
   return evaluateStructuredPredicate(exitCondition, opts.structuredOutput);
@@ -111,6 +116,22 @@ function evaluatePrChecksGreen(
     summary: satisfied
       ? `PR #${prNumber} checks green (${prLifecycleStatus})`
       : `PR #${prNumber} not green: ${prLifecycleStatus}`,
+  };
+}
+
+function evaluatePrMerged(
+  mergedAt: Date | null,
+  prNumber: number | null,
+): ConditionResult {
+  if (mergedAt != null) {
+    return {
+      satisfied: true,
+      summary: prNumber ? `PR #${prNumber} merged` : 'PR merged',
+    };
+  }
+  return {
+    satisfied: false,
+    summary: prNumber ? `PR #${prNumber} not yet merged` : 'PR not yet merged',
   };
 }
 
@@ -264,6 +285,7 @@ export function dispatchLoopIteration(opts: {
   structuredOutput: unknown;
   prLifecycleStatus: string | null | undefined;
   prNumber: number | null | undefined;
+  workerMergedAt?: Date | null;
   evaluatedAt?: Date;
 }): LoopDispatchResult {
   const {
@@ -288,6 +310,7 @@ export function dispatchLoopIteration(opts: {
     structuredOutput: opts.structuredOutput,
     prLifecycleStatus: opts.prLifecycleStatus,
     prNumber: opts.prNumber,
+    workerMergedAt: opts.workerMergedAt,
   });
 
   const historyEntry: LoopHistoryEntry = {

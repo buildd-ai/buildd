@@ -7,14 +7,12 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeInitiativeProgress, computeMissionSkyline, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { MissionGrid } from './MissionGrid';
-import { loadInitiativeEffort, derivePendingCounts, noPendingCounts, zeroEffortWindow } from '@/lib/initiative-pulse';
-import { InitiativeTriage } from './InitiativeTriage';
-import type { InitiativeTriageItem } from './triage-types';
+import { countBlockedByPR, type BlockingTask } from '@/lib/initiative-pulse';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 
 export const dynamic = 'force-dynamic';
@@ -86,23 +84,6 @@ export default async function MissionsPage({
     .from(workspaces)
     .where(eq(workspaces.teamId, activeTeamId));
 
-  // Load the active team's initiatives with rolled-up progress for the strip.
-  const teamInitiatives = await db.query.initiatives.findMany({
-    where: and(
-      eq(initiatives.teamId, activeTeamId),
-      inArray(initiatives.status, ['active', 'paused']),
-    ),
-    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
-    limit: 12,
-    columns: { id: true, title: true, status: true },
-    with: {
-      missions: {
-        columns: { id: true, status: true },
-        with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true } } },
-      },
-    },
-  });
-
   // Query roles for display
   const wsIds = await getUserWorkspaceIds(user.id);
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -149,41 +130,21 @@ export default async function MissionsPage({
     },
   });
 
-  // Effort data for InitiativeTriage sparklines — the shared 14-day aggregation
-  // (lib/initiative-pulse.ts), which every initiative surface reads. Returns a
-  // dense 14-entry window per initiative, anchored on today.
-  const effortByInitiative = await loadInitiativeEffort({ teamId: activeTeamId });
-
   const POLICY_TIER_LABEL: Record<string, string> = {
     'auto-threshold': 'Auto',
     'agent-review': 'Agent Review',
     'human': 'Human Gate',
   };
 
-  // Compute blocked-PR count per mission (for LAYER 3 chip)
-  // Build a cross-mission task map to resolve dependsOn across tasks
-  const allMissionTaskMap = new Map<string, { id: string; status: string; workers: any[] }>();
+  // Blocked-PR count per mission (LAYER 3 chip). The index spans every loaded
+  // mission because `dependsOn` crosses mission boundaries; the counting rule
+  // itself is shared with the Initiatives list (lib/initiative-pulse.ts) so the
+  // two surfaces cannot disagree about what "blocked" means.
+  const allMissionTaskMap = new Map<string, BlockingTask>();
   for (const m of allMissions) {
     for (const t of m.tasks || []) {
-      allMissionTaskMap.set(t.id, t as any);
+      allMissionTaskMap.set(t.id, t as unknown as BlockingTask);
     }
-  }
-  function countBlockedByPR(missionTasks: any[]): number {
-    let count = 0;
-    for (const t of missionTasks) {
-      if (t.status !== 'pending') continue;
-      const deps = (t.dependsOn as string[] | null) ?? [];
-      for (const depId of deps) {
-        const dep = allMissionTaskMap.get(depId);
-        if (!dep || dep.status !== 'completed') continue;
-        const depW = dep.workers?.[0];
-        if (depW?.prNumber && !depW.mergedAt && depW.prLifecycleStatus !== 'closed') {
-          count++;
-          break; // count this pending task once even if multiple deps block it
-        }
-      }
-    }
-    return count;
   }
 
   // Compute mission data
@@ -329,7 +290,7 @@ export default async function MissionsPage({
       effectivePolicyLabel,
       healthState: deriveHealth(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
-      blockedPRCount: countBlockedByPR(obj.tasks || []),
+      blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
       initiativeId: obj.initiativeId || null,
       initiativeName: (obj.initiative as any)?.title || null,
       priority: obj.priority ?? 0,
@@ -367,42 +328,6 @@ export default async function MissionsPage({
       m.normalizationSlots = m.skyline.totalSlots;
     }
   }
-
-  // Pending-action counts per initiative — one shared derivation
-  // (lib/initiative-pulse.ts) over rows already in memory, no extra query.
-  // `awaitingVerification` needs each task's workers, which only `allMissions`
-  // carries; the other three come from the derived mission rows.
-  const workersByMissionId = new Map(allMissions.map((m) => [m.id, m.tasks || []]));
-  const pendingByInitiative = derivePendingCounts(
-    missionsList.map((m) => ({
-      initiativeId: m.initiativeId,
-      isHeld: m.isHeld,
-      health: m.health,
-      lastActivityAt: m.lastActivityAt,
-      blockedPRCount: m.blockedPRCount,
-      tasks: workersByMissionId.get(m.id) as any,
-    })),
-  );
-
-  // Use teamInitiatives for accurate progress (all missions, no 50-mission cap).
-  const triageItems: InitiativeTriageItem[] = teamInitiatives.map((init) => {
-    const children: ChildMissionProgress[] = (init.missions || []).map((m: any) => {
-      const { totalTasks, completedTasks } = computeMissionProgress(m.tasks || []);
-      return { status: m.status as ChildMissionProgress['status'], totalTasks, completedTasks };
-    });
-    const rollup = computeInitiativeProgress(children);
-    const pending = pendingByInitiative.get(init.id) ?? noPendingCounts();
-    return {
-      id: init.id,
-      title: init.title,
-      progress: rollup.progress,
-      effortDays: effortByInitiative.get(init.id) ?? zeroEffortWindow(),
-      awaitingVerification: pending.awaitingVerification,
-      blocked: pending.blocked,
-      held: pending.held,
-      shippedThisWeek: pending.shippedThisWeek,
-    };
-  });
 
   const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
@@ -445,8 +370,6 @@ export default async function MissionsPage({
           </Link>
         </div>
       </div>
-
-      <InitiativeTriage items={triageItems} teamId={activeTeamId} />
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">

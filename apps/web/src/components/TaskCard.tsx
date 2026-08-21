@@ -62,6 +62,9 @@ export interface TaskCardProps {
 
   taskType?: TaskType | null;
 
+  /** Exit condition type from loopConfig — passed to StageChip for 'WAITING · MERGE' rendering. */
+  loopExitConditionType?: string | null;
+
   density: 'full' | 'row' | 'inline';
 
   /**
@@ -203,6 +206,7 @@ export function TaskCard({
   prLifecycleStatus,
   currentAction,
   taskType,
+  loopExitConditionType,
   density,
   groupScoped = false,
   groupTaskIds,
@@ -244,8 +248,11 @@ export function TaskCard({
     const isTerminalPr = prLifecycleStatus === 'merged' || prLifecycleStatus === 'closed';
     // Chip only for genuinely non-default active states; completed/pending/assigned
     // are conveyed by their section label and need no redundant badge.
+    // Exception: a loop task with condition_unmet (e.g. waiting for PR merge) must
+    // show its loop chip even when the task status is pending (requeued).
     const showChip = displayStatus === 'running' || displayStatus === 'waiting_input' ||
-                     displayStatus === 'failed' || displayStatus === 'cancelled';
+                     displayStatus === 'failed' || displayStatus === 'cancelled' ||
+                     (!!loopMaxLoops && !!loopState && loopState !== 'satisfied' && loopState !== 'exhausted');
     // Done-group tasks (completed + terminal PR) compress to one line: title + #NNNN · status.
     // WaitingOnYou tasks (completed + open PR) omit the inline PR — PrStatusLine in
     // CondensedTimeline renders it alongside the Merge button.
@@ -278,7 +285,7 @@ export function TaskCard({
         {/* T3 — chip only for active non-default states */}
         {showChip && (
           <div className="pointer-events-none shrink-0">
-            <StageChip stage={stage} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+            <StageChip stage={stage} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
           </div>
         )}
 
@@ -360,7 +367,7 @@ export function TaskCard({
 
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
-          <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+          <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
 
           {/* T3 — elapsed */}
           <span className={`font-mono text-[10px] tabular-nums ${tierColor}`}>
@@ -410,7 +417,7 @@ export function TaskCard({
           {taskType && <TaskTypeBadge type={taskType} />}
           <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
         </div>
-        <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} />
+        <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
       </div>
 
       {/* T1 — mission + workspace (second row) */}

@@ -31,6 +31,7 @@ import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
+import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -247,6 +248,7 @@ async function createTaskFromIssue(
         ? { externalIssueId: String(issue.number), externalIssueUrl: issue.html_url }
         : {}),
       status: 'pending',
+      taskClass: 'work',
       context: {
         github: { issueNumber: issue.number, issueId: issue.id, repoFullName: repository.full_name },
       },
@@ -674,6 +676,15 @@ async function handlePullRequestEvent(event: {
     checkDependsOnResolved(worker.task.id).catch((e) =>
       console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
     );
+
+    // Advance any task waiting on a pr_merged loop condition for this PR.
+    // The worker's mergedAt was stamped above; evaluateAndAdvanceLoopOnMerge
+    // reads it and marks the task completed if the condition is now satisfied.
+    if (worker.taskId && worker.workspaceId) {
+      evaluateAndAdvanceLoopOnMerge(worker.id, worker.taskId, worker.workspaceId).catch((e) =>
+        console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
+      );
+    }
   }
 
   if (pr.merged && worker?.task && worker.task.status !== 'completed') {
@@ -954,6 +965,7 @@ async function handleCheckSuiteFailure(
           missionId: retryTask.missionId,
           context: retryTask.context,
           creationSource: retryTask.creationSource,
+          taskClass: retryTask.taskClass,
           status: 'pending',
           priority: 7, // CI fix is urgent
           ...subjectObservation.taskValues,

@@ -12,7 +12,9 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGithubApi = mock(() => null as any);
 const mockMergePullRequest = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
+const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
+const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => Promise.resolve()),
@@ -30,11 +32,19 @@ mock.module('@/lib/github', () => ({
   mergePullRequest: mockMergePullRequest,
 }));
 
+// Mock team-access
+mock.module('@/lib/team-access', () => ({
+  getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
+}));
+
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: mockWorkersFindFirst },
+      workers: {
+        findFirst: mockWorkersFindFirst,
+        findMany: mockWorkersFindMany,
+      },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockWorkersUpdate(),
@@ -46,17 +56,25 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
+  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
 }));
 
 // Import handler AFTER mocks
 import { POST, PATCH, PUT, GET } from './route';
+
+// Shared account + workspace defaults for most tests (same team → access granted)
+const ACCOUNT = { id: 'account-1', teamId: 'team-1' };
+const WORKSPACE_OK = { teamId: 'team-1', githubRepoId: 'repo-1', githubInstallationId: 'inst-1' };
+const WORKSPACE_OTHER_TEAM = { teamId: 'team-2', githubRepoId: 'repo-1', githubInstallationId: 'inst-1' };
+const REPO = { id: 'repo-1', fullName: 'owner/repo', defaultBranch: 'main', installation: { installationId: 12345 } };
 
 // Helper to create mock NextRequest
 function createMockRequest(options: {
@@ -81,8 +99,10 @@ describe('POST /api/github/pr', () => {
     mockAuthenticateApiKey.mockReset();
     mockGithubApi.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -110,7 +130,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 400 when workerId is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -124,7 +144,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 400 when title is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -138,7 +158,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 400 when head is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -152,7 +172,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 404 when worker not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue(null);
 
     const req = createMockRequest({
@@ -166,16 +186,65 @@ describe('POST /api/github/pr', () => {
     expect(data.error).toBe('Worker not found');
   });
 
-  it('returns 403 when worker belongs to different account', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 403 when workspace team does not match account team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-2',
+      accountId: 'account-runner',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OTHER_TEAM,
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  // Test (a): account A's token + worker created under a different accountId but same workspace team → 200
+  it('allows worker from runner account when workspace team matches authenticated account team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-1',
+      accountId: 'account-runner',  // different accountId — runner's account
+      taskId: null,
+      name: 'test-worker',
+      workspace: WORKSPACE_OK,  // same team → access granted
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]); // dedup check: no existing PRs
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(42);
+  });
+
+  // Test (b): token with no access to the workspace (different team) → 403
+  it('rejects cross-team workspace access', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',  // same accountId, but wrong team
+      name: 'test-worker',
+      workspace: WORKSPACE_OTHER_TEAM,
     });
 
     const req = createMockRequest({
@@ -190,15 +259,12 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: null,
-        githubInstallationId: null,
-      },
+      workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
 
     const req = createMockRequest({
@@ -213,15 +279,12 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 404 when GitHub repo not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
 
@@ -237,15 +300,12 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 404 when GitHub repo has no installation', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue({
       id: 'repo-1',
@@ -266,22 +326,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('creates PR successfully and returns PR data', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 42,
       html_url: 'https://github.com/owner/repo/pull/42',
@@ -305,22 +357,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('updates worker with PR URL after creation', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 42,
       html_url: 'https://github.com/owner/repo/pull/42',
@@ -350,21 +394,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('calls githubApi with correct parameters', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: { ...WORKSPACE_OK },
     });
     mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
+      ...REPO,
       defaultBranch: 'develop',
-      installation: { installationId: 12345 },
     });
     mockGithubApi.mockResolvedValue({
       number: 10,
@@ -402,23 +441,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('uses workspace gitConfig.targetBranch when base not provided', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-        gitConfig: { targetBranch: 'dev' },
-      },
+      workspace: { ...WORKSPACE_OK, gitConfig: { targetBranch: 'dev' } },
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 10,
       html_url: 'https://github.com/owner/repo/pull/10',
@@ -438,26 +468,17 @@ describe('POST /api/github/pr', () => {
   });
 
   it('ignores task context baseBranch when it matches the PR head', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-        gitConfig: { targetBranch: 'dev' },
-      },
+      workspace: { ...WORKSPACE_OK, gitConfig: { targetBranch: 'dev' } },
       task: {
         context: { baseBranch: 'feature-branch' },
       },
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 10,
       html_url: 'https://github.com/owner/repo/pull/10',
@@ -477,21 +498,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('falls back to repo defaultBranch when no gitConfig.targetBranch', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
+      ...REPO,
       defaultBranch: 'develop',
-      installation: { installationId: 12345 },
     });
     mockGithubApi.mockResolvedValue({
       number: 10,
@@ -512,21 +528,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('falls back to main when no gitConfig and no repo defaultBranch', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
+      ...REPO,
       defaultBranch: null,
-      installation: { installationId: 12345 },
     });
     mockGithubApi.mockResolvedValue({
       number: 10,
@@ -547,26 +558,17 @@ describe('POST /api/github/pr', () => {
   });
 
   it('uses task context targetBranch over workspace gitConfig', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-        gitConfig: { targetBranch: 'dev' },
-      },
+      workspace: { ...WORKSPACE_OK, gitConfig: { targetBranch: 'dev' } },
       task: {
         context: { targetBranch: 'release/1.0' },
       },
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 10,
       html_url: 'https://github.com/owner/repo/pull/10',
@@ -586,26 +588,17 @@ describe('POST /api/github/pr', () => {
   });
 
   it('explicit base param overrides task context targetBranch', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-        gitConfig: { targetBranch: 'dev' },
-      },
+      workspace: { ...WORKSPACE_OK, gitConfig: { targetBranch: 'dev' } },
       task: {
         context: { targetBranch: 'release/1.0' },
       },
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 10,
       html_url: 'https://github.com/owner/repo/pull/10',
@@ -625,22 +618,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('uses default body text when prBody not provided', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 10,
       html_url: 'https://github.com/owner/repo/pull/10',
@@ -660,24 +645,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('deduplicates when worker already has a PR', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
       prUrl: 'https://github.com/owner/repo/pull/99',
       prNumber: 99,
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
 
     let capturedSetData: any = null;
     mockWorkersUpdate.mockReturnValue({
@@ -705,24 +682,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('deduplicates when GitHub already has an open PR for the head branch', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
       prUrl: null,
       prNumber: null,
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
 
     // First call: list existing PRs (returns one match)
     // Second call: fetch individual PR detail for diff stats
@@ -761,22 +730,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('stores diff stats from GitHub response when creating PR', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     // List check returns empty, then create returns PR with diff stats
     mockGithubApi.mockResolvedValueOnce([]);
     mockGithubApi.mockResolvedValueOnce({
@@ -811,24 +772,16 @@ describe('POST /api/github/pr', () => {
   });
 
   it('stores diff stats from GitHub response when deduplicating via existing PR', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
       prUrl: null,
       prNumber: null,
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValueOnce([
       { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
     ]);
@@ -857,8 +810,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('deduplicates when a sibling worker on the same task already has a PR', async () => {
-    // Scenario: retry creates a new worker for the same task; the prior worker's PR should be reused.
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 
     // First call: get current worker (no PR yet)
     mockWorkersFindFirst.mockResolvedValueOnce({
@@ -868,10 +820,7 @@ describe('POST /api/github/pr', () => {
       prUrl: null,
       prNumber: null,
       name: 'worker-retry',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
     // Second call: find sibling worker with PR
     mockWorkersFindFirst.mockResolvedValueOnce({
@@ -897,7 +846,7 @@ describe('POST /api/github/pr', () => {
   });
 
   it('mirrors sibling PR onto current worker when deduplicating by task', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-new',
@@ -906,7 +855,7 @@ describe('POST /api/github/pr', () => {
       prUrl: null,
       prNumber: null,
       name: 'worker-retry',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-original',
@@ -935,22 +884,14 @@ describe('POST /api/github/pr', () => {
   });
 
   it('returns 500 when githubApi throws an error', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       name: 'test-worker',
-      workspace: {
-        githubRepoId: 'repo-1',
-        githubInstallationId: 'inst-1',
-      },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockRejectedValue(new Error('GitHub API rate limit exceeded'));
 
     const req = createMockRequest({
@@ -987,8 +928,10 @@ describe('PATCH /api/github/pr', () => {
     mockAuthenticateApiKey.mockReset();
     mockGithubApi.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
     });
@@ -1004,7 +947,7 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 400 when workerId is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     const req = createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { prNumber: 42 },
@@ -1016,7 +959,7 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 400 when prNumber is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     const req = createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { workerId: 'w-1' },
@@ -1028,7 +971,7 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 404 when worker not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue(null);
     const req = createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1040,12 +983,12 @@ describe('PATCH /api/github/pr', () => {
     expect(data.error).toBe('Worker not found');
   });
 
-  it('returns 403 when worker belongs to different account', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 403 when workspace team does not match account team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-2',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      accountId: 'account-runner',
+      workspace: WORKSPACE_OTHER_TEAM,
     });
     const req = createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1058,11 +1001,11 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: null, githubInstallationId: null },
+      workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const req = createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1075,11 +1018,11 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 404 when GitHub repo not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
     const req = createPatchRequest({
@@ -1093,18 +1036,13 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('closes PR successfully and returns closed PR data', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 42,
       html_url: 'https://github.com/owner/repo/pull/42',
@@ -1127,18 +1065,13 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('calls githubApi with PATCH and state: closed', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValue({
       number: 71,
       html_url: 'https://github.com/owner/repo/pull/71',
@@ -1162,18 +1095,13 @@ describe('PATCH /api/github/pr', () => {
   });
 
   it('returns 500 when githubApi throws', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockRejectedValue(new Error('GitHub API error: 403 Resource not accessible by integration'));
 
     const req = createPatchRequest({
@@ -1212,8 +1140,10 @@ describe('PUT /api/github/pr', () => {
     mockAuthenticateApiKey.mockReset();
     mockMergePullRequest.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
     });
@@ -1228,20 +1158,20 @@ describe('PUT /api/github/pr', () => {
     expect(data.error).toBe('Invalid API key');
   });
 
-  it('returns 400 when workerId is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 400 when prNumber is missing (workerId also absent)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     const req = createPutRequest({
       headers: { Authorization: 'Bearer bld_test' },
-      body: { prNumber: 42 },
+      body: {},
     });
     const res = await PUT(req);
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBe('workerId required');
+    expect(data.error).toBe('prNumber required');
   });
 
-  it('returns 400 when prNumber is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 400 when prNumber is missing even when workerId is provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     const req = createPutRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { workerId: 'w-1' },
@@ -1252,8 +1182,8 @@ describe('PUT /api/github/pr', () => {
     expect(data.error).toBe('prNumber required');
   });
 
-  it('returns 404 when worker not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 404 when worker not found (workerId path)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue(null);
     const req = createPutRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1265,12 +1195,12 @@ describe('PUT /api/github/pr', () => {
     expect(data.error).toBe('Worker not found');
   });
 
-  it('returns 403 when worker belongs to different account', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 403 when workspace team does not match account team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-2',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      accountId: 'account-runner',
+      workspace: WORKSPACE_OTHER_TEAM,
     });
     const req = createPutRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1283,11 +1213,11 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: null, githubInstallationId: null },
+      workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const req = createPutRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1300,11 +1230,11 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('returns 404 when GitHub repo not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
     const req = createPutRequest({
@@ -1318,19 +1248,14 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('merges PR successfully and stamps worker mergedAt', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prUrl: 'https://github.com/owner/repo/pull/42',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
 
     let capturedSetData: any = null;
@@ -1358,19 +1283,14 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('uses mergeMethod param when provided', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prUrl: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
 
     const req = createPutRequest({
@@ -1383,19 +1303,14 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('returns 403 with hint when GitHub App lacks contents:write permission', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prUrl: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Resource not accessible by integration' });
 
     const req = createPutRequest({
@@ -1411,19 +1326,14 @@ describe('PUT /api/github/pr', () => {
   });
 
   it('returns {ok: false} when merge is blocked (not a permission error)', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prUrl: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Required status check "CI" is expected.' });
 
     const req = createPutRequest({
@@ -1438,14 +1348,144 @@ describe('PUT /api/github/pr', () => {
     expect(data.merged).toBe(false);
     expect(data.message).toContain('Required status check');
   });
+
+  // Test (c): merge_pr with prNumber only (no workerId) → resolves and merges
+  it('resolves worker from prNumber when workerId is absent and merges successfully', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-resolved',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/1732',
+      prNumber: 1732,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+
+    let capturedWorkerId: any = null;
+    const mockWhere = mock((cond: any) => {
+      capturedWorkerId = cond;
+      return Promise.resolve();
+    });
+    const mockSet = mock(() => ({ where: mockWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 1732 },  // no workerId
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(mockGetTeamWorkspaceIds).toHaveBeenCalledWith('team-1');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 1732, 'squash');
+  });
+
+  // Test (d): ambiguous prNumber across two workspaces → 409
+  it('returns 409 when prNumber matches workers in multiple workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['ws-1', 'ws-2']);
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w-a',
+        taskId: 't-1',
+        workspaceId: 'ws-1',
+        prUrl: 'https://github.com/org/repo-a/pull/42',
+        prNumber: 42,
+        workspace: { ...WORKSPACE_OK, githubRepoId: 'repo-a' },
+      },
+      {
+        id: 'w-b',
+        taskId: 't-2',
+        workspaceId: 'ws-2',
+        prUrl: 'https://github.com/org/repo-b/pull/42',
+        prNumber: 42,
+        workspace: { ...WORKSPACE_OK, githubRepoId: 'repo-b' },
+      },
+    ]);
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 42 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toContain('multiple workspaces');
+    expect(data.candidates).toEqual(expect.arrayContaining(['ws-1', 'ws-2']));
+  });
+
+  // Test (e): mergedAt stamped on resolve-by-prNumber merges
+  it('stamps mergedAt on the resolved worker when merging by prNumber', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-resolved',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/42',
+      prNumber: 42,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 42 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.merged).toBe(true);
+    // mergedAt must be stamped on the resolved worker
+    expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
+    expect(capturedSetData.prLifecycleStatus).toBe('merged');
+  });
+
+  it('returns 404 when prNumber-only resolve finds no matching worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([]);  // no match
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 9999 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe('PR not found or already merged');
+  });
 });
 
 // ── GET /api/github/pr (read PR details) ──────────────────────────────────────
 
-function createGetRequest(workerId: string, prNumber?: number): NextRequest {
+function createGetRequest(workerId: string | null, prNumber?: number, workspaceId?: string): NextRequest {
   const url = new URL('http://localhost:3000/api/github/pr');
-  url.searchParams.set('workerId', workerId);
+  if (workerId) url.searchParams.set('workerId', workerId);
   if (prNumber !== undefined) url.searchParams.set('prNumber', String(prNumber));
+  if (workspaceId) url.searchParams.set('workspaceId', workspaceId);
   return new NextRequest(url.toString(), {
     method: 'GET',
     headers: new Headers({ Authorization: 'Bearer bld_test' }),
@@ -1458,7 +1498,9 @@ describe('GET /api/github/pr', () => {
     mockAuthenticateApiKey.mockReset();
     mockGithubApi.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
+    mockGetTeamWorkspaceIds.mockReset();
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -1470,8 +1512,8 @@ describe('GET /api/github/pr', () => {
     expect(data.error).toBe('Invalid API key');
   });
 
-  it('returns 400 when workerId is missing', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 400 when both workerId and prNumber are missing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     const req = new NextRequest('http://localhost:3000/api/github/pr', {
       method: 'GET',
       headers: new Headers({ Authorization: 'Bearer bld_test' }),
@@ -1479,11 +1521,11 @@ describe('GET /api/github/pr', () => {
     const res = await GET(req);
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBe('workerId required');
+    expect(data.error).toBe('workerId or prNumber required');
   });
 
   it('returns 404 when worker not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue(null);
     const res = await GET(createGetRequest('nonexistent', 42));
     expect(res.status).toBe(404);
@@ -1491,12 +1533,12 @@ describe('GET /api/github/pr', () => {
     expect(data.error).toBe('Worker not found');
   });
 
-  it('returns 403 when worker belongs to different account', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  it('returns 403 when workspace team does not match account team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
-      accountId: 'account-2',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      accountId: 'account-runner',
+      workspace: WORKSPACE_OTHER_TEAM,
     });
     const res = await GET(createGetRequest('w-1', 42));
     expect(res.status).toBe(403);
@@ -1505,11 +1547,11 @@ describe('GET /api/github/pr', () => {
   });
 
   it('returns 400 when workspace not linked to GitHub repo', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
-      workspace: { githubRepoId: null, githubInstallationId: null },
+      workspace: { teamId: 'team-1', githubRepoId: null, githubInstallationId: null },
     });
     const res = await GET(createGetRequest('w-1', 42));
     expect(res.status).toBe(400);
@@ -1518,12 +1560,12 @@ describe('GET /api/github/pr', () => {
   });
 
   it('returns 404 when GitHub repo not found', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prNumber: 42,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
     mockGithubReposFindFirst.mockResolvedValue(null);
     const res = await GET(createGetRequest('w-1', 42));
@@ -1533,20 +1575,15 @@ describe('GET /api/github/pr', () => {
   });
 
   it('returns 400 when prNumber cannot be resolved', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prNumber: null,
       lastCommitSha: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
     // No prNumber in query and worker.prNumber is null
     const req = new NextRequest('http://localhost:3000/api/github/pr?workerId=w-1', {
       method: 'GET',
@@ -1559,21 +1596,16 @@ describe('GET /api/github/pr', () => {
   });
 
   it('returns PR details with CI and review summaries', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prNumber: 42,
       prUrl: 'https://github.com/owner/repo/pull/42',
       lastCommitSha: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
 
     // Call 1: PR details
     mockGithubApi.mockResolvedValueOnce({
@@ -1619,21 +1651,16 @@ describe('GET /api/github/pr', () => {
   });
 
   it('COMMENTED review after APPROVED does not erase approval', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prNumber: 42,
       prUrl: 'https://github.com/owner/repo/pull/42',
       lastCommitSha: null,
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
 
     // PR details
     mockGithubApi.mockResolvedValueOnce({
@@ -1658,21 +1685,16 @@ describe('GET /api/github/pr', () => {
   });
 
   it('auto-resolves prNumber from worker when not provided in query', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
       id: 'w-1',
       accountId: 'account-1',
       prNumber: 99,
       prUrl: 'https://github.com/owner/repo/pull/99',
       lastCommitSha: 'def456',
-      workspace: { githubRepoId: 'repo-1', githubInstallationId: 'inst-1' },
+      workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue({
-      id: 'repo-1',
-      fullName: 'owner/repo',
-      defaultBranch: 'main',
-      installation: { installationId: 12345 },
-    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
 
     mockGithubApi.mockResolvedValueOnce({
       number: 99,
@@ -1701,5 +1723,66 @@ describe('GET /api/github/pr', () => {
     expect(data.pr.number).toBe(99);
     expect(data.checks.state).toBe('none');
     expect(data.checks.total).toBe(0);
+  });
+
+  // Test: GET resolves worker by prNumber when workerId is absent
+  it('resolves PR details by prNumber when workerId is not provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-resolved',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/1732',
+      prNumber: 1732,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    mockGithubApi.mockResolvedValueOnce({
+      number: 1732,
+      title: 'feat: fix 403 on own team',
+      body: 'Fixes the auth boundary bug.',
+      state: 'open',
+      mergeable: true,
+      mergeable_state: 'clean',
+      html_url: 'https://github.com/owner/repo/pull/1732',
+      head: { sha: 'abc999' },
+      additions: 100,
+      deletions: 5,
+      changed_files: 3,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ status: 'completed', conclusion: 'success', name: 'CI' }] });
+    mockGithubApi.mockResolvedValueOnce([{ user: { login: 'bob' }, state: 'APPROVED' }]);
+
+    // No workerId — only prNumber
+    const res = await GET(createGetRequest(null, 1732));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(1732);
+    expect(data.pr.title).toBe('feat: fix 403 on own team');
+    expect(data.checks.state).toBe('success');
+    expect(data.reviews.approved).toBe(1);
+    expect(mockGetTeamWorkspaceIds).toHaveBeenCalledWith('team-1');
+  });
+
+  it('returns 409 when prNumber is ambiguous across workspaces in GET', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['ws-1', 'ws-2']);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-a', workspaceId: 'ws-1', prUrl: 'https://g.com/a/pull/42', prNumber: 42, workspace: WORKSPACE_OK },
+      { id: 'w-b', workspaceId: 'ws-2', prUrl: 'https://g.com/b/pull/42', prNumber: 42, workspace: WORKSPACE_OK },
+    ]);
+
+    const res = await GET(createGetRequest(null, 42));
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toContain('multiple workspaces');
+    expect(data.candidates).toEqual(expect.arrayContaining(['ws-1', 'ws-2']));
   });
 });

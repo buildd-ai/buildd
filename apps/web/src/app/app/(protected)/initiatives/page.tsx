@@ -3,20 +3,46 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { loadInitiativeList } from '@/lib/initiative-list';
-import { sortInitiatives } from '@/lib/initiative-presentation';
-import InitiativeCard from '@/components/InitiativeCard';
+import {
+  loadInitiativeEffort,
+  loadInitiativeVerdictInputs,
+  deriveInitiativeVerdict,
+  derivePendingCounts,
+  countBlockedByPR,
+  emptyVerdictRollup,
+  zeroEffortWindow,
+  noPendingCounts,
+  type EffortDay,
+  type VerdictRollup,
+  type BlockingTask,
+} from '@/lib/initiative-pulse';
+import {
+  partitionInitiativeZones,
+  VERDICT_LABEL,
+  NOT_WINNING_ORDER,
+  type InitiativePulse,
+} from '@/lib/verdict-presentation';
+import { InitiativeTriage } from './InitiativeTriage';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * The Initiatives list — the triage host (spec §4).
+ *
+ * One row per initiative, led by its verdict, partitioned into
+ * Not-winning / Winning / Dormant. This replaced a grid of `InitiativeCard`s
+ * whose only signal was a percentage and a lifecycle chip, which could not
+ * distinguish an arc that ships from one that burns tokens without merging.
+ */
 export default async function InitiativesListPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
-  const initiatives = sortInitiatives(await loadInitiativeList({ teamIds }));
+  const initiatives = await loadInitiativeList({ teamIds, pendingSignals: true });
 
-  // Empty-collapse: with zero initiatives the page is pure absence — no list
-  // chrome, just a single prompt to start the first one (spec safety property).
+  // Empty-collapse: with zero initiatives the page is pure absence — no zone
+  // headers, no divider, no dormant control (AC-18).
   if (initiatives.length === 0) {
     return (
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
@@ -36,7 +62,85 @@ export default async function InitiativesListPage() {
     );
   }
 
-  const blockedCount = initiatives.filter((i) => i.progress.status === 'blocked').length;
+  // Effort and verdict evidence are both team-scoped (§6.5): one pair of loaders
+  // per team, merged on initiative id. Initiative ids are globally unique, so the
+  // merge cannot collide — and the `__unassigned__` bucket is dropped, since
+  // missions without an initiative are a Missions-tab concern, not a row here.
+  const effortByInitiative = new Map<string, EffortDay[]>();
+  const rollupByInitiative = new Map<string, VerdictRollup>();
+  await Promise.all(
+    teamIds.map(async (teamId) => {
+      const [effort, rollups] = await Promise.all([
+        loadInitiativeEffort({ teamId }),
+        loadInitiativeVerdictInputs({ teamId }),
+      ]);
+      for (const [id, days] of effort) effortByInitiative.set(id, days);
+      for (const [id, rollup] of rollups) rollupByInitiative.set(id, rollup);
+    }),
+  );
+
+  // `dependsOn` crosses mission boundaries, so the blocking index spans every
+  // mission on the page rather than being rebuilt per initiative.
+  const taskIndex = new Map<string, BlockingTask>();
+  for (const initiative of initiatives) {
+    for (const mission of initiative.missions) {
+      for (const task of mission.tasks ?? []) taskIndex.set(task.id, task);
+    }
+  }
+
+  const pulses: InitiativePulse[] = initiatives.map((initiative) => {
+    const rollup = rollupByInitiative.get(initiative.id) ?? emptyVerdictRollup(initiative.status);
+    const effortDays = effortByInitiative.get(initiative.id) ?? zeroEffortWindow();
+
+    // A mission reads as shipped exactly when its status is 'completed' — the
+    // first rule of `deriveMissionHealth` — so the counts agree with the Missions
+    // tab without re-deriving full health here.
+    const counts =
+      derivePendingCounts(
+        initiative.missions.map((mission) => ({
+          initiativeId: initiative.id,
+          isHeld: mission.isHeld,
+          health: mission.status === 'completed' ? 'shipped' : mission.status,
+          lastActivityAt: mission.updatedAt,
+          blockedPRCount: countBlockedByPR(mission.tasks ?? [], taskIndex),
+          tasks: mission.tasks ?? [],
+        })),
+      ).get(initiative.id) ?? noPendingCounts();
+
+    const { verdict, confidence, tokens7d } = deriveInitiativeVerdict({ rollup, effortDays, counts });
+
+    return {
+      id: initiative.id,
+      title: initiative.title,
+      progress: initiative.progress.progress,
+      effortDays,
+      awaitingVerification: counts.awaitingVerification,
+      blocked: counts.blocked,
+      held: counts.held,
+      shippedThisWeek: counts.shippedThisWeek,
+      verdict,
+      confidence,
+      merges7d: rollup.merges7d,
+      attempts7d: rollup.attempts7d,
+      tokens7d,
+      criteriaFail: rollup.criteriaFail,
+      completedMissions: initiative.progress.completedMissions,
+      totalMissions: initiative.progress.totalMissions,
+      completedTasks: initiative.progress.completedTasks,
+      totalTasks: initiative.progress.totalTasks,
+    };
+  });
+
+  // Subheading counts arcs by verdict in ladder order, so the page states the
+  // answer before any row is read. Silent when nothing is going wrong.
+  const { notWinning } = partitionInitiativeZones(pulses);
+  const notWinningSummary = NOT_WINNING_ORDER
+    .map((verdict) => {
+      const n = notWinning.filter((p) => p.verdict === verdict).length;
+      return n > 0 ? `${n} ${VERDICT_LABEL[verdict].toLowerCase()}` : null;
+    })
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
@@ -44,7 +148,8 @@ export default async function InitiativesListPage() {
         <div>
           <h1 className="text-xl font-semibold text-text-primary font-sans uppercase tracking-tight">Initiatives</h1>
           <p className="text-[12px] text-text-muted mt-1">
-            {initiatives.length} open{blockedCount > 0 ? ` · ${blockedCount} blocked` : ''} · progress rolled up from missions and tasks
+            {initiatives.length} {initiatives.length === 1 ? 'arc' : 'arcs'}
+            {notWinningSummary ? ` · ${notWinningSummary}` : ''}
           </p>
         </div>
         <Link
@@ -55,11 +160,7 @@ export default async function InitiativesListPage() {
         </Link>
       </div>
 
-      <div className="flex flex-col gap-3">
-        {initiatives.map((initiative) => (
-          <InitiativeCard key={initiative.id} initiative={initiative} />
-        ))}
-      </div>
+      <InitiativeTriage items={pulses} teamId={teamIds[0] ?? 'none'} />
     </div>
   );
 }

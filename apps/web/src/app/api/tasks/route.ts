@@ -736,6 +736,13 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         status: 'pending',
         mode: 'execution',
+        taskClass: (
+          title.startsWith('[friction] ') ||
+          title.startsWith('Aggregate results:') ||
+          title.startsWith('Evaluate mission completion:') ||
+          title.startsWith('Mission:') ||
+          title.startsWith('Close mission')
+        ) ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {

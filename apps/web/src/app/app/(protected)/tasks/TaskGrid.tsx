@@ -8,6 +8,7 @@ import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
+import { deriveBandKey } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
@@ -45,7 +46,9 @@ interface GridTask {
   attemptCurrent?: number | null;
   attemptTotal?: number | null;
   taskType?: TaskType | null;
+  taskClass?: string | null;
   parentTaskId?: string | null;
+  loopExitConditionType?: string | null;
 }
 
 function timeAgo(dateStr: string): string {
@@ -100,6 +103,7 @@ function renderTaskCard(
         loopIteration={task.loopIteration}
         loopState={task.loopState}
         loopMaxLoops={task.loopMaxLoops}
+        loopExitConditionType={task.loopExitConditionType}
         workerStartedAt={task.workerStartedAt}
         workerUpdatedAt={task.workerUpdatedAt}
         attemptCurrent={task.attemptCurrent}
@@ -130,7 +134,16 @@ function renderTaskWithChildren(
   );
   const hasChildren = children.length > 0;
   const isExpanded = expandedParents.has(task.id);
-  const childLabel = children.length === 1 ? 'attempt' : 'attempts';
+  // Derive attempt label from children's taskType so 'Retry', 'Review', etc. render
+  // instead of the generic 'attempt'. Mixed-type children fall back to 'attempt'.
+  const childTypes = new Set(children.map(c => c.taskType).filter(Boolean));
+  const hasReview = childTypes.has('review') || childTypes.has('review-retry');
+  const hasRetry = childTypes.has('retry');
+  const childLabel = hasReview && !hasRetry
+    ? (children.length === 1 ? 'review' : 'reviews')
+    : hasRetry && !hasReview
+      ? (children.length === 1 ? 'retry' : 'retries')
+      : (children.length === 1 ? 'attempt' : 'attempts');
 
   // Elbow rail indentation for blocked tasks when blocker is in same group
   const isBlocked = (task.chain?.blockedBy?.length ?? 0) > 0;
@@ -240,12 +253,13 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return tasks;
   }, [tasks, missionFilter, initiativeMissionIds]);
 
-  // Split tasks into roots (no parent) and children (retry/reviewer tasks with parentTaskId)
-  const rootTasks = useMemo(() => visibleTasks.filter(t => !t.parentTaskId), [visibleTasks]);
+  // Split tasks: roots are 'work' tasks (genuine deliverables), children are 'attempt' tasks
+  // (CI retries, reviewer runs) that nest under their parent work task.
+  const rootTasks = useMemo(() => visibleTasks.filter(t => t.taskClass === 'work'), [visibleTasks]);
   const childrenByParentId = useMemo(() => {
     const map = new Map<string, GridTask[]>();
     for (const t of visibleTasks) {
-      if (t.parentTaskId) {
+      if (t.taskClass === 'attempt' && t.parentTaskId) {
         const existing = map.get(t.parentTaskId) ?? [];
         existing.push(t);
         map.set(t.parentTaskId, existing);
@@ -361,33 +375,15 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
   }, [groupBy, nonWaitingTasks]);
 
-  // ─── Time-band groups ──────────────────────────────────────────────────────
+  // ─── Time-band groups — §3.8: shared deriveBandKey (gap-clustered bands) ────
 
   const timeBandGroups = useMemo(() => {
     if (effectiveGroupBy !== 'time') return [];
-    const now = Date.now();
-    const todayStart   = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-    const weekStart    = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
-
-    const bands: { label: string; tasks: GridTask[] }[] = [
-      { label: 'Today',     tasks: [] },
-      { label: 'Yesterday', tasks: [] },
-      { label: 'This week', tasks: [] },
-      { label: 'Older',     tasks: [] },
-    ];
-
-    for (const t of nonWaitingTasks) {
-      const ms = new Date(t.updatedAt).getTime();
-      if (ms >= todayStart.getTime())     bands[0].tasks.push(t);
-      else if (ms >= yesterdayStart.getTime()) bands[1].tasks.push(t);
-      else if (ms >= weekStart.getTime()) bands[2].tasks.push(t);
-      else                                bands[3].tasks.push(t);
-    }
-
-    return bands
-      .filter(b => b.tasks.length > 0)
-      .map(b => ({ ...b, tasks: sortByRecency(b.tasks) }));
+    const withTs = nonWaitingTasks.map(t => ({
+      ...t,
+      completionTs: new Date(t.updatedAt).getTime(),
+    }));
+    return deriveBandKey(withTs, new Date());
   }, [nonWaitingTasks, effectiveGroupBy]);
 
   // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
@@ -786,14 +782,14 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             </div>
           )}
 
-          {/* Grouped by Time (default) */}
-          {effectiveGroupBy === 'time' && timeBandGroups.map((group) => (
-            <div key={group.label}>
+          {/* Grouped by Time (default) — §3.8: gap-clustered via deriveBandKey */}
+          {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
+            <div key={band.label}>
               <GroupSection
-                title={group.label}
-                taskCount={group.tasks.length}
+                title={band.label}
+                taskCount={band.items.length}
               />
-              {group.tasks.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
+              {band.items.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, false))}
             </div>
           ))}
 

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos, missions } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull } from 'drizzle-orm';
+import { workers, githubRepos, missions, tasks } from '@buildd/core/db/schema';
+import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
   resolveMatchedSurfaces,
@@ -12,6 +13,54 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+
+/**
+ * Resolve a worker by PR number across the account's accessible workspaces.
+ *
+ * Used by GET and PUT when workerId is not provided. Mirrors the pattern in
+ * prs/[prNumber]/merge/route.ts but uses team-based workspace access for
+ * API-key accounts (getTeamWorkspaceIds) instead of user-session access.
+ *
+ * Returns the worker row (with workspace) or an error descriptor.
+ */
+async function resolveWorkerByPrNumber(
+  account: { teamId: string },
+  prNumber: number,
+  workspaceId: string | null | undefined,
+): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+  const wsIds = await getTeamWorkspaceIds(account.teamId);
+  if (wsIds.length === 0) {
+    return { error: 'No workspaces found for account', status: 403 };
+  }
+
+  const searchIds =
+    workspaceId && wsIds.includes(workspaceId) ? [workspaceId] : wsIds;
+
+  const matchingWorkers = await db.query.workers.findMany({
+    where: and(
+      inArray(workers.workspaceId, searchIds),
+      eq(workers.prNumber, prNumber),
+      isNotNull(workers.prUrl),
+      isNull(workers.mergedAt),
+    ),
+    with: { workspace: true },
+  });
+
+  if (matchingWorkers.length === 0) {
+    return { error: 'PR not found or already merged', status: 404 };
+  }
+
+  const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
+  if (distinctWorkspaceIds.size > 1) {
+    return {
+      error: `PR #${prNumber} exists in multiple workspaces — pass workspaceId to disambiguate`,
+      status: 409,
+      candidates: [...distinctWorkspaceIds],
+    };
+  }
+
+  return matchingWorkers[0];
+}
 
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
@@ -45,8 +94,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Verify the account owns this worker
-    if (worker.accountId !== account.id) {
+    // Verify the account's team has access to this worker's workspace.
+    // accountId equality is wrong for multi-account teams — the runner's account
+    // differs from the MCP OAuth account. Team membership is the correct boundary.
+    if (worker.workspace?.teamId !== account.teamId) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -152,6 +203,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const taskContext = worker.task?.context as Record<string, unknown> | null;
+    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
+    const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
+    const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
+
     // Dedup: check if a PR already exists for this head branch
     try {
       const existingPrs = await githubApi(
@@ -184,6 +240,27 @@ export async function POST(req: NextRequest) {
         await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
+        // Stamp retry attempt on the existing PR body so the attempt count is
+        // visible on the PR itself (not just the reviewer task).
+        if (retryIteration > 0) {
+          try {
+            const currentBody: string = prDetail.body ?? existing.body ?? '';
+            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — retry task \`${worker.taskId}\`._`;
+            // Replace an existing attempt line or append a new one.
+            const attemptPattern = /_Attempt \d+\/\d+ — retry task `[^`]+`\._/;
+            const updatedBody = attemptPattern.test(currentBody)
+              ? currentBody.replace(attemptPattern, attemptLine)
+              : `${currentBody}\n\n---\n${attemptLine}`;
+            await githubApi(
+              repo.installation.installationId,
+              `/repos/${repo.fullName}/pulls/${existing.number}`,
+              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: updatedBody }) },
+            );
+          } catch {
+            // Non-fatal — attempt stamp is best-effort
+          }
+        }
+
         return NextResponse.json({
           ok: true,
           pr: {
@@ -199,16 +276,12 @@ export async function POST(req: NextRequest) {
       // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
     }
 
-    const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
-
     // Stamp retry lineage into the PR body when this is a fresh fallback PR
     // (resume branch was gone/diverged and a new branch was opened instead of
     // updating the existing one).  Lets humans disambiguate duplicate-looking
     // PRs in the list without reading the diff.
-    const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const lineageSuffix = retryIteration > 0
-      ? `\n\n---\n_Retry attempt ${retryIteration} — task \`${worker.taskId}\`._`
+      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — retry task \`${worker.taskId}\`. Resume branch was unavailable; new PR opened._`
       : '';
     const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
 
@@ -253,6 +326,18 @@ export async function POST(req: NextRequest) {
 
     await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
+
+    // Guaranteed supersede: when a fallback creates a new PR (resume branch was
+    // unavailable), close any open ancestor PRs so at most one PR is mergeable.
+    // This is platform-enforced — not left to agent initiative.
+    if (retryIteration > 0 && worker.task?.parentTaskId && repo.installation?.installationId) {
+      closeAncestorRetryPrs({
+        parentTaskId: worker.task.parentTaskId,
+        successorPrNumber: prData.number,
+        installationId: repo.installation.installationId,
+        repoFullName: repo.fullName,
+      }).catch(err => console.error('[create_pr] closeAncestorRetryPrs failed (non-fatal):', err));
+    }
 
     // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
     try {
@@ -342,7 +427,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    if (worker.accountId !== account.id) {
+    if (worker.workspace?.teamId !== account.teamId) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -398,25 +483,37 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, prNumber, mergeMethod = 'squash' } = body;
+    const { workerId, prNumber, mergeMethod = 'squash', workspaceId } = body;
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
-    }
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
 
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    }
-    if (worker.accountId !== account.id) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+      if (worker.workspace?.teamId !== account.teamId) {
+        return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+    } else {
+      // workerId absent — resolve worker from prNumber across the account's workspaces.
+      // Accepts optional workspaceId for disambiguation when multiple workspaces share a prNumber.
+      const resolved = await resolveWorkerByPrNumber(account, prNumber, workspaceId);
+      if ('error' in resolved) {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
     }
 
     const workspace = worker.workspace;
@@ -444,7 +541,7 @@ export async function PUT(req: NextRequest) {
       await db
         .update(workers)
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, workerId));
+        .where(eq(workers.id, worker.id));
     } else if (/resource not accessible by integration/i.test(result.message)) {
       // The GitHub App installation lacks the required permissions.
       // Merging requires pull_requests:write AND contents:write.
@@ -522,21 +619,50 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const workerId = searchParams.get('workerId');
     const prNumberParam = searchParams.get('prNumber');
+    const workspaceIdParam = searchParams.get('workspaceId');
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
+    if (!workerId && !prNumberParam) {
+      return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
+    let resolvedPrNumber: number;
 
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    }
-    if (worker.accountId !== account.id) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+      if (worker.workspace?.teamId !== account.teamId) {
+        return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+      const parsed = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
+      if (!parsed) {
+        return NextResponse.json(
+          { error: 'prNumber required — pass ?prNumber= or ensure worker has a PR' },
+          { status: 400 },
+        );
+      }
+      resolvedPrNumber = parsed;
+    } else {
+      // No workerId — resolve worker from prNumber across the account's workspaces.
+      const prNum = parseInt(prNumberParam!, 10);
+      if (isNaN(prNum)) {
+        return NextResponse.json({ error: 'Invalid prNumber' }, { status: 400 });
+      }
+      const resolved = await resolveWorkerByPrNumber(account, prNum, workspaceIdParam);
+      if ('error' in resolved) {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
+      resolvedPrNumber = prNum;
     }
 
     const workspace = worker.workspace;
@@ -553,13 +679,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
-    const prNumber = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
-    if (!prNumber) {
-      return NextResponse.json(
-        { error: 'prNumber required — pass ?prNumber= or ensure worker has a PR' },
-        { status: 400 },
-      );
-    }
+    const prNumber = resolvedPrNumber;
 
     const installationId = repo.installation.installationId;
     const fullName = repo.fullName;
@@ -648,4 +768,76 @@ async function persistMissionPrIfFirst(
     .update(missions)
     .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })
     .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
+}
+
+/**
+ * Close open PRs from ancestor retry tasks when a fallback opens a new PR.
+ *
+ * Walk the parentTaskId chain, collect all ancestor task IDs, find workers
+ * with open PRs on those tasks, and close each via GitHub API with a comment
+ * linking the successor. Best-effort — errors are logged but not fatal.
+ */
+async function closeAncestorRetryPrs(opts: {
+  parentTaskId: string;
+  successorPrNumber: number;
+  installationId: number;
+  repoFullName: string;
+}): Promise<void> {
+  const { parentTaskId, successorPrNumber, installationId, repoFullName } = opts;
+
+  // Walk task ancestry to collect all ancestor task IDs
+  const ancestorTaskIds: string[] = [];
+  const visited = new Set<string>();
+  let taskId: string | null = parentTaskId;
+  while (taskId && !visited.has(taskId)) {
+    visited.add(taskId);
+    ancestorTaskIds.push(taskId);
+    const currentId: string = taskId;
+    const parent = await db.query.tasks.findFirst({
+      where: eq(tasks.id, currentId),
+      columns: { parentTaskId: true },
+    });
+    taskId = parent?.parentTaskId ?? null;
+  }
+
+  if (ancestorTaskIds.length === 0) return;
+
+  // Find workers with open PRs on ancestor tasks
+  const ancestorWorkers = await db.query.workers.findMany({
+    where: and(
+      inArray(workers.taskId, ancestorTaskIds),
+      isNotNull(workers.prNumber),
+    ),
+    columns: { prNumber: true, prUrl: true },
+  });
+
+  const prNumbers = [...new Set(
+    ancestorWorkers
+      .map(w => w.prNumber)
+      .filter((n): n is number => typeof n === 'number' && n !== successorPrNumber),
+  )];
+
+  for (const prNumber of prNumbers) {
+    try {
+      // Post supersession comment
+      const comment =
+        `This pull request has been superseded by #${successorPrNumber} ` +
+        `(resume branch was unavailable; new attempt opened a fresh PR). ` +
+        `Closing to prevent accidental merge of a rejected attempt.`;
+      await githubApi(installationId, `/repos/${repoFullName}/issues/${prNumber}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: comment }),
+      });
+      // Close the PR
+      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'closed' }),
+      });
+      console.log(`[create_pr] Closed ancestor retry PR #${prNumber} superseded by #${successorPrNumber}`);
+    } catch (err) {
+      console.error(`[create_pr] Failed to close ancestor PR #${prNumber}:`, err);
+    }
+  }
 }

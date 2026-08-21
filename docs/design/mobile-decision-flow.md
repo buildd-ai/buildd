@@ -1,6 +1,6 @@
 # Mobile Decision Flow — Design Spec
 
-**Status:** Proposed — awaiting Max's approval before any implementation begins  
+**Status:** Partially Implemented — I-7, I-8, I-11, I-13–I-16 shipped (condensed timeline default-open hierarchy, SegmentStrip in disclosure rows, gate-chip collapse, density tiers, bookkeeping footer, verdict collapse, wave banding). I-1–I-6, I-9, I-10, I-12 pending (initiative grouping, live-state card collapse, gesture grammar).  
 **Related:**
 - `docs/design/review-gate-ux.md` (Waiting-on-you queue, StatusChip, gate chips, §5.2.1 merge CTA, §8 Activity list)
 - `docs/design/task-subject-anchors.md` §5–6 (prLifecycleStatus, reconciliation sweep, subjectStillLive)
@@ -252,6 +252,187 @@ The `segments` array is server-computed (same shape returned by the mission deta
 
 Ghost segments must be distinguishable without color (hatch pattern, not a tint) — mission-state-progress §Progress bar ghost rule applies here too.
 
+### 3.5 Density tiers
+
+Mission detail selects its default view from deliverable task count, not user preference:
+
+| Tasks | Default | Timeline |
+|---|---|---|
+| ≤ N_small | Timeline | is the page |
+| > N_small | Summary | a tab / drill-down |
+
+**N_small = 8**, derived from the real mission distribution in the buildd workspace. Query (run against dev Neon instance):
+
+```sql
+SELECT
+  count(*)                                                        AS mission_count,
+  percentile_cont(0.5)  WITHIN GROUP (ORDER BY deliverable_count) AS p50,
+  percentile_cont(0.75) WITHIN GROUP (ORDER BY deliverable_count) AS p75,
+  percentile_cont(0.9)  WITHIN GROUP (ORDER BY deliverable_count) AS p90
+FROM (
+  SELECT mission_id, count(*) AS deliverable_count
+  FROM tasks
+  WHERE mission_id  IS NOT NULL
+    AND status      != 'cancelled'
+    AND (
+      parent_task_id IS NULL
+      OR mode = 'execution'                          -- spawned builder tasks count
+    )
+    AND title NOT SIMILAR TO '\[(CI Retry|reviewer)[^]]*\].*'
+  GROUP BY mission_id
+  HAVING count(*) > 0
+) sub;
+```
+
+Proxy result from the 68-mission `buildd` workspace sample via the tasks API (deliverable counts as reported by `computeMissionProgress`): p50 = 5, p75 = 8, p90 = 13–14. The 25% of missions above the p75 threshold — those reaching 9–25 deliverable tasks — are precisely where the density problem manifests; the bottom 75% (≤8 tasks) are scannable as a flat timeline.
+
+**Summary view composition — existing components only:**
+
+```
+Desktop (≥640px):
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Mission title                                           15/15 · ✓ completed │
+│  [█████████████████████████████████████░░░░░░░░░░░░░░] 100%  full+labels    │
+│  11 PRs merged · 0 open                                                      │
+│  ─────────────────────────────────────────────────────────────────────────── │
+│  WAITING ON YOU  (1)                                                          │
+│  BUILD: Activity grouping model                                               │
+│  Changes Requested · iteration 1/3   ✗ 0.88                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+360 px:
+┌─────────────────────────────────────────────────┐
+│  Mission title               15/15 · ✓ completed│
+│  [██████████████████████████] 100%              │
+│  11 PRs merged                                  │
+│  ──────────────────────────────────────────────  │
+│  WAITING ON YOU  (1)                             │
+│  BUILD: Activity grouping model                  │
+│  Changes Requested · iter 1/3   ✗ 0.88           │
+└─────────────────────────────────────────────────┘
+```
+
+| Component | Density | Source |
+|---|---|---|
+| Mission outcome line (title + task count + status badge) | — | existing `missions/[id]/page.tsx` header |
+| `MissionProgressBar` | `full` with labels | PR #1699 (spec 13551a50) |
+| PR roll-up (`N PRs merged · M open`) | — | existing `MissionReviewSummary` or page-level count |
+| Waiting-on-you band | — | §3.1 of this spec; existing `groupTimelineTasks` |
+
+If Summary needs something `MissionProgressBar` cannot express at existing densities, that is a new density variant on `MissionProgressBar` — named and justified in the implementation task — **not** a new component.
+
+### 3.6 Bookkeeping rows are not timeline rows
+
+Rows classified as platform bookkeeping do not render as timeline rows at any density. They collapse to a single footer line, expandable.
+
+**Discriminator:** `deriveTaskType({ title, parentTaskId, mode })` from `packages/core/mission-helpers.ts`, introduced by PR #1706 (merged). A row is bookkeeping when this function returns **non-null** (`'retry' | 'review' | 'review-retry'`). No local re-derivation; no title-prefix string matching; no `parentTaskId IS NOT NULL` raw check.
+
+PR #1706 is merged into dev. The exact signature consumed:
+
+```ts
+import { deriveTaskType } from '@buildd/core/mission-helpers';
+// non-null → collapse to footer
+const isBookkeeping = deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }) !== null;
+```
+
+**Footer format:** one line per mission, right-aligned below all timeline bands:
+
+```
+── 12 orchestrator runs · last 2 d ago  ▶ ──
+```
+
+Tapping `▶` expands an inline list of the collapsed rows in reverse-chronological order (same compact format as expanded done rows from §3.3: title + relative time + PR link icon if `prUrl`).
+
+`review` and `review-retry` typed tasks are **already excluded** from `timelineTasks` in `page.tsx` (current filter: `t.category !== 'review'`). The §3.6 change applies to tasks where `deriveTaskType` returns `'retry'` — CI retries and orchestrator echoes — which currently pass through the category filter and appear as regular rows.
+
+### 3.7 Verdict collapse
+
+Reviewer verdict blobs — `🤖 Approved (confidence 0.90)` body prose + `→ Merging automatically…` — collapse to a trailing chip on the row: `✓ 0.93`. Tap expands inline. This extends PR #1589's chips-only-when-they-carry-signal rule (cite it — do not restate it): an approved verdict with merged PR is done state; the chip carries full signal.
+
+**Exception — this is the point of the feature:** the following verdict states render **expanded by default** at every density tier, and sort into the Waiting-on-you band from §3.1:
+
+- `Changes Requested` (any confidence)
+- `escalate` verdict type
+- Any reviewer verdict where the task status is `failed`
+
+A verdict demanding human action must never be collapsed or buried under merged history. The expanded Waiting-on-you render is identical to the current rendering of these states — no new layout.
+
+**Chip format:** `✓ {confidence}` for approved, `✗ {confidence}` for changes-requested when collapsed (changes-requested is not collapsed — included here for completeness). Color tokens: approved → `text-status-success`, changes-requested → `text-status-error`.
+
+Applies to: `CondensedTimeline.tsx` verdict rendering (lines 264–330 in the current file — the inline `reviewerNote` block). The body prose (`note.body`, `note.title` in `<p>` elements) and the "→ Merging automatically…" line are replaced by the chip for non-escalated approved verdicts.
+
+### 3.8 Wave banding
+
+Completed history in the done group bands into waves rendered with the **existing `GroupSection`** component (the same component doing Today / Yesterday / This week in Activity — `apps/web/src/components/GroupSection.tsx`, PR #1699). Only the band-key derivation is new.
+
+**Band-key derivation:**
+
+Gap-cluster completed tasks by `worker.mergedAt` (or `task.updatedAt` when `mergedAt` is null). Any gap of **≥ 4 hours** between consecutive completions opens a new band. The label derives from the first task's completion timestamp relative to now, using the same `deriveTimeBandLabel` vocabulary as `TaskGrid.tsx`:
+
+```
+Today · Yesterday · {Weekday} · {Month D} · {Month D, Year}
+```
+
+When two consecutive bands have the same label (e.g., both "Yesterday" — possible when tasks complete over two calendar days within the same 4 h window), append an ordinal suffix: `Yesterday (1)`, `Yesterday (2)`.
+
+**Derivation location:** `deriveBandKey(tasks: CondensedTimelineTask[], now: Date): BandedGroup[]` lives in `apps/web/src/lib/condensed-timeline.ts` — the same module that owns `groupTimelineTasks`. It is consumed by both `CondensedTimeline.tsx` (done-group banding) and `TaskGrid.tsx` (replacing its current ad-hoc `deriveTimeBandLabel` inline logic). One helper, two consumers.
+
+**Band render** (replaces the current single collapsed done disclosure row):
+
+```
+Desktop:
+▶  Today  · 3 tasks · 2 PRs  [████░░░] collapsed
+▶  Yesterday · 4 tasks · 4 PRs  [████████] (done)
+▶  This week · 6 tasks · 5 PRs  [████████] (done)
+── 12 orchestrator runs · last 2 d ago  ▶ ──
+
+360 px:
+▶  Today  · 3 t · 2 PR  [████░░░]
+▶  Yesterday · 4 t [████████]
+▶  This week · 6 t [████████]
+── 12 runs · 2 d ▶ ──
+```
+
+- Bands are **collapsed by default** (showing count + PR count + `SegmentStrip continuous height={4} maxWidth={80}` per §3.4).
+- The open/in-flight band (if it exists — tasks merged today with open-PR siblings) is **expanded by default**.
+- `GroupSection` is already always-expanded in Activity (no toggle). For timeline banding, it renders in collapsed mode: the existing component's `collapsible` prop (or equivalent) is set; collapsed state is local `useState` per band, reset on page re-entry per §3.3.
+- `TypeGlyph` (`TaskTypeBadge`, PR #1684) is rendered on expanded rows inside a band — same as existing CondensedTimeline task rows. No new glyph logic.
+
+### 3.9 Surface applicability table
+
+Which of §3.5–3.8 apply to each surface, and at which density:
+
+| Surface | §3.5 density tier | §3.6 bookkeeping footer | §3.7 verdict collapse | §3.8 wave banding |
+|---|---|---|---|---|
+| `missions/[id]/page.tsx` | ✓ governs view selection | ✓ pass `isBookkeeping` discriminator to grouping | ✓ (via CondensedTimeline) | ✓ (via CondensedTimeline done group) |
+| `missions/[id]/CondensedTimeline.tsx` | ✓ implements Summary + Timeline views | ✓ footer accumulator replaces row render | ✓ chip replaces body prose for approved verdicts | ✓ done group replaced by banded `GroupSection` list |
+| `home/page.tsx` (Right-now card) | ✗ always top-3 compact; no count gate | ✓ bookkeeping rows excluded (show top 3 non-bookkeeping) | ✓ chip only — compact card has no space for verdict prose | ✗ no history; compact card shows running tasks only |
+| `tasks/TaskGrid.tsx` (Activity) | ✗ Activity is always a flat/grouped list; no summary tier | ✓ bookkeeping rows already excluded via `parentTaskId IS NULL` DB filter; no change needed | ✗ Activity does not render reviewer verdict notes | replaces ad-hoc inline `deriveTimeBandLabel` with shared `deriveBandKey` from condensed-timeline.ts |
+| `home/page.tsx` (ACTIVITY feed) | ✗ fixed 6-row feed, no count gate | ✓ **real change** — feed is derived from workers (last 12 terminal, deduped by task), never filtered by `parentTaskId IS NULL`; `deriveTaskType({ title, parentTaskId, mode })` applied in post-processing; excluded rows are dropped (6-row feed does not warrant an expandable footer) | ✗ feed query does not fetch reviewer verdict notes | ✗ 6-row window is too narrow to span meaningful time bands |
+| `missions/MissionGrid.tsx` | ✗ mission card surface; no timeline | ✗ | ✗ | ✗ |
+| `initiatives/[id]/page.tsx` | ✗ shows mission list, not task timeline | ✗ | ✗ | ✗ |
+
+**Justification for surface-specific rules:**
+
+- §3.5 does not apply to Home or Activity because neither is a mission detail timeline — they have fixed layouts.
+- §3.6 already satisfied in Activity (`parentTaskId IS NULL` DB filter, per PR #1674). Applying it again would be a no-op.
+- §3.6 on the Home ACTIVITY feed is a real change: this feed is derived from workers, not from a task query with a `parentTaskId IS NULL` guard. Without the fix a reviewer-retry row and its parent both appear in the same 6-slot feed. Excluded rows are simply dropped; the feed is too narrow for an expandable footer.
+- §3.7 does not apply to Activity because `TaskGrid` rows do not render reviewer verdict notes — that data is not fetched for the Activity list query.
+- §3.7 does not apply to the Home ACTIVITY feed for the same reason.
+- §3.8 wave banding replaces (not supplements) `TaskGrid`'s existing time-band grouping, sharing the new helper. Per spec 13551a50 §7: duplicated jobs are the bug.
+- §3.8 does not apply to the Home ACTIVITY feed because a 6-row window rarely spans a 4-hour gap and the feed has no existing band UI to replace.
+
+**Delete-list** — sites that will be superseded by this spec:
+
+| File | Lines / construct | Superseded by |
+|---|---|---|
+| `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | Lines 264–330: `reviewerNote` block rendering body prose (`note.body`, `note.title` in `<p>` elements) + "→ Merging automatically…" line for non-escalated approved verdicts | §3.7 chip |
+| `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | Single collapsed done-disclosure `<button>` row (current `{!doneExpanded && ...}` block) | §3.8 per-band `GroupSection` list |
+| `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` | Line 423 `timelineTasks` filter (`t.category !== 'review'`) — currently passes CI retry rows through | §3.6: extend filter to exclude `deriveTaskType() !== null` rows; accumulate them into footer counter |
+| `apps/web/src/components/TaskGrid.tsx` | Inline `deriveTimeBandLabel` logic (Today / Yesterday / This week / Older classification) | §3.8 shared `deriveBandKey` helper |
+
+The build task's job includes deleting or replacing each of these. No other sites re-derive band keys, re-render verdict prose, or re-implement a collapse toggle for the done group.
+
 ---
 
 ## 4. Initiative tier on mobile
@@ -437,7 +618,7 @@ These items have no cross-feature dependencies and can be filed and merged in an
 
 ### 5.4 Proposed implementation task breakdown
 
-Recommended ship order. `dependsOn` values reference task IDs in this table (I-1 through I-12) and review-gate-ux build tasks (BT-1 through BT-12 in that spec). Do not file these tasks until Max approves this spec.
+Recommended ship order. `dependsOn` values reference task IDs in this table (I-1 through I-16) and review-gate-ux build tasks (BT-1 through BT-12 in that spec). Items I-1 through I-12 require approval of this spec; items I-13 through I-16 additionally require approval of the §3.5–3.9 addendum (same doc, same PR).
 
 | ID | Title | Key files | `dependsOn` |
 |---|---|---|---|
@@ -447,18 +628,25 @@ Recommended ship order. `dependsOn` values reference task IDs in this table (I-1
 | **I-4** | Missions list — Ungrouped "Other" bucket + safety guard | same | I-3 |
 | **I-5** | Initiative detail breadcrumb injection (`?from=initiative` passthrough) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `initiatives/[id]/page.tsx` | I-1 |
 | **I-6** | Home — add `initiativeId` to missions select in `home/page.tsx` | `apps/web/src/app/app/(protected)/home/page.tsx` | — |
-| **I-7** | Condensed timeline: default-open hierarchy (Waiting-on-you → Running → Queued → Done collapsed) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` + timeline component(s) | BT-2 (`blockingGate` field) |
-| **I-8** | Condensed timeline: `SegmentStrip` in collapsed disclosure rows | same | I-2, I-7 |
+| **I-7** ✅ | Condensed timeline: default-open hierarchy (Waiting-on-you → Running → Queued → Done collapsed) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` + `CondensedTimeline.tsx` + `apps/web/src/lib/condensed-timeline.ts` | BT-2 (`blockingGate` field) |
+| **I-8** ✅ | Condensed timeline: `SegmentStrip` in collapsed disclosure rows | same | I-2, I-7 |
 | **I-9** | Live-state card: Waiting-on-you card collapse on `prLifecycleStatus` | Home page "Waiting on you" section | BT-1, BT-7, **5/7 deployed** |
 | **I-10** | Live-state card: Escalation inbox resolved-group rendering | Escalation inbox component | **5/7 deployed** |
-| **I-11** | Live-state card: Timeline gate chip collapse on `mergedAt` | Mission detail timeline component | BT-1, BT-7 |
+| **I-11** ✅ | Live-state card: Timeline gate chip collapse on `mergedAt` | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | BT-1, BT-7 |
 | **I-12** | Gesture grammar: `SwipeableRow` + per-card swipe actions + undo toast | `apps/web/src/components/SwipeableRow.tsx` (new); apply to Home gate cards, Activity list rows, mission timeline rows | — |
+| **I-13** | Density tier selector: Summary default for missions > 8 tasks; Summary view composed of `MissionProgressBar density=full+labels` + PR roll-up + Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `CondensedTimeline.tsx` | I-7, I-8 |
+| **I-14** | Bookkeeping row collapse to footer: filter `deriveTaskType() !== null` rows out of `timelineTasks`; accumulate into `"N orchestrator runs · last X ago"` footer expandable | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` (line 423 `timelineTasks` filter), `CondensedTimeline.tsx` | I-7, PR #1706 (✅ merged) |
+| **I-15** | Verdict collapse to chip: replace approved verdict body prose with `✓ {confidence}` chip; expand on tap; `Changes Requested` / `escalate` / `failed` verdicts remain expanded and sort into Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` (lines 264–330) | I-7 |
+| **I-16** | Wave banding: replace single done-disclosure row with `GroupSection`-backed per-wave bands; `deriveBandKey()` helper in `condensed-timeline.ts`; 4 h gap threshold; shared with `TaskGrid.tsx` time-banding | `apps/web/src/lib/condensed-timeline.ts` (new `deriveBandKey`), `CondensedTimeline.tsx` (done group), `apps/web/src/components/TaskGrid.tsx` (replace inline `deriveTimeBandLabel`) | I-7, I-8 |
+
+✅ = implemented and deployed to production. Prerequisites for I-13–I-16.
 
 **Parallel-safe groups:**
 - `{I-1, I-2, I-6, I-12}` — fully independent; start these in parallel
 - `{I-3, I-4, I-5}` — parallel after I-1 completes
-- `{I-7, I-8}` — after I-2; I-8 additionally after I-7
-- `{I-9, I-10, I-11}` — gate on 5/7 deployment; I-9 and I-11 additionally gate on BT-1 + BT-7
+- `{I-7, I-8}` — after I-2; I-8 additionally after I-7 (both ✅ — no longer actionable)
+- `{I-9, I-10, I-11}` — gate on 5/7 deployment; I-9 and I-11 additionally gate on BT-1 + BT-7 (I-11 ✅)
+- `{I-13, I-14, I-15, I-16}` — all depend on I-7 ✅ and I-8 ✅; fully parallel with each other; no cross-dependency
 
 ---
 
@@ -467,5 +655,5 @@ Recommended ship order. `dependsOn` values reference task IDs in this table (I-1
 This spec is for Max's review. No implementation should begin until:
 
 1. Max approves (or provides revision feedback)
-2. Implementation tasks I-1 through I-12 are filed from this doc
+2. Implementation tasks I-1 through I-16 are filed from this doc (I-13 through I-16 require approval of the §3.5–3.9 addendum)
 3. Each task follows TDD: failing test first, then implementation

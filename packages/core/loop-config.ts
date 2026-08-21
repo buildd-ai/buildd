@@ -6,9 +6,9 @@ export const LOOP_MAX_LOOPS_MAX = 50;
 export const LOOP_BACKOFF_MINUTES_DEFAULT = 0;
 export const LOOP_BACKOFF_MINUTES_MAX = 10_080; // 7 days
 
-const EXIT_CONDITION_TYPES = new Set(['command', 'pr_checks_green', 'structured_predicate']);
+const EXIT_CONDITION_TYPES = new Set(['command', 'pr_checks_green', 'pr_merged', 'structured_predicate']);
 const PREDICATE_OPERATORS = new Set(['eq', 'neq', 'exists', 'gt', 'gte', 'lt', 'lte']);
-const LOOP_CONFIG_KEYS = new Set(['exitCondition', 'maxLoops', 'backoffMinutes']);
+const LOOP_CONFIG_KEYS = new Set(['exitCondition', 'maxLoops', 'backoffMinutes', 'waitExpiryMinutes']);
 
 function rejectUnknownKeys(obj: Record<string, unknown>, allowed: Set<string>, context: string): void {
   const unknown = Object.keys(obj).filter(k => !allowed.has(k));
@@ -61,6 +61,11 @@ function parseExitCondition(raw: unknown, verificationCommand?: string): LoopExi
   if (type === 'pr_checks_green') {
     rejectUnknownKeys(cond, new Set(['type']), 'exitCondition');
     return { type: 'pr_checks_green' };
+  }
+
+  if (type === 'pr_merged') {
+    rejectUnknownKeys(cond, new Set(['type']), 'exitCondition');
+    return { type: 'pr_merged' };
   }
 
   // type === 'structured_predicate'
@@ -148,5 +153,23 @@ export function parseLoopConfig(raw: unknown, verificationCommand?: string): Loo
     backoffMinutes = cfg.backoffMinutes;
   }
 
-  return { exitCondition, maxLoops, backoffMinutes };
+  let waitExpiryMinutes: number | undefined;
+  if ('waitExpiryMinutes' in cfg && cfg.waitExpiryMinutes !== undefined) {
+    if (typeof cfg.waitExpiryMinutes !== 'number' || !Number.isInteger(cfg.waitExpiryMinutes)) {
+      throw new Error('loopConfig.waitExpiryMinutes must be an integer');
+    }
+    if (cfg.waitExpiryMinutes < 1 || cfg.waitExpiryMinutes > LOOP_BACKOFF_MINUTES_MAX) {
+      throw new Error(
+        `loopConfig.waitExpiryMinutes must be between 1 and ${LOOP_BACKOFF_MINUTES_MAX}`
+      );
+    }
+    waitExpiryMinutes = cfg.waitExpiryMinutes;
+  }
+
+  return {
+    exitCondition,
+    maxLoops,
+    backoffMinutes,
+    ...(waitExpiryMinutes !== undefined ? { waitExpiryMinutes } : {}),
+  };
 }

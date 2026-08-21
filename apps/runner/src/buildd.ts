@@ -165,6 +165,11 @@ export class BuilddClient {
       parentAgentId?: string;
     }>;
     waitingFor?: { type: string; prompt: string; options?: string[] } | null;
+    // Actual git branch checked out in the worktree (may differ from the
+    // claim-time branch when setupWorktree honors a resumeBranch). Must be
+    // persisted so webhook lookups (reviewer/CI retry dispatch) see the correct
+    // branch for the next retry's resumeBranch context.
+    branch?: string;
     // Git stats
     lastCommitSha?: string;
     commitCount?: number;
