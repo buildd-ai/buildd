@@ -17,6 +17,7 @@ import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
 import { groupTimelineTasks } from '@/lib/condensed-timeline';
@@ -630,6 +631,9 @@ export default async function MissionDetailPage({
           taskIds={missionTaskIds}
         />
       )}
+
+      {/* Freshen PR state on open — reconcile only, never a planning pass */}
+      <MissionReconcileOnOpen missionId={id} />
 
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">

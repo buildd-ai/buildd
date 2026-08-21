@@ -146,6 +146,19 @@ keep workspace and repo data in sync and optionally auto-create tasks.
   would also match `owner/name-legacy`.
 - Back-link failures MUST NOT fail the delivery (GitHub does not retry App
   webhooks); they log and alert instead.
+- Worker lookups driven by a webhook MUST be scoped to the event's repository.
+  GitHub PR numbers are unique per repo, not globally, so matching on
+  `workers.prNumber` alone can resolve to another repo's worker and write merge
+  state onto the wrong row. Use `workerOwnsPr` / `workerOwnsPrUrl` from
+  `lib/repo-scope.ts`.
+- Workspace lookups from a webhook MUST match on a normalized `owner/name`
+  (`workspaceRepoMatches`). `workspaces.repo` may hold a bare full name or a
+  clone URL, so string equality against `repository.full_name` silently misses
+  most rows.
+- Because a merge is learned from exactly one un-retried delivery, PR state MUST
+  be reconcilable after the fact: `POST /api/missions/[id]/reconcile` re-derives
+  it from GitHub. Reconciliation is read-mostly and idempotent; it MUST NOT
+  trigger a planning pass, which costs an agent run.
 
 **Acceptance criteria**:
 - AC-8: WHEN a GitHub webhook payload is received with an invalid signature
