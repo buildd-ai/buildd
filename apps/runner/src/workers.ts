@@ -2220,6 +2220,14 @@ export class WorkerManager {
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
+      // Guard: claude-opus-5 at xhigh/max effort requires thinking enabled.
+      // Passing thinking: { type: "disabled" } at these effort levels returns 400.
+      const isOpus5HighEffort = /claude-opus-5/i.test(this.config.model || '')
+        && (configuredEffort === 'xhigh' || configuredEffort === 'max');
+      const effectiveThinking = (isOpus5HighEffort && (configuredThinking as any)?.type === 'disabled')
+        ? undefined
+        : configuredThinking;
+
       // Resolve SDK native binary explicitly — Bun's isolated linker layout
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
@@ -2349,7 +2357,7 @@ export class WorkerManager {
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls — validated against model capabilities below
-        ...(configuredThinking ? { thinking: configuredThinking } : {}),
+        ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
         ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 
@@ -2691,7 +2699,7 @@ export class WorkerManager {
           }
           discoverModelCapabilities(qi, worker, {
             effort: configuredEffort,
-            thinking: configuredThinking,
+            thinking: effectiveThinking,
             extendedContext,
           }, this.config.model, (e: any) => this.emit(e));
         },

@@ -72,11 +72,15 @@ Used only when the DB registry has no row for a tier (e.g. new team, cold start)
 ```ts
 // packages/core/model-tier-registry.ts
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
-  premium:  { provider: 'anthropic', model: 'claude-opus-4-8' },
+  premium:  { provider: 'anthropic', model: 'claude-opus-5' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
   budget:   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
 };
 ```
+
+> **Premium model: Opus 5 (as of 2026-08-21).** `claude-opus-5` ($5/$25/MTok) delivers near-Fable-5 performance at Opus 4.8 pricing — making it cost-neutral versus Opus 4.8 within our billing system (both match `id.includes('opus')` in `model-prices.ts` → `TIER_PRICES.opus`). The alias change is safe.
+>
+> **Premium+: Fable 5.** `claude-fable-5` is Anthropic's most capable model at 2× the cost ($10/$50/MTok) and carries a **30-day data-retention requirement** (Anthropic retains inputs/outputs for model improvement for 30 days unless opted out). Use it for tasks that genuinely require frontier capability and where the retention policy is acceptable; it is NOT the premium default.
 
 These are the **last resort** — a team that has configured its registry never sees them.
 
