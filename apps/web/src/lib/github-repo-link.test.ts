@@ -118,12 +118,14 @@ describe('syncInstallationRepos', () => {
     expect(backLinkStatement).not.toMatch(/like/i);
   });
 
-  it('normalizes workspaces.repo by stripping the host prefix and .git suffix', () => {
+  it('normalizes workspaces.repo using the shared repo-scope regexes', () => {
+    // The regexes live in @/lib/repo-scope so the webhook's workspace lookups
+    // and this back-link share one definition. See repo-scope.test.ts for the
+    // behavioural assertions on the patterns themselves.
     expect(repoNormalizer).toContain('regexp_replace');
-    expect(repoNormalizer).toContain('https?://');
-    expect(repoNormalizer).toContain('git@github');
-    expect(repoNormalizer).toContain('.git)?/*$');
     expect(repoNormalizer).toContain("coalesce(w.repo, '')");
+    expect(repoNormalizer).toContain('GITHUB_HOST_PREFIX_RE');
+    expect(repoNormalizer).toContain('GIT_SUFFIX_RE');
     expect(repoNormalizer).not.toMatch(/like/i);
   });
 

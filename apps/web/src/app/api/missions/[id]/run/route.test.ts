@@ -232,6 +232,64 @@ describe('POST /api/missions/[id]/run', () => {
     expect(data.task.id).toBe('task-existing');
   });
 
+  // Regression: the route returned 201 {task: null} for every skip path, which
+  // the client could not distinguish from success — so a deliberately-skipped
+  // run rendered as a dead button.
+  describe('skip outcomes are reported, not swallowed', () => {
+    function activeMission() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+      mockGetUserTeamIds.mockResolvedValue(['team-1']);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'obj-123', teamId: 'team-1' });
+    }
+
+    it('reports skippedPrOpen with 200', async () => {
+      activeMission();
+      mockRunMission.mockResolvedValue({ task: null, skippedPrOpen: true });
+
+      const response = await callHandler(createMockRequest(), 'obj-123');
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.skippedPrOpen).toBe(true);
+      expect(data.task).toBeNull();
+    });
+
+    it('reports skippedBlocked with its reason', async () => {
+      activeMission();
+      mockRunMission.mockResolvedValue({
+        task: null,
+        skippedBlocked: true,
+        blockedReason: 'Waiting for mission Foo to merge',
+      });
+
+      const response = await callHandler(createMockRequest(), 'obj-123');
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.skippedBlocked).toBe(true);
+      expect(data.blockedReason).toBe('Waiting for mission Foo to merge');
+    });
+
+    it('reports skippedBudgetExhausted with 200', async () => {
+      activeMission();
+      mockRunMission.mockResolvedValue({ task: null, skippedBudgetExhausted: true });
+
+      const response = await callHandler(createMockRequest(), 'obj-123');
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.skippedBudgetExhausted).toBe(true);
+    });
+
+    it('still returns 201 with the task when planning actually starts', async () => {
+      activeMission();
+      mockRunMission.mockResolvedValue({ task: { id: 'task-new' } });
+
+      const response = await callHandler(createMockRequest(), 'obj-123');
+      expect(response.status).toBe(201);
+      const data = await response.json();
+      expect(data.task.id).toBe('task-new');
+      expect(data.skippedPrOpen).toBeUndefined();
+    });
+  });
+
   it('returns 403 for non-admin API key', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'worker' });

@@ -13,6 +13,22 @@ const mockNotifyMissionPrReady = mock(() => Promise.resolve());
 const mockSyncInstallationReposById = mock(() =>
   Promise.resolve({ synced: 0, linked: 0, linkedWorkspaceIds: [] as string[] })
 );
+// Repo-scope helpers are mocked so tests can assert the webhook passes repo
+// context down. The predicates they build are covered in repo-scope.test.ts.
+const mockWorkerOwnsPr = mock((repoFullName: string, prNumber: number) => ({
+  type: 'workerOwnsPr',
+  repoFullName,
+  prNumber,
+}));
+const mockWorkerOwnsPrUrl = mock((prUrl: string, prNumber: number) => ({
+  type: 'workerOwnsPrUrl',
+  prUrl,
+  prNumber,
+}));
+const mockWorkspaceRepoMatches = mock((repoFullName: string) => ({
+  type: 'workspaceRepoMatches',
+  repoFullName,
+}));
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -48,6 +64,15 @@ mock.module('@/lib/mission-notifications', () => ({
 
 mock.module('@/lib/github-repo-link', () => ({
   syncInstallationReposById: mockSyncInstallationReposById,
+}));
+
+mock.module('@/lib/repo-scope', () => ({
+  workerOwnsPr: mockWorkerOwnsPr,
+  workerOwnsPrUrl: mockWorkerOwnsPrUrl,
+  workspaceRepoMatches: mockWorkspaceRepoMatches,
+  prUrlFor: (repo: string, n: number) => `https://github.com/${repo}/pull/${n}`,
+  GITHUB_HOST_PREFIX_RE: 'prefix-re',
+  GIT_SUFFIX_RE: 'suffix-re',
 }));
 
 mock.module('@/lib/pushover', () => ({
@@ -345,6 +370,9 @@ function resetAll() {
   mockSyncInstallationReposById.mockReturnValue(
     Promise.resolve({ synced: 0, linked: 0, linkedWorkspaceIds: [] })
   );
+  mockWorkerOwnsPr.mockClear();
+  mockWorkerOwnsPrUrl.mockClear();
+  mockWorkspaceRepoMatches.mockClear();
   mockDispatchNewTask.mockReset();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -936,6 +964,56 @@ describe('POST /api/github/webhook', () => {
       // PR files fetch (safety rails) — empty diff passes the line budget
       mockGithubApi.mockReturnValue(Promise.resolve([]));
     }
+
+    // Regression: worker lookups used to match on prNumber alone. PR numbers are
+    // unique per repo, not globally — buildd-ai/buildd#146 and maxjacu/moa-ops#146
+    // both exist, so merging one silently stamped mergedAt onto the other's
+    // worker. 25 of 70 colliding worker rows in production were wrong.
+    it('scopes the merge-stamp worker lookup to the event repo', async () => {
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', workspaceId: 'ws1', task: null });
+      const payload = makePullRequestPayload({
+        top: { action: 'closed' },
+        pull_request: {
+          number: 146,
+          merged: true,
+          html_url: 'https://github.com/maxjacu/moa-ops/pull/146',
+        },
+        repository: { full_name: 'maxjacu/moa-ops' },
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/moa-ops', 146);
+      // Never a bare prNumber lookup — that is the collision.
+      expect(mockWorkerOwnsPr.mock.calls.every((c) => typeof c[0] === 'string' && c[0].includes('/'))).toBe(true);
+    });
+
+    it('scopes the PR-lifecycle worker lookup to the event repo', async () => {
+      mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', workspaceId: 'ws1', branch: 'b' });
+      const payload = makePullRequestPayload({
+        top: { action: 'synchronize' },
+        pull_request: { number: 146, html_url: 'https://github.com/maxjacu/moa-ops/pull/146' },
+        repository: { full_name: 'maxjacu/moa-ops' },
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/moa-ops', 146);
+    });
+
+    // Regression: workspace lookups used `eq(workspaces.repo, full_name)`, which
+    // misses every workspace storing a clone URL — 11 of 12 in production.
+    it('matches workspaces by normalized repo, not exact string equality', async () => {
+      const payload = makePullRequestPayload({
+        repository: { full_name: 'maxjacu/moa-ops' },
+      });
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      expect(mockWorkspaceRepoMatches).toHaveBeenCalledWith('maxjacu/moa-ops');
+    });
 
     it('auto-merges a newly-opened PR when the repo has no CI', async () => {
       withAutoMergeWorkspaceAndWorker();

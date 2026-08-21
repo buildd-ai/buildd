@@ -1,8 +1,25 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
+
+/**
+ * Every way a manual orchestrator run can end. `runMission` has five distinct
+ * no-op paths; showing them is the difference between "the button is broken"
+ * and "the mission is deliberately paused, here's why".
+ */
+type RunOutcome =
+  | { kind: 'idle' }
+  | { kind: 'starting' }
+  | { kind: 'planning'; taskId: string | null; turns?: number }
+  | { kind: 'deduped'; taskId: string | null }
+  | { kind: 'pr_open' }
+  | { kind: 'blocked'; reason: string | null }
+  | { kind: 'budget' }
+  | { kind: 'error'; message: string };
 
 interface MissionSettingsProps {
   missionId: string;
@@ -36,6 +53,7 @@ export default function MissionSettings({
   const [taskLoading, setTaskLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRunLoading, setManualRunLoading] = useState(false);
+  const [runOutcome, setRunOutcome] = useState<RunOutcome>({ kind: 'idle' });
   const [editingCron, setEditingCron] = useState(false);
   const [cronValue, setCronValue] = useState(cronExpression || '');
   const [cronSaving, setCronSaving] = useState(false);
@@ -43,6 +61,45 @@ export default function MissionSettings({
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
+
+  // Live turn counter for the planning task we just started. The organizer can
+  // think for minutes; without this the button settles back to idle and the work
+  // is invisible.
+  const planningTaskId = runOutcome.kind === 'planning' ? runOutcome.taskId : null;
+  useEffect(() => {
+    if (!planningTaskId || !workspaceId) return;
+
+    const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
+    const channel = subscribeToChannel(channelName);
+    if (!channel) return;
+
+    const matches = (d: { taskId?: string; worker?: { taskId?: string } }) =>
+      (d.taskId ?? d.worker?.taskId) === planningTaskId;
+
+    const onProgress = (d: { taskId?: string; turns?: number; worker?: { taskId?: string; turns?: number } }) => {
+      if (!matches(d)) return;
+      const turns = d.turns ?? d.worker?.turns;
+      setRunOutcome((prev) =>
+        prev.kind === 'planning' ? { ...prev, turns: turns ?? prev.turns } : prev,
+      );
+    };
+    const onDone = (d: { taskId?: string; worker?: { taskId?: string } }) => {
+      if (!matches(d)) return;
+      setRunOutcome({ kind: 'idle' });
+      router.refresh();
+    };
+
+    channel.bind('worker:progress', onProgress);
+    channel.bind('worker:completed', onDone);
+    channel.bind('worker:failed', onDone);
+
+    return () => {
+      channel.unbind('worker:progress', onProgress);
+      channel.unbind('worker:completed', onDone);
+      channel.unbind('worker:failed', onDone);
+      unsubscribeFromChannel(channelName);
+    };
+  }, [planningTaskId, workspaceId, router]);
 
   async function patchMission(body: Record<string, unknown>) {
     try {
@@ -73,11 +130,17 @@ export default function MissionSettings({
     setStatusLoading(false);
   }
 
+  // Arming a mission means both things a stalled mission needs: the orchestrator
+  // ticks itself (orchestrationMode) and workers may claim its tasks (isHeld).
+  // These used to be separate controls — one an 11px text link labelled "Auto
+  // mode", the other a button labelled "Arm mission" that only appeared when
+  // held — and "armed but held" is not a state anyone asks for.
   async function handleArm() {
     setModeLoading(true);
-    const ok = await patchMission({ arm: true });
+    const ok = await patchMission({ arm: true, orchestrationMode: 'auto' });
     if (ok) {
       setIsHeld(false);
+      setOrchestrationMode('auto');
       router.refresh();
     }
     setModeLoading(false);
@@ -97,20 +160,30 @@ export default function MissionSettings({
   async function handleManualRun() {
     setManualRunLoading(true);
     setError(null);
+    setRunOutcome({ kind: 'starting' });
     try {
       const res = await fetch(`/api/missions/${missionId}/run`, {
         method: 'POST',
         credentials: 'include',
       });
-      if (res.ok) {
-        router.refresh();
+      const data = await res.json().catch(() => ({} as Record<string, unknown>));
+
+      if (!res.ok) {
+        setRunOutcome({ kind: 'error', message: (data.error as string) || 'Failed to trigger run' });
+      } else if (data.deduped) {
+        setRunOutcome({ kind: 'deduped', taskId: (data.task as any)?.id ?? null });
+      } else if (data.skippedPrOpen) {
+        setRunOutcome({ kind: 'pr_open' });
+      } else if (data.skippedBlocked) {
+        setRunOutcome({ kind: 'blocked', reason: (data.blockedReason as string) ?? null });
+      } else if (data.skippedBudgetExhausted) {
+        setRunOutcome({ kind: 'budget' });
       } else {
-        setError('Failed to trigger run');
-        setTimeout(() => setError(null), 3000);
+        setRunOutcome({ kind: 'planning', taskId: (data.task as any)?.id ?? null });
+        router.refresh();
       }
     } catch {
-      setError('Failed to trigger run');
-      setTimeout(() => setError(null), 3000);
+      setRunOutcome({ kind: 'error', message: 'Network error' });
     }
     setManualRunLoading(false);
   }
@@ -221,56 +294,78 @@ export default function MissionSettings({
             </div>
           )}
 
-          {/* Manual + not held + not review-ready: Run now is the primary action */}
-          {!isHeld && displayState !== 'review' && orchestrationMode === 'manual' && workspaceId && (
-            <button
-              onClick={handleManualRun}
-              disabled={manualRunLoading}
-              className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
-            >
-              {manualRunLoading ? (
-                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
-                </svg>
+          {/* Manual + not held + not review-ready: arming is the primary action.
+              "Plan once" was the primary CTA here, which put a one-shot poke
+              above the durable state change people actually came to make. */}
+          {!isHeld && displayState !== 'review' && orchestrationMode === 'manual' && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={handleArm}
+                disabled={modeLoading}
+                className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-[13px] font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
+              >
+                {modeLoading ? (
+                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                )}
+                {modeLoading ? 'Arming…' : 'Arm mission'}
+              </button>
+              {workspaceId && (
+                <button
+                  onClick={handleManualRun}
+                  disabled={manualRunLoading}
+                  title="Run the orchestrator once, then return to idle"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+                  </svg>
+                  Plan once
+                </button>
               )}
-              {manualRunLoading ? 'Running…' : 'Run now'}
-            </button>
+            </div>
           )}
 
-          {/* Auto + not held + not review-ready: Run now is available but secondary */}
+          {/* Auto + not held + not review-ready: an extra tick is secondary */}
           {!isHeld && displayState !== 'review' && orchestrationMode === 'auto' && workspaceId && (
             <button
               onClick={handleManualRun}
               disabled={manualRunLoading}
+              title="Tick the orchestrator now instead of waiting for the schedule"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
             >
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
               </svg>
-              {manualRunLoading ? 'Running…' : 'Run now'}
+              Plan now
             </button>
           )}
 
+          <RunOutcomeStrip outcome={runOutcome} onDismiss={() => setRunOutcome({ kind: 'idle' })} />
+
           {/* ── Secondary actions row ── */}
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Arm/Disarm toggle — text link, not prominent */}
-            {!isHeld && displayState !== 'review' && (
-              <button
-                onClick={handleToggleOrchestrationMode}
-                disabled={modeLoading}
-                className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
-                title={orchestrationMode === 'manual' ? 'Switch to auto mode' : 'Switch to manual mode'}
-              >
-                {modeLoading ? '…' : orchestrationMode === 'manual' ? 'Auto mode' : 'Disarm'}
-              </button>
+            {/* Disarm — the inverse of Arm mission. Arming is a primary button
+                above, so this side of the toggle is the only text link left. */}
+            {!isHeld && displayState !== 'review' && orchestrationMode === 'auto' && (
+              <>
+                <button
+                  onClick={handleToggleOrchestrationMode}
+                  disabled={modeLoading}
+                  className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                  title="Stop the orchestrator from ticking itself; you drive it with Plan now"
+                >
+                  {modeLoading ? '…' : 'Disarm'}
+                </button>
+                <span className="h-3 border-r border-card-border" />
+              </>
             )}
-
-            {!isHeld && displayState !== 'review' && <span className="h-3 border-r border-card-border" />}
 
             {/* Schedule editor */}
             {!editingCron && (
@@ -444,4 +539,103 @@ export default function MissionSettings({
       )}
     </div>
   );
+}
+
+/**
+ * Reports what a manual orchestrator run actually did. "Run now" used to call
+ * router.refresh() for every outcome, so a deliberate skip and a started
+ * planning cycle looked identical: nothing visibly happened.
+ */
+function RunOutcomeStrip({
+  outcome,
+  onDismiss,
+}: {
+  outcome: RunOutcome;
+  onDismiss: () => void;
+}) {
+  if (outcome.kind === 'idle') return null;
+
+  const spinner = (
+    <span className="w-2.5 h-2.5 rounded-full border-2 border-accent border-t-transparent animate-spin inline-block flex-shrink-0" />
+  );
+
+  const shell = (tone: string, children: React.ReactNode) => (
+    <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] ${tone}`}>
+      {children}
+    </div>
+  );
+
+  const taskLink = (taskId: string | null, label: string) =>
+    taskId ? (
+      <Link href={`/app/tasks/${taskId}`} className="font-medium text-primary hover:underline">
+        {label}
+      </Link>
+    ) : null;
+
+  switch (outcome.kind) {
+    case 'starting':
+      return shell('border-card-border bg-surface-3 text-text-secondary', <>{spinner}<span>Starting the orchestrator…</span></>);
+
+    case 'planning':
+      return shell(
+        'border-accent/30 bg-accent/5 text-text-secondary',
+        <>
+          {spinner}
+          <span>
+            Planning{outcome.turns ? ` · ${outcome.turns} turn${outcome.turns === 1 ? '' : 's'}` : ''} — it
+            decides what to run next, which can take a few minutes.
+          </span>
+          {taskLink(outcome.taskId, 'View organizer →')}
+        </>,
+      );
+
+    case 'deduped':
+      return shell(
+        'border-card-border bg-surface-3 text-text-secondary',
+        <>
+          {spinner}
+          <span>Already planning — nothing new was started.</span>
+          {taskLink(outcome.taskId, 'View organizer →')}
+        </>,
+      );
+
+    case 'pr_open':
+      return shell(
+        'border-status-warning/30 bg-status-warning/5 text-text-secondary',
+        <>
+          <span className="text-status-warning font-mono">⏸</span>
+          <span>Paused: the mission PR is still open. Planning resumes when it merges.</span>
+        </>,
+      );
+
+    case 'blocked':
+      return shell(
+        'border-status-warning/30 bg-status-warning/5 text-text-secondary',
+        <>
+          <span className="text-status-warning font-mono">⏸</span>
+          <span>{outcome.reason || 'Blocked by an upstream mission.'}</span>
+        </>,
+      );
+
+    case 'budget':
+      return shell(
+        'border-status-error/30 bg-status-error/5 text-text-secondary',
+        <>
+          <span className="text-status-error font-mono">✕</span>
+          <span>Cost budget exhausted — raise it to keep planning.</span>
+        </>,
+      );
+
+    case 'error':
+      return shell(
+        'border-status-error/30 bg-status-error/5 text-status-error',
+        <>
+          <span className="font-mono">✕</span>
+          <span className="min-w-0">{outcome.message}</span>
+          <button onClick={onDismiss} className="text-text-muted hover:text-text-secondary underline flex-shrink-0">
+            Dismiss
+          </button>
+        </>,
+      );
+  }
 }

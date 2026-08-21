@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
 import { triggerEvent, channels } from '@/lib/pusher';
+import { workspaceRepoMatches } from '@/lib/repo-scope';
 
 const DEFAULT_THRESHOLD = 5;
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -163,7 +164,7 @@ export async function detectDarkChecksForClosedPr(
   headSha: string,
 ): Promise<void> {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.repo, repoFullName),
+    where: workspaceRepoMatches(repoFullName),
     columns: { id: true, name: true },
   });
   if (!workspace) return;

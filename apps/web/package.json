@@ -10,7 +10,8 @@
     "start": "bun --bun next start",
     "lint": "next lint",
     "doctor": "bun run scripts/doctor.ts",
-    "doctor:vercel": "bun run scripts/doctor.ts --vercel"
+    "doctor:vercel": "bun run scripts/doctor.ts --vercel",
+    "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.985.0",
