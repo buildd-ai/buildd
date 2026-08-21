@@ -16,7 +16,7 @@ export interface PusherManagerCallbacks {
   getWorkers: () => Map<string, LocalWorker>;
   emit: (event: any) => void;
   emitCommand: (workerId: string, command: WorkerCommand) => void;
-  abort: (workerId: string) => Promise<void>;
+  abort: (workerId: string, cancelQueued?: boolean) => Promise<void>;
   sendMessage: (workerId: string, text: string) => Promise<void>;
   rollback: (workerId: string, checkpointUuid: string) => Promise<void>;
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
@@ -268,7 +268,7 @@ export class PusherManager {
           console.log(`[Worker ${workerId}] Push abort ignored: already in terminal state (${w.status})`);
           break;
         }
-        await this.callbacks.abort(workerId);
+        await this.callbacks.abort(workerId, command.cancelQueued);
         break;
       }
       case 'message':

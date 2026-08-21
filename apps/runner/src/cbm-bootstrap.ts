@@ -3,18 +3,12 @@
  *
  * Before the agent loop starts, the harness runs index_repository via the CBM
  * CLI so the graph is warm on turn one. On timeout or failure the session
- * continues without CBM — indexing failure must never fail the task.
- *
- * Detection: reads .mcp.json and looks for a "codebase-memory" entry with
- * type: "stdio". The entry drives both the pre-index CLI call and the SDK
- * mcpServers entry injected into queryOptions.
+ * continues with CBM still mounted but without a pre-indexed cache — the agent
+ * can trigger indexing on demand. Indexing failure must never fail the task.
  */
 
-import { readFileSync, rmSync } from 'fs';
+import { rmSync } from 'fs';
 import { spawn } from 'child_process';
-
-/** Path to the pre-baked CBM binary in the Coder worker image. */
-export const CBM_BINARY_DEFAULT = '/opt/buildd/bin/codebase-memory-mcp';
 
 /** Abort the index build after this many milliseconds. */
 export const CBM_INDEX_TIMEOUT_MS = 30_000;
@@ -23,34 +17,6 @@ export interface CbmServerConfig {
   command: string;
   args: string[];
   env: Record<string, string>;
-}
-
-/**
- * Read .mcp.json at the given path and return the codebase-memory stdio
- * server config if present, or null otherwise.
- *
- * The optional `readFileFn` seam lets tests inject file content directly
- * without relying on disk I/O (Bun's process-wide mock.module('fs') would
- * otherwise contaminate tests when run alongside suites that mock fs).
- */
-export function detectCbmConfig(
-  mcpJsonPath: string,
-  readFileFn: (path: string, encoding: 'utf-8') => string = readFileSync,
-): CbmServerConfig | null {
-  try {
-    const data = JSON.parse(readFileFn(mcpJsonPath, 'utf-8')) as {
-      mcpServers?: Record<string, { type?: string; command?: string; args?: string[]; env?: Record<string, string> }>;
-    };
-    const server = data.mcpServers?.['codebase-memory'];
-    if (!server || server.type !== 'stdio' || !server.command) return null;
-    return {
-      command: server.command,
-      args: server.args ?? [],
-      env: server.env ?? {},
-    };
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -93,7 +59,8 @@ export interface CbmBootstrapOptions {
 /**
  * Run `codebase-memory-mcp cli index_repository <worktreePath>` with a
  * 30-second hard timeout. Returns success with wall-clock duration or failure
- * with a reason string. On failure the caller must proceed without CBM.
+ * with a reason string. On failure the caller must proceed with CBM mounted
+ * but without a warm cache.
  */
 export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBootstrapResult> {
   const {
@@ -148,21 +115,4 @@ export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBoo
       }
     });
   });
-}
-
-/**
- * Build the SDK mcpServers entry for codebase-memory with resolved env values.
- * Pass cbmCacheDir from a successful runCbmBootstrap result.
- */
-export function buildCbmMcpEntry(
-  serverConfig: CbmServerConfig,
-  cbmCacheDir: string,
-  worktreePath: string,
-): { type: 'stdio'; command: string; args: string[]; env: Record<string, string> } {
-  return {
-    type: 'stdio',
-    command: serverConfig.command,
-    args: [...serverConfig.args],
-    env: resolveCbmEnv(serverConfig.env, cbmCacheDir, worktreePath),
-  };
 }

@@ -30,6 +30,7 @@ import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
+import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 
 export async function POST(req: NextRequest) {
@@ -96,7 +97,12 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
 
   switch (action) {
     case 'created': {
-      // New installation - save to database (repos are fetched on-demand)
+      // New installation - save the row, then immediately mirror its repos into
+      // github_repos and back-link matching workspaces. Doing this here (rather
+      // than only on the Settings "Sync" click) is what makes a fresh install
+      // usable: create_pr needs workspaces.githubRepoId, and the Settings page
+      // only lists installations that some workspace already points at, so a
+      // never-linked installation is unreachable from the UI.
       await db
         .insert(githubInstallations)
         .values({
@@ -119,6 +125,7 @@ async function handleInstallationEvent(event: GitHubInstallationEvent) {
             updatedAt: new Date(),
           },
         });
+      await backLinkInstallationRepos(installation.id, 'installation.created');
       break;
     }
 
@@ -153,13 +160,52 @@ async function handleInstallationReposEvent(event: {
   installation: { id: number };
   repositories_removed?: Array<{ id: number }>;
 }) {
-  // Only handle removals - clean up repos that were persisted when linked to a workspace
   if (event.action === 'removed' && event.repositories_removed) {
+    // Clean up repos that were persisted when linked to a workspace
     for (const repo of event.repositories_removed) {
       await db
         .delete(githubRepos)
         .where(eq(githubRepos.repoId, repo.id));
     }
+    return;
+  }
+
+  if (event.action === 'added') {
+    // Granting the app access to more repos back-links matching workspaces too.
+    // Re-syncing the whole installation (rather than just repositories_added)
+    // keeps one idempotent code path and picks up metadata the payload omits
+    // (default_branch, description).
+    await backLinkInstallationRepos(event.installation.id, 'installation_repositories.added');
+  }
+}
+
+/**
+ * Mirror an installation's repos into github_repos and back-link any workspace
+ * whose `repo` matches but has no githubRepoId. Never throws: a GitHub API
+ * hiccup must not fail the delivery (GitHub does not retry App webhooks), so
+ * failures page instead and the manual Settings sync remains the fallback.
+ */
+async function backLinkInstallationRepos(installationId: number, source: string) {
+  try {
+    const { synced, linked, linkedWorkspaceIds } = await syncInstallationReposById(installationId);
+    console.log(
+      `[github-repo-link] ${source}: installation ${installationId} synced ${synced} repo(s), ` +
+        `back-linked ${linked} workspace(s)${linked > 0 ? ` (${linkedWorkspaceIds.join(', ')})` : ''}`
+    );
+    if (linked > 0) {
+      notify({
+        title: 'GitHub repos linked',
+        message: `${source}: back-linked ${linked} workspace(s) to installation ${installationId}`,
+      });
+    }
+  } catch (err) {
+    console.error(`[github-repo-link] ${source} failed for installation ${installationId}:`, err);
+    notify({
+      app: 'alerts',
+      title: 'GitHub repo back-link failed',
+      message: `${source} for installation ${installationId}: ${err instanceof Error ? err.message : String(err)}`,
+      priority: 0,
+    });
   }
 }
 

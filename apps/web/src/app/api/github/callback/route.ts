@@ -62,10 +62,13 @@ export async function GET(req: NextRequest) {
     console.log('[GitHub Callback] Existing installation:', existing?.id || 'none');
 
     if (existing) {
-      // Update existing installation
+      // Update existing installation. installedByUserId is filled only when
+      // empty — re-running the flow on a shared org must not reassign it away
+      // from whoever originally installed the App.
       await db
         .update(githubInstallations)
         .set({
+          installedByUserId: existing.installedByUserId ?? session.user.id,
           accountLogin: installation.account.login,
           accountAvatarUrl: installation.account.avatar_url,
           permissions: installation.permissions,
@@ -82,6 +85,7 @@ export async function GET(req: NextRequest) {
         .insert(githubInstallations)
         .values({
           installationId: parseInt(installationId),
+          installedByUserId: session.user.id,
           accountType: installation.account.type,
           accountLogin: installation.account.login,
           accountId: installation.account.id,

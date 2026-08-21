@@ -32,6 +32,17 @@ export async function POST(
 
   const { id } = await params;
 
+  // cancelQueued (SDK 0.3.219+): opt-in flag to clear the runner's message queue
+  // alongside the interrupt, so queued messages do not execute after this call.
+  // Default: false — no change to existing interrupt callers.
+  let cancelQueued = false;
+  try {
+    const body = await req.json();
+    if (body?.cancelQueued === true) cancelQueued = true;
+  } catch {
+    // Empty or non-JSON body is fine — cancelQueued stays false.
+  }
+
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -91,6 +102,17 @@ export async function POST(
       { error: 'Worker state changed concurrently — interrupt has no effect' },
       { status: 409 },
     );
+  }
+
+  // cancelQueued: signal the runner to call SDK interrupt({ cancel_queued: true })
+  // immediately so queued messages are cleared before the session fully tears down.
+  // Fire-and-forget — the DB update already won the CAS lease.
+  if (cancelQueued) {
+    triggerEvent(
+      channels.worker(id),
+      events.WORKER_COMMAND,
+      { action: 'abort', cancelQueued: true, timestamp: Date.now() },
+    ).catch(() => {});
   }
 
   // Fail the reviewer task so it doesn't get re-claimed

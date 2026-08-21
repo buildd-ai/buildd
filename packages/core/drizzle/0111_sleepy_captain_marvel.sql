@@ -1,0 +1,3 @@
+ALTER TABLE "github_installations" ADD COLUMN "installed_by_user_id" uuid;--> statement-breakpoint
+ALTER TABLE "github_installations" ADD CONSTRAINT "github_installations_installed_by_user_id_users_id_fk" FOREIGN KEY ("installed_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "github_installations_installed_by_idx" ON "github_installations" USING btree ("installed_by_user_id");

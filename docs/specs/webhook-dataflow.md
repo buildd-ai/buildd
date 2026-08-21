@@ -134,6 +134,18 @@ keep workspace and repo data in sync and optionally auto-create tasks.
 - Unrecognized event types MUST be accepted with HTTP 200 (no error) — GitHub
   retries on non-2xx.
 - Installation events update `github_installations` rows.
+- `installation.created` and `installation_repositories.added` MUST mirror the
+  installation's repos into `github_repos` and back-link every workspace whose
+  `repo` resolves to one of them and has a null `githubRepoId`. Back-linking
+  MUST NOT depend on the manual Settings "Sync" click: that endpoint is scoped
+  to a single installation and Settings only lists installations a workspace
+  already points at, so a brand-new installation is otherwise unreachable.
+- Repo matching MUST normalize `workspaces.repo` to a bare `owner/name`
+  (accepting `owner/name`, an https URL, or an SSH URL, with or without `.git`)
+  and compare for equality. Substring matching is forbidden — `owner/name`
+  would also match `owner/name-legacy`.
+- Back-link failures MUST NOT fail the delivery (GitHub does not retry App
+  webhooks); they log and alert instead.
 
 **Acceptance criteria**:
 - AC-8: WHEN a GitHub webhook payload is received with an invalid signature

@@ -201,6 +201,8 @@ export interface LocalWorker {
   // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  cbmBootstrapResult?: 'ok' | 'failed';
+  cbmBootstrapFailReason?: string;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
   // MCP credential secrets (label → value) delivered inline at claim time.
@@ -273,6 +275,9 @@ export interface ModelUsage {
 export interface CbmMetrics {
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  /** Whether the pre-index bootstrap ran and whether it succeeded. Only set when outcome='enforced'. */
+  bootstrapResult?: 'ok' | 'failed';
+  bootstrapFailReason?: string;
   toolCalls: Record<string, number>;
   totalCbmCalls: number;
   readCount: number;
@@ -466,6 +471,9 @@ export interface WorkerCommand {
   checkpointUuid?: string;
   // recovery fields
   recoveryMode?: 'diagnose' | 'complete' | 'restart';
+  // abort fields — cancel_queued (SDK 0.3.219+): clear the message queue so
+  // queued messages do not execute after the interrupt. Default: false.
+  cancelQueued?: boolean;
 }
 
 // Provider configuration for LLM routing
