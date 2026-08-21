@@ -121,6 +121,47 @@ describe('computeMissionBudgetForecast', () => {
   });
 });
 
+// ── Sparse / missing data ─────────────────────────────────────────────────────
+
+describe('computeMonthlyBudgetForecast — sparse data', () => {
+  const base: MonthlyBudgetInput = {
+    budgetUsd: 200,
+    spentUsd: 0,
+    resetsAt: new Date('2026-09-01T00:00:00Z'),
+    recentWorkerCosts: [],
+    now: new Date('2026-08-21T00:00:00Z'),
+  };
+
+  it('returns null burn rate and null depletion when no workers ran in window', () => {
+    // Simulates workspace with no usage rows (e.g. brand-new workspace, or
+    // workers whose model had no price entry and therefore costUsd=0 → filtered out)
+    const result = computeMonthlyBudgetForecast({ ...base, recentWorkerCosts: [] });
+    expect(result.burnRateUsdPerDay).toBeNull();
+    expect(result.daysToDepletion).toBeNull();
+    expect(result.confidence).toBe('low');
+    expect(result.pctUsed).toBe(0);
+  });
+
+  it('returns finite pctUsed even when spentUsd is 0 and budgetUsd is set', () => {
+    const result = computeMonthlyBudgetForecast({ ...base, spentUsd: 0 });
+    expect(Number.isFinite(result.pctUsed)).toBe(true);
+    expect(result.pctUsed).toBe(0);
+  });
+
+  it('does not produce NaN or Infinity values for any field', () => {
+    const result = computeMonthlyBudgetForecast({ ...base, spentUsd: 0, recentWorkerCosts: [] });
+    expect(Number.isNaN(result.pctUsed)).toBe(false);
+    expect(result.burnRateUsdPerDay).toBeNull();
+    expect(result.daysToDepletion).toBeNull();
+  });
+});
+
+describe('computeMissionBudgetForecast — sparse data', () => {
+  it('returns empty array for empty input', () => {
+    expect(computeMissionBudgetForecast([])).toEqual([]);
+  });
+});
+
 // ── oauthEpisodeConfidence ────────────────────────────────────────────────────
 
 describe('oauthEpisodeConfidence', () => {
