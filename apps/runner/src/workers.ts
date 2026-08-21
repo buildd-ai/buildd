@@ -432,7 +432,7 @@ export class WorkerManager {
       getWorkers: () => this.workers,
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
-      abort: (workerId) => this.abort(workerId),
+      abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
@@ -3800,6 +3800,40 @@ If something is missing or incomplete, describe what and fix it now.`;
               .map((b: any) => b.text)
               .join('\n');
           }
+
+          // tool_result_meta sidecar (SDK 0.3.216+): typed classification of
+          // denied/cancelled/interrupted tool calls. Replaces string-matching on
+          // tool result prose — non_execution_kind is authoritative.
+          // Non-executions are permission decisions, not errors — skip the scanner
+          // entirely so they never emit a false permission_denied trace.
+          const nonExecMeta = (block as any).tool_result_meta;
+          const nonExecKind = nonExecMeta?.non_execution_kind as string | undefined;
+          if (nonExecKind) {
+            const feedback = nonExecMeta?.user_feedback as string | undefined;
+            // Resolve source tool for the milestone label (best-effort).
+            const toolUseId = block.tool_use_id as string | undefined;
+            let nonExecSource: string | undefined;
+            if (toolUseId) {
+              for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
+                const tc: any = worker.toolCalls[i];
+                if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
+                  nonExecSource = tc.name;
+                  break;
+                }
+              }
+            }
+            const label = feedback
+              ? `Tool not run (${nonExecKind}): "${feedback.slice(0, 80)}"`
+              : `Tool not run: ${nonExecKind}`;
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+            console.log(
+              `[Worker ${worker.id}] tool non-execution: kind=${nonExecKind} ` +
+              `tool=${nonExecSource ?? '?'}` +
+              (feedback ? ` feedback="${feedback.slice(0, 60)}"` : ''),
+            );
+            continue; // Permission decision — not a tool error; skip scanner
+          }
+
           if (!text) continue;
 
           // Source tool: look up the originating tool_use_id in recent tool calls.
@@ -3944,6 +3978,28 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else if (result.subtype !== 'success') {
         this.addMilestone(worker, { type: 'status', label: `Error: ${result.subtype}`, ts: Date.now() });
         sessionLog(worker.id, 'error', 'result_error', `subtype=${result.subtype} stopReason=${result.stop_reason}`, worker.taskId);
+      }
+
+      // terminal_reason (SDK 0.3.216+): surface distinguishable outcomes for
+      // max_turns and aborted_tools so they're visible in milestones, not
+      // collapsed into the same generic "completed" terminal state.
+      const terminalReason = result.terminal_reason as string | undefined;
+      if (terminalReason === 'max_turns') {
+        this.addMilestone(worker, {
+          type: 'status',
+          label: 'Max turns reached — consider raising maxTurns for this task',
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_max_turns', `turns=${result.num_turns ?? '?'}`, worker.taskId);
+      } else if (terminalReason === 'aborted_tools') {
+        const blocked = (result.permission_denials as Array<{ tool_name?: string; tool?: string }> | undefined)?.[0];
+        const blockedTool = blocked?.tool_name || blocked?.tool || 'a tool';
+        this.addMilestone(worker, {
+          type: 'status',
+          label: `Session blocked: "${blockedTool}" was denied — grant permission or switch approach`,
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_aborted_tools', `blocked_tool=${blockedTool}`, worker.taskId);
       }
 
       // Capture SDK result metadata for server sync
@@ -4124,8 +4180,8 @@ If something is missing or incomplete, describe what and fix it now.`;
     });
   }
 
-  async abort(workerId: string, reason?: string) {
-    return this.recoveryManager.abort(workerId, reason);
+  async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
+    return this.recoveryManager.abort(workerId, reason, cancelQueued);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {

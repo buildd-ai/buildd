@@ -54,8 +54,14 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
-  channels: { workspace: (id: string) => `workspace:${id}` },
-  events: { WORKER_FAILED: 'worker:failed' },
+  channels: {
+    workspace: (id: string) => `workspace:${id}`,
+    worker: (id: string) => `worker:${id}`,
+  },
+  events: {
+    WORKER_FAILED: 'worker:failed',
+    WORKER_COMMAND: 'worker:command',
+  },
 }));
 
 mock.module('@/lib/task-dependencies', () => ({
@@ -92,6 +98,7 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockWorkersFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
     mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
     mockResolveCompletedTask.mockReset();
     mockResolveCompletedTask.mockResolvedValue(undefined);
     workersUpdateChain = makeUpdateChain();
@@ -190,6 +197,81 @@ describe('POST /api/workers/[id]/interrupt', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-rev-1', 'ws-1');
+  });
+
+  it('fires Pusher abort to worker channel when cancelQueued=true', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-reviewer-1',
+      workspaceId: 'ws-1',
+      taskId: 't-rev-1',
+      status: 'running',
+    });
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        id: 't-rev-1',
+        category: 'review',
+        context: { reviewerFor: 't-original', prNumber: 42 },
+      })
+      .mockResolvedValueOnce({ id: 't-original', missionId: null });
+
+    const db = (await import('@buildd/core/db')).db;
+    (db.update as any) = (table: any) => {
+      if (table === 'workers_table') return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+      return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+    };
+    (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
+
+    const request = new NextRequest('http://localhost/api/workers/w-reviewer-1/interrupt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cancelQueued: true }),
+    });
+
+    const res = await POST(request, { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    expect(res.status).toBe(200);
+
+    // triggerEvent is called twice: once for the worker channel (cancelQueued),
+    // once for the workspace channel (WORKER_FAILED).
+    const calls = mockTriggerEvent.mock.calls;
+    const workerChannelCall = calls.find((c: any[]) => c[0] === 'worker:w-reviewer-1');
+    expect(workerChannelCall).toBeDefined();
+    expect(workerChannelCall![1]).toBe('worker:command');
+    expect(workerChannelCall![2]).toMatchObject({ action: 'abort', cancelQueued: true });
+  });
+
+  it('does NOT fire worker channel Pusher event when cancelQueued is absent', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-reviewer-1',
+      workspaceId: 'ws-1',
+      taskId: 't-rev-1',
+      status: 'running',
+    });
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        id: 't-rev-1',
+        category: 'review',
+        context: { reviewerFor: 't-original', prNumber: 42 },
+      })
+      .mockResolvedValueOnce({ id: 't-original', missionId: null });
+
+    const db = (await import('@buildd/core/db')).db;
+    (db.update as any) = (table: any) => {
+      if (table === 'workers_table') return makeReturningUpdateChain([{ id: 'w-reviewer-1' }]);
+      return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+    };
+    (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
+
+    const res = await POST(makeRequest(), { params: Promise.resolve({ id: 'w-reviewer-1' }) });
+    expect(res.status).toBe(200);
+
+    // Only the workspace WORKER_FAILED event fires — no worker channel event.
+    const calls = mockTriggerEvent.mock.calls;
+    const workerChannelCall = calls.find((c: any[]) => c[0] === 'worker:w-reviewer-1');
+    expect(workerChannelCall).toBeUndefined();
   });
 
   it('returns 409 without promotion when completion wins after the live-status read', async () => {
