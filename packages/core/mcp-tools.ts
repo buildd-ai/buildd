@@ -2538,7 +2538,8 @@ export async function handleBuilddAction(
     }
 
     case 'get_budget_forecast': {
-      const wsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
       const endpoint = wsId
         ? `/api/health/budget?workspaceId=${encodeURIComponent(wsId)}`
         : '/api/health/budget';
