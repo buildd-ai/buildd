@@ -501,6 +501,9 @@ export interface CbmMetrics {
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   /** Why CBM was not active (only set when outcome='disabled'). */
   disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  /** Whether the pre-index bootstrap ran and whether it succeeded. Only set when outcome='enforced'. */
+  bootstrapResult?: 'ok' | 'failed';
+  bootstrapFailReason?: string;
   /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
   toolCalls: Record<string, number>;
   /** Total CBM MCP tool calls across all CBM tools. */

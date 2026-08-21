@@ -1,24 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { join } from 'path';
 import {
-  detectCbmConfig,
   runCbmBootstrap,
-  buildCbmMcpEntry,
   CBM_INDEX_TIMEOUT_MS,
 } from '../../src/cbm-bootstrap';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Build a readFileFn seam that returns the given JSON content for any path,
- * or throws ENOENT when null is passed.
- */
-function makeReadFileFn(content: unknown | null) {
-  return (_path: string, _encoding: 'utf-8'): string => {
-    if (content === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-    return JSON.stringify(content);
-  };
-}
 
 function fakeCbmConfig() {
   return {
@@ -83,81 +69,12 @@ function makeHangSpawn() {
     const proc = new EventEmitter();
     (proc as any).stdout = new EventEmitter();
     (proc as any).stderr = new EventEmitter();
-    let killed = false;
     (proc as any).kill = () => {
-      killed = true;
       proc.emit('close', null);
     };
     return proc;
   };
 }
-
-// ── detectCbmConfig ───────────────────────────────────────────────────────────
-
-describe('detectCbmConfig', () => {
-  it('returns null when readFileFn throws (file not found)', () => {
-    expect(detectCbmConfig('/any/path/.mcp.json', makeReadFileFn(null))).toBeNull();
-  });
-
-  it('returns null when .mcp.json has no mcpServers', () => {
-    expect(detectCbmConfig('/p/.mcp.json', makeReadFileFn({ other: 'stuff' }))).toBeNull();
-  });
-
-  it('returns null when codebase-memory is missing from mcpServers', () => {
-    expect(detectCbmConfig('/p/.mcp.json', makeReadFileFn({
-      mcpServers: { buildd: { type: 'http', url: 'http://buildd' } },
-    }))).toBeNull();
-  });
-
-  it('returns null when codebase-memory has type http (not stdio)', () => {
-    expect(detectCbmConfig('/p/.mcp.json', makeReadFileFn({
-      mcpServers: { 'codebase-memory': { type: 'http', url: 'http://cbm' } },
-    }))).toBeNull();
-  });
-
-  it('returns null when codebase-memory has no command', () => {
-    expect(detectCbmConfig('/p/.mcp.json', makeReadFileFn({
-      mcpServers: { 'codebase-memory': { type: 'stdio', args: ['mcp'] } },
-    }))).toBeNull();
-  });
-
-  it('returns config when codebase-memory is a valid stdio server', () => {
-    const result = detectCbmConfig('/p/.mcp.json', makeReadFileFn({
-      mcpServers: {
-        buildd: { type: 'http', url: 'http://buildd' },
-        'codebase-memory': {
-          type: 'stdio',
-          command: '/opt/buildd/bin/codebase-memory-mcp',
-          args: ['mcp'],
-          env: { CBM_AUTO_WATCH: 'false' },
-        },
-      },
-    }));
-    expect(result).not.toBeNull();
-    expect(result!.command).toBe('/opt/buildd/bin/codebase-memory-mcp');
-    expect(result!.args).toEqual(['mcp']);
-    expect(result!.env.CBM_AUTO_WATCH).toBe('false');
-  });
-
-  it('returns config with empty args and env when omitted', () => {
-    const result = detectCbmConfig('/p/.mcp.json', makeReadFileFn({
-      mcpServers: {
-        'codebase-memory': {
-          type: 'stdio',
-          command: '/opt/buildd/bin/codebase-memory-mcp',
-        },
-      },
-    }));
-    expect(result).not.toBeNull();
-    expect(result!.args).toEqual([]);
-    expect(result!.env).toEqual({});
-  });
-
-  it('returns null when JSON is invalid (readFileFn returns bad content)', () => {
-    const badReadFn = (_path: string, _enc: 'utf-8') => 'not valid json {{{';
-    expect(detectCbmConfig('/p/.mcp.json', badReadFn)).toBeNull();
-  });
-});
 
 // ── runCbmBootstrap ───────────────────────────────────────────────────────────
 
@@ -301,48 +218,5 @@ describe('runCbmBootstrap', () => {
 
   it('exports CBM_INDEX_TIMEOUT_MS as 30000', () => {
     expect(CBM_INDEX_TIMEOUT_MS).toBe(30_000);
-  });
-});
-
-// ── buildCbmMcpEntry ──────────────────────────────────────────────────────────
-
-describe('buildCbmMcpEntry', () => {
-  it('returns a stdio MCP server entry with type:stdio', () => {
-    const entry = buildCbmMcpEntry(fakeCbmConfig(), '/tmp/cbm-worker-1', '/repo/cwd');
-    expect(entry.type).toBe('stdio');
-    expect(entry.command).toBe('/opt/buildd/bin/codebase-memory-mcp');
-  });
-
-  it('sets CBM_CACHE_DIR to the provided cbmCacheDir', () => {
-    const entry = buildCbmMcpEntry(fakeCbmConfig(), '/tmp/cbm-my-worker', '/repo/cwd');
-    expect(entry.env['CBM_CACHE_DIR']).toBe('/tmp/cbm-my-worker');
-  });
-
-  it('sets CBM_ALLOWED_ROOT to the worktree path', () => {
-    const entry = buildCbmMcpEntry(fakeCbmConfig(), '/tmp/cbm-x', '/my/worktree');
-    expect(entry.env['CBM_ALLOWED_ROOT']).toBe('/my/worktree');
-  });
-
-  it('substitutes __WORKSPACE_DIR__ in base env values', () => {
-    const config = {
-      command: '/bin/cbm',
-      args: [],
-      env: { CBM_ALLOWED_ROOT: '__WORKSPACE_DIR__', EXTRA: '__WORKSPACE_DIR__/sub' },
-    };
-    const entry = buildCbmMcpEntry(config, '/tmp/cbm-w', '/actual/cwd');
-    expect(entry.env['CBM_ALLOWED_ROOT']).toBe('/actual/cwd');
-    expect(entry.env['EXTRA']).toBe('/actual/cwd/sub');
-  });
-
-  it('always sets CBM_AUTO_WATCH=false and CBM_MEM_BUDGET_MB=1024', () => {
-    const entry = buildCbmMcpEntry(fakeCbmConfig(), '/tmp/cbm-y', '/cwd');
-    expect(entry.env['CBM_AUTO_WATCH']).toBe('false');
-    expect(entry.env['CBM_MEM_BUDGET_MB']).toBe('1024');
-  });
-
-  it('passes through server args from config', () => {
-    const config = { ...fakeCbmConfig(), args: ['mcp', '--extra'] };
-    const entry = buildCbmMcpEntry(config, '/tmp/cbm-z', '/cwd');
-    expect(entry.args).toEqual(['mcp', '--extra']);
   });
 });
