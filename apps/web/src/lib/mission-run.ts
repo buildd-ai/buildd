@@ -8,6 +8,7 @@ import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exh
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
+import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -73,6 +74,7 @@ export interface RunMissionDeps {
   exhaustMissionBudget?: (missionId: string, title: string, spendUsd: number, budgetUsd: number) => Promise<void>;
   prepareSubjectFiling?: typeof prepareSubjectFiling;
   recordSubjectMatchObserved?: typeof recordSubjectMatchObserved;
+  triggerEvent?: typeof _triggerEvent;
 }
 
 /**
@@ -94,6 +96,7 @@ export async function runMission(
   const exhaustMissionBudget = deps?.exhaustMissionBudget ?? _exhaustMissionBudget;
   const prepareSubject = deps?.prepareSubjectFiling ?? prepareSubjectFiling;
   const recordSubjectMatch = deps?.recordSubjectMatchObserved ?? recordSubjectMatchObserved;
+  const triggerEvent = deps?.triggerEvent ?? _triggerEvent;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -380,6 +383,20 @@ export async function runMission(
   if (workspace) {
     await dispatchNewTask(task, workspace);
   }
+
+  // Announce the cycle on the mission channel. The cron path (mission-loop.ts)
+  // already does this; the manual path used to be silent on the wire, so a
+  // client that clicked "Plan now" had nothing to listen to and the orchestrator
+  // worked invisibly for minutes.
+  await Promise.resolve(
+    triggerEvent(channels.mission(missionId), events.MISSION_CYCLE_STARTED, {
+      missionId,
+      cycleNumber: cycleCtx.cycleNumber,
+      triggerChainId: cycleCtx.triggerChainId,
+      triggerSource: cycleCtx.triggerSource,
+      planningTaskId: task.id,
+    }),
+  ).catch((e) => console.error('[runMission] cycle_started emit failed:', e));
 
   return { task };
 }

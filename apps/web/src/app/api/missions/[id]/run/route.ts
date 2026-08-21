@@ -78,8 +78,25 @@ export async function POST(
       }).catch(e => console.error('[run] Failed to emit manual-run note:', e));
     }
 
+    // Surface every outcome. runMission has five distinct no-op paths and the
+    // route used to drop four of them, returning 201 {task: null} — which the
+    // client could not tell from success, so a skipped run looked like a dead
+    // button. Skips are 200 (the request was understood and deliberately did
+    // nothing); only a created planning task is 201.
     if (result.deduped) {
       return NextResponse.json({ task: result.task, deduped: true }, { status: 200 });
+    }
+    if (result.skippedPrOpen) {
+      return NextResponse.json({ task: null, skippedPrOpen: true }, { status: 200 });
+    }
+    if (result.skippedBlocked) {
+      return NextResponse.json(
+        { task: null, skippedBlocked: true, blockedReason: result.blockedReason ?? null },
+        { status: 200 },
+      );
+    }
+    if (result.skippedBudgetExhausted) {
+      return NextResponse.json({ task: null, skippedBudgetExhausted: true }, { status: 200 });
     }
     return NextResponse.json({ task: result.task }, { status: 201 });
   } catch (error: any) {
