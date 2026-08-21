@@ -145,6 +145,11 @@ bun run test:integration                    # Integration tests (live server)
 bun run test:e2e                            # E2E tests (full stack)
 ```
 
+**On failure:** `bun test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
+```bash
+grep -A30 -F 'apps/web/src/lib/foo.test.ts' .test-report.log
+```
+
 **Smoke tests** (`*-smoke.test.ts`): Lightweight guards that always run in CI. Cover CRUD + auth + endpoint existence for a feature. Full suites (e.g., `missions.test.ts`) run on-demand or when affected code changes.
 
 See `docs/testing.md` and `docs/testing-strategy.md` for full details.
