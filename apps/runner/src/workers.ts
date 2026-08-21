@@ -3800,6 +3800,40 @@ If something is missing or incomplete, describe what and fix it now.`;
               .map((b: any) => b.text)
               .join('\n');
           }
+
+          // tool_result_meta sidecar (SDK 0.3.216+): typed classification of
+          // denied/cancelled/interrupted tool calls. Replaces string-matching on
+          // tool result prose — non_execution_kind is authoritative.
+          // Non-executions are permission decisions, not errors — skip the scanner
+          // entirely so they never emit a false permission_denied trace.
+          const nonExecMeta = (block as any).tool_result_meta;
+          const nonExecKind = nonExecMeta?.non_execution_kind as string | undefined;
+          if (nonExecKind) {
+            const feedback = nonExecMeta?.user_feedback as string | undefined;
+            // Resolve source tool for the milestone label (best-effort).
+            const toolUseId = block.tool_use_id as string | undefined;
+            let nonExecSource: string | undefined;
+            if (toolUseId) {
+              for (let i = worker.toolCalls.length - 1; i >= 0; i--) {
+                const tc: any = worker.toolCalls[i];
+                if (tc.toolUseId === toolUseId || tc.id === toolUseId) {
+                  nonExecSource = tc.name;
+                  break;
+                }
+              }
+            }
+            const label = feedback
+              ? `Tool not run (${nonExecKind}): "${feedback.slice(0, 80)}"`
+              : `Tool not run: ${nonExecKind}`;
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+            console.log(
+              `[Worker ${worker.id}] tool non-execution: kind=${nonExecKind} ` +
+              `tool=${nonExecSource ?? '?'}` +
+              (feedback ? ` feedback="${feedback.slice(0, 60)}"` : ''),
+            );
+            continue; // Permission decision — not a tool error; skip scanner
+          }
+
           if (!text) continue;
 
           // Source tool: look up the originating tool_use_id in recent tool calls.
