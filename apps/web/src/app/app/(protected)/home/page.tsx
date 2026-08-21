@@ -19,7 +19,7 @@ import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
-import { computeMissionProgress, deriveTaskType, crossedMilestone } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, crossedMilestone } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { InterruptReviewButton } from './InterruptReviewButton';
@@ -467,7 +467,7 @@ export default async function HomePage({
           limit: 12,
           with: {
             task: {
-              columns: { id: true, title: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true },
+              columns: { id: true, title: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true, taskClass: true },
               with: {
                 mission: {
                   columns: { title: true },
@@ -484,7 +484,7 @@ export default async function HomePage({
         recentActivity = recentWorkers
           .filter((w: any) => {
             const task = w.task;
-            if (task && deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }) !== null) return false;
+            if (task && (task.taskClass === 'attempt' || task.taskClass === 'bookkeeping')) return false;
             const key = task?.id || w.id;
             if (seenTasks.has(key)) return false;
             seenTasks.add(key);

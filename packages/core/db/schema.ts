@@ -482,6 +482,8 @@ export interface TaskResult {
   lastQuestion?: string;
   /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
   reaperAutoCompleted?: boolean;
+  /** Reaper audit trail moved here so result.summary carries the outcome, not forensics. See spec B.5. */
+  reaperForensics?: string;
 }
 
 // Per-model token usage from SDK result
@@ -851,6 +853,11 @@ export const tasks = pgTable('tasks', {
   subjectDedupeScope: text('subject_dedupe_scope').$type<'active' | 'retry_chain' | 'none'>(),
   subjectSupersededByTaskId: uuid('subject_superseded_by_task_id'),
   subjectResolution: text('subject_resolution').$type<'attached' | 'superseded' | 'filed_anyway' | 'reconciled'>(),
+  // Stored discriminator — set at insert time by every creation path.
+  // 'work': deliverable task counted in mission progress.
+  // 'attempt': CI retry or reviewer pass; collapses under its parent in all tallies.
+  // 'bookkeeping': coordination/housekeeping; excluded from progress denominator.
+  taskClass: text('task_class').notNull().default('work').$type<'work' | 'attempt' | 'bookkeeping'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -866,6 +873,7 @@ export const tasks = pgTable('tasks', {
   scheduleIdx: index('tasks_schedule_idx').on(t.scheduleId),
   kindIdx: index('tasks_kind_idx').on(t.kind),
   startAtIdx: index('tasks_start_at_idx').on(t.startAt),
+  taskClassIdx: index('tasks_task_class_idx').on(t.taskClass),
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),

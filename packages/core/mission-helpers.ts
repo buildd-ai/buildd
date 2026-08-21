@@ -274,19 +274,55 @@ export interface MissionSegment {
 export const MISSION_LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
 const LIVE_SET = new Set(MISSION_LIVE_WORKER_STATUSES);
 
+// ─── TaskClass selectors ──────────────────────────────────────────────────────
+
+/** True when t is a genuine deliverable (counts in mission progress and TASKS tally). */
+export const isWork = (t: { taskClass?: string | null }) => t.taskClass === 'work';
+
+/** True when t is a coordination/housekeeping row (excluded from progress denominator). */
+export const isBookkeeping = (t: { taskClass?: string | null }) => t.taskClass === 'bookkeeping';
+
+/** True when t is a retry or review pass that collapses under its parent. */
+export const isAttempt = (t: { taskClass?: string | null }) => t.taskClass === 'attempt';
+
+/**
+ * Build a map of parentTaskId → attempt tasks for attempt-nesting display.
+ * Replaces the raw parentTaskId/childrenMap approach in computeMissionProgress.
+ */
+export function attachAttempts<T extends { id?: string; taskClass?: string | null; parentTaskId?: string | null }>(
+  tasks: T[],
+): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const t of tasks) {
+    if (t.taskClass === 'attempt' && t.parentTaskId) {
+      const bucket = map.get(t.parentTaskId) ?? [];
+      bucket.push(t);
+      map.set(t.parentTaskId, bucket);
+    }
+  }
+  return map;
+}
+
 // ─── Deliverable predicate ────────────────────────────────────────────────────
 
 /**
  * Returns true if the task counts as a deliverable for mission progress.
- * Coordination tasks and auto-generated housekeeping titles are excluded.
+ *
+ * Primary path: reads taskClass directly. Falls back to title/mode/kind
+ * heuristics for rows that pre-date the backfill (taskClass IS NULL), so
+ * the function degrades gracefully during the migration window.
  */
 export function isDeliverableTask(task: {
+  taskClass?: string | null;
   kind?: string | null;
   title?: string | null;
   mode?: string | null;
   creationSource?: string | null;
   category?: string | null;
 }): boolean {
+  // Fast path: use the stored discriminator.
+  if (task.taskClass != null) return task.taskClass === 'work';
+  // Fallback for pre-migration rows (taskClass IS NULL).
   if (task.category === 'review') return false;
   if (task.kind === 'coordination') return false;
   if (task.mode === 'planning') return false;
@@ -338,6 +374,7 @@ function deriveMissionSegmentState(task: {
 export function computeMissionProgress(tasks: Array<{
   id?: string;
   status: string;
+  taskClass?: string | null;
   kind?: string | null;
   title?: string | null;
   mode?: string | null;
@@ -346,15 +383,18 @@ export function computeMissionProgress(tasks: Array<{
   parentTaskId?: string | null;
   workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null }>;
 }>): { totalTasks: number; completedTasks: number; progress: number; segments: MissionSegment[] } {
-  // Collapse attempt tasks under their parents. An attempt is identified by
-  // deriveTaskType returning non-null — this covers CI retries and reviewer runs
-  // while correctly preserving spawned builder tasks (mode='execution') as
-  // separate deliverables even though they carry a parentTaskId.
+  // Collapse attempt tasks under their parents.
+  // Primary: use taskClass='attempt' (set by backfill on all existing rows).
+  // Fallback: use deriveTaskType for any pre-migration row (taskClass IS NULL).
   const childrenMap = new Map<string, typeof tasks>();
   const rootTasks = tasks.filter(t => {
-    if (t.parentTaskId && deriveTaskType(t) !== null) {
-      if (!childrenMap.has(t.parentTaskId)) childrenMap.set(t.parentTaskId, []);
-      childrenMap.get(t.parentTaskId)!.push(t);
+    const isAttemptRow = t.taskClass != null
+      ? t.taskClass === 'attempt'
+      : (t.parentTaskId != null && deriveTaskType(t) !== null);
+    if (isAttemptRow && t.parentTaskId) {
+      const bucket = childrenMap.get(t.parentTaskId) ?? [];
+      bucket.push(t);
+      childrenMap.set(t.parentTaskId, bucket);
       return false;
     }
     return true;

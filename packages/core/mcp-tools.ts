@@ -192,7 +192,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -1389,7 +1389,7 @@ export async function handleBuilddAction(
         'roleSlug', 'baseBranch', 'verificationCommand', 'iteration', 'maxIterations',
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
-        'loopConfig', 'loopUntilVerified', 'subjectAnchor', 'fileAnywayReason', 'context',
+        'loopConfig', 'loopUntilVerified', 'loopUntilMerged', 'subjectAnchor', 'fileAnywayReason', 'context',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
@@ -1464,8 +1464,12 @@ export async function handleBuilddAction(
       if (params.loopUntilVerified !== undefined && params.loopUntilVerified !== true) {
         throw new Error('loopUntilVerified must be true when provided');
       }
-      if (params.loopUntilVerified === true && params.loopConfig !== undefined) {
-        throw new Error('Provide either loopConfig or loopUntilVerified, not both');
+      if (params.loopUntilMerged !== undefined && params.loopUntilMerged !== true) {
+        throw new Error('loopUntilMerged must be true when provided');
+      }
+      const loopShorthands = [params.loopUntilVerified, params.loopUntilMerged, params.loopConfig].filter(Boolean).length;
+      if (loopShorthands > 1) {
+        throw new Error('Provide at most one of loopConfig, loopUntilVerified, or loopUntilMerged');
       }
       if (params.loopUntilVerified === true) {
         if (typeof params.verificationCommand !== 'string' || params.verificationCommand.trim() === '') {
@@ -1475,6 +1479,12 @@ export async function handleBuilddAction(
           { exitCondition: { type: 'command' } },
           params.verificationCommand,
         );
+      } else if (params.loopUntilMerged === true) {
+        taskBody.loopConfig = parseLoopConfig({
+          exitCondition: { type: 'pr_merged' },
+          maxLoops: 6,
+          waitExpiryMinutes: 240,
+        });
       } else if (params.loopConfig !== undefined) {
         taskBody.loopConfig = parseLoopConfig(
           params.loopConfig,
@@ -2528,7 +2538,8 @@ export async function handleBuilddAction(
     }
 
     case 'get_budget_forecast': {
-      const wsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
       const endpoint = wsId
         ? `/api/health/budget?workspaceId=${encodeURIComponent(wsId)}`
         : '/api/health/budget';

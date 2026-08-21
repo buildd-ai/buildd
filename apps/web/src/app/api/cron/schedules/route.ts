@@ -621,6 +621,7 @@ export async function GET(req: NextRequest) {
             priority: template.priority || 0,
             status: 'pending',
             mode: template.mode || 'execution',
+            taskClass: (template.mode === 'planning') ? 'bookkeeping' : 'work',
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,

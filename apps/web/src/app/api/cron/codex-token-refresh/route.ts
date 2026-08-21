@@ -67,6 +67,7 @@ async function nudgeCredentialRefresh(
     description: `Refresh expiring ${purpose} credential.\n\nSecretId: ${credId}\nPurpose: ${purpose}\n\nCall POST /api/runner/credential-refresh with secretId, purpose, and action=lock to claim the refresh lock, then action=commit with the new tokens.`,
     priority: 50,
     tier: 'budget',
+    taskClass: 'bookkeeping',
     outputRequirement: 'none',
   });
   return 'nudged';

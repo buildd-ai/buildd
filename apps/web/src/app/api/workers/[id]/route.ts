@@ -1028,7 +1028,7 @@ export async function PATCH(
         if (loopConfig) {
           const freshWorkerForLoop = await db.query.workers.findFirst({
             where: eq(workers.id, id),
-            columns: { prLifecycleStatus: true, prNumber: true },
+            columns: { prLifecycleStatus: true, prNumber: true, mergedAt: true },
           });
           const existingLoopCtx = ((loopData?.context ?? {}) as Record<string, unknown>);
           const existingHistory = (existingLoopCtx.loopHistory as LoopHistoryEntry[] | undefined) ?? [];
@@ -1045,6 +1045,7 @@ export async function PATCH(
             structuredOutput: body.structuredOutput,
             prLifecycleStatus: freshWorkerForLoop?.prLifecycleStatus ?? null,
             prNumber: freshWorkerForLoop?.prNumber ?? null,
+            workerMergedAt: freshWorkerForLoop?.mergedAt ?? null,
           });
 
           // condition_unmet is expected control flow — does NOT consume retry attempts.
@@ -2125,6 +2126,7 @@ async function handleReviewerOutcomeIfNeeded(
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
+          taskClass: 'attempt',
           context: {
             iteration: currentIteration + 1,
             maxIterations,

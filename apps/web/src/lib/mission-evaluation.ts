@@ -211,6 +211,7 @@ export async function spawnEvaluationTask(
       priority: 1, // Higher priority — evaluate quickly
       status: 'pending',
       mode: 'planning',
+      taskClass: 'bookkeeping',
       context: {
         ...evalContext.context,
         triggeringTaskId,

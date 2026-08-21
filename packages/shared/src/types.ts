@@ -1050,6 +1050,7 @@ export interface SSEEvent<T = unknown> {
 export type LoopExitCondition =
   | { type: 'command'; command?: string }
   | { type: 'pr_checks_green' }
+  | { type: 'pr_merged' }
   | {
       type: 'structured_predicate';
       predicate?: {
@@ -1066,6 +1067,8 @@ export interface LoopConfig {
   maxLoops?: number;
   /** 0–10080 (7 days in minutes), defaults to 0 */
   backoffMinutes?: number;
+  /** Max minutes to wait for a pr_merged condition before the reaper may fail the task. Default 240 (4h). */
+  waitExpiryMinutes?: number;
 }
 
 export type LoopState =

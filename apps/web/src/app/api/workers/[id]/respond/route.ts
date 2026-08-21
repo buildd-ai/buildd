@@ -101,6 +101,7 @@ export async function POST(
       missionId: task?.missionId,
       roleSlug: task?.roleSlug,
       mode: task?.mode,
+      taskClass: (task?.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
       context: {
         baseBranch: worker.branch,
         userInput: message,

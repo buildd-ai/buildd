@@ -338,6 +338,7 @@ export async function runMission(
       priority: template?.priority || mission.priority || 0,
       status: 'pending',
       mode: template?.mode || 'planning',
+      taskClass: 'bookkeeping',
       roleSlug,
       runnerPreference: template?.runnerPreference || 'any',
       requiredCapabilities: template?.requiredCapabilities || [],

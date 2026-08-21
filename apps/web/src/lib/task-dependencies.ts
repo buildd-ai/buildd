@@ -287,6 +287,7 @@ async function maybeCreateAggregationTask(
     title: `Aggregate results: ${parent.title}`,
     description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
     mode: 'execution',
+    taskClass: 'bookkeeping',
     parentTaskId,
     missionId: parent.missionId,
     status: 'pending',
