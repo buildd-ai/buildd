@@ -1,3 +1,11 @@
+> **CANCELLED — 2026-08-21**
+> Anthropic cancelled the Sep 1 2026 price increase on Aug 10–11 2026. The $2/$10 rate for Sonnet 5 is
+> now the permanent standard price. Do NOT action the recommendation in section 3 (scaling
+> `costBudgetUsd` by 1.5×) — it was premised on a price increase that will not occur.
+> Superseded by PR #1735.
+
+---
+
 # Sonnet 5 Pricing Cutover Plan
 
 **Deadline**: 2026-09-01 00:00 UTC  
