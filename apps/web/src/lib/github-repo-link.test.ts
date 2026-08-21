@@ -1,11 +1,10 @@
 process.env.NODE_ENV = 'test';
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── Captured DB traffic ───────────────────────────────────────────────────────
 let insertedRows: any[] | null = null;
-let conflictTarget: any = null;
+let conflictSet: Record<string, unknown> | null = null;
 let executed: any[] = [];
 let executeRows: Array<{ id: string }> = [];
 let installationRow: any = null;
@@ -21,7 +20,7 @@ mock.module('@buildd/core/db', () => ({
       values: (rows: any[]) => ({
         onConflictDoUpdate: (opts: any) => {
           insertedRows = rows;
-          conflictTarget = opts.target;
+          conflictSet = opts.set;
           return Promise.resolve();
         },
       }),
@@ -42,8 +41,20 @@ mock.module('@/lib/github', () => ({
 
 const { syncInstallationRepos, syncInstallationReposById } = await import('./github-repo-link');
 
-const dialect = new PgDialect();
-const renderLastExecuted = () => dialect.sqlToQuery(executed[executed.length - 1]);
+// The back-link statement is asserted against the module source rather than a
+// rendered SQL object: sibling lib tests stub `drizzle-orm` with a dozen
+// incompatible `sql` shapes, and whichever loads last wins for the whole run,
+// so anything built on the real tagged-template internals is load-order
+// dependent. The source text is not.
+const source = await Bun.file(new URL('./github-repo-link.ts', import.meta.url)).text();
+const backLinkStatement = source.slice(
+  source.indexOf('UPDATE workspaces w'),
+  source.indexOf('RETURNING w.id')
+);
+const repoNormalizer = source.slice(
+  source.indexOf('const NORMALIZED_WORKSPACE_REPO'),
+  source.indexOf('/**', source.indexOf('const NORMALIZED_WORKSPACE_REPO'))
+);
 
 function makeGhRepo(overrides: Record<string, unknown> = {}) {
   return {
@@ -61,7 +72,7 @@ function makeGhRepo(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   insertedRows = null;
-  conflictTarget = null;
+  conflictSet = null;
   executed = [];
   executeRows = [];
   installationRow = null;
@@ -85,31 +96,43 @@ describe('syncInstallationRepos', () => {
       owner: 'maxjacu',
       defaultBranch: 'dev',
     });
-    expect(conflictTarget).toBeDefined();
+    // Re-running a sync must refresh metadata rather than error on repo_id.
+    expect(Object.keys(conflictSet!)).toEqual(
+      expect.arrayContaining(['installationId', 'fullName', 'defaultBranch', 'updatedAt'])
+    );
     expect(result).toEqual({ synced: 2, linked: 1, linkedWorkspaceIds: ['ws-moa-ops'] });
   });
 
-  it('back-links on a normalized owner/name match, not a substring match', async () => {
-    // Regression: the old predicate was `ilike(workspaces.repo, '%owner/name%')`,
-    // which also matches `owner/name-legacy`.
-    ghRepos = [makeGhRepo()];
+  it('issues exactly one back-link statement per sync', async () => {
+    ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/recut', name: 'recut' })];
     await syncInstallationRepos({ id: 'inst-row-1', installationId: 155534927 });
 
-    const { sql: text, params } = renderLastExecuted();
-    expect(text).toContain('UPDATE workspaces');
-    expect(text).toContain('regexp_replace');
-    expect(text).toContain('= lower(r.full_name)');
-    expect(text).toContain('w.github_repo_id IS NULL');
-    expect(text.toLowerCase()).not.toContain('like');
-    expect(params).toContain('inst-row-1');
+    // One multi-row upsert + one UPDATE ... FROM, regardless of repo count.
+    expect(executed).toHaveLength(1);
   });
 
-  it('scopes the back-link to the given installation', async () => {
-    ghRepos = [makeGhRepo()];
-    await syncInstallationRepos({ id: 'inst-row-1', installationId: 155534927 });
+  it('back-links on a normalized owner/name match, not a substring match', () => {
+    // Regression: the old predicate was `ilike(workspaces.repo, '%owner/name%')`,
+    // which also matches `owner/name-legacy`.
+    expect(backLinkStatement).toContain('${NORMALIZED_WORKSPACE_REPO} = lower(r.full_name)');
+    expect(backLinkStatement).not.toMatch(/like/i);
+  });
 
-    const { sql: text } = renderLastExecuted();
-    expect(text).toContain('r.installation_id =');
+  it('normalizes workspaces.repo by stripping the host prefix and .git suffix', () => {
+    expect(repoNormalizer).toContain('regexp_replace');
+    expect(repoNormalizer).toContain('https?://');
+    expect(repoNormalizer).toContain('git@github');
+    expect(repoNormalizer).toContain('.git)?/*$');
+    expect(repoNormalizer).toContain("coalesce(w.repo, '')");
+    expect(repoNormalizer).not.toMatch(/like/i);
+  });
+
+  it('only ever back-links workspaces that have no repo yet', () => {
+    expect(backLinkStatement).toContain('w.github_repo_id IS NULL');
+  });
+
+  it('scopes the back-link to the given installation', () => {
+    expect(backLinkStatement).toContain('r.installation_id =');
   });
 
   it('falls back to full_name for owner/name when the payload omits them', async () => {
