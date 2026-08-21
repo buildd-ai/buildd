@@ -12,7 +12,11 @@ import { sessionLog } from './session-logger';
 interface RecoverySession {
   inputStream: { end(): void };
   abortController: AbortController;
-  queryInstance?: { rewindFiles(uuid: string, opts: { dryRun: boolean }): Promise<any> };
+  queryInstance?: {
+    rewindFiles(uuid: string, opts: { dryRun: boolean }): Promise<any>;
+    /** interrupt() is available on the SDK Query instance. */
+    interrupt(opts?: { cancel_queued?: boolean }): Promise<unknown>;
+  };
 }
 
 /**
@@ -38,9 +42,15 @@ export interface RecoveryDeps {
 export class RecoveryManager {
   constructor(private deps: RecoveryDeps) {}
 
-  async abort(workerId: string, reason?: string) {
+  async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
     const session = this.deps.sessions.get(workerId);
     if (session) {
+      // cancel_queued: send SDK interrupt before aborting so the CLI clears its
+      // message queue. Queued messages would otherwise execute on the next turn
+      // even after the abort signal fires. Fire-and-forget — the abort follows.
+      if (cancelQueued && session.queryInstance) {
+        session.queryInstance.interrupt({ cancel_queued: true }).catch(() => {});
+      }
       // Abort the query and end the input stream
       session.abortController.abort();
       session.inputStream.end();

@@ -432,7 +432,7 @@ export class WorkerManager {
       getWorkers: () => this.workers,
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
-      abort: (workerId) => this.abort(workerId),
+      abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
@@ -4180,8 +4180,8 @@ If something is missing or incomplete, describe what and fix it now.`;
     });
   }
 
-  async abort(workerId: string, reason?: string) {
-    return this.recoveryManager.abort(workerId, reason);
+  async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
+    return this.recoveryManager.abort(workerId, reason, cancelQueued);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {

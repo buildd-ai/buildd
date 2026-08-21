@@ -471,6 +471,9 @@ export interface WorkerCommand {
   checkpointUuid?: string;
   // recovery fields
   recoveryMode?: 'diagnose' | 'complete' | 'restart';
+  // abort fields — cancel_queued (SDK 0.3.219+): clear the message queue so
+  // queued messages do not execute after the interrupt. Default: false.
+  cancelQueued?: boolean;
 }
 
 // Provider configuration for LLM routing
