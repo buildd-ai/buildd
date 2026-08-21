@@ -3980,6 +3980,28 @@ If something is missing or incomplete, describe what and fix it now.`;
         sessionLog(worker.id, 'error', 'result_error', `subtype=${result.subtype} stopReason=${result.stop_reason}`, worker.taskId);
       }
 
+      // terminal_reason (SDK 0.3.216+): surface distinguishable outcomes for
+      // max_turns and aborted_tools so they're visible in milestones, not
+      // collapsed into the same generic "completed" terminal state.
+      const terminalReason = result.terminal_reason as string | undefined;
+      if (terminalReason === 'max_turns') {
+        this.addMilestone(worker, {
+          type: 'status',
+          label: 'Max turns reached — consider raising maxTurns for this task',
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_max_turns', `turns=${result.num_turns ?? '?'}`, worker.taskId);
+      } else if (terminalReason === 'aborted_tools') {
+        const blocked = (result.permission_denials as Array<{ tool_name?: string; tool?: string }> | undefined)?.[0];
+        const blockedTool = blocked?.tool_name || blocked?.tool || 'a tool';
+        this.addMilestone(worker, {
+          type: 'status',
+          label: `Session blocked: "${blockedTool}" was denied — grant permission or switch approach`,
+          ts: Date.now(),
+        });
+        sessionLog(worker.id, 'warn', 'result_aborted_tools', `blocked_tool=${blockedTool}`, worker.taskId);
+      }
+
       // Capture SDK result metadata for server sync
       worker.resultMeta = {
         stopReason: result.stop_reason ?? null,
