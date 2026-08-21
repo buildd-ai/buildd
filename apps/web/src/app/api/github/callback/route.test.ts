@@ -182,6 +182,42 @@ describe('GET /api/github/callback', () => {
     expect(location).toContain('error=fetch_failed');
   });
 
+  it('records the installer on a new installation', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    mockInstallationsFindFirst.mockImplementation(() => null);
+
+    await GET(createRequest({ installation_id: '77777' }));
+
+    expect(mockInsertValues.mock.calls[0][0]).toMatchObject({
+      installationId: 77777,
+      installedByUserId: 'user-1',
+    });
+  });
+
+  it('backfills the installer on an existing installation that has none', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
+    mockInstallationsFindFirst.mockImplementation(() => ({
+      id: 'inst-db-1',
+      installedByUserId: null,
+    }));
+
+    await GET(createRequest({ installation_id: '77777' }));
+
+    expect(mockUpdateSet.mock.calls[0][0]).toMatchObject({ installedByUserId: 'user-1' });
+  });
+
+  it('does not reassign an installation already attributed to another user', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-2' } });
+    mockInstallationsFindFirst.mockImplementation(() => ({
+      id: 'inst-db-1',
+      installedByUserId: 'user-1',
+    }));
+
+    await GET(createRequest({ installation_id: '77777' }));
+
+    expect(mockUpdateSet.mock.calls[0][0]).toMatchObject({ installedByUserId: 'user-1' });
+  });
+
   it('creates new installation when none exists in DB', async () => {
     mockAuth.mockResolvedValue({ user: { email: 'test@test.com' } });
     mockInstallationsFindFirst.mockImplementation(() => null);

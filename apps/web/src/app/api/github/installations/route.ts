@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import { desc, eq, inArray, or } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -23,18 +23,22 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Scope installations to the user's workspaces
+    // An installation is visible to a user two ways:
+    //   1. a workspace they can see already points at it, or
+    //   2. they ran the install flow themselves (installedByUserId).
+    //
+    // (2) is what makes a fresh install usable. With (1) alone, installing the
+    // App before creating any workspace left the installation unreachable —
+    // absent from Settings (so its "Sync" button was unclickable) and absent
+    // from the /workspaces/new picker (so no workspace could point at it).
     const wsIds = await getUserWorkspaceIds(session.user.id!);
 
-    if (wsIds.length === 0) {
-      return NextResponse.json({ installations: [], configured: true });
-    }
-
-    // Find installation IDs linked to user's workspaces
-    const userWorkspaces = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, wsIds),
-      columns: { githubInstallationId: true },
-    });
+    const userWorkspaces = wsIds.length
+      ? await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, wsIds),
+          columns: { githubInstallationId: true },
+        })
+      : [];
 
     const installationIds = [
       ...new Set(
@@ -44,12 +48,13 @@ export async function GET(req: NextRequest) {
       ),
     ];
 
-    if (installationIds.length === 0) {
-      return NextResponse.json({ installations: [], configured: true });
-    }
-
     const installations = await db.query.githubInstallations.findMany({
-      where: inArray(githubInstallations.id, installationIds),
+      where: installationIds.length
+        ? or(
+            inArray(githubInstallations.id, installationIds),
+            eq(githubInstallations.installedByUserId, session.user.id!)
+          )
+        : eq(githubInstallations.installedByUserId, session.user.id!),
       orderBy: desc(githubInstallations.createdAt),
     });
 

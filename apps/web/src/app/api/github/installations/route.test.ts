@@ -44,12 +44,18 @@ mock.module('@buildd/core/db', () => ({
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
+  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  githubInstallations: { createdAt: 'createdAt', id: 'id' },
+  githubInstallations: {
+    createdAt: 'createdAt',
+    id: 'id',
+    installedByUserId: 'installedByUserId',
+  },
   workspaces: { id: 'id', githubInstallationId: 'githubInstallationId' },
 }));
 
@@ -135,6 +141,54 @@ describe('GET /api/github/installations', () => {
     expect(data.installations[0].id).toBe('inst-1');
     expect(data.installations[0].installationId).toBe(12345);
     expect(data.installations[0].accountLogin).toBe('my-org');
+  });
+
+  // Regression: a user who installs the App before creating any workspace has no
+  // workspace pointing at the installation, so the workspace-derived list is
+  // empty. The route used to short-circuit to [] there — leaving the fresh
+  // installation absent from Settings (unclickable "Sync") and from the
+  // /workspaces/new picker, with no way out of the loop.
+  it('returns installations the user installed even with no workspaces', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com', id: 'user-1' } });
+    mockIsGitHubAppConfigured.mockReturnValue(true);
+    mockGetUserWorkspaceIds.mockResolvedValue([]);
+    mockFindMany.mockResolvedValue([
+      { id: 'inst-fresh', installationId: 155534927, accountType: 'User', accountLogin: 'maxjacu' },
+    ]);
+
+    const response = await GET(createRequest());
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.installations).toHaveLength(1);
+    expect(data.installations[0].id).toBe('inst-fresh');
+    // Filtered on the installer, since there are no workspace-derived ids
+    expect(mockFindMany.mock.calls[0][0].where).toEqual({
+      field: 'installedByUserId',
+      value: 'user-1',
+      type: 'eq',
+    });
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('unions workspace-linked installations with self-installed ones', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com', id: 'user-1' } });
+    mockIsGitHubAppConfigured.mockReturnValue(true);
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany.mockResolvedValue([{ githubInstallationId: 'inst-1' }]);
+    mockFindMany.mockResolvedValue([{ id: 'inst-1' }, { id: 'inst-2' }]);
+
+    const response = await GET(createRequest());
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.installations).toHaveLength(2);
+    const where = mockFindMany.mock.calls[0][0].where;
+    expect(where.type).toBe('or');
+    expect(where.conditions).toEqual([
+      { field: 'id', values: ['inst-1'], type: 'inArray' },
+      { field: 'installedByUserId', value: 'user-1', type: 'eq' },
+    ]);
   });
 
   it('returns 500 on DB error', async () => {
