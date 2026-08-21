@@ -127,6 +127,7 @@ mock.module('fs', () => ({
   appendFileSync: () => {},
   statSync: () => ({ size: 0, mtimeMs: 0 }),
   copyFileSync: () => {},
+  rmSync: () => {},
 }));
 
 // Mock worker-store

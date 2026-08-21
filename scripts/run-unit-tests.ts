@@ -89,6 +89,79 @@ export async function runTestFile(
   }
 }
 
+export type FailureDigest = {
+  file: string;
+  failedTests: string[];
+  truncatedTests: number;
+  reason?: string;
+};
+
+const MAX_TESTS_PER_FILE = 5;
+const MAX_FILES_IN_SUMMARY = 20;
+
+/**
+ * Reduce a failed file's raw Bun output to the few lines an agent needs to act,
+ * so the digest stays readable when a tail-piped log truncates everything else.
+ */
+export function extractFailureDigest(file: string, output: string): FailureDigest {
+  const lines = output.split('\n');
+  const failedTests: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^\s*\(fail\)\s+(.*?)(?:\s+\[[\d.]+m?s\])?\s*$/);
+    if (match) failedTests.push(match[1]);
+  }
+
+  if (failedTests.length > 0) {
+    return {
+      file,
+      failedTests: failedTests.slice(0, MAX_TESTS_PER_FILE),
+      truncatedTests: Math.max(0, failedTests.length - MAX_TESTS_PER_FILE),
+    };
+  }
+
+  // No `(fail)` lines means the file never loaded (import crash, syntax error).
+  const errorLine = lines
+    .map(line => line.trim())
+    .find(line => /^(error|SyntaxError|TypeError|ReferenceError)\b/i.test(line));
+
+  return {
+    file,
+    failedTests: [],
+    truncatedTests: 0,
+    reason: errorLine ?? 'failed with no parseable test failures (see full log)',
+  };
+}
+
+export function formatFailureSummary(
+  digests: readonly FailureDigest[],
+  totalFiles: number,
+  logPath: string,
+): string {
+  const shown = digests.slice(0, MAX_FILES_IN_SUMMARY);
+  const omitted = digests.length - shown.length;
+  const out: string[] = ['', `${digests.length} of ${totalFiles} unit test files failed:`, ''];
+
+  for (const digest of shown) {
+    out.push(digest.file);
+    for (const test of digest.failedTests) out.push(`  x ${test}`);
+    if (digest.truncatedTests > 0) {
+      out.push(`  ... +${digest.truncatedTests} more failing tests in this file`);
+    }
+    if (digest.reason) out.push(`  ${digest.reason}`);
+    out.push('');
+  }
+
+  if (omitted > 0) out.push(`... ${omitted} more failing files omitted from this summary`, '');
+
+  out.push(
+    `Full output: ${logPath}`,
+    `Do not re-run the suite to see more -- grep the log:  grep -A30 -F '${shown[0]?.file ?? '<file>'}' ${logPath}`,
+  );
+
+  return out.join('\n');
+}
+
 async function main(): Promise<void> {
   const files = await discoverUnitTests();
   const concurrency = getTestConcurrency(process.env.BUILDD_TEST_CONCURRENCY);
@@ -102,16 +175,33 @@ async function main(): Promise<void> {
     } else {
       failures.push(result);
     }
-    process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
+    // Carriage-return progress is unreadable once redirected to a file, and the
+    // log is what agents grep. Only animate on a TTY.
+    if (process.stdout.isTTY) {
+      process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
+    }
   });
-  process.stdout.write('\n');
+  if (process.stdout.isTTY) process.stdout.write('\n');
 
+  // Files finish out of order under concurrency; sort so the log and digest are
+  // byte-stable across runs.
+  failures.sort((a, b) => a.file.localeCompare(b.file));
+
+  const logPath = process.env.BUILDD_TEST_LOG ?? '.test-report.log';
+  const report = failures
+    .map(failure => `--- ${failure.file} ---\n${failure.output.trim()}\n`)
+    .join('\n');
+  await Bun.write(logPath, report || `All ${files.length} unit test files passed.\n`);
+
+  // Full detail first, digest last: agents tail this output, so the actionable
+  // summary has to be the final thing printed.
   for (const failure of failures) {
     console.error(`\n--- ${failure.file} ---\n${failure.output.trim()}`);
   }
 
   if (failures.length > 0) {
-    console.error(`\n${failures.length} of ${files.length} unit test files failed.`);
+    const digests = failures.map(failure => extractFailureDigest(failure.file, failure.output));
+    console.error(formatFailureSummary(digests, files.length, logPath));
     process.exitCode = 1;
   } else {
     console.log(`All ${files.length} unit test files passed in isolated processes.`);
