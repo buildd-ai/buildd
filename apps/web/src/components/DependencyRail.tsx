@@ -4,32 +4,18 @@ import type { BlockRef } from '@/lib/task-presentation';
 
 interface DependencyRailProps {
   blockedBy: BlockRef[];
-  /**
-   * When true the blocker task is visible directly above this row in the same
-   * group and the parent has already applied the elbow-rail indentation CSS
-   * (ml-4 + border-l). This component renders nothing — the geometry is the
-   * signal.
-   *
-   * When false the blocker is in a different group or off-screen: render a
-   * compact reference chip.
-   */
-  blockerVisible: boolean;
 }
 
 /**
- * Replaces the `← blocked on {title}` prose div in TaskCard.
+ * Cross-group / off-screen blocker reference chip.
  *
- * Primary form (blockerVisible=true): renders nothing — indentation from the
- * parent wrapper carries the signal.
+ * Renders a compact `← #N` chip for each blocker. Used when the blocker is in
+ * a different section (fan-in) or not visible in the current render tree.
  *
- * Secondary form (blockerVisible=false): compact `← #N` chip that identifies
- * the blocker without repeating its full title.
- *
- * Last-resort fallback (no id/prNumber): a short muted id reference.
+ * Prose (`← blocked on {title}`) is banned — chip form is the only output.
  */
-export function DependencyRail({ blockedBy, blockerVisible }: DependencyRailProps) {
+export function DependencyRail({ blockedBy }: DependencyRailProps) {
   if (blockedBy.length === 0) return null;
-  if (blockerVisible) return null;
 
   const refs = blockedBy.map((b) => {
     if (b.prNumber) return `← #${b.prNumber}`;
