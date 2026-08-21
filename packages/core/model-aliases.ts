@@ -82,6 +82,14 @@ async function getAliases(): Promise<Record<string, string>> {
 }
 
 /**
+ * Returns true for models that require extended thinking to be enabled
+ * at xhigh/max effort levels (passing thinking: { type: "disabled" } returns 400).
+ */
+export function requiresThinkingEnabled(modelId: string): boolean {
+  return /claude-opus-5/i.test(modelId);
+}
+
+/**
  * Update the cached model aliases from a supportedModels() response.
  * Called by the runner after discovering model capabilities.
  */

@@ -54,6 +54,7 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { requiresThinkingEnabled } from '@buildd/core/model-aliases';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { detectCbmConfig, runCbmBootstrap, buildCbmMcpEntry as buildCbmBootstrapMcpEntry } from './cbm-bootstrap.js';
@@ -2220,11 +2221,11 @@ export class WorkerManager {
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
-      // Guard: claude-opus-5 at xhigh/max effort requires thinking enabled.
+      // Guard: some models (e.g. opus-5) at xhigh/max effort require thinking enabled.
       // Passing thinking: { type: "disabled" } at these effort levels returns 400.
-      const isOpus5HighEffort = /claude-opus-5/i.test(this.config.model || '')
+      const isHighEffortThinkingRequired = requiresThinkingEnabled(this.config.model || '')
         && (configuredEffort === 'xhigh' || configuredEffort === 'max');
-      const effectiveThinking = (isOpus5HighEffort && (configuredThinking as any)?.type === 'disabled')
+      const effectiveThinking = (isHighEffortThinkingRequired && (configuredThinking as any)?.type === 'disabled')
         ? undefined
         : configuredThinking;
 
