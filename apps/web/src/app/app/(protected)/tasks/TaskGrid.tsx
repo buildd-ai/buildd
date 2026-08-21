@@ -114,7 +114,6 @@ function renderTaskCard(
         taskType={task.taskType}
         density="row"
         groupScoped={groupScoped}
-        groupTaskIds={groupTaskIds}
       />
     </SwipeableRow>
   );

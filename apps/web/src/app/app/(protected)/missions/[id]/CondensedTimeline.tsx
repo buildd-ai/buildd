@@ -11,6 +11,7 @@ import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveBandKey } from '@/lib/condensed-timeline';
+import type { ChainUnit } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
@@ -56,12 +57,12 @@ export type BookkeepingTask = {
 };
 
 export type CondensedTimelineGroups = {
-  waitingOnYou: CondensedTimelineTask[];
-  running: CondensedTimelineTask[];
-  nextQueued: CondensedTimelineTask[];
-  blocked: CondensedTimelineTask[];
-  done: CondensedTimelineTask[];
-  failed: CondensedTimelineTask[];
+  waitingOnYou: ChainUnit<CondensedTimelineTask>[];
+  running: ChainUnit<CondensedTimelineTask>[];
+  nextQueued: ChainUnit<CondensedTimelineTask>[];
+  blocked: ChainUnit<CondensedTimelineTask>[];
+  done: ChainUnit<CondensedTimelineTask>[];
+  failed: ChainUnit<CondensedTimelineTask>[];
 };
 
 export type CondensedTimelineProps = {
@@ -280,20 +281,6 @@ function TaskRow({
         </SwipeableRow>
       </div>
 
-      {/* Blocked-by line */}
-      {task.chain && task.chain.blockedBy.length > 0 && (
-        <div className="pl-7 text-[10px] text-status-warning mt-0.5 mb-0.5">
-          {'← blocked on '}
-          {task.chain.blockedBy.map((b, i) => (
-            <span key={b.id}>
-              {i > 0 && ', '}
-              {b.prNumber ? `#${b.prNumber}` : b.title}
-              {b.prUrl ? ' (open)' : ''}
-            </span>
-          ))}
-        </div>
-      )}
-
       {/* PR status line */}
       {showPrLine && (
         <PrStatusLine task={task} effectivePolicyTier={effectivePolicyTier} />
@@ -405,21 +392,42 @@ function TaskRow({
   );
 }
 
-// ─── Task list within a section ───────────────────────────────────────────────
+// ─── Chain block — head + tail within one ChainUnit ──────────────────────────
 
-function TaskList({
-  tasks,
+function ChainBlock({
+  chain,
   effectivePolicyTier,
   policyLabel,
 }: {
-  tasks: CondensedTimelineTask[];
+  chain: ChainUnit<CondensedTimelineTask>;
+  effectivePolicyTier: MergePolicyTier;
+  policyLabel: string;
+}) {
+  return (
+    <div>
+      <TaskRow task={chain.head} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+      {chain.tail.map(task => (
+        <TaskRow key={task.id} task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+      ))}
+    </div>
+  );
+}
+
+// ─── Chain list within a section ─────────────────────────────────────────────
+
+function ChainList({
+  chains,
+  effectivePolicyTier,
+  policyLabel,
+}: {
+  chains: ChainUnit<CondensedTimelineTask>[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
 }) {
   return (
     <div className="space-y-0.5">
-      {tasks.map(task => (
-        <TaskRow key={task.id} task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+      {chains.map(chain => (
+        <ChainBlock key={chain.head.id} chain={chain} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
       ))}
     </div>
   );
@@ -546,8 +554,8 @@ function SummaryView({
       {waitingOnYou.length > 0 && (
         <div>
           <SectionLabel>Waiting on you</SectionLabel>
-          <TaskList
-            tasks={waitingOnYou}
+          <ChainList
+            chains={waitingOnYou}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -573,8 +581,8 @@ function WaveBandedDone({
   policyLabel,
   missionCompleted,
 }: {
-  done: CondensedTimelineTask[];
-  failed: CondensedTimelineTask[];
+  done: ChainUnit<CondensedTimelineTask>[];
+  failed: ChainUnit<CondensedTimelineTask>[];
   segments: MissionSegment[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
@@ -587,15 +595,16 @@ function WaveBandedDone({
 
   // Build O(1) segment lookup
   const segmentMap = new Map(segments.map(s => [s.taskId, s]));
-  const getSegments = (tasks: CondensedTimelineTask[]): MissionSegment[] =>
-    tasks.flatMap(t => { const s = segmentMap.get(t.id); return s ? [s] : []; });
+  const getSegments = (chains: ChainUnit<CondensedTimelineTask>[]): MissionSegment[] =>
+    chains.flatMap(c => [c.head, ...c.tail]).flatMap(t => { const s = segmentMap.get(t.id); return s ? [s] : []; });
 
-  // Wave-band the done tasks by completion timestamp
-  const doneWithTs = done.map(t => ({
-    ...t,
-    completionTs: t.latestWorker?.mergedAt
-      ? new Date(t.latestWorker.mergedAt).getTime()
-      : new Date(t.taskUpdatedAt).getTime(),
+  // Wave-band the done chains by head's completion timestamp
+  const doneWithTs = done.map(chain => ({
+    id: chain.head.id,
+    chain,
+    completionTs: chain.head.latestWorker?.mergedAt
+      ? new Date(chain.head.latestWorker.mergedAt).getTime()
+      : new Date(chain.head.taskUpdatedAt).getTime(),
   }));
   const bands = deriveBandKey(doneWithTs, new Date());
 
@@ -610,9 +619,10 @@ function WaveBandedDone({
       {/* Wave bands — newest first */}
       {bands.map(band => {
         const isOpen = isBandExpanded(band.label);
-        const bandSegs = getSegments(band.items);
-        const prCount = band.items.filter(t =>
-          t.latestWorker?.prUrl && (t.latestWorker.mergedAt || t.latestWorker.prLifecycleStatus === 'merged')
+        const bandChains = band.items.map(item => item.chain);
+        const bandSegs = getSegments(bandChains);
+        const prCount = bandChains.filter(c =>
+          c.head.latestWorker?.prUrl && (c.head.latestWorker.mergedAt || c.head.latestWorker.prLifecycleStatus === 'merged')
         ).length;
 
         return (
@@ -620,8 +630,8 @@ function WaveBandedDone({
             {isOpen ? (
               <div className="overflow-hidden">
                 <GroupSection title={band.label} taskCount={band.items.length} />
-                <TaskList
-                  tasks={band.items}
+                <ChainList
+                  chains={bandChains}
                   effectivePolicyTier={effectivePolicyTier}
                   policyLabel={policyLabel}
                 />
@@ -661,8 +671,8 @@ function WaveBandedDone({
           {failedExpanded && (
             <div className="overflow-hidden">
               <SectionLabel>Failed</SectionLabel>
-              <TaskList
-                tasks={failed}
+              <ChainList
+                chains={failed}
                 effectivePolicyTier={effectivePolicyTier}
                 policyLabel={policyLabel}
               />
@@ -736,20 +746,18 @@ function TimelineView({
   bookkeepingTasks: BookkeepingTask[];
 }) {
   const [moreQueuedExpanded, setMoreQueuedExpanded] = useState(false);
-  const [blockedExpanded, setBlockedExpanded] = useState(false);
 
   const { waitingOnYou, running, nextQueued, blocked, done, failed } = groups;
 
   const segmentMap = new Map(segments.map(s => [s.taskId, s]));
-  const getGroupSegments = (tasks: CondensedTimelineTask[]): MissionSegment[] =>
-    tasks.flatMap(t => { const s = segmentMap.get(t.id); return s ? [s] : []; });
+  const getGroupSegments = (chains: ChainUnit<CondensedTimelineTask>[]): MissionSegment[] =>
+    chains.flatMap(c => [c.head, ...c.tail]).flatMap(t => { const s = segmentMap.get(t.id); return s ? [s] : []; });
 
-  const showBlockedInline = blocked.length <= 2;
   const hasTerminal = done.length > 0 || failed.length > 0;
 
   const runningSorted = [...running].sort((a, b) => {
-    const aMs = a.latestWorker?.startedAt ? new Date(a.latestWorker.startedAt).getTime() : 0;
-    const bMs = b.latestWorker?.startedAt ? new Date(b.latestWorker.startedAt).getTime() : 0;
+    const aMs = a.head.latestWorker?.startedAt ? new Date(a.head.latestWorker.startedAt).getTime() : 0;
+    const bMs = b.head.latestWorker?.startedAt ? new Date(b.head.latestWorker.startedAt).getTime() : 0;
     return aMs - bMs;
   });
 
@@ -776,8 +784,8 @@ function TimelineView({
       {waitingOnYou.length > 0 && (
         <div>
           <SectionLabel>Waiting on you</SectionLabel>
-          <TaskList
-            tasks={waitingOnYou}
+          <ChainList
+            chains={waitingOnYou}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -788,10 +796,10 @@ function TimelineView({
       {runningSorted.length > 0 && (
         <div>
           <SectionLabel>
-            Running{runningSorted.some(t => t.latestWorker?.status === 'waiting_input') ? ' · Needs Input' : ''}
+            Running{runningSorted.some(c => c.head.latestWorker?.status === 'waiting_input') ? ' · Needs Input' : ''}
           </SectionLabel>
-          <TaskList
-            tasks={runningSorted}
+          <ChainList
+            chains={runningSorted}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -802,8 +810,8 @@ function TimelineView({
       {nextQueued.length > 0 && (
         <div>
           <SectionLabel>Next queued</SectionLabel>
-          <TaskList
-            tasks={queuedVisible}
+          <ChainList
+            chains={queuedVisible}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -812,8 +820,8 @@ function TimelineView({
             <>
               {moreQueuedExpanded && (
                 <div className="overflow-hidden transition-all duration-200 ease-out">
-                  <TaskList
-                    tasks={queuedOverflow}
+                  <ChainList
+                    chains={queuedOverflow}
                     effectivePolicyTier={effectivePolicyTier}
                     policyLabel={policyLabel}
                   />
@@ -845,47 +853,12 @@ function TimelineView({
       {/* ── BLOCKED ─────────────────────────────────────────────── */}
       {blocked.length > 0 && (
         <div>
-          {showBlockedInline ? (
-            <>
-              <SectionLabel>Waiting on dependencies</SectionLabel>
-              <TaskList
-                tasks={blocked}
-                effectivePolicyTier={effectivePolicyTier}
-                policyLabel={policyLabel}
-              />
-            </>
-          ) : (
-            <>
-              {blockedExpanded && (
-                <div className="overflow-hidden transition-all duration-200 ease-out">
-                  <SectionLabel>Waiting on dependencies</SectionLabel>
-                  <TaskList
-                    tasks={blocked}
-                    effectivePolicyTier={effectivePolicyTier}
-                    policyLabel={policyLabel}
-                  />
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setBlockedExpanded(v => !v)}
-                className="flex items-center gap-2 w-full text-left px-2 py-1.5 text-[12px] text-text-muted hover:text-text-secondary transition-colors rounded"
-              >
-                <span
-                  className="text-[10px] transition-transform duration-200"
-                  style={{ transform: blockedExpanded ? 'rotate(90deg)' : 'none' }}
-                >
-                  ▶
-                </span>
-                {blockedExpanded ? 'Hide blocked' : `${blocked.length} waiting on dependencies`}
-                {!blockedExpanded && (
-                  <span className="ml-auto flex-shrink-0">
-                    <MissionProgressBar density="mini" segments={getGroupSegments(blocked)} maxWidth={80} />
-                  </span>
-                )}
-              </button>
-            </>
-          )}
+          <SectionLabel>Waiting on dependencies</SectionLabel>
+          <ChainList
+            chains={blocked}
+            effectivePolicyTier={effectivePolicyTier}
+            policyLabel={policyLabel}
+          />
         </div>
       )}
 

@@ -20,8 +20,8 @@ import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
-import { groupTimelineTasks } from '@/lib/condensed-timeline';
-import type { CondensedTask, CondensedTaskWorker } from '@/lib/condensed-timeline';
+import { groupChainUnits } from '@/lib/condensed-timeline';
+import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
@@ -520,7 +520,7 @@ export default async function MissionDetailPage({
   });
   const condensedTaskMapForGrouping = new Map(condensedTasksForGrouping.map(t => [t.id, t]));
 
-  const rawGroups = groupTimelineTasks(condensedTasksForGrouping, condensedTaskMapForGrouping);
+  const rawGroups = groupChainUnits(condensedTasksForGrouping, condensedTaskMapForGrouping);
 
   // Convert a raw group member to a CondensedTimelineTask with enriched display fields
   function toTimelineTask(condensedTask: CondensedTask): CondensedTimelineTask {
@@ -556,13 +556,17 @@ export default async function MissionDetailPage({
     };
   }
 
+  function toChainUnit(chain: ChainUnit<CondensedTask>): ChainUnit<CondensedTimelineTask> {
+    return { head: toTimelineTask(chain.head), tail: chain.tail.map(toTimelineTask), shape: chain.shape };
+  }
+
   const timelineGroups: CondensedTimelineGroups = {
-    waitingOnYou: rawGroups.waitingOnYou.map(toTimelineTask),
-    running: rawGroups.running.map(toTimelineTask),
-    nextQueued: rawGroups.nextQueued.map(toTimelineTask),
-    blocked: rawGroups.blocked.map(toTimelineTask),
-    done: rawGroups.done.map(toTimelineTask),
-    failed: rawGroups.failed.map(toTimelineTask),
+    waitingOnYou: rawGroups.waitingOnYou.map(toChainUnit),
+    running: rawGroups.running.map(toChainUnit),
+    nextQueued: rawGroups.nextQueued.map(toChainUnit),
+    blocked: rawGroups.blocked.map(toChainUnit),
+    done: rawGroups.done.map(toChainUnit),
+    failed: rawGroups.failed.map(toChainUnit),
   };
 
   // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.

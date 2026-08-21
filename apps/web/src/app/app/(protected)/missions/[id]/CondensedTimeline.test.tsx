@@ -9,6 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineProps, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
+import type { ChainUnit } from '@/lib/condensed-timeline';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,11 @@ function makeTask(id: string, overrides: Partial<CondensedTimelineTask> = {}): C
 }
 
 const makeSeg = (taskId: string, state = 'solid' as const) => ({ taskId, state });
+const toChain = (task: CondensedTimelineTask): ChainUnit<CondensedTimelineTask> => ({
+  head: task,
+  tail: [],
+  shape: 'standalone',
+});
 
 const emptyGroups = {
   waitingOnYou: [],
@@ -68,7 +74,7 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: doneTasks }}
+        groups={{ ...emptyGroups, done: doneTasks.map(toChain) }}
         segments={[makeSeg('t1'), makeSeg('t2')]}
         allTasksCount={2}
       />,
@@ -83,7 +89,7 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: doneTasks, failed: failedTasks }}
+        groups={{ ...emptyGroups, done: doneTasks.map(toChain), failed: failedTasks.map(toChain) }}
         segments={[
           makeSeg('done1', 'solid'),
           makeSeg('fail1', 'notch'),
@@ -100,7 +106,7 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, nextQueued: queuedTasks }}
+        groups={{ ...emptyGroups, nextQueued: queuedTasks.map(toChain) }}
         segments={queuedTasks.map(t => makeSeg(t.id, 'empty'))}
         allTasksCount={5}
       />,
@@ -114,7 +120,7 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, nextQueued: queuedTasks }}
+        groups={{ ...emptyGroups, nextQueued: queuedTasks.map(toChain) }}
         segments={queuedTasks.map(t => makeSeg(t.id, 'empty'))}
         allTasksCount={3}
       />,
@@ -123,31 +129,16 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     expect(html).not.toContain('max-width:80px');
   });
 
-  it('renders a SegmentStrip on the collapsed blocked disclosure row when ≥3 blocked tasks', () => {
+  // The section-level blocked collapse was retired by the chain grouping pass (spec §5).
+  // Blocked tasks are always shown; only individual chains collapse when >4 tail members.
+  it('does NOT render a SegmentStrip for the blocked section — collapse retired by chain grouping', () => {
     const blockedTasks = Array.from({ length: 3 }, (_, i) => makeTask(`b${i}`, { status: 'pending' }));
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, blocked: blockedTasks }}
+        groups={{ ...emptyGroups, blocked: blockedTasks.map(toChain) }}
         segments={blockedTasks.map(t => makeSeg(t.id, 'empty'))}
         allTasksCount={3}
-      />,
-    );
-    expect(html).toContain('height:4px');
-    expect(html).toContain('max-width:80px');
-  });
-
-  it('does NOT render a SegmentStrip for the blocked section when ≤2 blocked tasks (always expanded)', () => {
-    const blockedTasks = [
-      makeTask('b1', { status: 'pending' }),
-      makeTask('b2', { status: 'pending' }),
-    ];
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        groups={{ ...emptyGroups, blocked: blockedTasks }}
-        segments={blockedTasks.map(t => makeSeg(t.id, 'empty'))}
-        allTasksCount={2}
       />,
     );
     expect(html).not.toContain('height:4px');
@@ -159,7 +150,7 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: doneTasks }}
+        groups={{ ...emptyGroups, done: doneTasks.map(toChain) }}
         segments={[]}
         allTasksCount={1}
       />,
@@ -207,7 +198,7 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
         {...baseProps}
         defaultView="summary"
         allTasksCount={10}
-        groups={{ ...emptyGroups, waitingOnYou: [waitingTask] }}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(waitingTask)] }}
       />,
     );
     expect(html).toContain('Waiting on you');
@@ -271,7 +262,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: [makeTask('t1', { status: 'completed' })] }}
+        groups={{ ...emptyGroups, done: [toChain(makeTask('t1', { status: 'completed' }))] }}
         bookkeepingTasks={[makeBookkeeping('b1', '2025-01-01T00:00:00Z')]}
         allTasksCount={1}
       />,
@@ -283,7 +274,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: [makeTask('t1', { status: 'completed' })] }}
+        groups={{ ...emptyGroups, done: [toChain(makeTask('t1', { status: 'completed' }))] }}
         bookkeepingTasks={[
           makeBookkeeping('b1', '2025-01-01T00:00:00Z'),
           makeBookkeeping('b2', '2025-01-02T00:00:00Z'),
@@ -299,7 +290,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, done: [makeTask('t1', { status: 'completed' })] }}
+        groups={{ ...emptyGroups, done: [toChain(makeTask('t1', { status: 'completed' }))] }}
         bookkeepingTasks={[]}
         allTasksCount={1}
       />,
@@ -327,7 +318,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, waitingOnYou: [approvedTask] }}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(approvedTask)] }}
         allTasksCount={1}
       />,
     );
@@ -367,7 +358,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, waitingOnYou: [approvedWithPr] }}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(approvedWithPr)] }}
         allTasksCount={1}
       />,
     );
@@ -391,7 +382,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, waitingOnYou: [changesTask] }}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(changesTask)] }}
         allTasksCount={1}
       />,
     );
@@ -415,7 +406,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        groups={{ ...emptyGroups, waitingOnYou: [escalatedTask] }}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(escalatedTask)] }}
         allTasksCount={1}
       />,
     );

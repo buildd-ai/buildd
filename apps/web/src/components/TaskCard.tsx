@@ -69,15 +69,9 @@ export interface TaskCardProps {
 
   /**
    * True when the row is rendered inside a GroupSection — suppresses the
-   * missionTitle subtitle (the section header already carries the identity)
-   * and enables the elbow-rail indentation for blocked tasks.
+   * missionTitle subtitle (the section header already carries the identity).
    */
   groupScoped?: boolean;
-  /**
-   * When groupScoped=true, the set of task IDs in the same group.
-   * Used to determine whether the blocker is visible (elbow rail) or off-screen (chip).
-   */
-  groupTaskIds?: ReadonlySet<string>;
 }
 
 // ─── Chain strip ─────────────────────────────────────────────────────────────
@@ -85,15 +79,7 @@ export interface TaskCardProps {
 function ChainStrip({ chain }: { chain: ChainPositionResult }) {
   // Standalone task with no deps and no dependents: omit — never render 1/1.
   if (chain.total === 1) return null;
-
-  return (
-    <div className="flex items-center gap-1">
-      <SegmentStrip segments={chain.segments} continuous={false} />
-      <span className="font-mono text-[10px] text-text-muted tabular-nums">
-        step {chain.index}/{chain.total}
-      </span>
-    </div>
-  );
+  return <SegmentStrip segments={chain.segments} continuous={false} />;
 }
 
 // ─── Intensity tier → elapsed color ──────────────────────────────────────────
@@ -209,7 +195,6 @@ export function TaskCard({
   loopExitConditionType,
   density,
   groupScoped = false,
-  groupTaskIds,
 }: TaskCardProps) {
   const now = useNow();
   const displayStatus = deriveDisplayStatus(taskStatus, workerStatus);
@@ -223,9 +208,6 @@ export function TaskCard({
     prLifecycleStatus,
     isBlocked,
   });
-  // Blocker is visible in same group when groupScoped and all blockers are in groupTaskIds
-  const blockerVisible = groupScoped && isBlocked && !!groupTaskIds &&
-    (chain?.blockedBy ?? []).every(b => groupTaskIds.has(b.id));
 
   const timestampLabel = deriveTimestampLabel({
     taskStatus,
@@ -360,7 +342,7 @@ export function TaskCard({
 
           {/* T2 — DependencyRail (replaces prose blocked-on div) */}
           {chain && chain.blockedBy.length > 0 && (
-            <DependencyRail blockedBy={chain.blockedBy} blockerVisible={blockerVisible} />
+            <DependencyRail blockedBy={chain.blockedBy} />
           )}
 
         </div>
@@ -438,7 +420,7 @@ export function TaskCard({
         <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 mb-1.5 pointer-events-none">
           <ChainStrip chain={chain} />
           {chain.blockedBy.length > 0 && (
-            <DependencyRail blockedBy={chain.blockedBy} blockerVisible={blockerVisible} />
+            <DependencyRail blockedBy={chain.blockedBy} />
           )}
           {chain.unblocks > 0 && chain.blockedBy.length === 0 && (
             <span className="text-[10px] text-text-muted">

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupTimelineTasks, gateChipCollapsed, deriveBandKey, deriveBandLabel } from './condensed-timeline';
+import { groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -496,5 +496,189 @@ describe('gateChipCollapsed', () => {
 
   it('chip collapses when mergedAt is any non-empty string', () => {
     expect(gateChipCollapsed('2024-08-02T12:34:56.789Z')).toBe(true);
+  });
+});
+
+// ─── identifyChains ───────────────────────────────────────────────────────────
+
+describe('identifyChains', () => {
+  // Helper: pending task with merged-PR dep (gate satisfied)
+  function mergedTask(id: string): CondensedTask {
+    return withWorker(makeTask({ id, status: 'completed' }), doneWorker({
+      prUrl: 'https://github.com/org/repo/pull/1',
+      mergedAt: '2025-01-01T00:00:00Z',
+    }));
+  }
+
+  // 8-deep linear chain: T1→T2→...→T8 (each depends on the previous)
+  it('identifies an 8-deep linear chain', () => {
+    const tasks: CondensedTask[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `t${i + 1}`,
+      status: 'pending',
+      dependsOn: i === 0 ? null : [`t${i}`],
+      workers: [],
+    }));
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const chains = identifyChains(tasks, taskMap);
+
+    expect(chains).toHaveLength(1);
+    const [chain] = chains;
+    expect(chain.head.id).toBe('t1');
+    expect(chain.tail.map(t => t.id)).toEqual(['t2', 't3', 't4', 't5', 't6', 't7', 't8']);
+    expect(chain.shape).toBe('linear');
+  });
+
+  // Fan-out: T1 has 3 unresolved dependents (T2, T3, T4)
+  it('identifies a fan-out chain (1 head, 3 dependents)', () => {
+    const head = makeTask({ id: 't1', status: 'pending', dependsOn: null });
+    const dep1 = makeTask({ id: 't2', status: 'pending', dependsOn: ['t1'] });
+    const dep2 = makeTask({ id: 't3', status: 'pending', dependsOn: ['t1'] });
+    const dep3 = makeTask({ id: 't4', status: 'pending', dependsOn: ['t1'] });
+    const tasks = [head, dep1, dep2, dep3];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const chains = identifyChains(tasks, taskMap);
+
+    expect(chains).toHaveLength(1);
+    const [chain] = chains;
+    expect(chain.head.id).toBe('t1');
+    expect(chain.tail.map(t => t.id)).toEqual(expect.arrayContaining(['t2', 't3', 't4']));
+    expect(chain.shape).toBe('fan-out');
+  });
+
+  // Fan-in: T3 depends on both T1 and T2 → T3 is a standalone fan-in
+  it('identifies a fan-in as a standalone chain', () => {
+    const t1 = makeTask({ id: 't1', status: 'pending', dependsOn: null });
+    const t2 = makeTask({ id: 't2', status: 'pending', dependsOn: null });
+    const t3 = makeTask({ id: 't3', status: 'pending', dependsOn: ['t1', 't2'] });
+    const tasks = [t1, t2, t3];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const chains = identifyChains(tasks, taskMap);
+
+    // t1 and t2 are standalone, t3 is fan-in standalone
+    const t3Chain = chains.find(c => c.head.id === 't3');
+    expect(t3Chain).toBeDefined();
+    expect(t3Chain!.shape).toBe('fan-in');
+    expect(t3Chain!.tail).toHaveLength(0);
+  });
+
+  // Standalone: single task with no deps and no dependents
+  it('wraps a standalone task as a chain of 1', () => {
+    const task = makeTask({ id: 't1', status: 'pending', dependsOn: null });
+    const taskMap = new Map([['t1', task]]);
+    const chains = identifyChains([task], taskMap);
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].head.id).toBe('t1');
+    expect(chains[0].tail).toHaveLength(0);
+    expect(chains[0].shape).toBe('standalone');
+  });
+
+  // Cycle guard: A→B→A — must not hang
+  it('handles a cyclic dep A→B→A without hanging', () => {
+    const t1 = makeTask({ id: 't1', status: 'pending', dependsOn: ['t2'] });
+    const t2 = makeTask({ id: 't2', status: 'pending', dependsOn: ['t1'] });
+    const tasks = [t1, t2];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    // Must not throw or hang — just return some chains
+    let chains: ReturnType<typeof identifyChains>;
+    expect(() => {
+      chains = identifyChains(tasks, taskMap);
+    }).not.toThrow();
+    // All tasks should appear somewhere (no tasks lost)
+    const allIds = chains!.flatMap(c => [c.head.id, ...c.tail.map(t => t.id)]);
+    expect(allIds).toContain('t1');
+    expect(allIds).toContain('t2');
+  });
+
+  // Linear chain with resolved (gate-satisfied) head dep — head still has no UNRESOLVED blocker
+  it('treats a task with only resolved blockers as a chain head', () => {
+    const resolved = mergedTask('dep1');
+    const head = makeTask({ id: 't1', status: 'pending', dependsOn: ['dep1'] });
+    const tail = makeTask({ id: 't2', status: 'pending', dependsOn: ['t1'] });
+    const tasks = [resolved, head, tail];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const chains = identifyChains(tasks, taskMap);
+
+    // dep1 is resolved — t1 has no unresolved blocker → t1 is a chain head
+    // t1→t2 should be a linear chain of 2
+    const headChain = chains.find(c => c.head.id === 't1');
+    expect(headChain).toBeDefined();
+    expect(headChain!.tail.map(t => t.id)).toEqual(['t2']);
+    expect(headChain!.shape).toBe('linear');
+  });
+});
+
+// ─── groupChainUnits ─────────────────────────────────────────────────────────
+
+describe('groupChainUnits', () => {
+  // The canonical chain-severing bug: A (waitingOnYou) → B (blocked)
+  // Both should end up in waitingOnYou because A is the head.
+  it('places a 2-task chain in the section of the head (fixes chain-severing)', () => {
+    const head = withWorker(makeTask({ id: 'A', status: 'completed' }), doneWorker({
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prNumber: 1,
+      prLifecycleStatus: 'open',
+      mergedAt: null,
+    }));
+    const tail = makeTask({ id: 'B', status: 'pending', dependsOn: ['A'] });
+    const tasks = [head, tail];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const groups = groupChainUnits(tasks, taskMap);
+
+    // A is waitingOnYou (completed + open PR); B is blocked on A
+    // Both should be in waitingOnYou as one chain
+    expect(groups.waitingOnYou).toHaveLength(1);
+    expect(groups.blocked).toHaveLength(0);
+    const [chain] = groups.waitingOnYou;
+    expect(chain.head.id).toBe('A');
+    expect(chain.tail.map(t => t.id)).toEqual(['B']);
+  });
+
+  // 8-deep chain — all in nextQueued (head has no deps, so nextQueued)
+  it('places an 8-deep chain all in nextQueued based on head readiness', () => {
+    const tasks: CondensedTask[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `t${i + 1}`,
+      status: 'pending',
+      dependsOn: i === 0 ? null : [`t${i}`],
+      workers: [],
+    }));
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const groups = groupChainUnits(tasks, taskMap);
+
+    // Head t1 has no deps → nextQueued
+    expect(groups.nextQueued).toHaveLength(1);
+    expect(groups.blocked).toHaveLength(0);
+    const [chain] = groups.nextQueued;
+    expect(chain.head.id).toBe('t1');
+    expect(chain.tail).toHaveLength(7);
+  });
+
+  // Fan-out: head is running, dependents follow into running
+  it('places a fan-out chain in running when head has a live worker', () => {
+    const head = withWorker(makeTask({ id: 'A', status: 'pending', dependsOn: null }), { status: 'running' });
+    const dep1 = makeTask({ id: 'B', status: 'pending', dependsOn: ['A'] });
+    const dep2 = makeTask({ id: 'C', status: 'pending', dependsOn: ['A'] });
+    const tasks = [head, dep1, dep2];
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const groups = groupChainUnits(tasks, taskMap);
+
+    expect(groups.running).toHaveLength(1);
+    const [chain] = groups.running;
+    expect(chain.head.id).toBe('A');
+    expect(chain.shape).toBe('fan-out');
+    expect(chain.tail.map(t => t.id)).toEqual(expect.arrayContaining(['B', 'C']));
+  });
+
+  // Standalone task without deps → nextQueued
+  it('places a standalone task in the correct section', () => {
+    const task = makeTask({ id: 't1', status: 'pending', dependsOn: null });
+    const taskMap = new Map([['t1', task]]);
+    const groups = groupChainUnits([task], taskMap);
+
+    expect(groups.nextQueued).toHaveLength(1);
+    const [chain] = groups.nextQueued;
+    expect(chain.head.id).toBe('t1');
+    expect(chain.tail).toHaveLength(0);
+    expect(chain.shape).toBe('standalone');
   });
 });

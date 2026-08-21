@@ -139,6 +139,186 @@ export function groupTimelineTasks<T extends CondensedTask>(
   return groups;
 }
 
+// ─── Chain identification ─────────────────────────────────────────────────────
+
+export type ChainShape = 'linear' | 'fan-out' | 'fan-in' | 'standalone';
+
+/**
+ * A structurally-identified chain unit.
+ * - linear: sequential tasks where each has exactly 1 unresolved blocker with 1 unresolved dependent
+ * - fan-out: head with N > 1 unresolved dependents (tail = the siblings)
+ * - fan-in: task with N > 1 unresolved blockers (tail is empty; standalone row)
+ * - standalone: no unresolved deps or dependents in the task set
+ */
+export type ChainUnit<T = CondensedTask> = {
+  head: T;
+  /** For linear: ordered tail members. For fan-out: the dependent siblings. For fan-in/standalone: empty. */
+  tail: T[];
+  shape: ChainShape;
+};
+
+/** Same bucket shape as TimelineGroups but each bucket holds ChainUnit arrays. */
+export type TimelineGroupsOfChains<T extends CondensedTask = CondensedTask> = {
+  waitingOnYou: ChainUnit<T>[];
+  running: ChainUnit<T>[];
+  nextQueued: ChainUnit<T>[];
+  blocked: ChainUnit<T>[];
+  done: ChainUnit<T>[];
+  failed: ChainUnit<T>[];
+};
+
+/**
+ * Identify chains from a task set.
+ *
+ * A linear chain is a maximal path where every node has exactly one unresolved
+ * blocker in the task set AND that blocker has exactly one unresolved dependent.
+ * Nodes that violate either condition are junction nodes.
+ *
+ * "Unresolved" = dep gate not satisfied (isGateSatisfied returns false).
+ * Only blockers present in taskMap are considered.
+ *
+ * Algorithm is O(N) with the adjacency index built in the first pass.
+ */
+export function identifyChains<T extends CondensedTask>(
+  tasks: T[],
+  taskMap: Map<string, CondensedTask>,
+): ChainUnit<T>[] {
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  const taskIds = new Set(tasks.map(t => t.id));
+
+  // Pass 1: build unresolved adjacency (only within our task set)
+  const unresolvedBlockers = new Map<string, string[]>(); // id → blocker ids
+  const unresolvedDependents = new Map<string, string[]>(); // id → dependent ids
+  for (const task of tasks) {
+    unresolvedBlockers.set(task.id, []);
+    unresolvedDependents.set(task.id, []);
+  }
+  for (const task of tasks) {
+    for (const depId of task.dependsOn ?? []) {
+      if (!taskIds.has(depId)) continue; // not in set → treated as resolved
+      const dep = taskMap.get(depId);
+      if (!dep) continue;
+      if (!isGateSatisfied(dep, dep.workers)) {
+        unresolvedBlockers.get(task.id)!.push(depId);
+        unresolvedDependents.get(depId)!.push(task.id);
+      }
+    }
+  }
+
+  // Pass 2: determine interior nodes of a linear chain.
+  // Interior: exactly 1 unresolved blocker, AND that blocker has exactly 1 unresolved dependent (itself).
+  function isLinearInterior(id: string): boolean {
+    const bl = unresolvedBlockers.get(id) ?? [];
+    if (bl.length !== 1) return false;
+    return (unresolvedDependents.get(bl[0]) ?? []).length === 1;
+  }
+
+  // Pass 3: walk chains starting from non-interior heads
+  const visited = new Set<string>();
+  const chains: ChainUnit<T>[] = [];
+
+  for (const task of tasks) {
+    if (visited.has(task.id)) continue;
+    if (isLinearInterior(task.id)) continue; // will be reached from its head
+
+    visited.add(task.id);
+    const myBlockers = unresolvedBlockers.get(task.id) ?? [];
+    const myDeps = unresolvedDependents.get(task.id) ?? [];
+
+    if (myBlockers.length > 1) {
+      // Fan-in: standalone row, no rail
+      chains.push({ head: task, tail: [], shape: 'fan-in' });
+    } else if (myDeps.length > 1) {
+      // Fan-out: collect all unvisited dependents as siblings
+      const tail: T[] = [];
+      for (const depId of myDeps) {
+        if (!visited.has(depId)) {
+          const dep = taskById.get(depId);
+          if (dep) { visited.add(depId); tail.push(dep); }
+        }
+      }
+      chains.push({ head: task, tail, shape: 'fan-out' });
+    } else if (myDeps.length === 1) {
+      // Linear: walk the chain forward, cycle-safe
+      const tail: T[] = [];
+      const pathSeen = new Set<string>([task.id]);
+      let current = task;
+
+      for (;;) {
+        const deps = unresolvedDependents.get(current.id) ?? [];
+        if (deps.length !== 1) break;
+        const nextId = deps[0];
+        if (pathSeen.has(nextId)) break; // cycle guard
+        const nextBlockers = unresolvedBlockers.get(nextId) ?? [];
+        if (nextBlockers.length !== 1) break; // fan-in ahead — stop
+        const next = taskById.get(nextId);
+        if (!next || visited.has(nextId)) break;
+        visited.add(nextId);
+        pathSeen.add(nextId);
+        tail.push(next);
+        current = next;
+      }
+      chains.push({ head: task, tail, shape: tail.length > 0 ? 'linear' : 'standalone' });
+    } else {
+      chains.push({ head: task, tail: [], shape: 'standalone' });
+    }
+  }
+
+  // Defensive: collect any unvisited tasks (cycle-related or edge cases)
+  for (const task of tasks) {
+    if (!visited.has(task.id)) {
+      chains.push({ head: task, tail: [], shape: 'standalone' });
+    }
+  }
+
+  return chains;
+}
+
+/**
+ * Partition timeline tasks into sections based on the HEAD's readiness.
+ *
+ * Runs identifyChains() first, then assigns each ChainUnit to a section
+ * using the same predicates as groupTimelineTasks(). The entire chain
+ * follows the head — this prevents chain-severing (e.g. A in waitingOnYou
+ * and B in blocked when A→B is a linear chain).
+ */
+export function groupChainUnits<T extends CondensedTask>(
+  tasks: T[],
+  taskMap: Map<string, CondensedTask>,
+): TimelineGroupsOfChains<T> {
+  const groups: TimelineGroupsOfChains<T> = {
+    waitingOnYou: [],
+    running: [],
+    nextQueued: [],
+    blocked: [],
+    done: [],
+    failed: [],
+  };
+
+  for (const chain of identifyChains(tasks, taskMap)) {
+    const { head } = chain;
+    if (hasLiveWorker(head)) {
+      groups.running.push(chain);
+    } else if (head.status === 'completed') {
+      if (isWaitingOnYou(head)) {
+        groups.waitingOnYou.push(chain);
+      } else {
+        groups.done.push(chain);
+      }
+    } else if (head.status === 'failed') {
+      groups.failed.push(chain);
+    } else if (head.status === 'pending' || head.status === 'assigned') {
+      if (allDepsGateSatisfied(head, taskMap)) {
+        groups.nextQueued.push(chain);
+      } else {
+        groups.blocked.push(chain);
+      }
+    }
+  }
+
+  return groups;
+}
+
 // ─── Gate chip helpers — I-11 ─────────────────────────────────────────────────
 
 /** True when the awaiting-merge gate chip should be collapsed (PR has been merged). */
