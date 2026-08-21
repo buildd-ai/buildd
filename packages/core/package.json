@@ -55,7 +55,7 @@
     "./subject-anchor-observe": "./subject-anchor-observe.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.206",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.231",
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
