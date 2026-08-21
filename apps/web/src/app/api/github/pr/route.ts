@@ -4,6 +4,7 @@ import { workers, githubRepos, missions, tasks } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
   resolveMatchedSurfaces,
@@ -12,6 +13,54 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+
+/**
+ * Resolve a worker by PR number across the account's accessible workspaces.
+ *
+ * Used by GET and PUT when workerId is not provided. Mirrors the pattern in
+ * prs/[prNumber]/merge/route.ts but uses team-based workspace access for
+ * API-key accounts (getTeamWorkspaceIds) instead of user-session access.
+ *
+ * Returns the worker row (with workspace) or an error descriptor.
+ */
+async function resolveWorkerByPrNumber(
+  account: { teamId: string },
+  prNumber: number,
+  workspaceId: string | null | undefined,
+): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+  const wsIds = await getTeamWorkspaceIds(account.teamId);
+  if (wsIds.length === 0) {
+    return { error: 'No workspaces found for account', status: 403 };
+  }
+
+  const searchIds =
+    workspaceId && wsIds.includes(workspaceId) ? [workspaceId] : wsIds;
+
+  const matchingWorkers = await db.query.workers.findMany({
+    where: and(
+      inArray(workers.workspaceId, searchIds),
+      eq(workers.prNumber, prNumber),
+      isNotNull(workers.prUrl),
+      isNull(workers.mergedAt),
+    ),
+    with: { workspace: true },
+  });
+
+  if (matchingWorkers.length === 0) {
+    return { error: 'PR not found or already merged', status: 404 };
+  }
+
+  const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
+  if (distinctWorkspaceIds.size > 1) {
+    return {
+      error: `PR #${prNumber} exists in multiple workspaces — pass workspaceId to disambiguate`,
+      status: 409,
+      candidates: [...distinctWorkspaceIds],
+    };
+  }
+
+  return matchingWorkers[0];
+}
 
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
@@ -45,8 +94,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Verify the account owns this worker
-    if (worker.accountId !== account.id) {
+    // Verify the account's team has access to this worker's workspace.
+    // accountId equality is wrong for multi-account teams — the runner's account
+    // differs from the MCP OAuth account. Team membership is the correct boundary.
+    if (worker.workspace?.teamId !== account.teamId) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -376,7 +427,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    if (worker.accountId !== account.id) {
+    if (worker.workspace?.teamId !== account.teamId) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -432,25 +483,37 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, prNumber, mergeMethod = 'squash' } = body;
+    const { workerId, prNumber, mergeMethod = 'squash', workspaceId } = body;
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
-    }
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
 
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    }
-    if (worker.accountId !== account.id) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+      if (worker.workspace?.teamId !== account.teamId) {
+        return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+    } else {
+      // workerId absent — resolve worker from prNumber across the account's workspaces.
+      // Accepts optional workspaceId for disambiguation when multiple workspaces share a prNumber.
+      const resolved = await resolveWorkerByPrNumber(account, prNumber, workspaceId);
+      if ('error' in resolved) {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
     }
 
     const workspace = worker.workspace;
@@ -478,7 +541,7 @@ export async function PUT(req: NextRequest) {
       await db
         .update(workers)
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, workerId));
+        .where(eq(workers.id, worker.id));
     } else if (/resource not accessible by integration/i.test(result.message)) {
       // The GitHub App installation lacks the required permissions.
       // Merging requires pull_requests:write AND contents:write.
@@ -556,21 +619,50 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const workerId = searchParams.get('workerId');
     const prNumberParam = searchParams.get('prNumber');
+    const workspaceIdParam = searchParams.get('workspaceId');
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
+    if (!workerId && !prNumberParam) {
+      return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
+    let resolvedPrNumber: number;
 
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    }
-    if (worker.accountId !== account.id) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+      if (worker.workspace?.teamId !== account.teamId) {
+        return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+      const parsed = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
+      if (!parsed) {
+        return NextResponse.json(
+          { error: 'prNumber required — pass ?prNumber= or ensure worker has a PR' },
+          { status: 400 },
+        );
+      }
+      resolvedPrNumber = parsed;
+    } else {
+      // No workerId — resolve worker from prNumber across the account's workspaces.
+      const prNum = parseInt(prNumberParam!, 10);
+      if (isNaN(prNum)) {
+        return NextResponse.json({ error: 'Invalid prNumber' }, { status: 400 });
+      }
+      const resolved = await resolveWorkerByPrNumber(account, prNum, workspaceIdParam);
+      if ('error' in resolved) {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
+      resolvedPrNumber = prNum;
     }
 
     const workspace = worker.workspace;
@@ -587,13 +679,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
-    const prNumber = prNumberParam ? parseInt(prNumberParam, 10) : worker.prNumber;
-    if (!prNumber) {
-      return NextResponse.json(
-        { error: 'prNumber required — pass ?prNumber= or ensure worker has a PR' },
-        { status: 400 },
-      );
-    }
+    const prNumber = resolvedPrNumber;
 
     const installationId = repo.installation.installationId;
     const fullName = repo.fullName;

@@ -189,8 +189,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
-    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). prNumber auto-resolved from worker context if omitted.',
+    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
+    get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -1253,14 +1253,20 @@ export async function handleBuilddAction(
     }
 
     case 'merge_pr': {
-      const workerId = resolveWorkerId(params.workerId, ctx);
+      // workerId is optional — route resolves worker from prNumber when absent.
+      const workerId = String(params.workerId ?? '') || ctx.workerId || null;
       if (!params.prNumber) throw new Error('prNumber is required');
 
       const mergeMethod = params.mergeMethod ?? 'squash';
 
       const data = await api('/api/github/pr', {
         method: 'PUT',
-        body: JSON.stringify({ workerId, prNumber: params.prNumber, mergeMethod }),
+        body: JSON.stringify({
+          workerId,
+          prNumber: params.prNumber,
+          mergeMethod,
+          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+        }),
       });
 
       if (!data.merged) {
@@ -1271,10 +1277,16 @@ export async function handleBuilddAction(
     }
 
     case 'get_pr': {
-      const workerId = resolveWorkerId(params.workerId, ctx);
-      const prNumberPart = params.prNumber ? `&prNumber=${params.prNumber}` : '';
+      // workerId is optional — pass prNumber to resolve from account's workspaces when absent.
+      const workerId = String(params.workerId ?? '') || ctx.workerId || null;
+      if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
 
-      const data = await api(`/api/github/pr?workerId=${workerId}${prNumberPart}`);
+      const parts: string[] = [];
+      if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
+      if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
+      if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
+
+      const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
 
       const pr = data.pr;
       const checks = data.checks;
