@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolvePolicy, DEFAULT_MERGE_POLICY } from './merge-policy';
+import { resolvePolicy, DEFAULT_MERGE_POLICY, mergePolicySchema } from './merge-policy';
 import { parseMergePolicy } from '@buildd/shared';
 
 describe('DEFAULT_MERGE_POLICY', () => {
@@ -158,5 +158,71 @@ describe('parseMergePolicyRead (fail-soft)', () => {
     const { parseMergePolicyRead } = await import('./merge-policy');
     const result = parseMergePolicyRead({ tier: 'human' });
     expect(result.tier).toBe('human');
+  });
+});
+
+describe('mergePolicySchema', () => {
+  it('accepts a valid auto-threshold policy', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'auto-threshold',
+      threshold: { maxLines: 500, denyPaths: ['drizzle/'] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a valid agent-review policy', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'agent-review',
+      agentReview: {
+        reviewerRole: 'reviewer',
+        maxConfidenceThreshold: 0.6,
+        gateCondition: 'approve-and-merge',
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a valid human policy with stallNotifyMinutes', () => {
+    const result = mergePolicySchema.safeParse({ tier: 'human', stallNotifyMinutes: 30 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects unknown top-level keys', () => {
+    const result = mergePolicySchema.safeParse({ tier: 'human', unknownKey: 'bad' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects unknown keys inside threshold', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'auto-threshold',
+      threshold: { maxLines: 100, bogus: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects unknown keys inside agentReview', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer', extra: 'bad' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid tier value', () => {
+    const result = mergePolicySchema.safeParse({ tier: 'invalid-tier' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects missing tier', () => {
+    const result = mergePolicySchema.safeParse({ threshold: { maxLines: 100 } });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid gateCondition', () => {
+    const result = mergePolicySchema.safeParse({
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer', gateCondition: 'invalid' },
+    });
+    expect(result.success).toBe(false);
   });
 });

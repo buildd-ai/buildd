@@ -477,6 +477,32 @@ Runners, Memory, Configure) remain reachable via:
 No primary nav entry for the workspace tree — workspace config is
 intentionally a second-level navigation concern, not a first-class tab.
 
+#### Secondary navigation surface: WorkspaceFilter combobox (parity requirement)
+
+The `WorkspaceFilter` combobox is a **first-class secondary navigation
+surface** that must have shell parity: if it is available on desktop it must
+be equally reachable on mobile.
+
+**Desktop**: `WorkspaceFilter` is mounted in the page header area of every
+primary data surface (Home, Missions, Activity, Health). Opening its dropdown
+exposes workspace-specific nav links (Configure, Runners, Schedules, Memory)
+plus "All workspaces" and "New workspace" entries.
+
+**Mobile**: `WorkspaceFilter` is mounted in `MobilePageHeader` (the fixed
+top bar rendered on all top-level pages). It receives workspace data from the
+protected layout and opens as a bottom sheet (existing mobile branch in the
+component). This gives mobile users access to:
+- `/app/workspaces` — workspace list ("All workspaces" footer link)
+- `/app/workspaces/[id]/config` — workspace config ("Configure" footer link)
+- `/app/workspaces/[id]/runners` — runners
+- `/app/workspaces/[id]/schedules` — schedules
+- `/app/workspaces/[id]/memory` — memory
+- `/app/workspaces/new` — create workspace
+
+**Parity gate**: adding or removing a nav link from the `WorkspaceFilter`
+footer automatically applies to both shells (it lives in one shared component).
+No per-shell conditional rendering is permitted.
+
 ### D.3 Atomic active-state fix (`MissionsBottomNav.tsx:72–82`)
 
 The mobile bottom nav must be updated atomically when the nav restructure

@@ -98,6 +98,8 @@ export interface MissionItem {
   spendUsd: string | null;
   segments: MissionSegment[];
   effectivePolicyLabel: string | null;
+  hasPolicyOverride: boolean;
+  awaitingMergePRCount: number;
   healthState: import('@/lib/mission-helpers').Health;
   inFlightTasks: import('@/lib/mission-helpers').InFlightTask[];
   blockedPRCount: number;
@@ -660,7 +662,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             : mission.startAt && new Date(mission.startAt).getTime() > Date.now()
             ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
             : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} isReviewReady={group === 'review'} />}
-          {mission.workspaceId && mission.effectivePolicyLabel && group !== 'review' && (
+          {mission.workspaceId && mission.effectivePolicyLabel && group !== 'review' && (mission.hasPolicyOverride || mission.awaitingMergePRCount > 0) && (
             <Link
               href={`/app/settings/workspace/${mission.workspaceId}`}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-[10px] font-mono text-text-muted hover:text-text-secondary hover:border-border-strong transition-colors"
@@ -815,7 +817,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             : mission.startAt && new Date(mission.startAt).getTime() > Date.now()
             ? <span className="font-mono text-[10px] uppercase tracking-wide border border-status-info text-status-info px-1.5 py-0.5">Starts in {nextRun.text}</span>
             : <MissionBadges mission={mission} health={mission.healthState} nextRun={nextRun} isReviewReady={group === 'review'} />}
-          {mission.workspaceId && mission.effectivePolicyLabel && group !== 'review' && (
+          {mission.workspaceId && mission.effectivePolicyLabel && group !== 'review' && (mission.hasPolicyOverride || mission.awaitingMergePRCount > 0) && (
             <Link
               href={`/app/settings/workspace/${mission.workspaceId}`}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-[10px] font-mono text-text-muted hover:text-text-secondary hover:border-border-strong transition-colors"

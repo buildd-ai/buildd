@@ -1,4 +1,7 @@
 import { cookies } from 'next/headers';
+import { eq } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { workspaces } from '@buildd/core/db/schema';
 import { AuthGuard } from '@/components/AuthGuard';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
@@ -20,6 +23,7 @@ export default async function ProtectedLayout({
   let userTeams: { id: string; name: string; slug: string }[] = [];
   let currentTeamId: string | null = null;
   let workspaceIds: string[] = [];
+  let teamWorkspaces: { id: string; name: string }[] = [];
 
   if (user) {
     try {
@@ -43,6 +47,17 @@ export default async function ProtectedLayout({
     } else if (userTeams.length > 0) {
       currentTeamId = userTeams[0].id;
     }
+
+    if (currentTeamId) {
+      try {
+        teamWorkspaces = await db
+          .select({ id: workspaces.id, name: workspaces.name })
+          .from(workspaces)
+          .where(eq(workspaces.teamId, currentTeamId));
+      } catch {
+        // teamWorkspaces stays empty; WorkspaceFilter renders nothing
+      }
+    }
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
@@ -63,7 +78,7 @@ export default async function ProtectedLayout({
               {/* Banner shown when a connector's auth expires mid-task */}
               <ConnectorReconnectBanner />
               {/* Mobile page header for non-tasks pages */}
-              <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} />
+              <MobilePageHeader teams={userTeams} currentTeamId={currentTeamId} userInitial={userInitial} workspaces={teamWorkspaces} />
               <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
                 {children}
               </main>

@@ -8,7 +8,8 @@ import { useClickOutside } from '@/hooks/useClickOutside';
 
 export interface WorkspaceFilterProps {
   workspaces: { id: string; name: string }[];
-  selectedId: string | null;
+  /** When omitted the component reads ?workspace= from the URL. */
+  selectedId?: string | null;
 }
 
 /**
@@ -47,11 +48,13 @@ function useIsMobile() {
  * Never uses a native <select> — rendered as a custom brutalist dropdown with
  * keyboard navigation, aria-listbox semantics, and a "+ New workspace" footer.
  */
-export function WorkspaceFilter({ workspaces, selectedId }: WorkspaceFilterProps) {
+export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: WorkspaceFilterProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
+
+  const selectedId = selectedIdProp !== undefined ? selectedIdProp : searchParams.get('workspace');
 
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
@@ -244,6 +247,21 @@ export function WorkspaceFilter({ workspaces, selectedId }: WorkspaceFilterProps
           ))}
         </div>
       )}
+      <Link
+        href="/app/workspaces"
+        onClick={close}
+        className={`w-full flex items-center gap-1.5 font-mono text-text-secondary hover:text-text-primary transition-colors hover:bg-surface-3 ${
+          isMobile ? 'px-5 py-3.5 text-sm' : 'px-3 py-2 text-xs'
+        }`}
+      >
+        <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+          <rect x="1" y="1" width="4" height="4" />
+          <rect x="7" y="1" width="4" height="4" />
+          <rect x="1" y="7" width="4" height="4" />
+          <rect x="7" y="7" width="4" height="4" />
+        </svg>
+        All workspaces
+      </Link>
       <Link
         href="/app/workspaces/new"
         onClick={close}
