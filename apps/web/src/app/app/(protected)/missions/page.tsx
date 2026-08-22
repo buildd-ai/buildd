@@ -288,6 +288,12 @@ export default async function MissionsPage({
       spendUsd: null,
       segments,
       effectivePolicyLabel,
+      hasPolicyOverride: (obj as any).mergePolicy != null,
+      awaitingMergePRCount: (obj.tasks || []).filter(t => {
+        if (t.status !== 'completed') return false;
+        const w = (t.workers as any[])?.[0];
+        return w?.prUrl && !w?.mergedAt && w?.prLifecycleStatus !== 'closed';
+      }).length,
       healthState: deriveHealth(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),

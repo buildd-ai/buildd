@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import type { MergePolicy, MergePolicyTier } from '@buildd/shared';
+import MissionPolicyDrawer from '@/components/MissionPolicyDrawer';
 
 interface Role {
   slug: string;
@@ -66,11 +67,13 @@ export default function MergePolicyEditor({
 
   // Tier 1 fields
   const [maxLines, setMaxLines] = useState(String(policy.threshold?.maxLines ?? 800));
-  const [denyPaths, setDenyPaths] = useState((policy.threshold?.denyPaths ?? []).join('\n'));
+  const [denyPaths, setDenyPaths] = useState<string[]>(policy.threshold?.denyPaths ?? []);
+  const [denyPathDraft, setDenyPathDraft] = useState('');
 
   // Tier 2 fields
   const [reviewerRole, setReviewerRole] = useState(policy.agentReview?.reviewerRole ?? '');
-  const [escalatePaths, setEscalatePaths] = useState((policy.agentReview?.escalateToPaths ?? []).join('\n'));
+  const [escalatePaths, setEscalatePaths] = useState<string[]>(policy.agentReview?.escalateToPaths ?? []);
+  const [escalatePathDraft, setEscalatePathDraft] = useState('');
   const [maxConfidence, setMaxConfidence] = useState(String(policy.agentReview?.maxConfidenceThreshold ?? 0.6));
   const [gateCondition, setGateCondition] = useState<'approve-and-merge' | 'approve-only'>(
     policy.agentReview?.gateCondition ?? 'approve-and-merge',
@@ -90,14 +93,14 @@ export default function MergePolicyEditor({
     if (policy.tier === 'auto-threshold') {
       p.threshold = {
         maxLines: parseInt(maxLines) || 800,
-        denyPaths: denyPaths.split('\n').map(s => s.trim()).filter(Boolean),
+        denyPaths,
       };
     }
 
     if (policy.tier === 'agent-review') {
       p.agentReview = {
         reviewerRole,
-        escalateToPaths: escalatePaths.split('\n').map(s => s.trim()).filter(Boolean),
+        escalateToPaths: escalatePaths,
         maxConfidenceThreshold: parseFloat(maxConfidence) || 0.6,
         gateCondition,
       };
@@ -149,18 +152,6 @@ export default function MergePolicyEditor({
     }
   }
 
-  async function saveOverride(override: MissionOverride) {
-    const res = await fetch(`/api/missions/${override.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mergePolicy: override.policy }),
-    });
-    if (res.ok) {
-      setMissionOverrides(prev => prev.map(m => (m.id === override.id ? override : m)));
-      setEditingOverride(null);
-    }
-  }
-
   return (
     <div className="space-y-8">
       {/* Breadcrumb */}
@@ -182,19 +173,19 @@ export default function MergePolicyEditor({
       {/* Tier selector */}
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-text-primary">Policy Tier</h2>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="flex flex-col gap-2">
           {TIER_OPTIONS.map(opt => (
             <button
               key={opt.value}
               onClick={() => setPolicy(p => ({ ...p, tier: opt.value }))}
-              className={`text-left p-3 border rounded-lg transition-colors ${
+              className={`text-left p-3 min-h-[52px] border rounded-lg transition-colors ${
                 policy.tier === opt.value
                   ? 'border-accent-border bg-accent-soft'
                   : 'border-border-default hover:border-border-strong bg-card'
               }`}
             >
               <div className="flex items-center gap-2 mb-1">
-                <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${
+                <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center ${
                   policy.tier === opt.value ? 'border-accent-border' : 'border-border-default'
                 }`}>
                   {policy.tier === opt.value && (
@@ -226,14 +217,33 @@ export default function MergePolicyEditor({
             <p className="text-xs text-text-muted">PRs exceeding this size won&apos;t auto-merge.</p>
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Deny paths (one per line)</label>
-            <textarea
-              rows={3}
-              value={denyPaths}
-              onChange={e => setDenyPaths(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border resize-none font-mono"
-              placeholder="drizzle/&#10;src/lib/auth/"
-            />
+            <label className="text-xs font-medium text-text-secondary">Deny paths</label>
+            <div className="space-y-1">
+              {denyPaths.map((p, i) => (
+                <div key={i} className="flex items-center gap-2 min-h-[44px]">
+                  <span className="flex-1 text-sm font-mono text-text-secondary px-2 py-1 bg-input rounded border border-border-default truncate">{p}</span>
+                  <button
+                    onClick={() => setDenyPaths(prev => prev.filter((_, j) => j !== i))}
+                    aria-label={`Remove ${p}`}
+                    className="shrink-0 w-9 h-9 flex items-center justify-center text-status-error hover:opacity-75 transition-opacity rounded"
+                  >✕</button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={denyPathDraft}
+                  onChange={e => setDenyPathDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); const v = denyPathDraft.trim(); if (v) { setDenyPaths(prev => [...prev, v]); setDenyPathDraft(''); } } }}
+                  placeholder="e.g. drizzle/"
+                  className="flex-1 min-h-[44px] px-3 py-2 text-sm font-mono bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
+                />
+                <button
+                  onClick={() => { const v = denyPathDraft.trim(); if (v) { setDenyPaths(prev => [...prev, v]); setDenyPathDraft(''); } }}
+                  className="shrink-0 px-3 min-h-[44px] text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
+                >Add</button>
+              </div>
+            </div>
             <p className="text-xs text-text-muted">PRs touching any of these path prefixes are blocked from auto-merge.</p>
           </div>
         </section>
@@ -266,14 +276,33 @@ export default function MergePolicyEditor({
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Escalate to human for paths (one per line)</label>
-            <textarea
-              rows={3}
-              value={escalatePaths}
-              onChange={e => setEscalatePaths(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border resize-none font-mono"
-              placeholder="packages/core/db/&#10;src/lib/auth/"
-            />
+            <label className="text-xs font-medium text-text-secondary">Escalate to human for paths</label>
+            <div className="space-y-1">
+              {escalatePaths.map((p, i) => (
+                <div key={i} className="flex items-center gap-2 min-h-[44px]">
+                  <span className="flex-1 text-sm font-mono text-text-secondary px-2 py-1 bg-input rounded border border-border-default truncate">{p}</span>
+                  <button
+                    onClick={() => setEscalatePaths(prev => prev.filter((_, j) => j !== i))}
+                    aria-label={`Remove ${p}`}
+                    className="shrink-0 w-9 h-9 flex items-center justify-center text-status-error hover:opacity-75 transition-opacity rounded"
+                  >✕</button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={escalatePathDraft}
+                  onChange={e => setEscalatePathDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); const v = escalatePathDraft.trim(); if (v) { setEscalatePaths(prev => [...prev, v]); setEscalatePathDraft(''); } } }}
+                  placeholder="e.g. packages/core/db/"
+                  className="flex-1 min-h-[44px] px-3 py-2 text-sm font-mono bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
+                />
+                <button
+                  onClick={() => { const v = escalatePathDraft.trim(); if (v) { setEscalatePaths(prev => [...prev, v]); setEscalatePathDraft(''); } }}
+                  className="shrink-0 px-3 min-h-[44px] text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
+                >Add</button>
+              </div>
+            </div>
             <p className="text-xs text-text-muted">PRs touching these paths always escalate to human review.</p>
           </div>
 
@@ -351,7 +380,7 @@ export default function MergePolicyEditor({
             {missionOverrides.map((m, i) => (
               <div
                 key={m.id}
-                className={`flex items-center gap-3 px-4 py-3 ${i < missionOverrides.length - 1 ? 'border-b border-border-default' : ''}`}
+                className={`flex items-center gap-3 px-4 min-h-[52px] ${i < missionOverrides.length - 1 ? 'border-b border-border-default' : ''}`}
               >
                 <span
                   className={`shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full ${TIER_BADGE_CLASS[m.policy.tier]}`}
@@ -364,17 +393,17 @@ export default function MergePolicyEditor({
                 >
                   {m.title}
                 </Link>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => setEditingOverride(m)}
-                    className="text-xs text-text-muted hover:text-text-primary transition-colors"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-xs text-text-muted hover:text-text-primary transition-colors px-2"
                   >
                     Edit
                   </button>
                   <button
                     onClick={() => removeOverride(m.id)}
                     disabled={removingMissionId === m.id}
-                    className="text-xs text-status-error hover:text-status-error/80 disabled:opacity-50 transition-colors"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-xs text-status-error hover:text-status-error/80 disabled:opacity-50 transition-colors px-2"
                   >
                     {removingMissionId === m.id ? 'Removing…' : 'Remove'}
                   </button>
@@ -385,12 +414,22 @@ export default function MergePolicyEditor({
         </section>
       )}
 
-      {/* Inline override editor */}
+      {/* Inline override editor — shared component, same save path as mission detail */}
       {editingOverride && (
-        <OverrideDrawer
-          override={editingOverride}
+        <MissionPolicyDrawer
+          missionId={editingOverride.id}
+          missionTitle={editingOverride.title}
           roles={roles}
-          onSave={saveOverride}
+          initialPolicy={editingOverride.policy}
+          onSave={async (policy) => {
+            if (policy === null) {
+              // Inherit selected — remove this override from the list
+              setMissionOverrides(prev => prev.filter(m => m.id !== editingOverride.id));
+            } else {
+              setMissionOverrides(prev => prev.map(m => (m.id === editingOverride.id ? { ...m, policy } : m)));
+            }
+            setEditingOverride(null);
+          }}
           onCancel={() => setEditingOverride(null)}
         />
       )}
@@ -398,112 +437,3 @@ export default function MergePolicyEditor({
   );
 }
 
-function OverrideDrawer({
-  override,
-  roles,
-  onSave,
-  onCancel,
-}: {
-  override: MissionOverride;
-  roles: Role[];
-  onSave: (o: MissionOverride) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [policy, setPolicy] = useState<MergePolicy>(override.policy);
-  const [maxLines, setMaxLines] = useState(String(policy.threshold?.maxLines ?? 800));
-  const [denyPaths, setDenyPaths] = useState((policy.threshold?.denyPaths ?? []).join('\n'));
-  const [reviewerRole, setReviewerRole] = useState(policy.agentReview?.reviewerRole ?? '');
-  const [saving, setSaving] = useState(false);
-
-  function build(): MergePolicy {
-    const p: MergePolicy = { tier: policy.tier };
-    if (policy.tier === 'auto-threshold') {
-      p.threshold = {
-        maxLines: parseInt(maxLines) || 800,
-        denyPaths: denyPaths.split('\n').map(s => s.trim()).filter(Boolean),
-      };
-    }
-    if (policy.tier === 'agent-review') {
-      p.agentReview = { reviewerRole };
-    }
-    return p;
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    await onSave({ ...override, policy: build() });
-    setSaving(false);
-  }
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center sm:items-center bg-black/40 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-card border border-border-strong rounded-t-2xl sm:rounded-2xl p-5 space-y-4 shadow-xl">
-        <div>
-          <h3 className="text-sm font-semibold text-text-primary">Edit Override</h3>
-          <p className="text-xs text-text-muted mt-0.5 truncate">{override.title}</p>
-        </div>
-
-        <div className="grid gap-2 grid-cols-3">
-          {TIER_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setPolicy(p => ({ ...p, tier: opt.value }))}
-              className={`text-xs py-1.5 px-2 rounded border transition-colors ${
-                policy.tier === opt.value
-                  ? 'border-accent-border bg-accent-soft text-text-primary'
-                  : 'border-border-default text-text-muted hover:border-border-strong'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-
-        {policy.tier === 'auto-threshold' && (
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Max lines</label>
-            <input
-              type="number"
-              min="1"
-              value={maxLines}
-              onChange={e => setMaxLines(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded"
-            />
-          </div>
-        )}
-
-        {policy.tier === 'agent-review' && (
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Reviewer role</label>
-            <select
-              value={reviewerRole}
-              onChange={e => setReviewerRole(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded"
-            >
-              <option value="">— Select a role —</option>
-              {roles.map(r => (
-                <option key={r.slug} value={r.slug}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        <div className="flex gap-2 pt-1">
-          <button
-            onClick={onCancel}
-            className="flex-1 py-2 text-sm border border-border-default rounded hover:bg-accent-soft transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 py-2 text-sm bg-accent-text text-white rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {saving ? 'Saving…' : 'Save override'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
