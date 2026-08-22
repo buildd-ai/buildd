@@ -11,7 +11,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import type { MergePolicy } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 
@@ -26,7 +26,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  gitConfig: { autoMergeDenyPaths?: string[]; autoMergeMaxLines?: number } | null | undefined,
+  threshold: MergePolicy['threshold'] | null | undefined,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // CI completeness check — verify no check runs are still pending or failing.
   try {
@@ -61,8 +61,8 @@ export async function evaluateAutoMergeSafety(
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
   }
 
-  const denyPaths = gitConfig?.autoMergeDenyPaths ?? [];
-  const maxLines = gitConfig?.autoMergeMaxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
+  const denyPaths = threshold?.denyPaths ?? [];
+  const maxLines = threshold?.maxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
 
   let files: Array<{ filename: string; additions: number; deletions: number }> = [];
   try {
@@ -143,11 +143,11 @@ export async function tryAutoMergeWorkerPr(params: {
   prNumber: number;
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
-  gitConfig: WorkspaceGitConfig | null | undefined;
+  threshold: MergePolicy['threshold'] | null | undefined;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, threshold } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, gitConfig);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, threshold);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 
