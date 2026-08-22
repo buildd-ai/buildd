@@ -14,6 +14,7 @@ const mockMergePullRequest = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
+const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
@@ -46,6 +47,7 @@ mock.module('@buildd/core/db', () => ({
         findMany: mockWorkersFindMany,
       },
       githubRepos: { findFirst: mockGithubReposFindFirst },
+      workspaces: { findMany: mockWorkspacesFindMany },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -65,6 +67,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
+  workspaces: { id: 'id', name: 'name', repo: 'repo' },
 }));
 
 // Import handler AFTER mocks
@@ -1500,6 +1503,7 @@ describe('GET /api/github/pr', () => {
     mockWorkersFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
     mockGetTeamWorkspaceIds.mockReset();
   });
 
@@ -1784,5 +1788,118 @@ describe('GET /api/github/pr', () => {
     const data = await res.json();
     expect(data.error).toContain('multiple workspaces');
     expect(data.candidates).toEqual(expect.arrayContaining(['ws-1', 'ws-2']));
+  });
+
+  // Regression: worker rows returned by Drizzle always include error: null and status: 'idle'/'completed'.
+  // The old discriminant ('error' in resolved) was always true for DB rows, causing
+  // NextResponse.json({}, { status: 'idle' }) to throw — the real error eaten by the outer catch.
+  it('returns 200 when worker row has error:null (Drizzle column always present)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    // Simulate a full Drizzle row: error column is null, status is text ('completed')
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-drizzle',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/149',
+      prNumber: 149,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      error: null,        // ← Drizzle always includes this column
+      status: 'completed', // ← Drizzle always includes this column (text, not an HTTP status)
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      mergeable: true, mergeable_state: 'clean',
+      html_url: 'https://github.com/owner/repo/pull/149',
+      head: { sha: 'sha149' }, additions: 50, deletions: 5, changed_files: 3,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest(null, 149));
+
+    // Must NOT be 500 — if discriminant fires on the worker row, status would be
+    // 'completed' (a string), Response constructor throws, catch returns 500.
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(149);
+  });
+
+  it('returns 200 when worker row has error set to a string (error column non-null)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-drizzle-err',
+      taskId: 'task-2',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/149',
+      prNumber: 149,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      error: 'Previous run failed with exit code 1', // ← error column set
+      status: 'failed', // ← text status
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      mergeable: null, mergeable_state: 'unknown',
+      html_url: 'https://github.com/owner/repo/pull/149',
+      head: { sha: 'sha149' }, additions: 50, deletions: 5, changed_files: 3,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest(null, 149));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(149);
+  });
+
+  it('resolves by workspace name when workspaceId is a name (not UUID)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['uuid-ws-1', 'uuid-ws-2']);
+    // Workspace name resolution: "moa-ops" maps to uuid-ws-1
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'uuid-ws-1', name: 'moa-ops', repo: 'acme/moa-ops' },
+      { id: 'uuid-ws-2', name: 'other', repo: 'acme/other' },
+    ]);
+    // With workspaceId narrowed to uuid-ws-1, only return that workspace's worker
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-moa',
+      taskId: 'task-moa',
+      workspaceId: 'uuid-ws-1',
+      prUrl: 'https://github.com/acme/moa-ops/pull/149',
+      prNumber: 149,
+      prLifecycleStatus: null,
+      lastCommitSha: null,
+      error: null,
+      status: 'completed',
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      mergeable: true, mergeable_state: 'clean',
+      html_url: 'https://github.com/acme/moa-ops/pull/149',
+      head: { sha: 'shaMoa' }, additions: 10, deletions: 2, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest(null, 149, 'moa-ops'));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(149);
+    // workspace name resolution must have been called
+    expect(mockWorkspacesFindMany).toHaveBeenCalled();
   });
 });

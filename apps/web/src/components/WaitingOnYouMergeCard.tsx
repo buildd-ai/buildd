@@ -46,6 +46,8 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       const res = await fetch(`/api/prs/${item.prNumber}/merge`, {
         method: 'POST',
         credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: item.workspaceId }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
