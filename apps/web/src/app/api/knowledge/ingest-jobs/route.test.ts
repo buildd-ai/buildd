@@ -11,6 +11,11 @@ mock.module('@/lib/knowledge-ingest', () => ({
   enqueueFullIngestJob: mockEnqueueFullIngestJob,
 }));
 
+let accessibleWorkspaceIds = new Set<string>(['ws-1']);
+mock.module('@/lib/knowledge-ingest-access', () => ({
+  getIngestAccessibleWorkspaceIds: mock(async () => accessibleWorkspaceIds),
+}));
+
 // Shared return value for the join query (workspaces → githubRepos).
 let joinResult: Array<{ repoFullName: string }> = [{ repoFullName: 'test-org/test-repo' }];
 // Return value for list queries (GET handler).
@@ -55,6 +60,7 @@ function makeRequest(method: string, body?: unknown, search = ''): NextRequest {
 }
 
 const adminAccount = { id: 'account-1', level: 'admin', authType: 'api' };
+const workerAccount = { id: 'account-2', level: 'worker', authType: 'api' };
 
 describe('POST /api/knowledge/ingest-jobs', () => {
   beforeEach(() => {
@@ -63,6 +69,7 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     mockEnqueueFullIngestJob.mockReset();
     mockEnqueueFullIngestJob.mockResolvedValue('job-id-1');
     joinResult = [{ repoFullName: 'test-org/test-repo' }];
+    accessibleWorkspaceIds = new Set(['ws-1']);
   });
 
   it('returns 401 without a valid API key', async () => {
@@ -71,10 +78,30 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 403 for non-admin tokens', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({ ...adminAccount, level: 'worker' });
+  it('returns 403 for trigger-level tokens', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...adminAccount, level: 'trigger' });
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(403);
+  });
+
+  it('allows worker-level tokens', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(workerAccount);
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(201);
+  });
+
+  it('returns 404 when worker token cannot access the workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(workerAccount);
+    accessibleWorkspaceIds = new Set();
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(404);
+    expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+  });
+
+  it('admin tokens bypass the workspace access check', async () => {
+    accessibleWorkspaceIds = new Set(); // empty — would block workers
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(201);
   });
 
   it('returns 400 when workspaceId is missing', async () => {
@@ -128,6 +155,24 @@ describe('POST /api/knowledge/ingest-jobs', () => {
       repo: 'test-org/test-repo',
       trigger: 'manual',
     });
+  });
+
+  it('accepts trigger override param', async () => {
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1', trigger: 'backfill' }));
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.job.trigger).toBe('backfill');
+    expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger: 'backfill' }),
+    );
+  });
+
+  it('defaults to trigger=manual for unknown trigger values', async () => {
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1', trigger: 'unknown' }));
+    expect(res.status).toBe(201);
+    expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger: 'manual' }),
+    );
   });
 });
 
