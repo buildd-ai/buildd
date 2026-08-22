@@ -509,4 +509,57 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
     expect(updatedSetData.goalCriteria).toBeNull();
   });
+
+  it('accepts a valid mergePolicy', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500 } } }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.mergePolicy).toEqual({ tier: 'auto-threshold', threshold: { maxLines: 500 } });
+  });
+
+  it('accepts null mergePolicy to clear policy', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ mergePolicy: null }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.mergePolicy).toBeNull();
+  });
+
+  it('rejects mergePolicy with unknown keys (returns 400)', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ mergePolicy: { tier: 'human', unknownField: 'bad' } }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/mergePolicy/);
+  });
+
+  it('rejects mergePolicy with invalid tier (returns 400)', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ mergePolicy: { tier: 'not-a-tier' } }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/mergePolicy/);
+  });
+
+  it('accepts agent-review mergePolicy with required fields', async () => {
+    const policy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ mergePolicy: policy }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.mergePolicy).toEqual(policy);
+  });
 });

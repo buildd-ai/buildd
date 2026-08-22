@@ -1,5 +1,26 @@
+import { z } from 'zod';
 import type { MergePolicy } from '@buildd/shared';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+
+const thresholdSchema = z.object({
+  maxLines: z.number().optional(),
+  maxSourceLines: z.number().optional(),
+  denyPaths: z.array(z.string()).optional(),
+}).strict();
+
+const agentReviewSchema = z.object({
+  reviewerRole: z.string(),
+  escalateToPaths: z.array(z.string()).optional(),
+  maxConfidenceThreshold: z.number().optional(),
+  gateCondition: z.enum(['approve-and-merge', 'approve-only']).optional(),
+}).strict();
+
+export const mergePolicySchema = z.object({
+  tier: z.enum(['auto-threshold', 'agent-review', 'human']),
+  threshold: thresholdSchema.optional(),
+  agentReview: agentReviewSchema.optional(),
+  stallNotifyMinutes: z.number().optional(),
+}).strict();
 
 /**
  * Resolve the effective MergePolicy for a PR, applying the precedence chain:
