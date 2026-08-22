@@ -8,7 +8,7 @@
  * vars are absent the runner falls back to the HTTP batch path (claim → /files →
  * /complete), which is fine for small repos but incurs Vercel billing for large ones.
  *
- * Auth: admin-level API key required.
+ * Auth: admin or worker-level API key. Trigger tokens are rejected.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -16,6 +16,11 @@ import { workspaces, githubRepos, knowledgeIngestJobs } from '@buildd/core/db/sc
 import { desc, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
+
+type TriggerValue = 'manual' | 'backfill' | 'repo_link' | 'scheduled';
+
+const VALID_TRIGGERS: TriggerValue[] = ['manual', 'backfill', 'repo_link', 'scheduled'];
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -23,11 +28,11 @@ export async function POST(req: NextRequest) {
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
-  if (account.level !== 'admin') {
-    return NextResponse.json({ error: 'Admin-level API key required' }, { status: 403 });
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot enqueue ingest jobs' }, { status: 403 });
   }
 
-  let body: { workspaceId?: unknown };
+  let body: { workspaceId?: unknown; trigger?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -38,6 +43,19 @@ export async function POST(req: NextRequest) {
   if (typeof workspaceId !== 'string' || !workspaceId) {
     return NextResponse.json({ error: 'workspaceId (string) is required' }, { status: 400 });
   }
+
+  // Worker tokens are scoped to their accessible workspaces; admin tokens can reach any workspace.
+  if (account.level !== 'admin') {
+    const accessible = await getIngestAccessibleWorkspaceIds(account.id);
+    if (!accessible.has(workspaceId)) {
+      return NextResponse.json({ error: 'Workspace not found or not accessible' }, { status: 404 });
+    }
+  }
+
+  const trigger: TriggerValue =
+    typeof body.trigger === 'string' && VALID_TRIGGERS.includes(body.trigger as TriggerValue)
+      ? (body.trigger as TriggerValue)
+      : 'manual';
 
   // Resolve the workspace's linked GitHub repo ("owner/name").
   const rows = await db
@@ -58,7 +76,7 @@ export async function POST(req: NextRequest) {
   const jobId = await enqueueFullIngestJob({
     workspaceId,
     repo: repoFullName,
-    trigger: 'manual',
+    trigger,
   });
 
   if (jobId === null) {
@@ -72,7 +90,7 @@ export async function POST(req: NextRequest) {
         id: jobId,
         workspaceId,
         repo: repoFullName,
-        trigger: 'manual',
+        trigger,
         scope: 'full',
         status: 'queued',
       },
