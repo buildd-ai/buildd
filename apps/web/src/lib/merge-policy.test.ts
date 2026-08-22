@@ -1,61 +1,19 @@
 import { describe, it, expect } from 'bun:test';
 import { resolvePolicy, mergePolicySchema } from './merge-policy';
 
-describe('resolvePolicy', () => {
-  it('returns auto-threshold from legacy autoMergePR: true', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergePR: true } as any });
-    expect(policy.tier).toBe('auto-threshold');
+const WS_AUTO = { gitConfig: { mergePolicy: { tier: 'auto-threshold' as const, threshold: { maxLines: 800 } } } };
+const WS_HUMAN = { gitConfig: { mergePolicy: { tier: 'human' as const } } };
+const WS_EMPTY = { gitConfig: null };
+
+describe('resolvePolicy — resolution chain', () => {
+  it('defaults to auto-threshold (maxLines 800) with no context', () => {
+    const p = resolvePolicy(WS_EMPTY);
+    expect(p.tier).toBe('auto-threshold');
+    expect(p.threshold?.maxLines).toBe(800);
   });
 
-  it('returns human from legacy autoMergePR: false', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergePR: false } as any });
-    expect(policy.tier).toBe('human');
-  });
-
-  it('returns auto-threshold from legacy autoMergeOnGreenCI: true', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergeOnGreenCI: true } as any });
-    expect(policy.tier).toBe('auto-threshold');
-  });
-
-  it('returns human from legacy autoMergeOnGreenCI: false', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergeOnGreenCI: false } as any });
-    expect(policy.tier).toBe('human');
-  });
-
-  it('autoMergeOnGreenCI takes precedence over autoMergePR', () => {
-    const policy = resolvePolicy({
-      gitConfig: { autoMergeOnGreenCI: false, autoMergePR: true } as any,
-    });
-    expect(policy.tier).toBe('human');
-  });
-
-  it('defaults to auto-threshold when no legacy fields are set', () => {
-    const policy = resolvePolicy({ gitConfig: null });
-    expect(policy.tier).toBe('auto-threshold');
-    expect((policy.threshold?.maxLines)).toBe(800);
-  });
-
-  it('inherits legacy maxLines and denyPaths', () => {
-    const policy = resolvePolicy({
-      gitConfig: {
-        autoMergeOnGreenCI: true,
-        autoMergeMaxLines: 400,
-        autoMergeDenyPaths: ['drizzle/'],
-      } as any,
-    });
-    expect(policy.tier).toBe('auto-threshold');
-    expect(policy.threshold?.maxLines).toBe(400);
-    expect(policy.threshold?.denyPaths).toEqual(['drizzle/']);
-  });
-
-  it('workspace explicit mergePolicy overrides legacy fields', () => {
-    const policy = resolvePolicy({
-      gitConfig: {
-        autoMergePR: true,
-        mergePolicy: { tier: 'human' },
-      } as any,
-    });
-    expect(policy.tier).toBe('human');
+  it('uses workspace mergePolicy when no task or mission override', () => {
+    expect(resolvePolicy(WS_HUMAN).tier).toBe('human');
   });
 
   it('workspace mergePolicy with agent-review is returned as-is', () => {
@@ -63,35 +21,61 @@ describe('resolvePolicy', () => {
       tier: 'agent-review' as const,
       agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 },
     };
-    const policy = resolvePolicy({
-      gitConfig: { mergePolicy: agentPolicy } as any,
+    const p = resolvePolicy({ gitConfig: { mergePolicy: agentPolicy } as any });
+    expect(p.tier).toBe('agent-review');
+    expect(p.agentReview?.reviewerRole).toBe('reviewer');
+  });
+
+  it('mission.mergePolicy overrides workspace policy', () => {
+    const p = resolvePolicy(WS_AUTO, { mergePolicy: { tier: 'human' } });
+    expect(p.tier).toBe('human');
+  });
+
+  it('null mission.mergePolicy falls through to workspace', () => {
+    const p = resolvePolicy(WS_HUMAN, { mergePolicy: null });
+    expect(p.tier).toBe('human');
+  });
+
+  it('mission.requiresReview=true maps to human tier (overrides mission.mergePolicy)', () => {
+    const p = resolvePolicy(WS_AUTO, { mergePolicy: { tier: 'auto-threshold' }, requiresReview: true });
+    expect(p.tier).toBe('human');
+  });
+
+  it('task.requiresReview=true maps to human tier (highest precedence)', () => {
+    const p = resolvePolicy(
+      WS_AUTO,
+      { mergePolicy: { tier: 'auto-threshold' }, requiresReview: false },
+      { requiresReview: true },
+    );
+    expect(p.tier).toBe('human');
+  });
+
+  it('task.requiresReview=false does not block mission or workspace policy', () => {
+    const p = resolvePolicy(WS_HUMAN, null, { requiresReview: false });
+    expect(p.tier).toBe('human');
+  });
+
+  it('task.requiresReview=true wins even when mission.mergePolicy is agent-review', () => {
+    const p = resolvePolicy(
+      WS_AUTO,
+      { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      { requiresReview: true },
+    );
+    expect(p.tier).toBe('human');
+  });
+
+  it('mission.requiresReview=true wins over mission.mergePolicy', () => {
+    const p = resolvePolicy(WS_AUTO, {
+      mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } },
+      requiresReview: true,
     });
-    expect(policy.tier).toBe('agent-review');
-    expect(policy.agentReview?.reviewerRole).toBe('reviewer');
+    expect(p.tier).toBe('human');
   });
 
-  it('mission mergePolicy overrides workspace policy', () => {
-    const policy = resolvePolicy(
-      { gitConfig: { mergePolicy: { tier: 'auto-threshold' } } as any },
-      { mergePolicy: { tier: 'human' } },
-    );
-    expect(policy.tier).toBe('human');
-  });
-
-  it('mission mergePolicy overrides legacy fields', () => {
-    const policy = resolvePolicy(
-      { gitConfig: { autoMergePR: true } as any },
-      { mergePolicy: { tier: 'human' } },
-    );
-    expect(policy.tier).toBe('human');
-  });
-
-  it('null mission mergePolicy falls through to workspace', () => {
-    const policy = resolvePolicy(
-      { gitConfig: { mergePolicy: { tier: 'human' } } as any },
-      { mergePolicy: null },
-    );
-    expect(policy.tier).toBe('human');
+  it('returns default when gitConfig is null and no mission/task', () => {
+    const p = resolvePolicy({ gitConfig: null }, null, null);
+    expect(p.tier).toBe('auto-threshold');
+    expect(p.threshold?.maxLines).toBe(800);
   });
 });
 

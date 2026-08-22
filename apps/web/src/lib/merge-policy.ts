@@ -22,36 +22,29 @@ export const mergePolicySchema = z.object({
   stallNotifyMinutes: z.number().optional(),
 }).strict();
 
+const DEFAULT_MERGE_POLICY: MergePolicy = {
+  tier: 'auto-threshold',
+  threshold: { maxLines: 800 },
+};
+
 /**
- * Resolve the effective MergePolicy for a PR, applying the precedence chain:
- *   mission.mergePolicy → workspace.gitConfig.mergePolicy → legacy autoMerge* fields → default
+ * Resolve the effective MergePolicy for a PR.
  *
- * The legacy fields are never stripped — workspaces that haven't opted into mergePolicy
- * continue with identical behavior.
+ * Precedence chain (highest to lowest):
+ *   task.requiresReview=true    → { tier: 'human' }
+ *   mission.requiresReview=true → { tier: 'human' }
+ *   mission.mergePolicy         → use it
+ *   workspace.gitConfig.mergePolicy → use it
+ *   default                     → { tier: 'auto-threshold', threshold: { maxLines: 800 } }
  */
 export function resolvePolicy(
   workspace: { gitConfig?: WorkspaceGitConfig | null },
-  mission?: { mergePolicy?: MergePolicy | null } | null,
+  mission?: { mergePolicy?: MergePolicy | null; requiresReview?: boolean } | null,
+  task?: { requiresReview?: boolean } | null,
 ): MergePolicy {
-  // 1. Mission override takes precedence
+  if (task?.requiresReview) return { tier: 'human' };
+  if (mission?.requiresReview) return { tier: 'human' };
   if (mission?.mergePolicy) return mission.mergePolicy;
-
-  // 2. Workspace explicit policy
   if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
-
-  // 3. Legacy fields → synthesize an auto-threshold policy
-  const legacyAutoMerge =
-    workspace.gitConfig?.autoMergeOnGreenCI ??
-    workspace.gitConfig?.autoMergePR ??
-    true;
-
-  if (!legacyAutoMerge) return { tier: 'human' };
-
-  return {
-    tier: 'auto-threshold',
-    threshold: {
-      maxLines: workspace.gitConfig?.autoMergeMaxLines ?? 800,
-      denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
-    },
-  };
+  return DEFAULT_MERGE_POLICY;
 }
