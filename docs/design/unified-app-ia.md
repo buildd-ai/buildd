@@ -81,8 +81,24 @@ Applied uniformly across all entity types:
 |---|---|---|---|
 | `secrets` (credentials) | NOT NULL | NULLABLE | ✅ done — the template |
 | `missions` | NOT NULL | NULLABLE | ✅ done — team-wide missions already work |
+| `initiatives` | NOT NULL | NULLABLE (advisory) | ✅ decided 2026-08-22 — team-scoped; see §A.4 |
 | `workspaceSkills` (roles) | **MISSING** | NOT NULL | ❌ needs schema change (§C) |
 | Data views (Home/Activity/Missions/Health) | resolved via cookie | optional filter | ❌ inconsistent today (§B) |
+
+### A.4 Initiatives are team-scoped (decided 2026-08-22)
+
+Initiatives follow the same team-primary pattern as missions and credentials.
+
+**Decision:** `initiatives.workspaceId` is **advisory only** — it records where an initiative was created and is displayed in breadcrumbs, but it is **not used for access control or assignment gating**. An initiative belongs to a team; any mission in that team (across any of its workspaces) may be linked to it.
+
+**Why:** The knowledge layer already namespaces initiatives as `{teamId}:initiative`, and the initiative picker on mission detail pages was already querying team-wide. The previous write-path check (`init.teamId !== mission.teamId`) was the odd one out — it was enforcing workspace-level scoping that contradicted both the schema design and retrieval behavior.
+
+**Consequences:**
+- `PATCH /api/missions/[id]` and `POST /api/missions` now validate the initiative against the **caller's team IDs**, not the mission's team ID. A caller with access to both `moa-ops` and `buildd` workspaces can link a `moa-ops` mission to a `buildd`-origin initiative.
+- When an initiative spans multiple workspaces, `manage_initiatives get` groups child missions by workspace in its brief, with a single overall rollup percentage labeled at the initiative level.
+- No schema change required: `initiatives.teamId NOT NULL` and `initiatives.workspaceId NULLABLE` already encode this correctly.
+
+**Error message:** A rejected initiative assignment now returns `initiative not found or not accessible to your team` (not a bare 404) so callers understand it is a scope mismatch, not a missing record.
 
 ### A.3 UI representation
 

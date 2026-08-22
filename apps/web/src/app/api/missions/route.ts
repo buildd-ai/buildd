@@ -268,14 +268,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Optional parent initiative — must exist and belong to the same team.
+    // Optional parent initiative — must be accessible to the caller (any of their teams).
+    // teamId here is derived from the workspace; use callerTeamIds to allow cross-workspace linking.
     if (initiativeId) {
       const init = await db.query.initiatives.findFirst({
         where: eq(initiatives.id, initiativeId),
         columns: { id: true, teamId: true },
       });
-      if (!init || init.teamId !== teamId) {
-        return NextResponse.json({ error: 'initiative not found' }, { status: 404 });
+      const callerTeamIds = apiAccount ? [apiAccount.teamId] : userTeamIds;
+      if (!init || !callerTeamIds.includes(init.teamId)) {
+        return NextResponse.json({ error: 'initiative not found or not accessible to your team' }, { status: 404 });
       }
     }
 
