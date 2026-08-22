@@ -16,18 +16,20 @@ import type { MergePolicy } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
-const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
-
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
+ *
+ * Path checks are routed through the resolved policy:
+ *   - tier 1 (auto-threshold): threshold.denyPaths
+ *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  threshold: MergePolicy['threshold'] | null | undefined,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // CI completeness check — verify no check runs are still pending or failing.
   try {
@@ -62,8 +64,11 @@ export async function evaluateAutoMergeSafety(
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
   }
 
-  const denyPaths = threshold?.denyPaths ?? [];
-  const maxLines = threshold?.maxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
+  const denyPaths =
+    policy.tier === 'agent-review'
+      ? (policy.agentReview?.escalateToPaths ?? [])
+      : (policy.threshold?.denyPaths ?? []);
+  const maxLines = policy.threshold?.maxLines ?? 800;
 
   let files: Array<{ filename: string; additions: number; deletions: number }> = [];
   try {
@@ -144,11 +149,11 @@ export async function tryAutoMergeWorkerPr(params: {
   prNumber: number;
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
-  threshold: MergePolicy['threshold'] | null | undefined;
+  policy: MergePolicy;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, threshold } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, threshold);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 

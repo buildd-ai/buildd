@@ -8,6 +8,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
+import { parseMergePolicy } from '@buildd/shared';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
@@ -214,6 +215,13 @@ export async function PATCH(
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
+    }
+
+    if (mergePolicy !== undefined && mergePolicy !== null) {
+      const parsed = parseMergePolicy(mergePolicy);
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error, field: parsed.field }, { status: 422 });
+      }
     }
 
     if (orchestrationMode !== undefined && orchestrationMode !== 'auto' && orchestrationMode !== 'manual') {

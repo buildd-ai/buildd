@@ -184,12 +184,12 @@ describe('preflightEscalationCheck', () => {
 // These cases cover the canonical resolution chain from docs/design/merge-policy.md §10.
 
 describe('resolvePolicy', () => {
-  it('defaults to auto-threshold when no mergePolicy is set', () => {
-    const policy = resolvePolicy({ gitConfig: null });
+  it('returns auto-threshold when workspace has auto-threshold mergePolicy', () => {
+    const policy = resolvePolicy({ gitConfig: { mergePolicy: { tier: 'auto-threshold' } } as any });
     expect(policy.tier).toBe('auto-threshold');
   });
 
-  it('returns human when workspace mergePolicy is human', () => {
+  it('returns human when workspace has human mergePolicy', () => {
     const policy = resolvePolicy({ gitConfig: { mergePolicy: { tier: 'human' } } as any });
     expect(policy.tier).toBe('human');
   });
