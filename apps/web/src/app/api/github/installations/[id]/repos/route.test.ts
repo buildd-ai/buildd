@@ -9,9 +9,11 @@ const mockAuth = mock(() => null as any);
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockListInstallationRepos = mock(() => [] as any[]);
+const mockSyncInstallationRepos = mock(() => ({ synced: 0, linked: 0, linkedWorkspaceIds: [] }) as any);
 
 mock.module('@/auth', () => ({ auth: mockAuth }));
 mock.module('@/lib/github', () => ({ listInstallationRepos: mockListInstallationRepos }));
+mock.module('@/lib/github-repo-link', () => ({ syncInstallationRepos: mockSyncInstallationRepos }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -46,6 +48,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
     mockInstallationsFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockListInstallationRepos.mockReset();
+    mockSyncInstallationRepos.mockReset();
     process.env.NODE_ENV = 'production';
   });
 
@@ -157,6 +160,48 @@ describe('GET /api/github/installations/[id]/repos', () => {
     });
     const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
     expect(response.status).toBe(401);
+  });
+
+  it('POST returns synced, linked, and linkedWorkspaceIds on success', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
+    mockSyncInstallationRepos.mockResolvedValue({
+      synced: 3,
+      linked: 2,
+      linkedWorkspaceIds: ['ws-1', 'ws-2'],
+    });
+
+    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+      method: 'POST',
+    });
+    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.synced).toBe(3);
+    expect(data.linked).toBe(2);
+    expect(data.linkedWorkspaceIds).toEqual(['ws-1', 'ws-2']);
+  });
+
+  it('POST returns linked=0 with empty linkedWorkspaceIds when no workspace repo matches', async () => {
+    mockAuth.mockResolvedValue({ user: { email: 'user@test.com' } });
+    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
+    mockSyncInstallationRepos.mockResolvedValue({
+      synced: 5,
+      linked: 0,
+      linkedWorkspaceIds: [],
+    });
+
+    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+      method: 'POST',
+    });
+    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.synced).toBe(5);
+    expect(data.linked).toBe(0);
+    expect(data.linkedWorkspaceIds).toEqual([]);
   });
 
   it('returns 500 on error', async () => {
