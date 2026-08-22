@@ -184,13 +184,13 @@ describe('preflightEscalationCheck', () => {
 // These four cases are the canonical unit test table from docs/design/merge-policy.md §10.
 
 describe('resolvePolicy', () => {
-  it('returns auto-threshold from legacy autoMergePR: true', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergePR: true } as any });
+  it('returns auto-threshold when workspace has auto-threshold mergePolicy', () => {
+    const policy = resolvePolicy({ gitConfig: { mergePolicy: { tier: 'auto-threshold' } } as any });
     expect(policy.tier).toBe('auto-threshold');
   });
 
-  it('returns human from legacy autoMergePR: false', () => {
-    const policy = resolvePolicy({ gitConfig: { autoMergePR: false } as any });
+  it('returns human when workspace has human mergePolicy', () => {
+    const policy = resolvePolicy({ gitConfig: { mergePolicy: { tier: 'human' } } as any });
     expect(policy.tier).toBe('human');
   });
 

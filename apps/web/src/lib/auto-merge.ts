@@ -11,22 +11,24 @@ import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import type { MergePolicy } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-
-const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
+ *
+ * Path checks are routed through the resolved policy:
+ *   - tier 1 (auto-threshold): threshold.denyPaths
+ *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  gitConfig: { autoMergeDenyPaths?: string[]; autoMergeMaxLines?: number } | null | undefined,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // CI completeness check — verify no check runs are still pending or failing.
   try {
@@ -61,8 +63,11 @@ export async function evaluateAutoMergeSafety(
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
   }
 
-  const denyPaths = gitConfig?.autoMergeDenyPaths ?? [];
-  const maxLines = gitConfig?.autoMergeMaxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
+  const denyPaths =
+    policy.tier === 'agent-review'
+      ? (policy.agentReview?.escalateToPaths ?? [])
+      : (policy.threshold?.denyPaths ?? []);
+  const maxLines = policy.threshold?.maxLines ?? 800;
 
   let files: Array<{ filename: string; additions: number; deletions: number }> = [];
   try {
@@ -143,11 +148,11 @@ export async function tryAutoMergeWorkerPr(params: {
   prNumber: number;
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
-  gitConfig: WorkspaceGitConfig | null | undefined;
+  policy: MergePolicy;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, gitConfig } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, gitConfig);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 
