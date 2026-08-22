@@ -97,12 +97,12 @@ export async function POST(
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 });
     }
 
-    const { synced, linked } = await syncInstallationRepos({
+    const { synced, linked, linkedWorkspaceIds } = await syncInstallationRepos({
       id: installation.id,
       installationId: installation.installationId,
     });
 
-    return NextResponse.json({ synced, linked });
+    return NextResponse.json({ synced, linked, linkedWorkspaceIds });
   } catch (error) {
     console.error('Sync repos error:', error);
     return NextResponse.json({ error: 'Failed to sync repos' }, { status: 500 });
