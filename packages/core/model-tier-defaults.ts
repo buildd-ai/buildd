@@ -18,7 +18,7 @@ export interface TierEntry {
 }
 
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
-  premium:  { provider: 'anthropic', model: 'claude-opus-4-8',           source: 'default' },
+  premium:  { provider: 'anthropic', model: 'claude-opus-5',             source: 'default' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6',         source: 'default' },
   budget:   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
 };

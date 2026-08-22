@@ -70,13 +70,19 @@ CREATE TABLE model_tier_registry (
 Used only when the DB registry has no row for a tier (e.g. new team, cold start). Defined in the resolver module — not scattered:
 
 ```ts
-// packages/core/model-tier-registry.ts
+// packages/core/model-tier-defaults.ts
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
-  premium:  { provider: 'anthropic', model: 'claude-opus-4-8' },
+  premium:  { provider: 'anthropic', model: 'claude-opus-5' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
   budget:   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
 };
 ```
+
+> **Note — premium vs premium+:** `claude-opus-5` is the `premium` default as of 2026-08-21
+> ($5/$25 per MTok, near-Fable-5 quality). `claude-fable-5` is available as a `premium+`
+> option via explicit model override; it costs ~2× more and is subject to a 30-day
+> training-data retention requirement. Pin it explicitly via `task.context.model` or a
+> workspace registry override — it is intentionally not the default.
 
 These are the **last resort** — a team that has configured its registry never sees them.
 

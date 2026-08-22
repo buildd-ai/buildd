@@ -54,6 +54,7 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { resolveEffectiveThinking } from '@buildd/core/model-aliases';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap } from './cbm-bootstrap.js';
@@ -2220,6 +2221,14 @@ export class WorkerManager {
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
+      // Guard: some models (e.g. opus-5) at xhigh/max effort require thinking enabled.
+      // Passing thinking: { type: "disabled" } at these effort levels returns 400.
+      const effectiveThinking = resolveEffectiveThinking(
+        this.config.model || '',
+        configuredEffort as any,
+        configuredThinking as any,
+      );
+
       // Resolve SDK native binary explicitly — Bun's isolated linker layout
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
@@ -2353,7 +2362,7 @@ export class WorkerManager {
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls — validated against model capabilities below
-        ...(configuredThinking ? { thinking: configuredThinking } : {}),
+        ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
         ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 
@@ -2641,7 +2650,7 @@ export class WorkerManager {
           }
           discoverModelCapabilities(qi, worker, {
             effort: configuredEffort,
-            thinking: configuredThinking,
+            thinking: effectiveThinking,
             extendedContext,
           }, this.config.model, (e: any) => this.emit(e));
         },
