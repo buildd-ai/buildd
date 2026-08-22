@@ -77,6 +77,7 @@ export interface ActionQueueItem {
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
   taskId?: string;
   taskTitle?: string;
+  workspaceId?: string;
   workspaceName?: string;
   upstreamTaskTitle?: string;
   unblockCount?: number;
@@ -127,6 +128,7 @@ export function buildActionQueue(
       prNumber: item.prNumber ?? undefined,
       taskId: item.taskId,
       taskTitle: item.taskTitle,
+      workspaceId: item.workspaceId || undefined,
       workspaceName: item.workspaceName || undefined,
       waitingMinutes: item.waitingMinutes,
       escalationReason: item.escalationReason,

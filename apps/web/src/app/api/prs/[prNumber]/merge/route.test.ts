@@ -125,7 +125,7 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     expect(body.error).toMatch(/closed/i);
   });
 
-  it('returns 422 when prNumber is ambiguous across workspaces', async () => {
+  it('returns 409 when prNumber is ambiguous across workspaces', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1', 'ws-2']);
     // Same PR number, different workspace IDs
@@ -135,9 +135,10 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     ]);
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toMatch(/multiple workspaces/i);
+    expect(body.candidates).toEqual(expect.arrayContaining(['ws-1', 'ws-2']));
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 

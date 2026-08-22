@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos, missions, tasks } from '@buildd/core/db/schema';
+import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -33,8 +33,29 @@ async function resolveWorkerByPrNumber(
     return { error: 'No workspaces found for account', status: 403 };
   }
 
-  const searchIds =
-    workspaceId && wsIds.includes(workspaceId) ? [workspaceId] : wsIds;
+  // Resolve workspaceId to a UUID — callers may pass a repo name (e.g. "moa-ops")
+  // rather than a UUID. wsIds only contains UUIDs, so a direct includes() check
+  // misses name-based inputs and silently falls back to searching all workspaces.
+  let narrowedWsId: string | null = null;
+  if (workspaceId) {
+    if (wsIds.includes(workspaceId)) {
+      narrowedWsId = workspaceId;
+    } else {
+      const allWs = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
+        columns: { id: true, name: true, repo: true },
+      });
+      const lower = workspaceId.toLowerCase();
+      const match = allWs.find(ws =>
+        ws.name.toLowerCase() === lower ||
+        ws.repo?.toLowerCase() === lower ||
+        ws.repo?.toLowerCase().endsWith('/' + lower)
+      );
+      if (match) narrowedWsId = match.id;
+    }
+  }
+
+  const searchIds = narrowedWsId ? [narrowedWsId] : wsIds;
 
   const matchingWorkers = await db.query.workers.findMany({
     where: and(
@@ -507,7 +528,7 @@ export async function PUT(req: NextRequest) {
       // workerId absent — resolve worker from prNumber across the account's workspaces.
       // Accepts optional workspaceId for disambiguation when multiple workspaces share a prNumber.
       const resolved = await resolveWorkerByPrNumber(account, prNumber, workspaceId);
-      if ('error' in resolved) {
+      if (typeof resolved.status === 'number') {
         return NextResponse.json(
           { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
@@ -655,7 +676,10 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid prNumber' }, { status: 400 });
       }
       const resolved = await resolveWorkerByPrNumber(account, prNum, workspaceIdParam);
-      if ('error' in resolved) {
+      // Discriminate on numeric status: error descriptors carry { error: string, status: number }
+      // while Drizzle worker rows carry status as a text column ('idle', 'active', etc.).
+      // 'error' in resolved is always true for DB rows because the error column always exists.
+      if (typeof resolved.status === 'number') {
         return NextResponse.json(
           { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
