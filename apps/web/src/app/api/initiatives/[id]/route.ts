@@ -46,6 +46,7 @@ export async function GET(
         missions: {
           columns: { id: true, title: true, status: true, priority: true, workspaceId: true, updatedAt: true },
           with: {
+            workspace: { columns: { id: true, name: true } },
             tasks: {
               columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
               with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },

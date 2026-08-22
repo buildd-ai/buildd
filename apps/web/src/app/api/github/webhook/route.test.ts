@@ -858,13 +858,13 @@ describe('POST /api/github/webhook', () => {
     });
   });
 
-  // ── requiresReview gate (check_suite success path) ──────────────────────────
-  describe('check_suite — requiresReview gate', () => {
+  // ── policy tier gating (check_suite success path) ──────────────────────────
+  describe('check_suite — policy tier gating', () => {
     function withSuccessWorkerPr(opts: {
       taskRequiresReview?: boolean;
-      mission?: { id: string; requiresReview: boolean } | null;
+      mission?: { id: string; requiresReview: boolean; mergePolicy?: any } | null;
     } = {}) {
-      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true } }]);
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800 } } } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
       mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
       mockTasksFindFirst.mockReturnValue({
@@ -876,8 +876,9 @@ describe('POST /api/github/webhook', () => {
       });
     }
 
-    it('holds PR and skips merge when task.requiresReview is true', async () => {
-      withSuccessWorkerPr({ taskRequiresReview: true });
+    it('holds PR and notifies when resolvePolicy returns tier=human', async () => {
+      withSuccessWorkerPr();
+      mockResolvePolicy.mockReturnValueOnce({ tier: 'human' });
       mockNotifyMissionPrReady.mockReturnValue(Promise.resolve({ notified: true }));
 
       const res = await POST(
@@ -885,33 +886,31 @@ describe('POST /api/github/webhook', () => {
       );
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
       const notifyArgs = (mockNotifyMissionPrReady.mock.calls[0] as any[])[1];
       expect(notifyArgs.reason).toBe('awaiting_review');
     });
 
-    it('holds PR and skips merge when mission.requiresReview is true (inherited)', async () => {
-      withSuccessWorkerPr({ mission: { id: 'm1', requiresReview: true } });
-      mockNotifyMissionPrReady.mockReturnValue(Promise.resolve({ notified: true }));
+    it('skips merge without notification when resolvePolicy returns tier=agent-review', async () => {
+      withSuccessWorkerPr();
+      mockResolvePolicy.mockReturnValueOnce({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer' },
+      });
 
       const res = await POST(
         createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
       );
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
-      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
-      const notifyArgs = (mockNotifyMissionPrReady.mock.calls[0] as any[])[1];
-      expect(notifyArgs.reason).toBe('awaiting_review');
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
 
-    it('auto-merges when requiresReview is false and CI is green', async () => {
-      withSuccessWorkerPr({ taskRequiresReview: false, mission: null });
-      // check-runs empty (warns but does not block), PR files within budget
-      mockGithubApi
-        .mockReturnValueOnce(Promise.resolve({ check_runs: [] }))
-        .mockReturnValueOnce(Promise.resolve([]));
+    it('calls tryAutoMergeWorkerPr with threshold when resolvePolicy returns tier=auto-threshold', async () => {
+      withSuccessWorkerPr();
+      // default mockResolvePolicy returns auto-threshold
 
       const res = await POST(
         createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
@@ -919,23 +918,26 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
+      expect(callArgs).toHaveProperty('threshold');
+      expect(callArgs).not.toHaveProperty('gitConfig');
     });
 
-    it('blocks merge when a check run is still pending (CI completeness check)', async () => {
-      withSuccessWorkerPr({ taskRequiresReview: false, mission: null });
-      // First githubApi call is check-runs — pending run blocks merge
-      mockGithubApi.mockReturnValueOnce(
-        Promise.resolve({
-          check_runs: [{ name: 'build', status: 'in_progress', conclusion: null }],
-        })
-      );
+    it('passes task and mission context to resolvePolicy', async () => {
+      withSuccessWorkerPr({
+        taskRequiresReview: false,
+        mission: { id: 'm1', requiresReview: false },
+      });
 
-      const res = await POST(
+      await POST(
         createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
       );
 
-      expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockResolvePolicy).toHaveBeenCalledTimes(1);
+      const [wsArg, missionArg, taskArg] = (mockResolvePolicy.mock.calls[0] as any[]);
+      expect(wsArg).toHaveProperty('gitConfig');
+      expect(missionArg).toHaveProperty('requiresReview');
+      expect(taskArg).toHaveProperty('requiresReview');
     });
   });
 
@@ -1267,22 +1269,24 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
-    it('calls tryAutoMergeWorkerPr (which handles line-budget blocking internally)', async () => {
+    it('calls tryAutoMergeWorkerPr with threshold (which handles line-budget blocking internally)', async () => {
       // The safety-rail logic (line budget, deny paths, notifyMissionPrReady on block)
       // now lives in auto-merge.ts. At the webhook level, we verify that
-      // tryAutoMergeWorkerPr is invoked with the right gitConfig so the library
-      // can apply those checks. The detailed blocking tests live in auto-merge.test.ts.
-      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 } }]);
+      // tryAutoMergeWorkerPr is invoked with a threshold (from resolvePolicy) so the
+      // library can apply those checks. The detailed blocking tests live in auto-merge.test.ts.
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 10 } } } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+      mockResolvePolicy.mockReturnValueOnce({ tier: 'auto-threshold', threshold: { maxLines: 10, denyPaths: [] } });
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
-      expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toMatchObject({
-        gitConfig: { autoMergePR: true, autoMergeMaxLines: 10 },
-      });
+      const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
+      expect(callArgs).toHaveProperty('threshold');
+      expect(callArgs.threshold.maxLines).toBe(10);
+      expect(callArgs).not.toHaveProperty('gitConfig');
     });
 
     it('sets worker.mergedAt when PR merges (dependsOn gate prerequisite)', async () => {

@@ -20,7 +20,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 export const DEFAULT_ALIASES: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-8',
+  opus: 'claude-opus-5',
 };
 
 /** In-memory cache to avoid DB reads on every call. */
@@ -79,6 +79,34 @@ async function getAliases(): Promise<Record<string, string>> {
   }
 
   return DEFAULT_ALIASES;
+}
+
+type ThinkingConfig = { type: 'enabled' | 'disabled' | 'adaptive' } | undefined;
+type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined;
+
+/**
+ * Returns true for models that require extended thinking to be enabled
+ * at xhigh/max effort levels (passing thinking: { type: "disabled" } returns 400).
+ */
+export function requiresThinkingEnabled(modelId: string): boolean {
+  return /claude-opus-5/i.test(modelId);
+}
+
+/**
+ * Resolve the effective thinking config, stripping a "disabled" override when
+ * the model requires thinking at xhigh/max effort (API returns 400 otherwise).
+ */
+export function resolveEffectiveThinking(
+  model: string,
+  configuredEffort: Effort,
+  configuredThinking: ThinkingConfig,
+): ThinkingConfig {
+  const isHighEffortThinkingRequired =
+    requiresThinkingEnabled(model || '') &&
+    (configuredEffort === 'xhigh' || configuredEffort === 'max');
+  return isHighEffortThinkingRequired && (configuredThinking as any)?.type === 'disabled'
+    ? undefined
+    : configuredThinking;
 }
 
 /**

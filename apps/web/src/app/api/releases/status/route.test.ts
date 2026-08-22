@@ -20,14 +20,19 @@ const mockResolveReleaseTarget = mock(() => ({
     name: 'buildd',
     repoFullName: 'buildd-ai/buildd',
     installationId: 12345,
-    releaseConfig: null,
+    releaseConfig: {
+      enabled: true,
+      strategy: 'workflow_dispatch',
+      ref: 'dev',
+      prodBranch: 'main',
+      workflowFile: 'release.yml',
+    },
     defaultBranch: 'dev',
   },
 }) as any);
 const mockResolveReleaseStrategy = mock(() => ({
-  ok: false,
-  reason: 'not_configured',
-  message: 'no strategy',
+  ok: true,
+  strategy: { kind: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', inputs: {} },
 }) as any);
 const mockReleasePreflight = mock(() => ({
   aheadBy: 3,
@@ -130,6 +135,75 @@ describe('GET /api/releases/status', () => {
     const { GET } = await import('./route');
     const res = await GET(makeRequest('bld_adminkey'));
     expect(res.status).toBe(500);
+  });
+
+  it('resolves ref and prodBranch from releaseConfig when not passed explicitly', async () => {
+    // Regression: workflow_dispatch workspace with prodBranch=main, defaultBranch=dev.
+    // Calling release_status without explicit params must use (dev → main), not (dev → dev).
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementationOnce(() => ({
+      ok: true,
+      target: {
+        workspaceId: 'ws-buildd',
+        owner: 'buildd-ai',
+        name: 'buildd',
+        repoFullName: 'buildd-ai/buildd',
+        installationId: 12345,
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          ref: 'dev',
+          prodBranch: 'main',
+          workflowFile: 'release.yml',
+        },
+        defaultBranch: 'dev',
+      },
+    }));
+    mockResolveReleaseStrategy.mockImplementationOnce(() => ({
+      ok: true,
+      strategy: { kind: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', inputs: {} },
+    }));
+    let capturedArgs: any;
+    mockReleasePreflight.mockImplementationOnce((...args: any[]) => {
+      capturedArgs = args;
+      return { aheadBy: 5, ciState: 'passing', shippableCommits: [], openReleasePr: null };
+    });
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-buildd' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // The preflight must have been called with ref=dev, prodBranch=main — NOT dev→dev.
+    expect(capturedArgs[3]).toEqual({ ref: 'dev', prodBranch: 'main' });
+  });
+
+  it('returns 422 when ref and prodBranch resolve to the same value', async () => {
+    // Guard: comparing a branch to itself is always zero and misleads the preflight.
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementationOnce(() => ({
+      ok: true,
+      target: {
+        workspaceId: 'ws-1',
+        owner: 'buildd-ai',
+        name: 'buildd',
+        repoFullName: 'buildd-ai/buildd',
+        installationId: 12345,
+        releaseConfig: null,
+        defaultBranch: 'dev',
+      },
+    }));
+    mockResolveReleaseStrategy.mockImplementationOnce(() => ({
+      ok: false,
+      reason: 'not_configured',
+      message: 'no strategy',
+    }));
+    const { GET } = await import('./route');
+    // No releaseConfig → ref=dev, prodBranch=dev → same → 422.
+    const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/same value/i);
   });
 
   it('returns 400 (not 500) when workspaceId is a name instead of a UUID', async () => {

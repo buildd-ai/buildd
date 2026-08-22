@@ -299,8 +299,8 @@ export async function PATCH(
           where: eq(initiatives.id, initiativeId),
           columns: { id: true, teamId: true },
         });
-        if (!init || init.teamId !== existing.teamId) {
-          return NextResponse.json({ error: 'initiative not found' }, { status: 404 });
+        if (!init || !teamIds.includes(init.teamId)) {
+          return NextResponse.json({ error: 'initiative not found or not accessible to your team' }, { status: 404 });
         }
       }
       updateData.initiativeId = initiativeId || null;

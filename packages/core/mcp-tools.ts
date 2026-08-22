@@ -2971,9 +2971,22 @@ export async function handleBuilddAction(
           if (!params.initiativeId) throw new Error('initiativeId is required');
           const data = await api(`/api/initiatives/${params.initiativeId}`);
           const p = data.progress || {};
-          const missionList = (data.missions || []).map((m: any) =>
-            `  - [${m.status}] ${m.title} — ${m.progress ?? 0}% (${m.completedTasks ?? 0}/${m.totalTasks ?? 0}) (${m.id})`
-          ).join('\n');
+          // Group missions by workspace so cross-repo rollups are explicit.
+          const missionsArr: any[] = data.missions || [];
+          const wsGroups: Record<string, any[]> = {};
+          for (const m of missionsArr) {
+            const wsLabel = m.workspace?.name ?? (m.workspaceId ? m.workspaceId.slice(0, 8) : '(no workspace)');
+            if (!wsGroups[wsLabel]) wsGroups[wsLabel] = [];
+            wsGroups[wsLabel].push(m);
+          }
+          const missionList = Object.entries(wsGroups)
+            .map(([ws, ms]) => {
+              const lines = ms.map((m: any) =>
+                `    - [${m.status}] ${m.title} — ${m.progress ?? 0}% (${m.completedTasks ?? 0}/${m.totalTasks ?? 0}) (${m.id})`
+              ).join('\n');
+              return `  ${ws}:\n${lines}`;
+            })
+            .join('\n');
           const artifactList = (data.artifacts || []).map((a: any) =>
             `  - ${a.title} (${a.type}) — ${a.id}`
           ).join('\n');

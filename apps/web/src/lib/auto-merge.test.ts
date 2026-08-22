@@ -37,7 +37,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
 
   it('returns ok:false when mergeable_state is dirty', async () => {
     await expect(
-      evaluateAutoMergeSafety(...params, {}),
+      evaluateAutoMergeSafety(...params, undefined),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('dirty'),
@@ -51,7 +51,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ mergeable_state: 'blocked' });
     await expect(
-      evaluateAutoMergeSafety(...params, {}),
+      evaluateAutoMergeSafety(...params, undefined),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('blocked'),
@@ -65,7 +65,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ mergeable_state: 'clean' });
     await expect(
-      evaluateAutoMergeSafety(...params, {}),
+      evaluateAutoMergeSafety(...params, undefined),
     ).resolves.toEqual({ ok: true });
   });
 
@@ -76,7 +76,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ mergeable_state: 'unknown' });
     await expect(
-      evaluateAutoMergeSafety(...params, {}),
+      evaluateAutoMergeSafety(...params, undefined),
     ).resolves.toEqual({ ok: true });
   });
 });
@@ -97,7 +97,7 @@ describe('evaluateAutoMergeSafety schema deny paths', () => {
   it('allows additive SQL through a schema-specific deny path', async () => {
     await expect(
       evaluateAutoMergeSafety(...params, {
-        autoMergeDenyPaths: ['packages/core/db/schema.ts', 'packages/core/drizzle/'],
+        denyPaths: ['packages/core/db/schema.ts', 'packages/core/drizzle/'],
       }),
     ).resolves.toEqual({ ok: true });
     expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
@@ -110,7 +110,7 @@ describe('evaluateAutoMergeSafety schema deny paths', () => {
     });
     await expect(
       evaluateAutoMergeSafety(...params, {
-        autoMergeDenyPaths: ['packages/core/db/schema.ts'],
+        denyPaths: ['packages/core/db/schema.ts'],
       }),
     ).resolves.toEqual({
       ok: false,
@@ -127,7 +127,7 @@ describe('evaluateAutoMergeSafety schema deny paths', () => {
       ]);
     await expect(
       evaluateAutoMergeSafety(...params, {
-        autoMergeDenyPaths: ['.github/workflows/'],
+        denyPaths: ['.github/workflows/'],
       }),
     ).resolves.toEqual({
       ok: false,

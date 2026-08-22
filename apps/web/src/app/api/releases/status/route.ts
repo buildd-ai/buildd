@@ -51,16 +51,29 @@ export async function GET(req: NextRequest) {
   const strategy = resolution.ok ? resolution.strategy : null;
 
   // Choose sensible source/target refs for the compare, overridable via query.
+  // Prefer the resolved strategy's fields first, then releaseConfig fields, then defaultBranch.
   const ref =
     sp.get('ref') ??
     (strategy?.kind === 'workflow_dispatch'
       ? strategy.ref
       : strategy?.kind === 'script'
-        ? strategy.ref ?? target.defaultBranch
-        : target.defaultBranch);
+        ? strategy.ref ?? target.releaseConfig?.ref ?? target.defaultBranch
+        : target.releaseConfig?.ref ?? target.defaultBranch);
   const prodBranch =
     sp.get('prodBranch') ??
-    (strategy?.kind === 'branch_merge' ? strategy.prodBranch : target.defaultBranch);
+    (strategy?.kind === 'branch_merge'
+      ? strategy.prodBranch
+      : target.releaseConfig?.prodBranch ?? target.defaultBranch);
+
+  if (ref === prodBranch) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Release config error: ref and prodBranch resolve to the same value ("${ref}") — comparing a branch to itself always shows zero commits ahead and is never a meaningful preflight`,
+      },
+      { status: 422 },
+    );
+  }
 
   try {
     const preflight = await releasePreflight(target.installationId, target.owner, target.name, {

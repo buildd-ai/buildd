@@ -14,6 +14,7 @@ const mockMissionsFindFirst = mock(() => ({
   scheduleId: null,
   priority: 0,
 }) as any);
+const mockInitiativesFindFirst = mock(() => null as any);
 let updatedSetData: any = null;
 const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
@@ -62,6 +63,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaces: { findFirst: mock(() => ({ id: 'ws-1' })) },
+      initiatives: { findFirst: mockInitiativesFindFirst },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
@@ -96,6 +98,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks',
   taskSchedules: 'taskSchedules',
   workspaces: { id: 'id', teamId: 'teamId' },
+  initiatives: 'initiatives',
 }));
 
 import { PATCH } from './route';
@@ -113,6 +116,7 @@ describe('PATCH /api/missions/[id]', () => {
     mockMissionsUpdate.mockReset();
     mockScheduleFindFirst.mockReset();
     mockScheduleUpdate.mockReset();
+    mockInitiativesFindFirst.mockReset();
     updatedSetData = null;
     insertedScheduleValues = null;
     updatedScheduleData = null;
@@ -561,5 +565,74 @@ describe('PATCH /api/missions/[id]', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
     expect(updatedSetData.mergePolicy).toEqual(policy);
+  });
+
+  // Initiative assignment — team-scoped (not workspace-scoped)
+  it('links an initiative in the same caller team', async () => {
+    // Initiative lives in team-1, same team as caller — should succeed.
+    mockInitiativesFindFirst.mockReturnValue({ id: 'init-1', teamId: 'team-1' });
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ initiativeId: 'init-1' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.initiativeId).toBe('init-1');
+  });
+
+  it('links an initiative from a different workspace but same caller team', async () => {
+    // Mission is in ws-1 (team-1); initiative is also in team-1 but advisory workspaceId ws-other.
+    // Caller belongs to team-1. Should succeed regardless of workspace mismatch.
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'moa-ops mission',
+      workspaceId: 'ws-moa-ops',
+      scheduleId: null,
+      priority: 0,
+    });
+    mockInitiativesFindFirst.mockReturnValue({ id: 'init-buildd', teamId: 'team-1' });
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ initiativeId: 'init-buildd' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.initiativeId).toBe('init-buildd');
+  });
+
+  it('rejects an initiative not in any caller team', async () => {
+    // Initiative belongs to team-2; caller only has access to team-1.
+    mockInitiativesFindFirst.mockReturnValue({ id: 'init-other', teamId: 'team-2' });
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ initiativeId: 'init-other' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toContain('initiative not found or not accessible');
+  });
+
+  it('rejects a non-existent initiativeId', async () => {
+    mockInitiativesFindFirst.mockReturnValue(null);
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ initiativeId: 'init-ghost' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toContain('initiative not found or not accessible');
+  });
+
+  it('clears initiativeId with null', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ initiativeId: null }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.initiativeId).toBeNull();
   });
 });

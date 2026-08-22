@@ -396,13 +396,6 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
-        // Honour autoMergeOnGreenCI (CI-specific alias), fallback to autoMergePR, default true.
-        const gitCfg = workspace.gitConfig;
-        const shouldAutoMerge = gitCfg?.autoMergeOnGreenCI ?? gitCfg?.autoMergePR ?? true;
-        if (!shouldAutoMerge) {
-          continue;
-        }
-
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
           where: and(
@@ -433,38 +426,52 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
           .where(eq(workers.id, worker.id));
 
-        // requiresReview gate — hold PR for human review if task or mission requires it.
+        // Resolve policy from task + mission context
+        let taskCtx: {
+          id: string;
+          requiresReview: boolean;
+          missionId: string | null;
+          title: string;
+          mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null;
+        } | null = null;
         if (worker.taskId) {
-          const reviewTask = await db.query.tasks.findFirst({
+          taskCtx = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            with: { mission: { columns: { id: true, requiresReview: true } } },
+            with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
-          });
+          }) ?? null;
+        }
+        const policy = resolvePolicy(workspace, taskCtx?.mission ?? null, taskCtx);
 
-          const missionRequires = (reviewTask?.mission as { requiresReview?: boolean } | null)?.requiresReview;
-          if (reviewTask && (reviewTask.requiresReview || missionRequires)) {
-            console.log(`PR held for human review (requiresReview=true) — ${repository.full_name}#${pr.number}`);
-            if (reviewTask.missionId) {
-              await notifyMissionPrReady(reviewTask.missionId, {
-                title: 'PR ready — awaiting human review',
-                prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
-                prNumber: pr.number,
-                headSha,
-                reason: 'awaiting_review',
-                message: `${reviewTask.title} — PR #${pr.number} is ready but held for human review (requiresReview=true).`,
-              });
-            }
-            continue;
+        if (policy.tier === 'human') {
+          console.log(`PR held for human review (tier=human) — ${repository.full_name}#${pr.number}`);
+          if (taskCtx?.missionId) {
+            await notifyMissionPrReady(taskCtx.missionId, {
+              title: 'PR ready — awaiting human review',
+              prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
+              prNumber: pr.number,
+              headSha,
+              reason: 'awaiting_review',
+              message: `${taskCtx.title} — PR #${pr.number} is ready but held for human review.`,
+            });
           }
+          continue;
         }
 
+        if (policy.tier === 'agent-review') {
+          // Reviewer already dispatched on PR open; defer merge to reviewer outcome handler
+          console.log(`PR awaiting agent review outcome — ${repository.full_name}#${pr.number}`);
+          continue;
+        }
+
+        // auto-threshold: proceed to merge
         await tryAutoMergeWorkerPr({
           installationId: installation.id,
           repoFullName: repository.full_name,
           prNumber: pr.number,
           headSha,
           worker,
-          gitConfig: workspace.gitConfig,
+          threshold: policy.threshold,
         });
       }
 
@@ -1218,10 +1225,6 @@ async function maybeAutoMergeNoCiPr(
   });
 
   for (const workspace of linkedWorkspaces) {
-    if (!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR)) {
-      continue;
-    }
-
     // Only auto-merge PRs created by a Buildd worker in this workspace.
     const worker = await db.query.workers.findFirst({
       where: and(
@@ -1230,6 +1233,26 @@ async function maybeAutoMergeNoCiPr(
       ),
     });
     if (!worker) {
+      continue;
+    }
+
+    // Resolve policy from task + mission context
+    let taskCtx: {
+      id: string;
+      requiresReview: boolean;
+      missionId: string | null;
+      title: string;
+      mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null;
+    } | null = null;
+    if (worker.taskId) {
+      taskCtx = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
+        columns: { id: true, requiresReview: true, missionId: true, title: true },
+      }) ?? null;
+    }
+    const policy = resolvePolicy(workspace, taskCtx?.mission ?? null, taskCtx);
+    if (policy.tier !== 'auto-threshold') {
       continue;
     }
 
@@ -1248,7 +1271,7 @@ async function maybeAutoMergeNoCiPr(
       prNumber: pr.number,
       headSha: pr.head.sha,
       worker,
-      gitConfig: workspace.gitConfig,
+      threshold: policy.threshold,
     });
   }
 }

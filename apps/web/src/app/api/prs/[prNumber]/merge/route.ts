@@ -21,7 +21,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ prNumber: string }> }
 ) {
   const user = await getCurrentUser();
@@ -41,12 +41,24 @@ export async function POST(
     return NextResponse.json({ error: 'No workspaces found' }, { status: 403 });
   }
 
+  // Accept workspaceId from body to disambiguate when the same PR number exists in
+  // multiple repos. The merge card passes the workspace UUID from the escalation item.
+  let workspaceId: string | null = null;
+  try {
+    const body = await req.json().catch(() => ({}));
+    if (body?.workspaceId && typeof body.workspaceId === 'string' && wsIds.includes(body.workspaceId)) {
+      workspaceId = body.workspaceId;
+    }
+  } catch { /* non-fatal — body is optional */ }
+
+  const searchIds = workspaceId ? [workspaceId] : wsIds;
+
   // Fetch ALL unmerged workers matching this prNumber across the user's workspaces.
   // PR numbers are not unique across repos — findFirst would silently pick the wrong
   // workspace's worker if two repos both happen to have an open PR with this number.
   const matchingWorkers = await db.query.workers.findMany({
     where: and(
-      inArray(workers.workspaceId, wsIds),
+      inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
@@ -75,14 +87,16 @@ export async function POST(
   // multiple repos, we cannot know which one to merge without a workspaceId.
   const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
   if (distinctWorkspaceIds.size > 1) {
+    const candidates = [...distinctWorkspaceIds];
     console.error(
       `[pr-merge] PR #${prNumber} matched ${distinctWorkspaceIds.size} workspaces — ambiguous merge rejected`,
     );
     return NextResponse.json(
       {
-        error: `PR #${prNumber} exists in multiple workspaces — use the workspace-specific view to merge`,
+        error: `PR #${prNumber} exists in multiple workspaces — pass workspaceId to disambiguate`,
+        candidates,
       },
-      { status: 422 },
+      { status: 409 },
     );
   }
 
