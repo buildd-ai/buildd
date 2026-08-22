@@ -2067,7 +2067,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
-        gitConfig: workspace.gitConfig,
+        policy: approvePolicy!,
       });
       break;
     }

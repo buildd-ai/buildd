@@ -8,6 +8,7 @@ import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { parseMergePolicy } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
   DEFAULT_MISSION_HEARTBEAT_CHECKLIST,
@@ -189,6 +190,13 @@ export async function POST(req: NextRequest) {
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
+    }
+
+    if (mergePolicy !== undefined && mergePolicy !== null) {
+      const parsed = parseMergePolicy(mergePolicy);
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error, field: parsed.field }, { status: 422 });
+      }
     }
 
     if (goalCriteria !== undefined && goalCriteria !== null) {
