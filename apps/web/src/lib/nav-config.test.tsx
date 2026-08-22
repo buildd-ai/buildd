@@ -72,6 +72,7 @@ describe('mobilePageTitle', () => {
 
   it('titles the menu-accessed surfaces (Account / Connections)', () => {
     expect(mobilePageTitle('/app/you')).toBe('Account');
+    expect(mobilePageTitle('/app/settings')).toBe('Connections');
     expect(mobilePageTitle('/app/connections')).toBe('Connections');
   });
 
