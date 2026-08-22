@@ -212,31 +212,40 @@ describe('POST /api/workspaces/[id]/config', () => {
     const data = await res.json();
     expect(data.gitConfig.defaultBranch).toBe('main');
     expect(data.gitConfig.branchingStrategy).toBe('feature');
-    // Auto-merge defaults off when not provided
-    expect(data.gitConfig.autoMergePR).toBe(false);
+    // Legacy autoMerge* fields are not written by the handler; mergePolicy is the canonical field
+    expect(data.gitConfig.autoMergePR).toBeUndefined();
+    expect(data.gitConfig.autoMergeOnGreenCI).toBeUndefined();
   });
 
-  it('persists autoMergePR and its safety rails', async () => {
+  it('persists mergePolicy when provided and validates unknown keys', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
-    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+    // Valid policy accepted
+    const validReq = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
       method: 'POST',
       headers: new Headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({
-        autoMergePR: true,
-        autoMergeMaxLines: 500,
-        autoMergeDenyPaths: ['drizzle/', 'src/lib/auth/', 123],
+        mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500, denyPaths: ['drizzle/'] } },
       }),
     });
-    const res = await POST(req, { params: mockParams });
+    const validRes = await POST(validReq, { params: mockParams });
+    expect(validRes.status).toBe(200);
+    const data = await validRes.json();
+    expect(data.gitConfig.mergePolicy).toMatchObject({ tier: 'auto-threshold', threshold: { maxLines: 500 } });
 
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.gitConfig.autoMergePR).toBe(true);
-    expect(data.gitConfig.autoMergeMaxLines).toBe(500);
-    // Non-string deny-path entries are filtered out
-    expect(data.gitConfig.autoMergeDenyPaths).toEqual(['drizzle/', 'src/lib/auth/']);
+    // Unknown key rejected with 422
+    const invalidReq = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        mergePolicy: { tier: 'auto-threshold', approvalMode: 'lgtm' },
+      }),
+    });
+    const invalidRes = await POST(invalidReq, { params: mockParams });
+    expect(invalidRes.status).toBe(422);
+    const errData = await invalidRes.json();
+    expect(errData.error).toMatch(/unknown field/i);
   });
 
   it('allows an OAuth JWT token (owner) to update config', async () => {

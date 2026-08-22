@@ -312,6 +312,65 @@ export interface MergePolicy {
   stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
 }
 
+const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes']);
+const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
+const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
+
+export type MergePolicyParseResult =
+  | { ok: true; policy: MergePolicy }
+  | { ok: false; error: string; field?: string };
+
+export function parseMergePolicy(val: unknown): MergePolicyParseResult {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) {
+    return { ok: false, error: 'mergePolicy must be an object' };
+  }
+  const obj = val as Record<string, unknown>;
+
+  // Reject unknown top-level keys
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_TOP_KEYS.has(key)) {
+      return { ok: false, error: `mergePolicy has unknown field: ${key}`, field: key };
+    }
+  }
+
+  if (!VALID_TIERS.includes(obj.tier as MergePolicyTier)) {
+    return {
+      ok: false,
+      error: `mergePolicy.tier must be one of: ${VALID_TIERS.join(', ')}`,
+      field: 'tier',
+    };
+  }
+
+  if (obj.threshold !== undefined) {
+    if (!obj.threshold || typeof obj.threshold !== 'object' || Array.isArray(obj.threshold)) {
+      return { ok: false, error: 'mergePolicy.threshold must be an object', field: 'threshold' };
+    }
+    for (const key of Object.keys(obj.threshold as object)) {
+      if (!KNOWN_THRESHOLD_KEYS.has(key)) {
+        return { ok: false, error: `mergePolicy.threshold has unknown field: ${key}`, field: `threshold.${key}` };
+      }
+    }
+  }
+
+  if (obj.agentReview !== undefined) {
+    if (!obj.agentReview || typeof obj.agentReview !== 'object' || Array.isArray(obj.agentReview)) {
+      return { ok: false, error: 'mergePolicy.agentReview must be an object', field: 'agentReview' };
+    }
+    for (const key of Object.keys(obj.agentReview as object)) {
+      if (!KNOWN_AGENT_REVIEW_KEYS.has(key)) {
+        return { ok: false, error: `mergePolicy.agentReview has unknown field: ${key}`, field: `agentReview.${key}` };
+      }
+    }
+    const ar = obj.agentReview as Record<string, unknown>;
+    if (typeof ar.reviewerRole !== 'string' || !ar.reviewerRole) {
+      return { ok: false, error: 'mergePolicy.agentReview.reviewerRole must be a non-empty string', field: 'agentReview.reviewerRole' };
+    }
+  }
+
+  return { ok: true, policy: obj as unknown as MergePolicy };
+}
+
 export type MissionNoteAuthorType = 'agent' | 'user' | 'system';
 export type MissionNoteType =
   | 'decision'

@@ -83,41 +83,26 @@ mission's tasks.
 ALTER TABLE missions ADD COLUMN merge_policy jsonb;
 ```
 
-Resolution order: **mission.mergePolicy** → **workspace.gitConfig.mergePolicy** → legacy
-`gitConfig.autoMergeOnGreenCI/autoMergePR` → default `auto-threshold` with existing defaults.
+Resolution order: **task.requiresReview** → **mission.mergePolicy** → **mission.requiresReview** →
+**workspace.gitConfig.mergePolicy** → `DEFAULT_MERGE_POLICY` (`auto-threshold`, 800 lines, no deny paths).
 
-### 1.4 Migration from legacy gitConfig fields
+### 1.4 MergePolicy is authoritative — unknown keys rejected on write
 
-No existing workspace configuration is broken. The webhook handler resolves policy as:
+`MergePolicy` stored in `workspaces.gitConfig.mergePolicy` or `missions.mergePolicy` is the single
+source of truth. The legacy `autoMergePR` / `autoMergeOnGreenCI` / `autoMergeMaxLines` /
+`autoMergeDenyPaths` fields have been stripped from all workspaces (migration 0112).
 
-```typescript
-function resolvePolicy(workspace: Workspace, mission?: Mission | null): MergePolicy {
-  // 1. Mission override takes precedence
-  if (mission?.mergePolicy) return mission.mergePolicy;
+**On write** (settings editor, `manage_workspaces`, mission create/update): `parseMergePolicy()` in
+`@buildd/shared` validates the incoming object. Unknown keys are **rejected with HTTP 422** — not
+silently stripped. This closes the class of bug where a key typo (`approvalMode` instead of
+`gateCondition`) was accepted, stored, and silently ignored.
 
-  // 2. Workspace explicit policy
-  if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
+**On read** (`resolvePolicy()`): `parseMergePolicyRead()` is used — it logs a warning and falls back
+to `DEFAULT_MERGE_POLICY` rather than throwing. A malformed stored policy must never wedge PR handling.
 
-  // 3. Legacy fields → synthesize an auto-threshold policy
-  const legacyAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI
-    ?? workspace.gitConfig?.autoMergePR
-    ?? true;
-
-  if (!legacyAutoMerge) return { tier: 'human' };
-
-  return {
-    tier: 'auto-threshold',
-    threshold: {
-      maxLines: workspace.gitConfig?.autoMergeMaxLines ?? 800,
-      denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
-    },
-  };
-}
-```
-
-The legacy fields remain valid and are never stripped. Teams that have not set `mergePolicy`
-explicitly continue with identical behavior. When a team sets `mergePolicy` for the first time via
-the UI, the UI pre-fills the threshold values from the legacy fields to prevent invisible changes.
+**`task.requiresReview` / `mission.requiresReview`** are folded into the precedence chain as
+task-level and mission-level `{ tier: 'human' }` overrides respectively. There is no separate branch
+in the merge path; the single `resolvePolicy()` call drives all merge decisions.
 
 ---
 
@@ -127,9 +112,9 @@ This tier is the existing CI-gated mechanism, formalized.
 
 ### 2.1 Evaluation (unchanged logic, now named)
 
-`evaluateAutoMergeSafety` in `apps/web/src/app/api/github/webhook/route.ts` already implements this.
-After the merge policy is introduced, this function reads from the resolved `MergePolicy.threshold`
-rather than directly from `gitConfig` fields.
+`evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts` implements this.
+It reads path/line limits from the resolved `MergePolicy` — `threshold.denyPaths` at tier 1,
+`agentReview.escalateToPaths` at tier 2 — rather than directly from `gitConfig` fields.
 
 Gates (in order):
 1. All CI check suites passed
