@@ -602,21 +602,59 @@ Per-Mission Override
     Override: Human Gate                       [Edit] [Remove]
 ```
 
-**Active policy indication on mission header**:
+**Inherit/override model (Vercel-style)**:
 
-The mission header row (mission list + mission detail page header) shows a small policy chip:
+Each mission's merge policy follows the same pattern as Vercel project settings: **Inherit is the
+default and it is always visible** — the mission-detail page shows a "Merge Policy" row in the
+Configuration section displaying the effective tier and its origin:
 
 ```
-  [Mission name]  ·  Auto Review  ·  4/10 done  ·  2 awaiting merge
+Merge Policy    Agent Review · Inherited from buildd         [Override]
+Merge Policy    Human Gate · Overridden                [Reset] [Change]
 ```
 
-The policy chip shows the effective tier (resolved: mission override or workspace default). Tapping
-the chip navigates to the policy config page.
+- **Inherited**: mission has no `mergePolicy` field set; effective tier comes from the workspace
+  default. The row shows `<tier> · Inherited from <workspaceName>` with an `[Override]` action.
+- **Overridden**: mission has an explicit `mergePolicy` set. The row shows `<tier> · Overridden`
+  with `[Reset]` (one-tap clear → back to inherit) and `[Change]` (open drawer) actions.
 
-**Editing the policy**: tapping [Edit] opens an inline drawer (not a new page) with a segmented
-control for the tier and collapsible threshold/agent-review config sections. Save writes to
-`workspace.gitConfig.mergePolicy` or `mission.mergePolicy`. Pre-fills threshold values from
-legacy `gitConfig` fields on first open.
+Tapping `[Override]` or `[Change]` opens the same **inline bottom-sheet drawer** used by the
+workspace settings per-mission override editor. The drawer has four options:
+`Inherit / Auto-Threshold / Agent Review / Human Gate`. Selecting **Inherit** clears
+`mission.mergePolicy` (it is not a fourth tier — it is the absence of an override). Selecting
+anything else writes the override and the row switches to the overridden state.
+
+**Active policy chip on mission header**:
+
+The mission header row (mission list + mission detail page header) shows a small policy chip,
+but **only when the chip adds signal** — always-on chips on every card are noise at list density.
+
+Show the chip when:
+- `mission.mergePolicy != null` — the mission has an explicit override (differs from workspace default)
+- OR `awaitingMerge > 0` — there is at least one open PR blocked on this policy right now
+
+```
+  [Mission name]  ·  Agent Review  ·  4/10 done  ·  2 awaiting merge
+```
+
+Tapping the chip navigates to the workspace policy config page.
+
+**Same drawer component, two mounts**:
+
+The per-mission override drawer in workspace settings and the mission-page inline drawer are the
+same `MissionPolicyDrawer` component (`apps/web/src/components/MissionPolicyDrawer.tsx`). This
+ensures both surfaces always agree on what the saved policy looks like and eliminates the risk of
+a second unvalidated write path.
+
+**Editing the workspace policy**: tapping [Edit] on the workspace-level policy opens an inline drawer
+with a segmented control for the tier and collapsible threshold/agent-review config sections. Save
+writes to `workspace.gitConfig.mergePolicy`. Pre-fills threshold values from legacy `gitConfig`
+fields on first open.
+
+**Mobile layout**: the tier selector uses stacked rows (not a 3-column grid) so all options are
+readable at 390px without truncation. Deny/escalate path lists use add-row / remove-row controls
+(not textareas) so paths are individually editable with a 44px touch target per row. Drawers are
+bottom sheets on mobile with the save action reachable above the keyboard.
 
 ---
 

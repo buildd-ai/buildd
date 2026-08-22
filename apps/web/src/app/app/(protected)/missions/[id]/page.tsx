@@ -13,6 +13,7 @@ import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-h
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import MissionSettings from './MissionSettings';
+import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
@@ -278,6 +279,8 @@ export default async function MissionDetailPage({
     workspaceForPolicy ?? { gitConfig: null },
     { mergePolicy: (mission as any).mergePolicy ?? null },
   );
+  const workspaceDefaultPolicy = resolvePolicy(workspaceForPolicy ?? { gitConfig: null });
+  const hasPolicyOverride = (mission as any).mergePolicy != null;
   const policyTierLabel: Record<string, string> = {
     'auto-threshold': 'Auto',
     'agent-review': 'Agent Review',
@@ -676,17 +679,18 @@ export default async function MissionDetailPage({
                   isOverdue={heartbeatOverdue}
                 />
               )}
-              {/* BT-21: Policy chip on mission header */}
-              {mission.workspaceId && (
+              {/* Policy chip — show only when overridden or has PRs awaiting merge */}
+              {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
                 <Link
                   href={`/app/settings/workspace/${mission.workspaceId}`}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-3 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  title={`Merge policy: ${policyLabel}`}
+                  title={`Merge policy: ${policyLabel}${hasPolicyOverride ? ' (overridden)' : ' (inherited)'}`}
                 >
                   <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M12 5v14m-7-7l7 7 7-7" />
                   </svg>
                   {policyLabel}
+                  {hasPolicyOverride && <span className="opacity-60">·override</span>}
                 </Link>
               )}
             </span>
@@ -1041,6 +1045,22 @@ export default async function MissionDetailPage({
                 activeTasks={(mission.tasks || []).filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status)).length}
                 costBudgetUsd={costBudgetUsd}
               />
+              {/* Merge policy row — inherit/override pattern */}
+              {mission.workspaceId && (
+                <div className="mt-4 pt-3 border-t border-border-default">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[11px] text-text-muted uppercase tracking-wider font-semibold">Merge Policy</span>
+                  </div>
+                  <MissionMergePolicyRow
+                    missionId={id}
+                    missionTitle={mission.title}
+                    roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
+                    missionPolicy={(mission as any).mergePolicy ?? null}
+                    workspaceDefaultTier={workspaceDefaultPolicy.tier}
+                    workspaceName={mission.workspace?.name ?? null}
+                  />
+                </div>
+              )}
             </div>
           )}
 
