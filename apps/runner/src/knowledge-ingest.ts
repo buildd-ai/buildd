@@ -5,9 +5,16 @@
  * repo checkout, which runners already hold. On each idle heartbeat tick the
  * poller offers the server the "owner/name" slugs of every local clone; if a
  * queued full job matches, it reads the repo tree at the job's sha (via
- * git ls-tree/show — no working-tree mutation) and streams file batches to the
- * server, which chunks/embeds/upserts. All heavy lifting lives in
- * @buildd/core/knowledge-store/full-ingest so CI can reuse it.
+ * git ls-tree/show — no working-tree mutation) and writes chunks to the DB.
+ *
+ * Two execution modes:
+ *   local  — DATABASE_URL + VOYAGE_API_KEY present on the runner host.
+ *             Uses PgVectorStore + ingestFiles directly: no Vercel billing,
+ *             no maxDuration ceiling, handles code/docs/spec in a single pass.
+ *             Fixes the F2 path-format split via path-based pruneOrphans sweep.
+ *   http   — Fallback when DATABASE_URL/VOYAGE_API_KEY are absent.
+ *             Streams file batches to /api/knowledge/ingest-jobs/:id/files,
+ *             which chunks/embeds/upserts on Vercel (original behaviour).
  *
  * Gated by KNOWLEDGE_INGEST_JOBS (default on; set to 0 to disable).
  */
@@ -108,15 +115,128 @@ function defaultExecuteJob(api: FullIngestApiClient) {
   };
 }
 
+/**
+ * Local execution path: runs when DATABASE_URL + VOYAGE_API_KEY are present on
+ * the runner host. Writes directly to PgVectorStore — no Vercel billing, no
+ * maxDuration ceiling. Handles code, docs, AND spec corpora in one pass.
+ *
+ * The path-based pruneOrphans sweep after ingest also fixes the F2 split:
+ * old chunks stored with subdir-relative paths (e.g. "core/foo.ts") are not in
+ * the seen set (which has "packages/core/foo.ts") and get deleted automatically.
+ */
+function createLocalExecuteJob(api: FullIngestApiClient) {
+  return async (job: FullIngestJob, repoPath: string): Promise<{ status: 'done' | 'error' }> => {
+    const log = (msg: string) => console.log(msg);
+    log(`[knowledge-ingest:local] job ${job.id} (${job.trigger}) ${job.repo} @ ${job.sha ?? 'HEAD'}`);
+    const startedAt = Date.now();
+    try {
+      const [
+        { createGitRepoReader: makeReader },
+        { shouldIngestFile, classifyIngestCorpus },
+        { PgVectorStore, ingestFiles },
+        { getVoyageEmbedderForCorpus },
+        { pruneOrphans },
+      ] = await Promise.all([
+        import('@buildd/core/knowledge-store/full-ingest'),
+        import('@buildd/core/knowledge-store/ingest-filter'),
+        import('@buildd/core/knowledge-store'),
+        import('@buildd/core/knowledge-store/voyage-embedder'),
+        import('@buildd/core/knowledge-store/ingest'),
+      ]);
+
+      const reader = makeReader(repoPath, job.sha);
+      const allPaths = await reader.listFiles();
+
+      const codeFiles: Array<{ path: string; content: string }> = [];
+      const docsFiles: Array<{ path: string; content: string }> = [];
+      let skipped = 0;
+
+      for (const filePath of allPaths) {
+        if (!shouldIngestFile(filePath)) { skipped++; continue; }
+        const corpus = classifyIngestCorpus(filePath);
+        if (!corpus) { skipped++; continue; }
+        const content = await reader.readFile(filePath);
+        if (!content) { skipped++; continue; }
+        if (corpus === 'code') codeFiles.push({ path: filePath, content });
+        else docsFiles.push({ path: filePath, content });
+      }
+
+      log(`[knowledge-ingest:local] job ${job.id}: ${codeFiles.length} code, ${docsFiles.length} docs, ${skipped} filtered`);
+
+      const BATCH = 50;
+      let totalChunks = 0;
+      let skippedUnchanged = 0;
+
+      const codeStore = new PgVectorStore(getVoyageEmbedderForCorpus('code'));
+      const docsStore = new PgVectorStore(getVoyageEmbedderForCorpus('docs'));
+      const specStore = new PgVectorStore(getVoyageEmbedderForCorpus('spec'));
+
+      for (let i = 0; i < codeFiles.length; i += BATCH) {
+        const res = await ingestFiles(codeStore, job.workspaceId, 'code', codeFiles.slice(i, i + BATCH));
+        totalChunks += res.chunks;
+        skippedUnchanged += res.skippedUnchanged;
+      }
+      for (let i = 0; i < docsFiles.length; i += BATCH) {
+        const batch = docsFiles.slice(i, i + BATCH);
+        const docsRes = await ingestFiles(docsStore, job.workspaceId, 'docs', batch);
+        await ingestFiles(specStore, job.workspaceId, 'spec', batch.map(f => ({ ...f })));
+        totalChunks += docsRes.chunks;
+        skippedUnchanged += docsRes.skippedUnchanged;
+      }
+
+      // Namespace-wide orphan sweep. Empty prefix = entire namespace.
+      // This also clears any F2 stale chunks keyed with wrong paths (e.g. "core/..."
+      // stored by old CI runs, not present in the seen set of "packages/core/...").
+      const codeSeenPaths = new Set(codeFiles.map(f => f.path));
+      const docsSeenPaths = new Set(docsFiles.map(f => f.path));
+      const [codePruned, docsPruned, specPruned] = await Promise.all([
+        pruneOrphans(codeStore, job.workspaceId, 'code', '', codeSeenPaths),
+        pruneOrphans(docsStore, job.workspaceId, 'docs', '', docsSeenPaths),
+        pruneOrphans(specStore, job.workspaceId, 'spec', '', docsSeenPaths),
+      ]);
+
+      const stats = {
+        filesListed: allPaths.length,
+        filesSent: codeFiles.length + docsFiles.length,
+        filesSkipped: skipped,
+        chunksUpserted: totalChunks,
+        skippedUnchanged,
+        prunedCode: codePruned.length,
+        prunedDocs: docsPruned.length,
+        prunedSpec: specPruned.length,
+        durationMs: Date.now() - startedAt,
+        sha: reader.resolvedSha,
+        mode: 'local',
+      };
+      log(`[knowledge-ingest:local] job ${job.id} done: ${JSON.stringify(stats)}`);
+
+      // sweep:false — we ran pruneOrphans locally (more precise than time-based sweep).
+      await api.completeJob(job.id, { status: 'done', stats, sweep: false });
+      return { status: 'done' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[knowledge-ingest:local] job ${job.id} failed:`, err);
+      try { await api.completeJob(job.id, { status: 'error', error: message }); } catch {}
+      return { status: 'error' };
+    }
+  };
+}
+
 /** Wire-up used by the WorkerManager: HTTP api from the runner's server config. */
 export function createKnowledgeIngestPoller(config: {
   builddServer: string;
   apiKey: string;
   scanRepos: () => LocalRepo[];
 }): KnowledgeIngestPoller {
+  const api = createHttpIngestApi({ serverUrl: config.builddServer, apiKey: config.apiKey });
+  const hasLocalDb = !!(process.env.DATABASE_URL && process.env.VOYAGE_API_KEY);
+  if (hasLocalDb) {
+    console.log('[knowledge-ingest] local mode: DATABASE_URL + VOYAGE_API_KEY detected — embedding runs on runner, not Vercel');
+  }
   return new KnowledgeIngestPoller({
     enabled: process.env.KNOWLEDGE_INGEST_JOBS !== '0',
-    api: createHttpIngestApi({ serverUrl: config.builddServer, apiKey: config.apiKey }),
+    api,
     scanRepos: config.scanRepos,
+    executeJob: hasLocalDb ? createLocalExecuteJob(api) : undefined,
   });
 }
