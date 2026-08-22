@@ -338,6 +338,64 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.githubRepoId).toBeUndefined();
     expect(capturedUpdates.githubInstallationId).toBeUndefined();
   });
+
+  it('accepts a valid gitConfig.mergePolicy', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { gitConfig: { mergePolicy: { tier: 'human' } } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.gitConfig).toMatchObject({ mergePolicy: { tier: 'human' } });
+  });
+
+  it('accepts null gitConfig.mergePolicy to clear policy', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { mergePolicy: { tier: 'human' } } });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { gitConfig: { mergePolicy: null } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.gitConfig).toMatchObject({ mergePolicy: null });
+  });
+
+  it('rejects gitConfig.mergePolicy with unknown keys (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { gitConfig: { mergePolicy: { tier: 'human', bogusField: true } } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/gitConfig\.mergePolicy/);
+  });
+
+  it('rejects gitConfig.mergePolicy with invalid tier (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { gitConfig: { mergePolicy: { tier: 'not-a-tier' } } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/gitConfig\.mergePolicy/);
+  });
 });
 
 describe('DELETE /api/workspaces/[id]', () => {
