@@ -18,7 +18,7 @@ export default function GitHubSection() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [disconnecting, setDisconnecting] = useState<{ id: string; login: string } | null>(null);
   const [disconnectLoading, setDisconnectLoading] = useState(false);
 
@@ -49,7 +49,16 @@ export default function GitHubSection() {
       });
       if (res.ok) {
         const data = await res.json();
-        setMessage({ type: 'success', text: `Synced ${data.synced} repositories` });
+        const repoWord = data.synced === 1 ? 'repo' : 'repos';
+        const wsWord = data.linked === 1 ? 'workspace' : 'workspaces';
+        const summary = `Synced ${data.synced} ${repoWord} · linked ${data.linked} ${wsWord}`;
+        const isWarning = data.linked === 0 && data.synced > 0;
+        setMessage({
+          type: isWarning ? 'info' : 'success',
+          text: isWarning
+            ? `${summary} — check workspace repo URLs or installation scope`
+            : summary,
+        });
         loadInstallations();
       } else {
         const err = await res.json();
@@ -102,6 +111,8 @@ export default function GitHubSection() {
         <div className={`mb-4 p-3 rounded-lg text-sm ${
           message.type === 'success'
             ? 'bg-status-success/10 text-status-success border border-status-success/30'
+            : message.type === 'info'
+            ? 'bg-status-warning/10 text-status-warning border border-status-warning/30'
             : 'bg-status-error/10 text-status-error border border-status-error/30'
         }`}>
           {message.text}

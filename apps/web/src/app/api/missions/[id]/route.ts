@@ -10,6 +10,7 @@ import { computeMissionProgress } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
+import { mergePolicySchema } from '@/lib/merge-policy';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -318,7 +319,20 @@ export async function PATCH(
       updateData.gateCondition = gateCondition;
     }
     if (mergePolicy !== undefined) {
-      updateData.mergePolicy = mergePolicy ?? null;
+      if (mergePolicy !== null) {
+        const result = mergePolicySchema.safeParse(mergePolicy);
+        if (!result.success) {
+          const msg = result.error.issues[0]?.message ?? 'invalid';
+          const path = result.error.issues[0]?.path.join('.') ?? '';
+          return NextResponse.json(
+            { error: `mergePolicy${path ? `.${path}` : ''}: ${msg}` },
+            { status: 400 },
+          );
+        }
+        updateData.mergePolicy = result.data;
+      } else {
+        updateData.mergePolicy = null;
+      }
     }
     if (orchestrationMode !== undefined) {
       updateData.orchestrationMode = orchestrationMode;

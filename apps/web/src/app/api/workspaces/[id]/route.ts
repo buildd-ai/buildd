@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob, extractGithubFullName } from '@/lib/knowledge-ingest';
+import { mergePolicySchema } from '@/lib/merge-policy';
 
 export async function GET(
   req: NextRequest,
@@ -140,6 +141,17 @@ export async function PATCH(
     // gitConfig and shallow-merges the provided keys, so a one-flag update can't
     // clobber the rest of the config — unlike the form's full-rebuild POST.
     if (gitConfig !== undefined && gitConfig !== null && typeof gitConfig === 'object' && !Array.isArray(gitConfig)) {
+      if ('mergePolicy' in gitConfig && gitConfig.mergePolicy != null) {
+        const result = mergePolicySchema.safeParse(gitConfig.mergePolicy);
+        if (!result.success) {
+          const msg = result.error.issues[0]?.message ?? 'invalid';
+          const path = result.error.issues[0]?.path.join('.') ?? '';
+          return NextResponse.json(
+            { error: `gitConfig.mergePolicy${path ? `.${path}` : ''}: ${msg}` },
+            { status: 400 },
+          );
+        }
+      }
       const current = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, id),
         columns: { gitConfig: true },
