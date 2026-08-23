@@ -1160,6 +1160,8 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
+  sandboxEnabled: boolean('sandbox_enabled'),
+  sandboxProbeAt: timestamp('sandbox_probe_at', { withTimezone: true }),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

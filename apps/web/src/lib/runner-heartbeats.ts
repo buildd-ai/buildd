@@ -79,5 +79,7 @@ export async function getRunnerHeartbeats(
       activeWorkerCount: hb.activeWorkerCount,
       maxConcurrentWorkers: hb.maxConcurrentWorkers,
       connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
+      sandboxEnabled: hb.sandboxEnabled ?? null,
+      sandboxProbeAt: hb.sandboxProbeAt ? (hb.sandboxProbeAt as Date).toISOString() : null,
     }));
 }

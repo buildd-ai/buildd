@@ -97,8 +97,11 @@ function parseClaimError(err: Error): { status: number; reason: string } {
 // Claude Code's sandbox makes every Bash call fail with a bwrap error. We detect
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
+let _bwrapProbeAt: string | null = null;
 /** Test-only: reset the bwrap probe cache so each test starts from a known state. */
-export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; }
+export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; _bwrapProbeAt = null; }
+/** ISO timestamp of the last bwrap probe, or null if not yet probed. */
+export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
@@ -106,6 +109,7 @@ export function isBwrapSupported(): boolean {
   if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
+    _bwrapProbeAt = new Date().toISOString();
     if (!_bwrapSupported) {
       console.log('[runner] bwrap user namespaces unavailable — will force sandbox disabled for all tasks');
     }
@@ -662,7 +666,9 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts());
+      const probeAt = getBwrapProbeAt();
+      const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
