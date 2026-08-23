@@ -19,6 +19,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { escalateConflictExhaustion } from '@/lib/auto-merge';
 
 export async function POST(
   req: NextRequest,
@@ -183,6 +184,7 @@ export async function POST(
           );
         }
         if (dispatchResult.exhausted) {
+          await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
           return NextResponse.json(
             {
               error: `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Manual action required: rebase onto the base branch, resolve conflicts, or abandon this PR.`,
