@@ -2088,4 +2088,113 @@ describe('POST /api/tasks', () => {
     expect(response.status).toBe(200);
     expect(captured()?.loopConfig).toBeUndefined();
   });
+
+  // ── mission pathManifest defaulting ─────────────────────────────────────────
+
+  function missionPathManifestSetup() {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'mcp',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: {} });
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required', defaultBackend: null, startAt: null });
+    let capturedValues: any = null;
+    const mockValues = mock((values: any) => {
+      capturedValues = values;
+      return { returning: mock(() => [{ id: 'task-mp', workspaceId: 'ws-1', title: 'Mission task', ...values }]) };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+    return () => capturedValues;
+  }
+
+  it('defaults pathManifest to ["**"] for mission tasks with no explicit pathManifest', async () => {
+    const captured = missionPathManifestSetup();
+    // No sibling tasks in flight
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toEqual(['**']);
+  });
+
+  it('preserves explicit pathManifest when provided alongside missionId', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        pathManifest: ['apps/web/src/lib/feature.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
+  });
+
+  it('does not set pathManifest for non-mission tasks with no explicit pathManifest', async () => {
+    const captured = missionPathManifestSetup();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Standalone task' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toBeUndefined();
+  });
+
+  it('mission task with ["**"] default serialises against sibling with explicit paths via auto-dependsOn', async () => {
+    const captured = missionPathManifestSetup();
+    // A sibling task already in-flight that has explicit paths
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-task-A', pathManifest: ['apps/web/src/lib/shared.ts'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1' },
+    }));
+
+    expect(response.status).toBe(200);
+    // Got the conservative default
+    expect(captured().pathManifest).toEqual(['**']);
+    // The '**' sentinel overlaps with any explicit path → auto-dependsOn edge added
+    expect(captured().dependsOn).toContain('sibling-task-A');
+  });
+
+  it('two mission tasks with ["**"] default serialise against each other via auto-dependsOn', async () => {
+    const captured = missionPathManifestSetup();
+    // A sibling mission task that also received the '**' default
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-task-A', pathManifest: ['**'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toEqual(['**']);
+    expect(captured().dependsOn).toContain('sibling-task-A');
+  });
 });

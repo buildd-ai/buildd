@@ -61,6 +61,18 @@ describe('pathsOverlap', () => {
       ['apps/runner/index.ts', 'packages/core/db/schema.ts'],
     )).toBe(false);
   });
+
+  it('returns true when either manifest contains the repo-wide wildcard sentinel "**"', () => {
+    expect(pathsOverlap(['**'], ['apps/web/src/lib/foo.ts'])).toBe(true);
+    expect(pathsOverlap(['apps/web/src/lib/foo.ts'], ['**'])).toBe(true);
+    expect(pathsOverlap(['**'], ['**'])).toBe(true);
+    expect(pathsOverlap(['apps/web/src/lib/foo.ts', '**'], ['packages/core/db/schema.ts'])).toBe(true);
+  });
+
+  it('still returns false for empty arrays even when combined with "**" elsewhere', () => {
+    expect(pathsOverlap([], ['**'])).toBe(false);
+    expect(pathsOverlap(['**'], [])).toBe(false);
+  });
 });
 
 describe('serializeBatchByManifest', () => {

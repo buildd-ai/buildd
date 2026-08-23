@@ -24,6 +24,9 @@
 export function pathsOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return false;
 
+  // '**' is a repo-wide sentinel that overlaps with every path.
+  if (a.includes('**') || b.includes('**')) return true;
+
   const normalize = (p: string) => p.replace(/\/+$/, ''); // strip trailing slashes
   const na = a.map(normalize);
   const nb = b.map(normalize);
