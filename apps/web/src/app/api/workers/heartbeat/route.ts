@@ -32,6 +32,8 @@ export async function POST(req: NextRequest) {
       localUiUrl,
       activeWorkerCount = 0,
       environment,
+      sandboxEnabled = null,
+      sandboxProbeAt = null,
     } = body;
 
     if (!localUiUrl) {
@@ -55,6 +57,8 @@ export async function POST(req: NextRequest) {
     // Generate token on first registration, reuse on subsequent heartbeats
     const viewerToken = existing?.viewerToken || randomBytes(24).toString('base64url');
 
+    const sandboxProbeDate = sandboxProbeAt ? new Date(sandboxProbeAt) : null;
+
     // Atomic upsert using unique index on (accountId, localUiUrl)
     // Only update timestamp and worker count - workspaces resolved on-demand
     await db.insert(workerHeartbeats)
@@ -66,6 +70,8 @@ export async function POST(req: NextRequest) {
         maxConcurrentWorkers: account.maxConcurrentWorkers,
         activeWorkerCount,
         environment: environment || null,
+        sandboxEnabled: sandboxEnabled as boolean | null,
+        sandboxProbeAt: sandboxProbeDate,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -74,6 +80,7 @@ export async function POST(req: NextRequest) {
           maxConcurrentWorkers: account.maxConcurrentWorkers,
           activeWorkerCount,
           environment: environment || null,
+          ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },

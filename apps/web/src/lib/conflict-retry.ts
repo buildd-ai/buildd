@@ -19,7 +19,8 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
+import { pathsOverlap } from '@buildd/core/path-overlap';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notify } from '@/lib/pushover';
@@ -82,6 +83,7 @@ export interface ConflictRetryInput {
     workspaceId: string;
     context: Record<string, unknown> | null;
     missionId?: string | null;
+    pathManifest?: string[] | null;
   };
   worker: {
     id: string;
@@ -106,6 +108,8 @@ export interface ConflictRetryTask {
   conflictRetryPrNumber: number;
   conflictRetryHeadSha: string;
   context: Record<string, unknown>;
+  /** pathManifest inherited from the original task, or ['**'] when the task belongs to a mission. */
+  pathManifest: string[] | null;
 }
 
 /**
@@ -128,6 +132,15 @@ export function buildConflictRetryTask(params: ConflictRetryInput): ConflictRetr
 
   const nextIteration = currentIteration + 1;
 
+  // Inherit pathManifest from original task; fall back to ['**'] for mission tasks
+  // so the path-overlap serialization gate fires correctly for sibling tasks.
+  const pathManifest: string[] | null =
+    originalTask.pathManifest && originalTask.pathManifest.length > 0
+      ? originalTask.pathManifest
+      : originalTask.missionId
+        ? ['**']
+        : null;
+
   const cleanTitle = originalTask.title
     .replace(/^\[Conflict Retry #?\d*\]\s*/i, '')
     .replace(/^\[CI Retry #?\d*\]\s*/i, '');
@@ -141,6 +154,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput): ConflictRetr
     creationSource: 'conflict',
     conflictRetryPrNumber: worker.prNumber,
     conflictRetryHeadSha: headSha,
+    pathManifest,
     context: {
       // Branch continuity — agent starts from the conflicted branch
       baseBranch: worker.branch,
@@ -249,7 +263,7 @@ export async function dispatchConflictRetry(
   // Fetch the original task
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true },
+    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true },
   });
   if (!task) {
     console.warn(`[conflict-retry] task ${taskId} not found — skipping dispatch`);
@@ -320,6 +334,7 @@ export async function dispatchConflictRetry(
       workspaceId: task.workspaceId,
       context: (task.context as Record<string, unknown>) || null,
       missionId: task.missionId,
+      pathManifest: task.pathManifest as string[] | null,
     },
     worker: { id: worker.id, branch: worker.branch, prNumber },
     headSha,
@@ -329,6 +344,25 @@ export async function dispatchConflictRetry(
   if (!retryTask) {
     console.log(`[conflict-retry] iteration cap reached for PR #${prNumber} — escalate to human`);
     return { dispatched: false, exhausted: true };
+  }
+
+  // Auto-compute dependsOn for path-overlap serialization — same logic as POST /api/tasks.
+  const resolvedDependsOn: string[] = [];
+  if (retryTask.pathManifest && retryTask.pathManifest.length > 0) {
+    const inFlightTasks = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.workspaceId, workspaceId),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+        isNotNull(tasks.pathManifest),
+      ),
+      columns: { id: true, pathManifest: true },
+    });
+    for (const t of inFlightTasks) {
+      if (!t.pathManifest?.length) continue;
+      if (pathsOverlap(retryTask.pathManifest, t.pathManifest as string[])) {
+        resolvedDependsOn.push(t.id);
+      }
+    }
   }
 
   const [newTask] = await db
@@ -346,6 +380,13 @@ export async function dispatchConflictRetry(
       conflictRetryHeadSha: retryTask.conflictRetryHeadSha,
       status: 'pending',
       priority: 8,
+      subjectKind: 'pull_request',
+      subjectPrNumber: prNumber,
+      subjectHeadSha: headSha,
+      subjectBranch: worker.branch,
+      subjectDedupeScope: 'active',
+      pathManifest: retryTask.pathManifest,
+      ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
     })
     .onConflictDoNothing()
     .returning();

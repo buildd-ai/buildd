@@ -864,7 +864,14 @@ describe('POST /api/github/webhook', () => {
       taskRequiresReview?: boolean;
       mission?: { id: string; requiresReview: boolean; mergePolicy?: any } | null;
     } = {}) {
-      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800 } } } }]);
+      const requiresHuman = opts.taskRequiresReview || opts.mission?.requiresReview;
+      // requiresReview is now folded into the policy chain — drive the mock accordingly
+      mockResolvePolicy.mockReturnValue(
+        requiresHuman
+          ? { tier: 'human' as const }
+          : { tier: 'auto-threshold' as const, threshold: { maxLines: 800, denyPaths: [] } },
+      );
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: {} }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 42 });
       mockAllCheckSuitesPassed.mockReturnValue(Promise.resolve(true));
       mockTasksFindFirst.mockReturnValue({
@@ -908,7 +915,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
 
-    it('calls tryAutoMergeWorkerPr with threshold when resolvePolicy returns tier=auto-threshold', async () => {
+    it('calls tryAutoMergeWorkerPr with policy when resolvePolicy returns tier=auto-threshold', async () => {
       withSuccessWorkerPr();
       // default mockResolvePolicy returns auto-threshold
 
@@ -919,7 +926,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
       const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
-      expect(callArgs).toHaveProperty('threshold');
+      expect(callArgs).toHaveProperty('policy');
       expect(callArgs).not.toHaveProperty('gitConfig');
     });
 
@@ -1049,18 +1056,20 @@ describe('POST /api/github/webhook', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('does nothing when autoMergePR is disabled', async () => {
-      withAutoMergeWorkspaceAndWorker({ autoMergePR: false });
+    it('does nothing when policy tier is human', async () => {
+      mockResolvePolicy.mockReturnValue({ tier: 'human' as const });
+      withAutoMergeWorkspaceAndWorker({ mergePolicy: { tier: 'human' } });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('auto-merges when autoMergeOnGreenCI is true (new canonical field)', async () => {
-      withAutoMergeWorkspaceAndWorker({ autoMergeOnGreenCI: true });
+    it('auto-merges when policy tier is auto-threshold', async () => {
+      mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold' as const, threshold: { maxLines: 800, denyPaths: [] } });
+      withAutoMergeWorkspaceAndWorker({ mergePolicy: { tier: 'auto-threshold' } });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
@@ -1069,14 +1078,15 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
-    it('does nothing when autoMergeOnGreenCI is false, even if autoMergePR is true', async () => {
-      withAutoMergeWorkspaceAndWorker({ autoMergeOnGreenCI: false, autoMergePR: true });
+    it('does nothing for agent-review tier (reviewer handles merge after approve)', async () => {
+      mockResolvePolicy.mockReturnValue({ tier: 'agent-review' as const, agentReview: { reviewerRole: 'reviewer' } });
+      withAutoMergeWorkspaceAndWorker({ mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
-      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('completes task — branch_merge workspace: Path A handles release, Path B does NOT dispatch', async () => {
@@ -1269,24 +1279,22 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
-    it('calls tryAutoMergeWorkerPr with threshold (which handles line-budget blocking internally)', async () => {
+    it('calls tryAutoMergeWorkerPr with resolved policy (which handles safety-rail checks internally)', async () => {
       // The safety-rail logic (line budget, deny paths, notifyMissionPrReady on block)
-      // now lives in auto-merge.ts. At the webhook level, we verify that
-      // tryAutoMergeWorkerPr is invoked with a threshold (from resolvePolicy) so the
-      // library can apply those checks. The detailed blocking tests live in auto-merge.test.ts.
-      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 10 } } } }]);
+      // lives in auto-merge.ts. At the webhook level, we verify that tryAutoMergeWorkerPr
+      // is invoked with the resolved policy. The detailed safety-rail tests live in auto-merge.test.ts.
+      mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold' as const, threshold: { maxLines: 800, denyPaths: ['.github/workflows/'] } });
+      mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['.github/workflows/'] } } } }]);
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', prNumber: 7 });
       mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
-      mockResolvePolicy.mockReturnValueOnce({ tier: 'auto-threshold', threshold: { maxLines: 10, denyPaths: [] } });
 
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
-      const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
-      expect(callArgs).toHaveProperty('threshold');
-      expect(callArgs.threshold.maxLines).toBe(10);
-      expect(callArgs).not.toHaveProperty('gitConfig');
+      expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toMatchObject({
+        policy: { tier: 'auto-threshold', threshold: { denyPaths: ['.github/workflows/'] } },
+      });
     });
 
     it('sets worker.mergedAt when PR merges (dependsOn gate prerequisite)', async () => {
