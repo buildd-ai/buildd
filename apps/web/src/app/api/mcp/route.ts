@@ -622,59 +622,99 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         }
         const taskId = workerRow.taskId;
 
-        const task = await db.query.tasks.findFirst({
+        let mcpTask = await db.query.tasks.findFirst({
           where: eq(tasks.id, taskId),
-          columns: { id: true, workspaceId: true, pathManifest: true, status: true },
+          columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
         });
-        if (!task) {
+        if (!mcpTask) {
           return {
             content: [{ type: "text" as const, text: "Task not found." }],
             isError: true,
           };
         }
-        if (!['pending', 'assigned', 'in_progress'].includes(task.status)) {
+        if (!['pending', 'assigned', 'in_progress'].includes(mcpTask.status)) {
           return {
-            content: [{ type: "text" as const, text: `Cannot claim paths for a task with status "${task.status}".` }],
+            content: [{ type: "text" as const, text: `Cannot claim paths for a task with status "${mcpTask.status}".` }],
             isError: true,
           };
         }
 
-        // Find active sibling tasks in the same workspace with a pathManifest
-        const siblings = await db.query.tasks.findMany({
-          where: and(
-            eq(tasks.workspaceId, task.workspaceId),
-            inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-            isNotNull(tasks.pathManifest),
-            ne(tasks.id, taskId),
-          ),
-          columns: { id: true, title: true, pathManifest: true },
-        });
+        const MCP_CLAIM_RETRIES = 3;
+        for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
+          // Scope siblings to the same mission when the task has one; fall back
+          // to workspace scope for tasks that are not under any mission.
+          const siblings = await db.query.tasks.findMany({
+            where: and(
+              eq(tasks.workspaceId, mcpTask.workspaceId),
+              mcpTask.missionId ? eq(tasks.missionId, mcpTask.missionId) : undefined,
+              inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+              isNotNull(tasks.pathManifest),
+              ne(tasks.id, taskId),
+            ),
+            columns: { id: true, title: true, pathManifest: true },
+          });
 
-        for (const sibling of siblings) {
-          if (!sibling.pathManifest?.length) continue;
-          if (pathsOverlap(paths, sibling.pathManifest as string[])) {
-            const result = {
-              claimed: false,
-              blockingTaskId: sibling.id,
-              blockingTaskTitle: sibling.title,
-              message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
+          for (const sibling of siblings) {
+            if (!sibling.pathManifest?.length) continue;
+            if (pathsOverlap(paths, sibling.pathManifest as string[])) {
+              const result = {
+                claimed: false,
+                blockingTaskId: sibling.id,
+                blockingTaskTitle: sibling.title,
+                message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
+              };
+              return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+            }
+          }
+
+          const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
+          const existingSet = new Set(existingManifest);
+          const newPaths = paths.filter((p) => !existingSet.has(p));
+
+          if (newPaths.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: existingManifest }) }],
             };
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          }
+
+          const updatedManifest = [...existingManifest, ...newPaths];
+
+          // Atomic CAS: write only if pathManifest hasn't changed since we read it.
+          const [updated] = await db
+            .update(tasks)
+            .set({ pathManifest: updatedManifest })
+            .where(
+              and(
+                eq(tasks.id, taskId),
+                sql`path_manifest IS NOT DISTINCT FROM ${JSON.stringify(existingManifest)}::jsonb`,
+              )
+            )
+            .returning({ id: tasks.id });
+
+          if (updated) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
+            };
+          }
+
+          // CAS failed — re-read and retry if attempts remain.
+          if (attempt < MCP_CLAIM_RETRIES - 1) {
+            const refreshed = await db.query.tasks.findFirst({
+              where: eq(tasks.id, taskId),
+              columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
+            });
+            if (!refreshed) {
+              return {
+                content: [{ type: "text" as const, text: "Task not found." }],
+                isError: true,
+              };
+            }
+            mcpTask = refreshed;
           }
         }
 
-        // No conflict: extend the task's pathManifest
-        const currentManifest = (task.pathManifest as string[] | null) ?? [];
-        const existingSet = new Set(currentManifest);
-        const newPaths = paths.filter((p) => !existingSet.has(p));
-        let updatedManifest = currentManifest;
-        if (newPaths.length > 0) {
-          updatedManifest = [...currentManifest, ...newPaths];
-          await db.update(tasks).set({ pathManifest: updatedManifest }).where(eq(tasks.id, taskId));
-        }
-
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ claimed: false, error: "Concurrent update conflict. Please retry." }) }],
         };
       } else {
         throw new Error(`Unknown tool: ${name}`);
