@@ -364,10 +364,12 @@ export default async function MissionsPage({
               Seats: {activeSeats}/{maxSeats}
             </span>
           )}
-          <WorkspaceFilter
-            workspaces={teamWorkspaces}
-            selectedId={wsFilter ?? null}
-          />
+          <div className="hidden md:block">
+            <WorkspaceFilter
+              workspaces={teamWorkspaces}
+              selectedId={wsFilter ?? null}
+            />
+          </div>
           <Link
             href="/app/missions/new"
             className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"

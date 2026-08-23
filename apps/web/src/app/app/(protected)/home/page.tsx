@@ -1187,7 +1187,7 @@ export default async function HomePage({
       <div className="max-w-5xl mx-auto">
         {/* Workspace filter — narrows all sections to a single workspace */}
         {teamWorkspaces.length > 0 && (
-          <div className="flex justify-end mb-4">
+          <div className="hidden md:flex justify-end mb-4">
             <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
           </div>
         )}
