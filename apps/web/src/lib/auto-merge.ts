@@ -168,6 +168,10 @@ export async function tryAutoMergeWorkerPr(params: {
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
         if (dispatchResult.dispatched) return;
+        if (dispatchResult.superseded) {
+          // Supersession detected — escalateSupersession already fired inside dispatch
+          return;
+        }
         if (dispatchResult.disabled) {
           // Feature disabled — fall through to mission notification so human sees it
         } else if (dispatchResult.exhausted) {
@@ -221,7 +225,9 @@ export async function tryAutoMergeWorkerPr(params: {
           console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
-        if (dispatchResult.exhausted && worker.taskId) {
+        if (dispatchResult.superseded) {
+          // Supersession detected — escalateSupersession already fired inside dispatch
+        } else if (dispatchResult.exhausted && worker.taskId) {
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
         }
       }
@@ -315,3 +321,5 @@ export async function escalateConflictExhaustion(
 
   console.log(`[conflict-retry] escalated PR #${prNumber}@${headSha.slice(0, 7)} for task ${taskId}`);
 }
+
+export { escalateSupersession } from '@/lib/conflict-retry';

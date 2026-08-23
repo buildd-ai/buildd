@@ -183,6 +183,17 @@ export async function POST(
             { status: 409 },
           );
         }
+        if (dispatchResult.superseded) {
+          // escalateSupersession already fired inside dispatchConflictRetry
+          return NextResponse.json(
+            {
+              error: `PR #${prNumber} appears superseded — its changes are already in base. Escalated for human review.`,
+              conflictSuperseded: true,
+              successorPrNumber: dispatchResult.successorPrNumber ?? null,
+            },
+            { status: 409 },
+          );
+        }
         if (dispatchResult.exhausted) {
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
           return NextResponse.json(
