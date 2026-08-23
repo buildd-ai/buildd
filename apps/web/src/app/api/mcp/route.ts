@@ -641,27 +641,35 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
 
         const MCP_CLAIM_RETRIES = 3;
         for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
-          // Scope siblings to the same mission when the task has one; fall back
-          // to workspace scope for tasks that are not under any mission.
+          // Scope is always workspace-wide — same logic as the REST path-claim
+          // route. missionId is included so the response can distinguish
+          // in-mission vs. cross-mission blockers for the caller.
           const siblings = await db.query.tasks.findMany({
             where: and(
               eq(tasks.workspaceId, mcpTask.workspaceId),
-              mcpTask.missionId ? eq(tasks.missionId, mcpTask.missionId) : undefined,
               inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
               isNotNull(tasks.pathManifest),
               ne(tasks.id, taskId),
             ),
-            columns: { id: true, title: true, pathManifest: true },
+            columns: { id: true, title: true, pathManifest: true, missionId: true },
           });
 
           for (const sibling of siblings) {
             if (!sibling.pathManifest?.length) continue;
             if (pathsOverlap(paths, sibling.pathManifest as string[])) {
+              const isCrossMission =
+                sibling.missionId !== null &&
+                mcpTask.missionId !== null &&
+                sibling.missionId !== mcpTask.missionId;
+              const message = isCrossMission
+                ? `Paths overlap with task "${sibling.title}" (${sibling.id.slice(0, 8)}) in a different mission (${sibling.missionId!.slice(0, 8)}). Report blocked with blockingTaskId and blockingMissionId — a dependsOn edge across missions is a significant coordination decision; escalate to a human or the organizer.`
+                : `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`;
               const result = {
                 claimed: false,
                 blockingTaskId: sibling.id,
                 blockingTaskTitle: sibling.title,
-                message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
+                blockingMissionId: sibling.missionId ?? null,
+                message,
               };
               return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
             }
