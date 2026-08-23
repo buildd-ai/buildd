@@ -324,6 +324,53 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
       });
     }
 
+    // send_worker_message is available to worker and admin tokens (not trigger-only tokens).
+    if (accountLevel === 'worker' || accountLevel === 'admin') {
+      tools.push({
+        name: "send_worker_message",
+        description: `Send a structured message to another active task worker in the same workspace.
+
+Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
+
+Messages are delivered on the recipient's next update_progress check-in as pendingMessages[].
+Sender is resolved automatically from your ?worker= context — do not pass it as a parameter.
+Cross-workspace targeting is rejected (data isolation rule, not a nicety).
+Recipient terminal → returns { delivered: false, reason: "recipient_terminal" }.
+Rate limit: 5 messages per sender per minute per recipient task (retryAfter in error).
+Body size limit: 2 KB. Hop cap: 5 (prevents ping-pong loops — messages with hopCount >= 5 are dropped).
+
+Requires a worker context (?worker=<workerId> in the MCP URL).`,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            recipientTaskId: {
+              type: "string" as const,
+              description: "Task ID of the recipient. Must share a workspaceId with your task.",
+            },
+            type: {
+              type: "string" as const,
+              enum: ["path_blocked_on_you", "path_released", "question", "answer"],
+              description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
+            },
+            body: {
+              type: "object" as const,
+              description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
+            },
+            hopCount: {
+              type: "number" as const,
+              description: "Hop count for forwarded messages (0-based). Omit for new messages. Messages with hopCount >= 5 are dropped to prevent loops.",
+            },
+          },
+          required: ["recipientTaskId", "type", "body"],
+        },
+      });
+    }
+
     if (!isSensitive) {
       tools.push(
         {
@@ -723,6 +770,203 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ claimed: false, error: "Concurrent update conflict. Please retry." }) }],
+        };
+      } else if (name === "send_worker_message") {
+        // Requires worker or admin token — trigger tokens don't run agent work
+        if (accountLevel === 'trigger') {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: 'forbidden', reason: 'send_worker_message requires worker or admin token level' }) }],
+            isError: true,
+          };
+        }
+        if (!workerId) {
+          return {
+            content: [{ type: "text" as const, text: "send_worker_message requires a worker context. Reconnect with ?worker=<workerId> in the MCP URL." }],
+            isError: true,
+          };
+        }
+
+        const recipientTaskId = args?.recipientTaskId as string | undefined;
+        const msgType = args?.type as string | undefined;
+        const msgBody = args?.body as Record<string, unknown> | undefined;
+        const incomingHopCount = typeof args?.hopCount === 'number' ? Math.floor(args.hopCount as number) : 0;
+
+        if (!recipientTaskId) {
+          return {
+            content: [{ type: "text" as const, text: "recipientTaskId is required." }],
+            isError: true,
+          };
+        }
+
+        const VALID_MSG_TYPES = ['path_blocked_on_you', 'path_released', 'question', 'answer'];
+        if (!msgType || !VALID_MSG_TYPES.includes(msgType)) {
+          return {
+            content: [{ type: "text" as const, text: `type must be one of: ${VALID_MSG_TYPES.join(', ')}` }],
+            isError: true,
+          };
+        }
+
+        if (!msgBody || typeof msgBody !== 'object' || Array.isArray(msgBody)) {
+          return {
+            content: [{ type: "text" as const, text: "body must be a non-null object." }],
+            isError: true,
+          };
+        }
+
+        // Size cap: body JSON must be ≤ 2 KB
+        const bodyJson = JSON.stringify(msgBody);
+        if (bodyJson.length > 2048) {
+          return {
+            content: [{ type: "text" as const, text: `body exceeds 2 KB limit (${bodyJson.length} bytes). Reduce message size.` }],
+            isError: true,
+          };
+        }
+
+        // Hop cap: max 5 forwards — prevents ping-pong loops
+        if (incomingHopCount >= 5) {
+          return {
+            content: [{ type: "text" as const, text: `Hop cap reached (hopCount=${incomingHopCount} >= 5). Message dropped to prevent ping-pong loops between workers.` }],
+            isError: true,
+          };
+        }
+
+        // Resolve sender worker → taskId
+        const senderWorker = await db.query.workers.findFirst({
+          where: eq(workersTable.id, workerId),
+          columns: { taskId: true },
+        });
+        if (!senderWorker?.taskId) {
+          return {
+            content: [{ type: "text" as const, text: "No active task found for this worker." }],
+            isError: true,
+          };
+        }
+        const senderTaskId = senderWorker.taskId;
+
+        // Cannot message your own task
+        if (recipientTaskId === senderTaskId) {
+          return {
+            content: [{ type: "text" as const, text: "Cannot send a message to your own task." }],
+            isError: true,
+          };
+        }
+
+        // Resolve sender task (need workspaceId + context for rate limit)
+        const senderTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, senderTaskId),
+          columns: { id: true, workspaceId: true, context: true },
+        });
+        if (!senderTask) {
+          return {
+            content: [{ type: "text" as const, text: "Sender task not found." }],
+            isError: true,
+          };
+        }
+
+        // Resolve recipient task
+        const recipientTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, recipientTaskId),
+          columns: { id: true, workspaceId: true, status: true, context: true },
+        });
+        if (!recipientTask) {
+          return {
+            content: [{ type: "text" as const, text: `Recipient task ${recipientTaskId} not found.` }],
+            isError: true,
+          };
+        }
+
+        // Workspace scope check — data-boundary rule, not optional
+        if (recipientTask.workspaceId !== senderTask.workspaceId) {
+          return {
+            content: [{ type: "text" as const, text: `Cross-workspace messaging is not allowed. Sender and recipient must share a workspaceId.` }],
+            isError: true,
+          };
+        }
+
+        // Terminal recipient: caller can escalate instead of waiting
+        const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
+        if (TERMINAL_STATUSES.includes(recipientTask.status)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ delivered: false, reason: 'recipient_terminal', recipientStatus: recipientTask.status }),
+            }],
+          };
+        }
+
+        // Rate limit: max 5 messages per sender per minute per recipient task.
+        // Counter stored in sender's task context to avoid a new table.
+        const nowMs = Date.now();
+        const RATE_WINDOW_MS = 60_000;
+        const MAX_PER_WINDOW = 5;
+
+        const senderCtx = (senderTask.context ?? {}) as Record<string, unknown>;
+        const rateData = (senderCtx.workerMsgRateLimit ?? {}) as {
+          windowStart?: number;
+          counts?: Record<string, number>;
+        };
+
+        let windowStart = rateData.windowStart ?? 0;
+        let counts = (rateData.counts ?? {}) as Record<string, number>;
+
+        if (nowMs - windowStart > RATE_WINDOW_MS) {
+          windowStart = nowMs;
+          counts = {};
+        }
+
+        const currentCount = counts[recipientTaskId] ?? 0;
+        if (currentCount >= MAX_PER_WINDOW) {
+          const retryAfter = Math.ceil((windowStart + RATE_WINDOW_MS - nowMs) / 1000);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: 'rate_limited',
+                message: `Max ${MAX_PER_WINDOW} messages per minute to this recipient.`,
+                retryAfter,
+              }),
+            }],
+            isError: true,
+          };
+        }
+
+        // Increment rate limit counter on sender task context
+        counts[recipientTaskId] = currentCount + 1;
+        await db
+          .update(tasks)
+          .set({ context: { ...senderCtx, workerMsgRateLimit: { windowStart, counts } } })
+          .where(eq(tasks.id, senderTaskId));
+
+        // Build structured message envelope
+        const messageId = crypto.randomUUID();
+        const workerMessage = {
+          id: messageId,
+          type: msgType,
+          fromTaskId: senderTaskId,
+          fromWorkerId: workerId,
+          sentAt: new Date().toISOString(),
+          hopCount: incomingHopCount + 1,
+          body: msgBody,
+        };
+
+        // Deliver: append to recipient task's pendingWorkerMessages in context.
+        // Drained (cleared) by the recipient worker's next PATCH update_progress call,
+        // which returns them as pendingMessages[] in the response.
+        const recipientCtx = (recipientTask.context ?? {}) as Record<string, unknown>;
+        const pendingMsgs = Array.isArray(recipientCtx.pendingWorkerMessages)
+          ? [...(recipientCtx.pendingWorkerMessages as unknown[]), workerMessage]
+          : [workerMessage];
+
+        await db
+          .update(tasks)
+          .set({ context: { ...recipientCtx, pendingWorkerMessages: pendingMsgs } })
+          .where(eq(tasks.id, recipientTaskId));
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ delivered: true, messageId, recipientTaskId }),
+          }],
         };
       } else {
         throw new Error(`Unknown tool: ${name}`);
