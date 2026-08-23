@@ -426,6 +426,28 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.pathManifest).toEqual(['**']);
   });
 
+  it("conflict retry for manifest-less mission task serialises against sibling with ['**'] via dependsOn", async () => {
+    // Regression test for the #1759/#1763 ping-pong loop:
+    // Both tasks were filed by the organizer without a pathManifest (pre-PR #1773).
+    // PR #1780 ensures retries default to ['**'] for mission tasks and run the
+    // overlap check — so when a sibling also carries ['**'], a dependsOn edge is
+    // added and the two tasks are serialized instead of ping-ponging forever.
+    //
+    // MOCK_TASK already has: pathManifest: null, missionId: 'mission-1'
+    // Sibling is the other half of the ping-pong pair, also with ['**']
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'sibling-mission-task', pathManifest: ['**'] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    // Retry inherits ['**'] sentinel via the missionId fallback (PR #1780)
+    expect(capturedInsertValues.pathManifest).toEqual(['**']);
+    // ['**'] overlaps ['**'] → dependsOn edge added → tasks serialized, no more ping-pong
+    expect(capturedInsertValues.dependsOn).toContain('sibling-mission-task');
+  });
+
   it('returns dispatched=false when workspace is not found', async () => {
     mockWorkspaceFindFirst.mockResolvedValue(null);
     const result = await dispatchConflictRetry(BASE_PARAMS);
