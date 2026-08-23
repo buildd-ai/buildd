@@ -17,11 +17,13 @@
  */
 
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { eq, inArray, isNotNull, and } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
 import { pathsOverlap } from '@buildd/core/path-overlap';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
+import { notify } from '@/lib/pushover';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -227,6 +229,10 @@ export interface DispatchConflictRetryResult {
   exhausted?: boolean;
   /** True when the feature is disabled on this workspace. */
   disabled?: boolean;
+  /** True when the supersession precheck determined the change is already upstream. */
+  superseded?: boolean;
+  /** The PR that appears to have already landed the change, if identifiable. */
+  successorPrNumber?: number | null;
 }
 
 /**
@@ -243,6 +249,7 @@ export async function dispatchConflictRetry(
   // Fetch workspace (needed for autoResolveMergeConflicts flag + dispatchNewTask)
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
+    with: { githubInstallation: true },
   });
   if (!workspace) {
     console.warn(`[conflict-retry] workspace ${workspaceId} not found — skipping dispatch`);
@@ -263,14 +270,60 @@ export async function dispatchConflictRetry(
     return { dispatched: false };
   }
 
-  // Fetch the worker for branch info
+  // Fetch the worker for branch info and recorded diff stats
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, workerId),
-    columns: { id: true, branch: true, prNumber: true },
+    columns: { id: true, branch: true, prNumber: true, filesChanged: true, linesAdded: true, linesRemoved: true },
   });
   if (!worker || !worker.branch) {
     console.warn(`[conflict-retry] worker ${workerId} not found or has no branch — skipping dispatch`);
     return { dispatched: false };
+  }
+
+  // ── Supersession precheck ─────────────────────────────────────────────────
+  // Run before building the retry task. If the PR's changes are already upstream,
+  // halt the chain and escalate rather than burning an attempt.
+  const installationId = workspace.githubInstallation?.installationId ?? null;
+  if (installationId) {
+    const precheck = await runSupersessionPrecheck({
+      installationId,
+      repoFullName,
+      prNumber,
+      recordedStats: {
+        filesChanged: worker.filesChanged ?? 0,
+        linesAdded: worker.linesAdded ?? 0,
+        linesRemoved: worker.linesRemoved ?? 0,
+      },
+      driftRatioThreshold:
+        (workspace.gitConfig as WorkspaceGitConfig | null)?.supersessionDriftRatioThreshold
+        ?? DEFAULT_SUPERSESSION_DRIFT_RATIO,
+      workspaceId,
+      taskId,
+    }).catch(err => {
+      console.warn(`[conflict-retry] supersession precheck failed for PR #${prNumber} (non-fatal):`, err);
+      return null;
+    });
+
+    if (precheck?.superseded) {
+      console.log(
+        `[conflict-retry] supersession detected for PR #${prNumber} (signals: ${precheck.signals.join(', ')},` +
+        ` driftLines: ${precheck.driftRatioLines?.toFixed(1)}x,` +
+        ` successor: ${precheck.successorPrNumber ?? 'unknown'}) — halting retry chain`,
+      );
+      await escalateSupersession(
+        taskId,
+        repoFullName,
+        prNumber,
+        precheck.successorPrNumber ?? null,
+      ).catch(err =>
+        console.error(`[conflict-retry] escalateSupersession failed for PR #${prNumber}:`, err),
+      );
+      return {
+        dispatched: false,
+        superseded: true,
+        successorPrNumber: precheck.successorPrNumber,
+      };
+    }
   }
 
   const retryTask = buildConflictRetryTask({
@@ -349,4 +402,83 @@ export async function dispatchConflictRetry(
   );
 
   return { dispatched: true, taskId: newTask.id };
+}
+
+// ── Supersession escalation ───────────────────────────────────────────────────
+
+/**
+ * Emit escalation when the supersession precheck determines this PR's changes
+ * have already landed in base via a different route.
+ *
+ * Idempotent: CAS on tasks.context.supersessionEscalatedPrNumber — fires at
+ * most once per (taskId, prNumber).
+ *
+ * Exported from conflict-retry (not auto-merge) to avoid a circular dependency:
+ * auto-merge → conflict-retry → auto-merge.
+ */
+export async function escalateSupersession(
+  taskId: string,
+  repoFullName: string,
+  prNumber: number,
+  successorPrNumber: number | null,
+): Promise<void> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, missionId: true, title: true, context: true },
+  });
+  if (!task) return;
+
+  // Atomic dedup: only one escalation per (taskId, prNumber)
+  const [claimed] = await db
+    .update(tasks)
+    .set({
+      context: sql`COALESCE(context, '{}'::jsonb) || jsonb_build_object('supersessionEscalatedPrNumber', ${prNumber}::int)`,
+    })
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        or(
+          sql`context IS NULL`,
+          sql`context->>'supersessionEscalatedPrNumber' IS NULL`,
+        ),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  if (!claimed) {
+    console.log(`[supersession] escalation already fired for task ${taskId} PR #${prNumber}`);
+    return;
+  }
+
+  const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
+  const successorClause = successorPrNumber
+    ? ` PR #${prNumber}'s fix appears to have landed via PR #${successorPrNumber}.`
+    : '';
+
+  if (task.missionId) {
+    const successorNote = successorPrNumber
+      ? `\n\nPR #${successorPrNumber} appears to have already landed the same change.`
+      : '';
+    await db.insert(missionNotes).values({
+      missionId: task.missionId,
+      taskId: task.id,
+      authorType: 'system',
+      type: 'reviewer_escalated',
+      title: `PR #${prNumber} — SUPERSEDED · close?`,
+      body: `The conflict-retry precheck detected that this PR's changes are already present in the base branch.${successorNote}\n\nChoose one:\n- **Close PR** — the change landed elsewhere; this PR is no longer needed\n- **Reopen investigation** — re-read the diff and re-dispatch if the change is genuinely different\n\nPR: ${prUrl}`,
+      status: 'open',
+    });
+  }
+
+  notify({
+    app: 'tasks',
+    title: `PR #${prNumber}: SUPERSEDED · close?`,
+    message: `${task.title}\nChanges appear to already be in base.${successorClause}\nClose or re-investigate.`,
+    url: taskUrl,
+    urlTitle: 'View task',
+    priority: 0,
+  });
+
+  console.log(`[supersession] escalated PR #${prNumber} for task ${taskId}${successorPrNumber ? ` (successor: #${successorPrNumber})` : ''}`);
 }

@@ -288,6 +288,12 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // Supersession precheck: ratio threshold for the drift-ratio detector.
+  // When live GitHub PR stats are ≥ this multiple larger than recorded stats,
+  // the drift detector fires. Requires content-already-upstream to also fire
+  // before the retry chain is halted. Default: 10 (10×).
+  supersessionDriftRatioThreshold?: number;
+
   // Data classification for privacy enforcement. Absent / 'standard' = normal retention.
   // 'sensitive' = structured-only retention: free-text fields (progress messages, summaries,
   // artifacts, error traces) are dropped at the control-plane boundary; only schema-validated
