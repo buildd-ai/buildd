@@ -13,6 +13,7 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { escalateConflictExhaustion } from '@/lib/auto-merge';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -594,6 +595,9 @@ export async function PUT(req: NextRequest) {
           console.error(`[github/pr] conflict-retry dispatch failed for PR #${prNumber}:`, err);
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
+        if (dispatchResult.exhausted && worker.taskId) {
+          await escalateConflictExhaustion(worker.taskId, repo.fullName, prNumber, headSha);
+        }
         const message = dispatchResult.dispatched
           ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
           : dispatchResult.exhausted
