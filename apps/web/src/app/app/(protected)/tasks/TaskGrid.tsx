@@ -553,7 +553,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             )}
           </div>
           {!missionFilter && workspaces && (
-            <WorkspaceFilter workspaces={workspaces} selectedId={selectedWorkspaceId ?? null} />
+            <span className="hidden md:block">
+              <WorkspaceFilter workspaces={workspaces} selectedId={selectedWorkspaceId ?? null} />
+            </span>
           )}
         </div>
 

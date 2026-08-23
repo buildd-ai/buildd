@@ -486,6 +486,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Conservative default for mission tasks without an explicit pathManifest.
+    // When a task belongs to a mission but declares no paths, default to the
+    // repo-wide sentinel ['**'] so the auto-dependsOn pass below can serialise
+    // it against any sibling mission task that also carries ['**'] or touches
+    // the same files — preventing the silent path-overlap race that caused PR
+    // conflicts when sibling tasks edited the same files concurrently.
+    // Callers that know exactly which files they'll touch should always pass
+    // pathManifest explicitly to allow fine-grained parallelism.
+    if (missionId && !pathManifest) {
+      pathManifest = ['**'];
+    }
+
     // Validate dependsOn references exist in the same workspace
     if (Array.isArray(dependsOn) && dependsOn.length > 0) {
       const depTasks = await db.query.tasks.findMany({

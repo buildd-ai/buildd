@@ -22,8 +22,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
-import { workspaces, teams } from "@buildd/core/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { workspaces, teams, workers as workersTable, tasks } from "@buildd/core/db/schema";
+import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { pathsOverlap } from "@buildd/core/path-overlap";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -293,6 +294,36 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       },
     ];
 
+    // check_path_claim is available to worker and admin tokens (not trigger-only tokens).
+    // Trigger tokens don't run agent work so they never need mid-task path expansion.
+    if (accountLevel === 'worker' || accountLevel === 'admin') {
+      tools.push({
+        name: "check_path_claim",
+        description: `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
+
+If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
+If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
+
+Requires a worker context (?worker=<workerId> in the MCP URL).`,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            paths: {
+              type: "array" as const,
+              items: { type: "string" as const },
+              description: "File paths (or directory prefixes) you need to claim. Non-empty array of strings.",
+            },
+          },
+          required: ["paths"],
+        },
+      });
+    }
+
     if (!isSensitive) {
       tools.push(
         {
@@ -561,6 +592,130 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         } else {
           return await handleLearnAction(memClient, args as Record<string, unknown>, memCtx);
         }
+      } else if (name === "check_path_claim") {
+        if (!workerId) {
+          return {
+            content: [{ type: "text" as const, text: "check_path_claim requires a worker context. Reconnect with ?worker=<workerId> in the MCP URL." }],
+            isError: true,
+          };
+        }
+
+        const rawPaths = args?.paths;
+        if (!Array.isArray(rawPaths) || rawPaths.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "paths must be a non-empty array of strings." }],
+            isError: true,
+          };
+        }
+        const paths = rawPaths as string[];
+
+        // Resolve taskId from the worker row
+        const workerRow = await db.query.workers.findFirst({
+          where: eq(workersTable.id, workerId),
+          columns: { taskId: true },
+        });
+        if (!workerRow?.taskId) {
+          return {
+            content: [{ type: "text" as const, text: "No active task found for this worker." }],
+            isError: true,
+          };
+        }
+        const taskId = workerRow.taskId;
+
+        let mcpTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, taskId),
+          columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
+        });
+        if (!mcpTask) {
+          return {
+            content: [{ type: "text" as const, text: "Task not found." }],
+            isError: true,
+          };
+        }
+        if (!['pending', 'assigned', 'in_progress'].includes(mcpTask.status)) {
+          return {
+            content: [{ type: "text" as const, text: `Cannot claim paths for a task with status "${mcpTask.status}".` }],
+            isError: true,
+          };
+        }
+
+        const MCP_CLAIM_RETRIES = 3;
+        for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
+          // Scope siblings to the same mission when the task has one; fall back
+          // to workspace scope for tasks that are not under any mission.
+          const siblings = await db.query.tasks.findMany({
+            where: and(
+              eq(tasks.workspaceId, mcpTask.workspaceId),
+              mcpTask.missionId ? eq(tasks.missionId, mcpTask.missionId) : undefined,
+              inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+              isNotNull(tasks.pathManifest),
+              ne(tasks.id, taskId),
+            ),
+            columns: { id: true, title: true, pathManifest: true },
+          });
+
+          for (const sibling of siblings) {
+            if (!sibling.pathManifest?.length) continue;
+            if (pathsOverlap(paths, sibling.pathManifest as string[])) {
+              const result = {
+                claimed: false,
+                blockingTaskId: sibling.id,
+                blockingTaskTitle: sibling.title,
+                message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
+              };
+              return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+            }
+          }
+
+          const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
+          const existingSet = new Set(existingManifest);
+          const newPaths = paths.filter((p) => !existingSet.has(p));
+
+          if (newPaths.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: existingManifest }) }],
+            };
+          }
+
+          const updatedManifest = [...existingManifest, ...newPaths];
+
+          // Atomic CAS: write only if pathManifest hasn't changed since we read it.
+          const [updated] = await db
+            .update(tasks)
+            .set({ pathManifest: updatedManifest })
+            .where(
+              and(
+                eq(tasks.id, taskId),
+                sql`path_manifest IS NOT DISTINCT FROM ${JSON.stringify(existingManifest)}::jsonb`,
+              )
+            )
+            .returning({ id: tasks.id });
+
+          if (updated) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
+            };
+          }
+
+          // CAS failed — re-read and retry if attempts remain.
+          if (attempt < MCP_CLAIM_RETRIES - 1) {
+            const refreshed = await db.query.tasks.findFirst({
+              where: eq(tasks.id, taskId),
+              columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
+            });
+            if (!refreshed) {
+              return {
+                content: [{ type: "text" as const, text: "Task not found." }],
+                isError: true,
+              };
+            }
+            mcpTask = refreshed;
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ claimed: false, error: "Concurrent update conflict. Please retry." }) }],
+        };
       } else {
         throw new Error(`Unknown tool: ${name}`);
       }

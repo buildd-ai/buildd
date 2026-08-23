@@ -12,7 +12,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-07-18
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-07-18
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-08-23
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-07-18
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18

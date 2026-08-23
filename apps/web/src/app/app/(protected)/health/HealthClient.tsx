@@ -324,7 +324,9 @@ export function HealthClient({
       <div className="mb-6">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">Health</h1>
-          <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+          <span className="hidden md:block">
+            <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+          </span>
         </div>
       </div>
 

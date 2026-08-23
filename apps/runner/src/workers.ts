@@ -54,7 +54,6 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
-import { resolveEffectiveThinking } from '@buildd/core/model-aliases';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap } from './cbm-bootstrap.js';
@@ -100,7 +99,7 @@ function parseClaimError(err: Error): { status: number; reason: string } {
 let _bwrapSupported: boolean | null = null;
 /** Test-only: reset the bwrap probe cache so each test starts from a known state. */
 export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; }
-function isBwrapSupported(): boolean {
+export function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
   // even if the env var is set after the first call.
@@ -504,6 +503,12 @@ export class WorkerManager {
     } catch (err) {
       console.warn('Environment scan failed:', err);
     }
+
+    // Probe bwrap availability at boot so the result is cached before any task
+    // starts. Without this, the probe runs lazily inside the first task execution
+    // and a false-positive (e.g. setuid bwrap passing the probe) can only be
+    // detected after the agent loop is already deep in work.
+    isBwrapSupported();
     // Re-scan every 30 minutes
     this.envScanInterval = setInterval(() => {
       try {
@@ -1527,6 +1532,13 @@ export class WorkerManager {
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
 
+    // bwrap auto-retry flag: set in the catch block when a bwrap_namespace_denied
+    // abort fires mid-run. Signals the finally block to skip worktree cleanup and
+    // the post-finally code to restart the session without sandbox. Loop-guarded:
+    // _bwrapSupported is already false when the retry runs, so a second bwrap
+    // abort cannot occur.
+    let bwrapRetryAfterCleanup = false;
+
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
@@ -2221,14 +2233,6 @@ export class WorkerManager {
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
 
-      // Guard: some models (e.g. opus-5) at xhigh/max effort require thinking enabled.
-      // Passing thinking: { type: "disabled" } at these effort levels returns 400.
-      const effectiveThinking = resolveEffectiveThinking(
-        this.config.model || '',
-        configuredEffort as any,
-        configuredThinking as any,
-      );
-
       // Resolve SDK native binary explicitly — Bun's isolated linker layout
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
@@ -2321,13 +2325,11 @@ export class WorkerManager {
           ? {
               spawnClaudeCodeProcess: createBwrapSpawn(workerBwrapArgv, () => {
                 // The outer wrapper can expose the same probe false-positive as
-                // Claude's inner bwrap. Preserve PR #1383 recovery semantics:
-                // flip the process cache once, fail fast, and make future tasks
-                // bypass both sandbox layers without requiring a runner restart.
+                // Claude's inner bwrap. Flip the cache once and signal startSession
+                // to auto-retry without sandbox rather than marking the task Failed.
                 if (_bwrapSupported !== false) {
                   _bwrapSupported = false;
-                  worker.error = 'bwrap sandbox unavailable on this host (user namespace creation blocked). '
-                    + 'Future tasks will run with sandbox disabled; restart with appropriate namespace permissions to re-enable.';
+                  worker.bwrapRetryPending = true;
                   abortController.abort();
                 }
               }),
@@ -2362,7 +2364,7 @@ export class WorkerManager {
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
         // Thinking/effort controls — validated against model capabilities below
-        ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
+        ...(configuredThinking ? { thinking: configuredThinking } : {}),
         ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 
@@ -2650,7 +2652,7 @@ export class WorkerManager {
           }
           discoverModelCapabilities(qi, worker, {
             effort: configuredEffort,
-            thinking: effectiveThinking,
+            thinking: configuredThinking,
             extendedContext,
           }, this.config.model, (e: any) => this.emit(e));
         },
@@ -3142,7 +3144,17 @@ If something is missing or incomplete, describe what and fix it now.`;
         backgroundAgentMs: failBgMs,
       };
 
-      if (isAbortError) {
+      if (isAbortError && worker.bwrapRetryPending) {
+        // bwrap namespace denied mid-run: sandbox is already disabled globally
+        // (_bwrapSupported = false). Don't mark as Failed — restart the session
+        // without sandbox so the task completes normally. Loop-guarded: the retry
+        // runs with _bwrapSupported=false so a second bwrap abort cannot occur.
+        worker.bwrapRetryPending = false;
+        bwrapRetryAfterCleanup = true;
+        console.warn(`[Worker ${worker.id}] bwrap abort mid-run — will restart without sandbox`);
+        this.addMilestone(worker, { type: 'status', label: 'bwrap_retry: restarting without sandbox', ts: Date.now() });
+        // Fall through to finally (skipping worktree cleanup) then restart below
+      } else if (isAbortError) {
         // Clean abort - already handled by abort() method which set worker.error
         console.log(`[Worker ${worker.id}] Session aborted: ${worker.error || 'Unknown reason'}`);
         sessionLog(worker.id, 'warn', 'session_abort', worker.error || 'Session aborted', worker.taskId);
@@ -3188,14 +3200,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
       }
-      this.emit({ type: 'worker_update', worker });
-      storeSaveWorker(worker);
-
-      // When this is a resume attempt, re-throw so the caller (resumeSession)
-      // can fall through to Layer 2 (reconstructed context). Without this,
-      // startSession swallows the error and Layer 2 never gets a chance.
-      if (resumeSessionId) {
-        throw error;
+      if (!bwrapRetryAfterCleanup) {
+        this.emit({ type: 'worker_update', worker });
+        storeSaveWorker(worker);
+        // When this is a resume attempt, re-throw so the caller (resumeSession)
+        // can fall through to Layer 2 (reconstructed context). Without this,
+        // startSession swallows the error and Layer 2 never gets a chance.
+        if (resumeSessionId) throw error;
       }
     } finally {
       if (isSensitive) deactivateRedaction();
@@ -3208,8 +3219,9 @@ If something is missing or incomplete, describe what and fix it now.`;
         // workers keep worktree alive for session resume (follow-up messages / user answers).
         // Worktrees for these workers get cleaned up during eviction.
         // Exception: e2e test worktrees are always cleaned up immediately (ephemeral).
+        // bwrap retry: preserve the worktree so the restarted session can reuse it.
         const isEphemeral = isEphemeralTestBranch(worker.branch);
-        if (worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
+        if (!bwrapRetryAfterCleanup && worker.worktreePath && (isEphemeral || (worker.status !== 'done' && worker.status !== 'waiting'))) {
           await cleanupWorktree(session.repoPath, worker.worktreePath, worker.id).catch(err => {
             console.error(`[Worker ${worker.id}] Worktree cleanup failed:`, err);
           });
@@ -3335,6 +3347,14 @@ If something is missing or incomplete, describe what and fix it now.`;
         if (!this.config.serverless) {
           this.claimPendingTasks().catch(() => {});
         }
+      }
+
+      // bwrap auto-retry: session cleaned up, worktree preserved — restart now.
+      // _bwrapSupported is already false so the retry runs without sandbox and
+      // cannot trigger another bwrap abort (loop-guarded by the cache flip).
+      if (bwrapRetryAfterCleanup) {
+        console.log(`[Worker ${worker.id}] Restarting session without bwrap sandbox`);
+        return this.startSession(worker, cwd, task);
       }
     }
   }
@@ -3890,15 +3910,15 @@ If something is missing or incomplete, describe what and fix it now.`;
             // positive (e.g. runner started with old code, or setuid bwrap let the
             // probe pass while Claude Code's non-root invocation fails). When the
             // first actual failure surfaces, flip the cache and abort the current
-            // task so a clean retry runs with sandbox disabled from the start.
+            // task. startSession's catch block will detect bwrapRetryPending and
+            // restart the session without sandbox rather than marking it Failed.
             if (traces.some(t => t.pattern === 'bwrap_namespace_denied') && _bwrapSupported !== false) {
               _bwrapSupported = false;
               console.warn(
                 `[runner] bwrap namespace creation failed at runtime for worker ${worker.id} — ` +
-                'sandbox disabled globally. Task aborted for clean retry without sandbox.',
+                'sandbox disabled globally. Auto-retrying without sandbox.',
               );
-              worker.error = 'bwrap sandbox unavailable on this host (user namespace creation blocked). ' +
-                'Runner has disabled sandbox. Retry the task — it will run without sandboxing.';
+              worker.bwrapRetryPending = true;
               const session = this.sessions.get(worker.id);
               if (session) session.abortController.abort();
             }

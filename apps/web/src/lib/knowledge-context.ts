@@ -16,6 +16,52 @@ export type KnowledgeQuerier = {
   countNamespace?: (ns: string) => Promise<number>;
 };
 
+const STALE_BASELINE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+function ageLabel(date: Date | null | undefined): string {
+  if (!date) return '';
+  const days = Math.floor((Date.now() - new Date(date).getTime()) / 86400000);
+  if (days < 1) return 'today';
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+function renderHit(r: QueryResult): string {
+  const firstLine = r.content.split('\n').find(l => l.trim()) ?? '';
+  const title = firstLine.replace(/^#+\s*/, '').slice(0, 100);
+  const parts: string[] = [`[${r.score.toFixed(2)}]`, title];
+
+  if (r.sourceType === 'task') {
+    const success = r.metadata?.success;
+    parts.push(success === true ? 'completed' : success === false ? 'failed' : 'task');
+  } else if (r.sourceType === 'pr') {
+    const prNum = r.metadata?.prNumber;
+    parts.push(prNum ? `PR #${prNum}` : 'PR');
+  }
+
+  // For task hits: surface PR reference from metadata
+  const prUrl = r.metadata?.prUrl as string | undefined;
+  if (prUrl && r.sourceType === 'task') {
+    const match = /[/#](\d+)$/.exec(prUrl);
+    parts.push(match ? `PR #${match[1]}` : 'has PR');
+  }
+
+  const age = ageLabel(r.createdAt);
+  if (age) parts.push(age);
+
+  const link = r.sourceUrl ? ` (${r.sourceUrl})` : '';
+  return `- ${parts.join(' | ')}${link}`;
+}
+
+function isStaleBaseline(r: QueryResult): boolean {
+  if (r.sourceType !== 'task') return false;
+  if (r.metadata?.success !== true) return false;
+  if (!r.metadata?.prUrl) return false;
+  if (!r.createdAt) return false;
+  return Date.now() - new Date(r.createdAt).getTime() < STALE_BASELINE_WINDOW_MS;
+}
+
 /**
  * Retrieve relevant prior work from the KnowledgeStore and format it for the
  * orchestrator's planning prompt. Makes knowledge first-class at plan time: the
@@ -61,7 +107,7 @@ export async function buildKnowledgeContext(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store?: KnowledgeQuerier,
-  opts?: { sensitive?: boolean },
+  opts?: { sensitive?: boolean; paths?: string[] },
 ): Promise<string[]> {
   if (!query.trim()) return [];
   const sensitive = opts?.sensitive ?? false;
@@ -70,11 +116,15 @@ export async function buildKnowledgeContext(
 
     const hint = await buildCorporaHint(workspaceId, teamId, ks, sensitive);
 
+    // Query memory (team-scoped), plans, task outcomes, PRs, and code (workspace-scoped).
+    // Cap at 3 hits per corpus to bound prompt growth.
     const sources: Array<{ label: string; ns: string }> = [];
     if (teamId && !sensitive) sources.push({ label: 'Team memory', ns: buildNamespace(teamId, 'memory') });
     if (workspaceId) {
       sources.push({ label: 'Prior plans', ns: buildNamespace(workspaceId, 'plan') });
       sources.push({ label: 'Past task outcomes', ns: buildNamespace(workspaceId, 'task') });
+      sources.push({ label: 'Pull requests', ns: buildNamespace(workspaceId, 'pr') });
+      sources.push({ label: 'Code index', ns: buildNamespace(workspaceId, 'code') });
     }
 
     const sectioned = sources.length > 0
@@ -84,9 +134,13 @@ export async function buildKnowledgeContext(
             if (results.length === 0) return [];
             const lines = [`\n### ${s.label}`];
             for (const r of results) {
-              const firstLine = r.content.split('\n').find((l) => l.trim()) ?? '';
-              const link = r.sourceUrl ? ` (${r.sourceUrl})` : '';
-              lines.push(`- ${firstLine.slice(0, 160)}${link}`);
+              lines.push(renderHit(r));
+              if (isStaleBaseline(r)) {
+                lines.push(
+                  '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
+                  ' Merged code may not be released, so the UI is not evidence.',
+                );
+              }
             }
             return lines;
           }),
@@ -100,6 +154,28 @@ export async function buildKnowledgeContext(
     if (priorWork.length > 0) {
       output.push('\n## Related prior work (retrieved from knowledge base)');
       output.push(...priorWork);
+    }
+
+    // Path-based lookup — surface recent PRs touching the same file paths.
+    // Composes with the overlap serialization from PR #1130 (structural guard) without replacing it.
+    const paths = opts?.paths;
+    if (workspaceId && paths && paths.length > 0) {
+      const pathQuery = paths.slice(0, 20).join('\n');
+      const pathResults = await ks
+        .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3 })
+        .catch(() => [] as QueryResult[]);
+      if (pathResults.length > 0) {
+        output.push('\n## Recent work on relevant paths');
+        for (const r of pathResults) {
+          output.push(renderHit(r));
+          if (isStaleBaseline(r)) {
+            output.push(
+              '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
+              ' Merged code may not be released, so the UI is not evidence.',
+            );
+          }
+        }
+      }
     }
 
     return output.length > 0 ? output : [];
