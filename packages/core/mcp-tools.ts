@@ -8,6 +8,7 @@
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
 import type { MissionControlCapability } from './mission-control-capabilities';
+import { parseMergePolicy } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -3207,15 +3208,18 @@ export async function handleBuilddAction(
           if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
           if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
 
-          // Partial gitConfig: accept a gitConfig object and/or the common
-          // autoMergePR shortcut. Shallow-merged server-side (PATCH), so other
-          // gitConfig fields are preserved.
+          // Partial gitConfig: accept a gitConfig object. Shallow-merged server-side (PATCH).
           const gitConfig: Record<string, unknown> = {
             ...(params.gitConfig && typeof params.gitConfig === 'object' ? params.gitConfig as Record<string, unknown> : {}),
           };
-          if (params.autoMergePR !== undefined) gitConfig.autoMergePR = params.autoMergePR;
-          if (params.autoMergeMaxLines !== undefined) gitConfig.autoMergeMaxLines = params.autoMergeMaxLines;
-          if (params.autoMergeDenyPaths !== undefined) gitConfig.autoMergeDenyPaths = params.autoMergeDenyPaths;
+          // Validate mergePolicy if provided — reject unknown keys rather than silently strip
+          if (gitConfig.mergePolicy !== undefined && gitConfig.mergePolicy !== null) {
+            const parsed = parseMergePolicy(gitConfig.mergePolicy);
+            if (!parsed.ok) {
+              throw new Error(`gitConfig.mergePolicy: ${parsed.error}`);
+            }
+            gitConfig.mergePolicy = parsed.policy;
+          }
           if (Object.keys(gitConfig).length > 0) body.gitConfig = gitConfig;
 
           // releaseConfig goes to the config endpoint; everything else to the workspace endpoint

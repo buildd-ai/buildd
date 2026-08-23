@@ -426,52 +426,47 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
           .where(eq(workers.id, worker.id));
 
-        // Resolve policy from task + mission context
-        let taskCtx: {
-          id: string;
-          requiresReview: boolean;
-          missionId: string | null;
-          title: string;
-          mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null;
-        } | null = null;
+        // Resolve merge policy via the single precedence chain:
+        //   task.requiresReview → mission.mergePolicy → mission.requiresReview → workspace.mergePolicy → default
+        let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
         if (worker.taskId) {
-          taskCtx = await db.query.tasks.findFirst({
+          workerTask = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
+            with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
-          }) ?? null;
+          }) as typeof workerTask;
         }
-        const policy = resolvePolicy(workspace, taskCtx?.mission ?? null, taskCtx);
+        const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
 
         if (policy.tier === 'human') {
-          console.log(`PR held for human review (tier=human) — ${repository.full_name}#${pr.number}`);
-          if (taskCtx?.missionId) {
-            await notifyMissionPrReady(taskCtx.missionId, {
+          console.log(`PR held for human review (policy.tier=human) — ${repository.full_name}#${pr.number}`);
+          if (workerTask?.missionId) {
+            await notifyMissionPrReady(workerTask.missionId, {
               title: 'PR ready — awaiting human review',
               prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
               prNumber: pr.number,
               headSha,
               reason: 'awaiting_review',
-              message: `${taskCtx.title} — PR #${pr.number} is ready but held for human review.`,
+              message: `${workerTask.title} — PR #${pr.number} is ready but held for human review.`,
             });
           }
           continue;
         }
 
         if (policy.tier === 'agent-review') {
-          // Reviewer already dispatched on PR open; defer merge to reviewer outcome handler
-          console.log(`PR awaiting agent review outcome — ${repository.full_name}#${pr.number}`);
+          // Reviewer was dispatched when the PR was opened; it will trigger merge on approve.
+          console.log(`PR #${pr.number} on ${repository.full_name} awaiting agent review — deferring merge`);
           continue;
         }
 
-        // auto-threshold: proceed to merge
+        // policy.tier === 'auto-threshold'
         await tryAutoMergeWorkerPr({
           installationId: installation.id,
           repoFullName: repository.full_name,
           prNumber: pr.number,
           headSha,
           worker,
-          threshold: policy.threshold,
+          policy,
         });
       }
 
@@ -1236,23 +1231,20 @@ async function maybeAutoMergeNoCiPr(
       continue;
     }
 
-    // Resolve policy from task + mission context
-    let taskCtx: {
-      id: string;
-      requiresReview: boolean;
-      missionId: string | null;
-      title: string;
-      mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null;
-    } | null = null;
+    // Resolve merge policy with task/mission context
+    let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
     if (worker.taskId) {
-      taskCtx = await db.query.tasks.findFirst({
+      workerTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
-        columns: { id: true, requiresReview: true, missionId: true, title: true },
-      }) ?? null;
+        with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
+        columns: { id: true, requiresReview: true },
+      }) as typeof workerTask;
     }
-    const policy = resolvePolicy(workspace, taskCtx?.mission ?? null, taskCtx);
+    const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
+
     if (policy.tier !== 'auto-threshold') {
+      // 'human': surface in escalation inbox (notification fired by check_suite or PR open handler)
+      // 'agent-review': reviewer was dispatched on PR open; it will trigger merge on approve
       continue;
     }
 
@@ -1271,7 +1263,7 @@ async function maybeAutoMergeNoCiPr(
       prNumber: pr.number,
       headSha: pr.head.sha,
       worker,
-      threshold: policy.threshold,
+      policy,
     });
   }
 }
