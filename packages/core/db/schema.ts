@@ -2243,4 +2243,46 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
 
+// Durable held-lock records for worker path ownership.
+// One row per (task, path). releasedAt IS NULL means the claim is active.
+// See docs/design/path-claims.md.
+export const pathClaims = pgTable('path_claims', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  path: text('path').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
+}, (t) => ({
+  // Hot path: overlap check queries all active claims in a workspace.
+  activeIdx: index('path_claims_active_idx').on(t.workspaceId).where(sql`${t.releasedAt} IS NULL`),
+  // Release sweep: release all claims for a given task.
+  taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
+}));
+
+export type PathClaim = typeof pathClaims.$inferSelect;
+export type NewPathClaim = typeof pathClaims.$inferInsert;
+
+// Waiter queue: tasks blocked on a path claim, waiting to be notified on release.
+// One row per (blockingTaskId, waitingTaskId, blockedPath). UNIQUE prevents double-registration.
+// See docs/design/path-claims.md.
+export const pathClaimWaiters = pgTable('path_claim_waiters', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  blockingTaskId: uuid('blocking_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  waitingTaskId: uuid('waiting_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  blockedPath: text('blocked_path').notNull(),
+  registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow().notNull(),
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+}, (t) => ({
+  // UNIQUE guard: idempotent ON CONFLICT DO NOTHING for repeat 409s on same paths.
+  uniqueWaiter: uniqueIndex('pcw_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
+  // Fan-out query: "all un-notified waiters for this blocking task".
+  blockingTaskOpenIdx: index('pcw_blocking_task_idx').on(t.blockingTaskId).where(sql`${t.notifiedAt} IS NULL`),
+}));
+
+export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
+export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
+
 // smoke-test-3-ci-retry-1 20260725
