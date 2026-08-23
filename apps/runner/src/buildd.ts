@@ -451,10 +451,16 @@ export class BuilddClient {
     activeWorkerCount: number,
     environment?: WorkerEnvironment,
     redactionCounts?: Record<string, number>,
+    sandboxEnabled?: boolean | null,
+    sandboxProbeAt?: string | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
     const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
     if (redactionCounts && Object.keys(redactionCounts).length > 0) {
       payload.redactionCounts = redactionCounts;
+    }
+    if (sandboxProbeAt !== null && sandboxProbeAt !== undefined) {
+      payload.sandboxEnabled = sandboxEnabled;
+      payload.sandboxProbeAt = sandboxProbeAt;
     }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
