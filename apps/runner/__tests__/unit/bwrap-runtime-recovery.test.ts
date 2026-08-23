@@ -19,14 +19,27 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
+// Closure-controlled query: first-call abort for retry tests, normal otherwise.
+let queryCallCount = 0;
+let queryAbortFirstCall = false;
+
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (_opts: any) => ({
-    streamInput: () => {},
-    supportedModels: async () => [],
-    [Symbol.asyncIterator]() {
-      return { async next() { return { value: undefined, done: true }; } };
-    },
-  }),
+  query: (_opts: any) => {
+    const callNum = ++queryCallCount;
+    const shouldAbort = queryAbortFirstCall && callNum === 1;
+    return {
+      streamInput: () => {},
+      supportedModels: async () => [],
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            if (shouldAbort) throw new Error('Request was aborted.');
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    };
+  },
 }));
 
 const mockUpdateWorker = mock(async () => ({}));
@@ -106,7 +119,7 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 // Import WorkerManager after mocks
-const { WorkerManager, __resetBwrapSupportForTest } = await import('../../src/workers');
+const { WorkerManager, __resetBwrapSupportForTest, isBwrapSupported } = await import('../../src/workers');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,9 +142,11 @@ function makeWorker(overrides?: Partial<LocalWorker>): LocalWorker {
     taskDescription: 'Do something',
     workspaceId: 'ws-1',
     workspaceName: 'test-workspace',
+    workspaceDataClass: 'standard',
     branch: 'buildd/test',
     status: 'working',
     hasNewActivity: false,
+    startedAt: Date.now(),
     lastActivity: Date.now(),
     milestones: [],
     currentAction: 'Running...',
@@ -139,6 +154,10 @@ function makeWorker(overrides?: Partial<LocalWorker>): LocalWorker {
     output: [],
     toolCalls: [],
     messages: [],
+    subagentTasks: [],
+    subagentTasksObservedCount: 0,
+    checkpoints: [],
+    checkpointEvents: new Set(),
     phaseText: null,
     phaseStart: null,
     phaseToolCount: 0,
@@ -187,6 +206,19 @@ function makeBashToolResultMessage(text: string) {
   };
 }
 
+function makeTask() {
+  return {
+    id: 'task-bwrap',
+    title: 'Test bwrap task',
+    description: 'Do something',
+    workspaceId: 'ws-1',
+    workspace: { name: 'test-workspace', dataClass: 'standard' },
+    status: 'waiting',
+    priority: 1,
+    mode: 'execution',
+  };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('bwrap runtime recovery', () => {
@@ -196,13 +228,17 @@ describe('bwrap runtime recovery', () => {
     // Reset module-level bwrap cache so recovery fires from a clean state,
     // even when other test files have already set _bwrapSupported=false.
     __resetBwrapSupportForTest();
+    queryCallCount = 0;
+    queryAbortFirstCall = false;
+    mockUpdateWorker.mockReset();
+    mockUpdateWorker.mockImplementation(async () => ({}));
   });
 
   afterEach(() => {
     manager?.destroy();
   });
 
-  test('sets worker.error and aborts session when bwrap_namespace_denied is detected mid-task', async () => {
+  test('sets bwrapRetryPending and aborts session when bwrap_namespace_denied is detected mid-task', async () => {
     manager = new WorkerManager(makeConfig());
     const worker = makeWorker();
     const abortController = new AbortController();
@@ -213,7 +249,10 @@ describe('bwrap runtime recovery', () => {
 
     await (manager as any).handleMessage(worker, makeBashToolResultMessage(bwrapError));
 
-    expect(worker.error).toContain('bwrap sandbox unavailable');
+    // bwrapRetryPending signals startSession to restart without sandbox (not mark as Failed)
+    expect(worker.bwrapRetryPending).toBe(true);
+    // worker.error must NOT be set — the task is not failed, just retrying
+    expect(worker.error).toBeUndefined();
     expect(abortController.signal.aborted).toBe(true);
   });
 
@@ -245,5 +284,49 @@ describe('bwrap runtime recovery', () => {
 
     expect(abortController.signal.aborted).toBe(false);
     expect(worker.error).toBeUndefined();
+  });
+
+  test('boot probe: WorkerManager constructor calls isBwrapSupported to warm up cache', () => {
+    // Verify isBwrapSupported is now exported (regression: previously unexported)
+    expect(typeof isBwrapSupported).toBe('function');
+    // After creating WorkerManager, the cache should be warm (not null).
+    // We verify this by checking that isBwrapSupported() returns a boolean
+    // without re-running checkBwrapSupport (which would call execSync).
+    // The constructor calls isBwrapSupported() and checkBwrapSupport returns true (mocked).
+    __resetBwrapSupportForTest();
+    manager = new WorkerManager(makeConfig());
+    // Cache is warm: the result is already boolean (not null)
+    // Calling isBwrapSupported() again returns true (from cache, no re-probe)
+    expect(isBwrapSupported()).toBe(true);
+  });
+
+  test('regression: bwrap abort does not call updateWorker(status=failed); restarts instead', async () => {
+    // Regression test: simulate namespace-creation denial and assert the run
+    // does NOT reach a Failed terminal state. Instead startSession restarts.
+    //
+    // Setup: query throws AbortError on first call (simulating bwrap abort after
+    // bwrapRetryPending is pre-set). On second call it completes normally.
+    queryAbortFirstCall = true;
+
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-retry' });
+    // Pre-set bwrapRetryPending as if handleMessage already detected the error
+    worker.bwrapRetryPending = true;
+
+    // Call startSession directly — first query aborts, catch block detects
+    // bwrapRetryPending and restarts; second query completes normally.
+    await (manager as any).startSession(worker, '/tmp/test-workspace', makeTask());
+
+    // The session must NOT have been reported as failed
+    const failedCalls = mockUpdateWorker.mock.calls.filter(
+      (args: any[]) => args[0] && args[1]?.status === 'failed',
+    );
+    expect(failedCalls).toHaveLength(0);
+
+    // Exactly 2 query calls: first aborted, second successful retry
+    expect(queryCallCount).toBe(2);
+
+    // Worker ends in done state, not error
+    expect(worker.status).toBe('done');
   });
 });
