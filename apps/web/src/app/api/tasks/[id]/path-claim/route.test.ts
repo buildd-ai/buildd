@@ -186,19 +186,27 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     expect(body.blockingTaskTitle).toBe('Sibling task');
   });
 
-  it('does NOT block on a sibling from a different mission (workspace-only scope would be wrong)', async () => {
-    // Task belongs to MISSION_ID; the "sibling" is in OTHER_MISSION_ID.
-    // The siblings query is scoped to the same mission, so it returns no rows.
+  it('blocks a cross-mission sibling with overlapping paths (workspace-scoped collision)', async () => {
+    // Task belongs to MISSION_ID; the sibling is in OTHER_MISSION_ID.
+    // Siblings are workspace-scoped — mission membership is not a collision boundary.
+    // Cross-mission tasks touching the same file must block each other (incidents #1759/#1763).
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    // Simulate the DB returning no siblings (query filtered by missionId)
-    mockTasksFindMany.mockResolvedValue([]);
+    // Workspace-scoped query returns the cross-mission sibling
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Cross-mission sibling',
+        pathManifest: ['packages/core/db/schema.ts'],
+      },
+    ]);
 
-    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const req = makeRequest(TASK_ID, { paths: ['packages/core/db/schema.ts'] });
     const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
-    // Should succeed — different-mission tasks don't block each other
-    expect(res.status).toBe(200);
+    // Cross-mission overlap should block — workspace-scoped check
+    expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.claimed).toBe(true);
+    expect(body.claimed).toBe(false);
+    expect(body.blockingTaskId).toBe(SIBLING_ID);
   });
 
   it('falls back to workspace scope when task has no missionId', async () => {

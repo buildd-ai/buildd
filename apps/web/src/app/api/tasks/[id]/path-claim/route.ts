@@ -27,8 +27,8 @@ const MAX_CLAIM_RETRIES = 3;
  *   The caller should report blocked with the blockingTaskId so a dependsOn
  *   edge can be added before continuing.
  *
- * Siblings are scoped to the same mission when the task has a missionId;
- * otherwise the check falls back to workspace scope.
+ * Siblings are always scoped to the workspace — mission membership is a
+ * coordination hint, not a collision boundary.
  */
 export async function POST(
   req: NextRequest,
@@ -94,12 +94,11 @@ export async function POST(
   }
 
   for (let attempt = 0; attempt < MAX_CLAIM_RETRIES; attempt++) {
-    // Scope siblings to the same mission when the task has one; fall back to
-    // workspace scope for tasks that are not under any mission.
+    // Scope siblings to the workspace — mission membership is a coordination hint,
+    // not a collision boundary. Cross-mission tasks touching the same file must block.
     const siblings = await db.query.tasks.findMany({
       where: and(
         eq(tasks.workspaceId, currentTask.workspaceId),
-        currentTask.missionId ? eq(tasks.missionId, currentTask.missionId) : undefined,
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
         isNotNull(tasks.pathManifest),
         ne(tasks.id, id),

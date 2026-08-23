@@ -641,12 +641,11 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
 
         const MCP_CLAIM_RETRIES = 3;
         for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
-          // Scope siblings to the same mission when the task has one; fall back
-          // to workspace scope for tasks that are not under any mission.
+          // Scope siblings to the workspace — mission membership is a coordination hint,
+          // not a collision boundary. Cross-mission tasks touching the same file must block.
           const siblings = await db.query.tasks.findMany({
             where: and(
               eq(tasks.workspaceId, mcpTask.workspaceId),
-              mcpTask.missionId ? eq(tasks.missionId, mcpTask.missionId) : undefined,
               inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
               isNotNull(tasks.pathManifest),
               ne(tasks.id, taskId),
