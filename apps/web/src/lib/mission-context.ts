@@ -363,6 +363,16 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     const skillSlugs = (templateContext?.skillSlugs as string[])
       || (Array.isArray(scheduleContext?.skillSlugs) ? scheduleContext!.skillSlugs as string[] : []);
 
+    // Check workspace sensitivity before early return (needed for knowledge retrieval scoping)
+    let heartbeatSensitive = false;
+    if (mission.workspaceId) {
+      const hbWs = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, mission.workspaceId),
+        columns: { dataClass: true },
+      });
+      heartbeatSensitive = (hbWs?.dataClass as string) === 'sensitive';
+    }
+
     return buildHeartbeatContext({
       id: mission.id,
       title: mission.title,
@@ -370,6 +380,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       heartbeatChecklist,
       skillSlugs,
       workspaceId: mission.workspaceId,
+      teamId: mission.teamId,
+      sensitive: heartbeatSensitive,
     });
   }
 
@@ -448,7 +460,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
     ),
     limit: 20,
-    columns: { id: true, title: true, status: true, description: true, dependsOn: true, context: true },
+    columns: { id: true, title: true, status: true, description: true, dependsOn: true, context: true, pathManifest: true },
   });
   const budgetWaitingTasks = allActiveTasks.filter(
     t => t.status === 'pending' && !!(t.context as any)?.budgetExhausted
@@ -698,10 +710,20 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
   }
 
-  // Knowledge bridge — inject relevant prior work (team memory, prior plans,
-  // past task outcomes) retrieved from the KnowledgeStore. Best-effort.
+  // Knowledge bridge — inject relevant prior work retrieved from the KnowledgeStore.
+  // Queries memory, task, pr, and code corpora. Also runs a path-based PR lookup when
+  // active tasks carry pathManifests (composes with overlap serialization from PR #1130).
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
-  const knowledgeParts = await buildKnowledgeContext(knowledgeQuery, mission.workspaceId, mission.teamId, undefined, { sensitive: missionWorkspaceSensitive });
+  const activePaths = allActiveTasks
+    .flatMap(t => (t as any).pathManifest || [])
+    .filter(Boolean) as string[];
+  const knowledgeParts = await buildKnowledgeContext(
+    knowledgeQuery,
+    mission.workspaceId,
+    mission.teamId,
+    undefined,
+    { sensitive: missionWorkspaceSensitive, paths: activePaths.length > 0 ? activePaths : undefined },
+  );
   descParts.push(...knowledgeParts);
 
   // Known-entities catalog (§8.4) — canonical vocabulary hint. Best-effort ''.
@@ -786,6 +808,12 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // Dynamic orchestrator hints (static instructions are in the Organizer role content)
   descParts.push('\n## Situational Guidance');
+  descParts.push(
+    '**Prior-work gate**: Before creating any task, check "Related prior work" above. ' +
+    'If a retrieved item scores ≥0.82 similarity AND its PR was merged within 14 days, ' +
+    'do NOT create the task. Instead: `post_note type=decision` naming the PR and explaining ' +
+    'why decomposition was skipped for that item.',
+  );
 
   if (isRecurringPattern) {
     descParts.push(
@@ -877,6 +905,8 @@ async function buildHeartbeatContext(mission: {
   heartbeatChecklist: string | null;
   skillSlugs?: string[];
   workspaceId?: string | null;
+  teamId?: string | null;
+  sensitive?: boolean;
 }) {
   // Query mission state in parallel
   const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
@@ -907,7 +937,7 @@ async function buildHeartbeatContext(mission: {
         inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
       ),
       limit: 10,
-      columns: { id: true, title: true, status: true, roleSlug: true },
+      columns: { id: true, title: true, status: true, roleSlug: true, pathManifest: true },
     }),
     // Failed tasks (include more for grouping)
     db.query.tasks.findMany({
@@ -1007,7 +1037,8 @@ async function buildHeartbeatContext(mission: {
 - Only report "ok" if the mission is actively progressing and no action is needed RIGHT NOW.
 - If the mission is stalled (same state as prior heartbeats), you MUST take action or escalate — never report "ok" for a stalled mission.
 - If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.
-- Before creating a task, check the "Active/Pending Tasks" section. If a pending task with a similar title already exists, do NOT create a duplicate.`);
+- Before creating a task, check the "Active/Pending Tasks" section. If a pending task with a similar title already exists, do NOT create a duplicate.
+- **Prior-work gate**: Before creating any task, check "Related prior work" below. If a retrieved item scores ≥0.82 similarity AND its PR was merged within 14 days, do NOT create the task. Instead: \`post_note type=decision\` naming the PR and why decomposition was skipped for that item.`);
 
   // Direct action guidance — let heartbeats do small tasks in-session
   descParts.push(`\n## Direct Action
@@ -1115,6 +1146,22 @@ Only create child tasks when the work requires:
       descParts.push(`- [${t.title}] PR #${r.prNumber}: ${r.prUrl}`);
     }
   }
+
+  // Prior-work retrieval — inject on every heartbeat so the organizer can apply the
+  // ≥0.82/14-day gate before creating tasks. Widened to memory+task+pr+code corpora.
+  // Also run path-based lookup when active tasks carry pathManifests.
+  const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
+  const activePaths = (activeTasks as Array<{ pathManifest?: string[] | null }>)
+    .flatMap(t => t.pathManifest || [])
+    .filter(Boolean) as string[];
+  const heartbeatKnowledgeParts = await buildKnowledgeContext(
+    knowledgeQuery,
+    mission.workspaceId,
+    mission.teamId ?? null,
+    undefined,
+    { sensitive: mission.sensitive ?? false, paths: activePaths.length > 0 ? activePaths : undefined },
+  );
+  descParts.push(...heartbeatKnowledgeParts);
 
   const contextData: Record<string, unknown> = {
     missionId: mission.id,

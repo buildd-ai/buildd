@@ -1185,7 +1185,7 @@ export default async function HomePage({
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <div className="max-w-5xl mx-auto">
-        {/* Workspace filter — narrows all sections to a single workspace */}
+        {/* Workspace filter — desktop only; mobile header owns the picker */}
         {teamWorkspaces.length > 0 && (
           <div className="hidden md:flex justify-end mb-4">
             <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />

@@ -1357,11 +1357,13 @@ export async function handleBuilddAction(
         ? `\nMax loops: ${updated.loopConfig?.maxLoops ?? params.maxLoops}\nNote: this does not alter an in-flight worker prompt; use send_agent_message to steer active work.`
         : '';
 
-      // Warn when a material field (title/description) is edited on a task whose
-      // worker is still in-flight — the running agent is locked to the previous brief.
-      let activeWorkerWarning = '';
-      const materialChanged = updateFields.title !== undefined || updateFields.description !== undefined;
-      if (materialChanged) {
+      // When description is edited on a task with an active worker, the running
+      // agent is locked to the previous brief. Auto-deliver the new description
+      // via an urgent instruct message so the durable record and live worker stay
+      // in sync without requiring a manual second call.
+      // Title-only changes don't need to reach running agents — title is a label.
+      let workerNote = '';
+      if (updateFields.description !== undefined) {
         try {
           const taskData = await api(`/api/tasks/${params.taskId}?include=workers`);
           const activeStatuses = ['running', 'assigned', 'waiting_input'];
@@ -1369,28 +1371,56 @@ export async function handleBuilddAction(
             (w: { id: string; status: string }) => activeStatuses.includes(w.status),
           );
           if (activeWorker) {
-            activeWorkerWarning = `\nWARNING: worker ${activeWorker.id} is currently ${activeWorker.status} on this task and is running against the PREVIOUS description. This edit did NOT reach it. To steer the running work, call send_agent_message (taskId=${params.taskId}) with the delta.`;
-            // Fire-and-forget: record the divergence on the task feed so it's visible in the UI timeline.
             const noteEndpoint = updated.missionId
               ? `/api/missions/${updated.missionId}/notes`
               : `/api/tasks/${params.taskId}/notes`;
-            api(noteEndpoint, {
-              method: 'POST',
-              body: JSON.stringify({
-                type: 'warning',
-                title: 'Material edit while worker is active',
-                bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) is running against the previous description. Use send_agent_message (taskId=${params.taskId}) to redirect it.`,
-                authorType: 'system',
-                status: 'answered',
-              }),
-            }).catch(() => {});
+            try {
+              // Option B: auto-deliver the new description as an urgent message.
+              const deliveryMessage = [
+                'TASK DESCRIPTION UPDATED: The task specification has changed while you are working.',
+                'Updated description:',
+                '',
+                params.description as string,
+                '',
+                'Please review the updated specification and adjust your work accordingly.',
+              ].join('\n');
+              await api(`/api/workers/${activeWorker.id}/instruct`, {
+                method: 'POST',
+                body: JSON.stringify({ message: deliveryMessage, priority: 'urgent' }),
+              });
+              workerNote = `\nNOTE: Description change auto-delivered to worker ${activeWorker.id} (${activeWorker.status}) as an urgent message.`;
+              // Fire-and-forget: record the delivery on the task feed.
+              api(noteEndpoint, {
+                method: 'POST',
+                body: JSON.stringify({
+                  type: 'update',
+                  title: 'Description updated — worker notified',
+                  bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) was sent an urgent message with the updated description.`,
+                  authorType: 'system',
+                  status: 'answered',
+                }),
+              }).catch(() => {});
+            } catch {
+              // Option A fallback: auto-delivery failed — return a ready-to-send payload.
+              workerNote = `\nWARNING: worker ${activeWorker.id} is currently ${activeWorker.status} on this task and is running against the PREVIOUS description. Auto-delivery failed. To steer the running work, call send_agent_message with:\n  taskId: ${params.taskId}\n  message: (the new description)\n  priority: "urgent"`;
+              api(noteEndpoint, {
+                method: 'POST',
+                body: JSON.stringify({
+                  type: 'warning',
+                  title: 'Description edit while worker is active — delivery failed',
+                  bodyText: `Worker ${activeWorker.id} (${activeWorker.status}) is running against the previous description. Auto-delivery failed. Use send_agent_message (taskId=${params.taskId}) to redirect it.`,
+                  authorType: 'system',
+                  status: 'answered',
+                }),
+              }).catch(() => {});
+            }
           }
         } catch {
           // Non-fatal — don't block the update response if the worker check fails
         }
       }
 
-      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}${activeWorkerWarning}`);
+      return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${loopInfo}${workerNote}`);
     }
 
     case 'create_task': {
