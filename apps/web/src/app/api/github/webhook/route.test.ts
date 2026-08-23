@@ -915,7 +915,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
 
-    it('calls tryAutoMergeWorkerPr with threshold when resolvePolicy returns tier=auto-threshold', async () => {
+    it('calls tryAutoMergeWorkerPr with policy when resolvePolicy returns tier=auto-threshold', async () => {
       withSuccessWorkerPr();
       // default mockResolvePolicy returns auto-threshold
 
@@ -926,7 +926,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
       const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
-      expect(callArgs).toHaveProperty('threshold');
+      expect(callArgs).toHaveProperty('policy');
       expect(callArgs).not.toHaveProperty('gitConfig');
     });
 
