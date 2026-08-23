@@ -292,9 +292,18 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
           open ? 'shadow-sm text-text-primary' : ''
         }`}
       >
-        <span className="text-[8px] uppercase tracking-widest text-text-muted leading-tight">WORKSPACE</span>
+        <span className="text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
         <div className="flex items-center gap-1.5">
-          <span className="truncate max-w-[120px] text-xs">{selectedLabel}</span>
+          {/* Grid glyph: mobile-only, shown for "All workspaces" scope */}
+          {!selectedId && (
+            <svg className="w-3.5 h-3.5 shrink-0 md:hidden" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+              <rect x="1" y="1" width="4" height="4" />
+              <rect x="7" y="1" width="4" height="4" />
+              <rect x="1" y="7" width="4" height="4" />
+              <rect x="7" y="7" width="4" height="4" />
+            </svg>
+          )}
+          <span className={`truncate max-w-[120px] text-xs${!selectedId ? ' hidden md:inline' : ''}`}>{selectedLabel}</span>
           <svg
             className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
             fill="none"
