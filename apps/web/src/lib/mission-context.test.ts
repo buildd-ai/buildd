@@ -968,6 +968,76 @@ describe('buildMissionContext', () => {
     expect(result!.description).not.toContain('COORDINATE-ONLY MODE');
     expect(result!.context.decompositionSkipped).toBeUndefined();
   });
+
+  // ── Prior-work gate ──
+
+  it('heartbeat context includes prior-work gate rule in Protocol section', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-gate',
+      title: 'Daily scan',
+      description: 'Check things',
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: null,
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-gate', {
+      heartbeat: true,
+      triggerSource: 'cron',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('Prior-work gate');
+    expect(result!.description).toContain('0.82');
+    expect(result!.description).toContain('14 days');
+  });
+
+  it('standard planning context includes prior-work gate in Situational Guidance', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-gate-std',
+      title: 'Build feature Y',
+      description: 'Ship new feature',
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockArtifactsFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-gate-std');
+    expect(result).not.toBeNull();
+    expect(result!.description).toContain('Prior-work gate');
+    expect(result!.description).toContain('0.82');
+    expect(result!.description).toContain('14 days');
+    expect(result!.description).toContain('Situational Guidance');
+  });
+
+  it('heartbeat context does not fail when knowledge retrieval throws', async () => {
+    // This is already guaranteed by the try/catch in buildKnowledgeContext,
+    // but verify end-to-end that heartbeat returns a result even when store is unavailable.
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-nostore',
+      title: 'Heartbeat no store',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: null,
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-nostore', {
+      heartbeat: true,
+      triggerSource: 'cron',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.context.heartbeat).toBe(true);
+  });
 });
 
 // ── getWorkspaceRoles ──

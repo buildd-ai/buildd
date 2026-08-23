@@ -16,13 +16,14 @@ function mockStore(
       return (byNs[ns] ?? []).map((r, i) => ({
         id: r.id ?? `id-${i}`,
         namespace: ns,
-        corpus: 'memory',
-        sourceType: 'memory',
+        corpus: r.corpus ?? 'memory',
+        sourceType: r.sourceType ?? 'memory',
         sourcePath: null,
         sourceUrl: r.sourceUrl ?? null,
         content: r.content ?? '',
-        metadata: {},
-        score: 1,
+        metadata: r.metadata ?? {},
+        score: r.score ?? 1,
+        createdAt: r.createdAt ?? null,
       })) as QueryResult[];
     },
     countNamespace: countByNs
@@ -68,6 +69,146 @@ describe('buildKnowledgeContext', () => {
     expect(seen).toContain('team-1:memory');
     expect(seen).toContain('ws-1:plan');
     expect(seen).toContain('ws-1:task');
+  });
+
+  it('also queries pr and code corpora', async () => {
+    const seen: string[] = [];
+    const store: KnowledgeQuerier = {
+      async query(ns) { seen.push(ns); return []; },
+    };
+    await buildKnowledgeContext('goal', 'ws-1', 'team-1', store);
+    expect(seen).toContain('ws-1:pr');
+    expect(seen).toContain('ws-1:code');
+  });
+
+  it('renders score, status, and age for task hits', async () => {
+    const recent = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+    const store = mockStore({
+      'ws-1:task': [{
+        content: '# Task: Build auth flow\n## Outcome (SUCCESS)\nDone.',
+        sourceType: 'task',
+        score: 0.91,
+        metadata: { success: true, prUrl: 'https://github.com/org/repo/pull/1234' },
+        createdAt: recent,
+        sourceUrl: '/app/tasks/abc',
+      }],
+    });
+    const text = (await buildKnowledgeContext('auth', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('0.91');
+    expect(text).toContain('completed');
+    expect(text).toContain('PR #1234');
+    expect(text).toContain('2d ago');
+  });
+
+  it('renders PR number for pr corpus hits', async () => {
+    const store = mockStore({
+      'ws-1:pr': [{
+        content: '# PR #999: Add new feature\n## Description\nWhatever.',
+        sourceType: 'pr',
+        score: 0.85,
+        metadata: { prNumber: 999, phase: 'implementation' },
+        sourceUrl: 'https://github.com/org/repo/pull/999',
+      }],
+    });
+    const text = (await buildKnowledgeContext('new feature', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('Pull requests');
+    expect(text).toContain('PR #999');
+    expect(text).toContain('0.85');
+  });
+
+  it('adds stale-baseline warning for task completed with PR merged within 14 days', async () => {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const store = mockStore({
+      'ws-1:task': [{
+        content: '# Task: Rework Activity IA\n## Outcome (SUCCESS)\nDone.',
+        sourceType: 'task',
+        score: 0.88,
+        metadata: { success: true, prUrl: 'https://github.com/org/repo/pull/1685' },
+        createdAt: threeDaysAgo,
+      }],
+    });
+    const text = (await buildKnowledgeContext('activity surface', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('MAY ALREADY BE SHIPPED');
+  });
+
+  it('does NOT add stale-baseline warning for task completed 30 days ago', async () => {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const store = mockStore({
+      'ws-1:task': [{
+        content: '# Task: Rework Activity IA\n## Outcome (SUCCESS)\nDone.',
+        sourceType: 'task',
+        score: 0.88,
+        metadata: { success: true, prUrl: 'https://github.com/org/repo/pull/1685' },
+        createdAt: thirtyDaysAgo,
+      }],
+    });
+    const text = (await buildKnowledgeContext('activity surface', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).not.toContain('MAY ALREADY BE SHIPPED');
+  });
+
+  it('does NOT add stale-baseline warning when task has no prUrl', async () => {
+    const yesterday = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    const store = mockStore({
+      'ws-1:task': [{
+        content: '# Task: Research something\n## Outcome (SUCCESS)\nDone.',
+        sourceType: 'task',
+        score: 0.90,
+        metadata: { success: true },
+        createdAt: yesterday,
+      }],
+    });
+    const text = (await buildKnowledgeContext('research', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).not.toContain('MAY ALREADY BE SHIPPED');
+  });
+
+  it('runs path-based lookup when paths are provided', async () => {
+    const seenQueries: Array<{ ns: string; text: string }> = [];
+    const store: KnowledgeQuerier = {
+      async query(ns, params) {
+        seenQueries.push({ ns, text: params.text });
+        return [];
+      },
+    };
+    await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store, {
+      paths: ['apps/web/src/lib/auth.ts', 'apps/web/src/lib/session.ts'],
+    });
+    const pathQuery = seenQueries.find(q => q.ns === 'ws-1:pr' && q.text.includes('auth.ts'));
+    expect(pathQuery).toBeDefined();
+  });
+
+  it('path-based lookup renders a separate section', async () => {
+    const store = mockStore({
+      'ws-1:pr': [{
+        content: '# PR #777: Refactor auth\n## Changed files\n- apps/web/src/lib/auth.ts',
+        sourceType: 'pr',
+        score: 0.87,
+        metadata: { prNumber: 777 },
+      }],
+    });
+    const text = (await buildKnowledgeContext('auth refactor', 'ws-1', 'team-1', store, {
+      paths: ['apps/web/src/lib/auth.ts'],
+    })).join('\n');
+    expect(text).toContain('Recent work on relevant paths');
+    expect(text).toContain('PR #777');
+  });
+
+  it('skips path-based lookup when paths array is empty', async () => {
+    const seen: string[] = [];
+    const store: KnowledgeQuerier = {
+      async query(ns) { seen.push(ns); return []; },
+    };
+    await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store, { paths: [] });
+    // pr is still queried for the main prior-work pass, but not a second time for path lookup
+    const prQueries = seen.filter(ns => ns === 'ws-1:pr');
+    expect(prQueries.length).toBe(1); // only the main prior-work query, not the path lookup
+  });
+
+  it('gracefully returns [] when store throws', async () => {
+    const store: KnowledgeQuerier = {
+      async query() { throw new Error('store down'); },
+    };
+    const result = await buildKnowledgeContext('goal', 'ws-1', 'team-1', store);
+    expect(result).toEqual([]);
   });
 });
 

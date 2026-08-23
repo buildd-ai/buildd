@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-08-23
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -238,3 +238,61 @@ mission from its live task list without reading from any stored health column.
 **Out of scope**: Sub-missions (`parentMissionId`) lifecycle. Mission heartbeat
 scheduling (covered by `task-schedules`). The mission loop orchestration agent
 logic (runner-side, not coordination layer).
+
+---
+
+## Organizer prior-work retrieval contract
+
+**Capability statement**: Every mission planning pass — whether triggered by cron
+(heartbeat) or manually — MUST inject a "Related prior work" block retrieved from
+the KnowledgeStore before the organizer decides what tasks to create.
+
+**Corpora queried** (all best-effort, failures silently skipped):
+
+| Corpus | Namespace | Purpose |
+|--------|-----------|---------|
+| `memory` | `{teamId}:memory` | Team lessons and gotchas |
+| `task` | `{workspaceId}:task` | Prior task outcomes |
+| `pr` | `{workspaceId}:pr` | Pull request diffs (change history) |
+| `code` | `{workspaceId}:code` | Current code index |
+| `plan` | `{workspaceId}:plan` | Prior decomposition plans |
+
+Cap: 3 hits per corpus to bound prompt growth.
+
+**Rendering**: Each hit shows `[score] title | type/status | PR ref | age`. Task
+hits with `success=true` and a `prUrl` surface the PR number. Memory hits show age.
+
+**Stale-baseline flag**: Any task hit where `metadata.success === true` and
+`metadata.prUrl` is set and `createdAt` is within the last 14 days renders with:
+> ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.
+
+**Path-based lookup**: When active tasks in the mission carry a `pathManifest`,
+`buildKnowledgeContext` runs an additional query against `{workspaceId}:pr` using
+the path list as query text. Results appear in a separate "Recent work on relevant
+paths" section. Composes with PR #1130 overlap serialization.
+
+**Decomposition skip rule**: If a retrieved item scores ≥0.82 cosine similarity
+AND its task card `createdAt` is within 14 days with a PR, the organizer MUST NOT
+create a task for that scope. Required action: `post_note type=decision` naming
+the PR and explaining why decomposition was skipped.
+
+**Invariants**:
+- Retrieval failure MUST NOT fail or block a heartbeat or planning pass.
+- Sensitive workspaces (`dataClass = 'sensitive'`) skip the `memory` corpus query.
+
+**Code surface**:
+- `apps/web/src/lib/knowledge-context.ts` — `buildKnowledgeContext()`
+- `apps/web/src/lib/mission-context.ts` — `buildMissionContext()`, `buildHeartbeatContext()`
+
+**Acceptance criteria**:
+- AC-16: GIVEN a mission with prior related work WHEN heartbeat context is built
+  THEN the "Related prior work" block is present with score, status, and PR ref.
+- AC-17: GIVEN a task card with `success=true`, `prUrl` set, `createdAt` 3 days ago
+  WHEN knowledge context is built THEN the stale-baseline warning is rendered.
+- AC-18: GIVEN the same task card with `createdAt` 30 days ago
+  THEN no stale-baseline warning appears.
+- AC-19: GIVEN active tasks with `pathManifest` entries
+  WHEN knowledge context is built THEN a path-scoped PR query fires.
+- AC-20: GIVEN the knowledge store throwing on all queries
+  WHEN heartbeat or planning context is built THEN no error is raised and the
+  rest of the context is returned normally.
