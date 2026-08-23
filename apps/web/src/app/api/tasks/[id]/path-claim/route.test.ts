@@ -6,6 +6,7 @@ const SIBLING_ID = '22222222-2222-2222-2222-222222222222';
 const WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const MISSION_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const OTHER_MISSION_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+const SIBLING_MISSION_ID = OTHER_MISSION_ID; // alias for readability in cross-mission tests
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
@@ -174,6 +175,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
         id: SIBLING_ID,
         title: 'Sibling task',
         pathManifest: ['src/shared.ts'],
+        missionId: MISSION_ID,
       },
     ]);
 
@@ -186,30 +188,16 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     expect(body.blockingTaskTitle).toBe('Sibling task');
   });
 
-  it('does NOT block on a sibling from a different mission (workspace-only scope would be wrong)', async () => {
-    // Task belongs to MISSION_ID; the "sibling" is in OTHER_MISSION_ID.
-    // The siblings query is scoped to the same mission, so it returns no rows.
+  it('blocks when a cross-mission sibling has an overlapping manifest', async () => {
+    // Task is in MISSION_ID; sibling is in a different mission (OTHER_MISSION_ID).
+    // The fix: workspace-wide scope means this MUST block.
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    // Simulate the DB returning no siblings (query filtered by missionId)
-    mockTasksFindMany.mockResolvedValue([]);
-
-    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
-    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
-    // Should succeed — different-mission tasks don't block each other
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.claimed).toBe(true);
-  });
-
-  it('falls back to workspace scope when task has no missionId', async () => {
-    // Task has no missionId; any same-workspace sibling with a conflicting
-    // pathManifest should still block it.
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: null }));
     mockTasksFindMany.mockResolvedValue([
       {
         id: SIBLING_ID,
-        title: 'Other task (no mission)',
+        title: 'Cross-mission task',
         pathManifest: ['src/shared.ts'],
+        missionId: SIBLING_MISSION_ID,
       },
     ]);
 
@@ -219,6 +207,110 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     const body = await res.json();
     expect(body.claimed).toBe(false);
     expect(body.blockingTaskId).toBe(SIBLING_ID);
+    expect(body.blockingTaskTitle).toBe('Cross-mission task');
+  });
+
+  it('response carries blockingMissionId when the blocker is in a different mission', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Cross-mission task',
+        pathManifest: ['src/shared.ts'],
+        missionId: SIBLING_MISSION_ID,
+      },
+    ]);
+
+    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+    const body = await res.json();
+    expect(body.blockingMissionId).toBe(SIBLING_MISSION_ID);
+    // Message should mention cross-mission escalation
+    expect(body.message).toContain('different mission');
+  });
+
+  it('response carries null blockingMissionId for same-mission blockers', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Sibling task',
+        pathManifest: ['src/shared.ts'],
+        missionId: MISSION_ID,
+      },
+    ]);
+
+    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+    const body = await res.json();
+    // Same-mission block: blockingMissionId is the sibling's missionId (same as caller's)
+    // but the message should use the dependsOn-edge wording, not cross-mission escalation
+    expect(body.message).not.toContain('different mission');
+    expect(body.message).toContain('dependsOn');
+  });
+
+  it('orphan task (null missionId) blocks against a mission-owned sibling', async () => {
+    // Current task has no mission; sibling is in MISSION_ID.
+    // Workspace-wide check must still fire.
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: null }));
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Mission-owned sibling',
+        pathManifest: ['src/shared.ts'],
+        missionId: MISSION_ID,
+      },
+    ]);
+
+    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.claimed).toBe(false);
+    expect(body.blockingTaskId).toBe(SIBLING_ID);
+    expect(body.blockingMissionId).toBe(MISSION_ID);
+  });
+
+  it('mission-owned task blocks against an orphan sibling (null missionId)', async () => {
+    // Current task has MISSION_ID; sibling has no mission. Must block.
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Orphan sibling',
+        pathManifest: ['src/shared.ts'],
+        missionId: null,
+      },
+    ]);
+
+    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.claimed).toBe(false);
+    expect(body.blockingTaskId).toBe(SIBLING_ID);
+    expect(body.blockingMissionId).toBeNull();
+  });
+
+  it('workspace-scoped check: two orphan tasks block each other', async () => {
+    // Neither has a mission; workspace check still fires.
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: null }));
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: SIBLING_ID,
+        title: 'Other task (no mission)',
+        pathManifest: ['src/shared.ts'],
+        missionId: null,
+      },
+    ]);
+
+    const req = makeRequest(TASK_ID, { paths: ['src/shared.ts'] });
+    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.claimed).toBe(false);
+    expect(body.blockingTaskId).toBe(SIBLING_ID);
+    expect(body.blockingMissionId).toBeNull();
   });
 
   it('returns 409 for directory-prefix overlap with sibling', async () => {
@@ -228,6 +320,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
         id: SIBLING_ID,
         title: 'Sibling task',
         pathManifest: ['apps/web/src/lib'],
+        missionId: null,
       },
     ]);
 

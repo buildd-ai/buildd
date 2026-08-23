@@ -23,12 +23,13 @@ const MAX_CLAIM_RETRIES = 3;
  *   The task's pathManifest is atomically extended with the new paths via CAS.
  *
  * Conflict — at least one path overlaps an active sibling task's manifest:
- *   409 { claimed: false, blockingTaskId: string, blockingTaskTitle: string, message: string }
- *   The caller should report blocked with the blockingTaskId so a dependsOn
- *   edge can be added before continuing.
+ *   409 { claimed: false, blockingTaskId: string, blockingTaskTitle: string,
+ *          blockingMissionId: string | null, message: string }
+ *   The caller should report blocked. blockingMissionId is non-null when the
+ *   blocker belongs to a different mission; in that case a cross-mission
+ *   dependsOn is a significant call — escalate to a human or organizer.
  *
- * Siblings are scoped to the same mission when the task has a missionId;
- * otherwise the check falls back to workspace scope.
+ * Siblings are scoped to the workspace (not restricted to the same mission).
  */
 export async function POST(
   req: NextRequest,
@@ -94,28 +95,39 @@ export async function POST(
   }
 
   for (let attempt = 0; attempt < MAX_CLAIM_RETRIES; attempt++) {
-    // Scope siblings to the same mission when the task has one; fall back to
-    // workspace scope for tasks that are not under any mission.
+    // Scope is always workspace-wide. A path conflict between tasks in different
+    // missions is just as real as one within the same mission — narrowing to
+    // missionId was the bug that let two missions rewrite the same file silently.
+    // missionId is included in the columns so the response can report whether the
+    // blocker is in-mission or cross-mission, which helps the caller decide how
+    // to escalate (dependsOn edge vs. human / organizer intervention).
     const siblings = await db.query.tasks.findMany({
       where: and(
         eq(tasks.workspaceId, currentTask.workspaceId),
-        currentTask.missionId ? eq(tasks.missionId, currentTask.missionId) : undefined,
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
         isNotNull(tasks.pathManifest),
         ne(tasks.id, id),
       ),
-      columns: { id: true, title: true, pathManifest: true },
+      columns: { id: true, title: true, pathManifest: true, missionId: true },
     });
 
     for (const sibling of siblings) {
       if (!sibling.pathManifest?.length) continue;
       if (pathsOverlap(paths, sibling.pathManifest as string[])) {
+        const isCrossMission =
+          sibling.missionId !== null &&
+          currentTask.missionId !== null &&
+          sibling.missionId !== currentTask.missionId;
+        const message = isCrossMission
+          ? `Paths overlap with task "${sibling.title}" (${sibling.id.slice(0, 8)}) in a different mission (${sibling.missionId!.slice(0, 8)}). Report blocked with blockingTaskId and blockingMissionId — a dependsOn edge across missions is a significant coordination decision; escalate to a human or the organizer.`
+          : `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`;
         return NextResponse.json(
           {
             claimed: false,
             blockingTaskId: sibling.id,
             blockingTaskTitle: sibling.title,
-            message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
+            blockingMissionId: sibling.missionId ?? null,
+            message,
           },
           { status: 409 }
         );
