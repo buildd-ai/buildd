@@ -13,9 +13,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
+let lastCapturedQueryOpts: any = null;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (_opts: any) => {
+  query: (callOpts: any) => {
+    lastCapturedQueryOpts = callOpts;
     const msgs = [...mockMessages];
     let idx = 0;
     return {
@@ -62,6 +64,7 @@ describe('ClaudeBackend.runStreamed', () => {
   beforeEach(() => {
     mockMessages = [];
     mockStreamInputFn.mockClear();
+    lastCapturedQueryOpts = null;
   });
 
   describe('progress events', () => {
@@ -276,6 +279,57 @@ describe('ClaudeBackend.runStreamed', () => {
       expect(progressRaw.length).toBe(2);
       expect((progressRaw[0] as any).type).toBe('assistant');
       expect((progressRaw[1] as any).type).toBe('result');
+    });
+
+    describe('sessionId / resume interaction', () => {
+      test('fresh session: sessionId is set from opts.sessionId', async () => {
+        mockMessages = [{ type: 'result', subtype: 'success' }];
+        const backend = new ClaudeBackend({
+          options: {},
+          inputStream: emptyStream(),
+        });
+        for await (const _ of backend.runStreamed({
+          prompt: 'test',
+          sessionId: 'worker-uuid-abc',
+          cwd: '/tmp',
+        })) {}
+        expect(lastCapturedQueryOpts?.options?.sessionId).toBe('worker-uuid-abc');
+      });
+
+      test('resume session: sessionId is omitted to avoid --session-id --resume CLI error', async () => {
+        mockMessages = [{ type: 'result', subtype: 'success' }];
+        const backend = new ClaudeBackend({
+          // resume is set when startSession is called with a resumeSessionId
+          options: { resume: 'claude-session-uuid-xyz' },
+          inputStream: emptyStream(),
+        });
+        for await (const _ of backend.runStreamed({
+          prompt: 'test',
+          sessionId: 'worker-uuid-abc',
+          cwd: '/tmp',
+        })) {}
+        // sessionId must NOT be in options — the CLI rejects --session-id --resume
+        // without --fork-session. See send_agent_message delivery crash (PR #1794).
+        expect(lastCapturedQueryOpts?.options?.sessionId).toBeUndefined();
+        // resume must still be present
+        expect(lastCapturedQueryOpts?.options?.resume).toBe('claude-session-uuid-xyz');
+      });
+
+      test('config.options.sessionId is also removed on resume (not just opts.sessionId)', async () => {
+        mockMessages = [{ type: 'result', subtype: 'success' }];
+        const backend = new ClaudeBackend({
+          // workers.ts sets sessionId: worker.id in config.options always
+          options: { sessionId: 'stale-session-id', resume: 'claude-session-uuid-xyz' },
+          inputStream: emptyStream(),
+        });
+        for await (const _ of backend.runStreamed({
+          prompt: 'test',
+          sessionId: 'worker-uuid-abc',
+          cwd: '/tmp',
+        })) {}
+        expect(lastCapturedQueryOpts?.options?.sessionId).toBeUndefined();
+        expect(lastCapturedQueryOpts?.options?.resume).toBe('claude-session-uuid-xyz');
+      });
     });
 
     test('merges RunStreamedOpts into query options', async () => {

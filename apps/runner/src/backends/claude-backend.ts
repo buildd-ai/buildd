@@ -17,15 +17,24 @@ export class ClaudeBackend implements AgentBackend {
   constructor(private config: ClaudeBackendConfig) {}
 
   async *runStreamed(opts: RunStreamedOpts): AsyncIterable<BackendEvent> {
-    const queryOptions = {
+    const isResume = Boolean(this.config.options.resume);
+    const queryOptions: Record<string, unknown> = {
       ...this.config.options,
-      sessionId: opts.sessionId,
       cwd: opts.cwd,
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.maxTurns ? { maxTurns: opts.maxTurns } : {}),
       ...(opts.env ? { env: opts.env } : {}),
       ...(opts.outputSchema ? { outputFormat: { type: 'json', schema: opts.outputSchema } } : {}),
     };
+
+    // The CLI rejects --session-id alongside --resume unless --fork-session is also set.
+    // For resume sessions the existing session is identified by `resume` alone; omit sessionId.
+    // For fresh sessions, pin the session UUID to the buildd worker id for correlation.
+    if (isResume) {
+      delete queryOptions.sessionId;
+    } else {
+      queryOptions.sessionId = opts.sessionId;
+    }
 
     const queryInstance = query({
       prompt: opts.prompt as Parameters<typeof query>[0]['prompt'],
