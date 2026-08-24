@@ -192,6 +192,7 @@ interface WorkerSession {
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
   backend?: ClaudeBackend;  // Stored for queryInstance access after runStreamed() starts
+  sessionId: string;  // Per-invocation CLI session ID (decoupled from worker.id so bwrap retries get a fresh ID)
 }
 
 // Constants for repetition detection
@@ -1534,9 +1535,14 @@ export class WorkerManager {
     const worktreeIdx = cwd.indexOf(worktreeMarker);
     const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
 
+    // Fresh session ID per invocation so that bwrap retries (which call startSession
+    // again on the same worker object) never present an already-registered session
+    // ID to the Claude CLI. The CLI rejects duplicate IDs with exit code 1.
+    const invocationSessionId = crypto.randomUUID();
+
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
-    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
 
     // bwrap auto-retry flag: set in the catch block when a bwrap_namespace_denied
     // abort fires mid-run. Signals the finally block to skip worktree cleanup and
@@ -2322,7 +2328,7 @@ export class WorkerManager {
       // Build query options
       const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
-        sessionId: worker.id,
+        sessionId: invocationSessionId,
         cwd,
         model: this.config.model,
         ...(fallbackModel ? { fallbackModel } : {}),
@@ -2689,7 +2695,7 @@ export class WorkerManager {
 
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
-        sessionId: worker.id,
+        sessionId: invocationSessionId,
         cwd,
         ...(backendModel ? { model: backendModel } : {}),
         ...(maxTurns ? { maxTurns } : {}),
@@ -2770,7 +2776,7 @@ export class WorkerManager {
                 this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
                 worker.currentAction = `Creating ${outputReq === 'pr_required' ? 'PR' : 'deliverable'}...`;
                 this.emit({ type: 'worker_update', worker });
-                sessionRef.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
+                sessionRef.inputStream.enqueue(buildUserMessage(nudge, { sessionId: invocationSessionId }));
                 outputReqNudged = true;
                 outputReqNudgeCount++;
               }
@@ -2825,7 +2831,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
           const sessionRef = this.sessions.get(worker.id);
           if (sessionRef) {
-            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
+            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: invocationSessionId }));
           }
           continue; // Don't break — keep streaming the agent's response
         }
@@ -3665,7 +3671,7 @@ If something is missing or incomplete, describe what and fix it now.`;
               const sessionRef = this.sessions.get(worker.id);
               if (sessionRef) {
                 sessionRef.inputStream.enqueue(
-                  buildUserMessage(repetitionCheck.nudgeMessage!, { sessionId: worker.id })
+                  buildUserMessage(repetitionCheck.nudgeMessage!, { sessionId: sessionRef.sessionId })
                 );
               }
               console.log(`[Worker ${worker.id}] ⚠️ Loop nudge: ${repetitionCheck.nudgeMessage}`);
