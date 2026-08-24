@@ -2256,6 +2256,7 @@ export const pathClaims = pgTable('path_claims', {
   path: text('path').notNull(),
   claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
   releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
 }, (t) => ({
   activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
@@ -2282,8 +2283,8 @@ export const pathClaimWaiters = pgTable('path_claim_waiters', {
   registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow().notNull(),
   notifiedAt: timestamp('notified_at', { withTimezone: true }),
 }, (t) => ({
-  uniqueWaiter: uniqueIndex('path_claim_waiters_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
-  blockingIdx: index('path_claim_waiters_blocking_idx').on(t.blockingTaskId),
+  uniqueWaiter: uniqueIndex('pcw_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
+  blockingTaskOpenIdx: index('pcw_blocking_task_idx').on(t.blockingTaskId).where(sql`${t.notifiedAt} IS NULL`),
   starvationIdx: index('path_claim_waiters_starvation_idx').on(t.workspaceId, t.registeredAt).where(sql`${t.notifiedAt} IS NULL`),
 }));
 

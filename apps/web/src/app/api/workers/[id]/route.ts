@@ -1754,6 +1754,20 @@ export async function PATCH(
         columns: { context: true },
       }))?.context as Record<string, unknown> | null
     : null;
+
+  // Drain pending worker-to-worker messages so they can be returned in the response.
+  // Messages are stored in tasks.context.pendingWorkerMessages by send_worker_message (MCP).
+  // Clear them atomically before returning so they are delivered exactly once.
+  const pendingWorkerMessages = Array.isArray(taskContext?.pendingWorkerMessages)
+    ? (taskContext.pendingWorkerMessages as unknown[])
+    : [];
+  if (pendingWorkerMessages.length > 0 && worker.taskId) {
+    await db
+      .update(tasks)
+      .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })
+      .where(eq(tasks.id, worker.taskId));
+  }
+
   const isHeartbeatOk =
     taskContext?.heartbeat === true &&
     status === 'completed' &&
@@ -1944,10 +1958,11 @@ export async function PATCH(
 
   const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
 
-  // Return worker with any pending instructions and output warnings
+  // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    ...(pendingWorkerMessages.length > 0 ? { pendingMessages: pendingWorkerMessages } : {}),
     ...(outputWarning ? { outputWarning } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }

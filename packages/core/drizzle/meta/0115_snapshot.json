@@ -1,6 +1,6 @@
 {
-  "id": "218b589e-4fbb-4d33-b63d-327b06b4765f",
-  "prevId": "ab270188-48b5-4e1c-b61d-3932fa2e0ae7",
+  "id": "8ea74859-2aeb-4c74-bde2-966de07452f8",
+  "prevId": "218b589e-4fbb-4d33-b63d-327b06b4765f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4731,6 +4731,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "path_claim_waiters_starvation_idx": {
+          "name": "path_claim_waiters_starvation_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "registered_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"path_claim_waiters\".\"notified_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -4835,6 +4857,12 @@
           "columns": [
             {
               "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "path",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

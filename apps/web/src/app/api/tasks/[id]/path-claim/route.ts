@@ -35,6 +35,7 @@ const MAX_CLAIM_RETRIES = 3;
  *   path_claim_released Pusher event fires on the workspace channel.
  *
  * Siblings are scoped to the workspace (not restricted to the same mission).
+ * The ** wildcard is rejected with 400 — wildcard claims are not supported.
  */
 export async function POST(
   req: NextRequest,
