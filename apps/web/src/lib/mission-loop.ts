@@ -7,6 +7,7 @@ import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked, checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
+import type { GoalCriteriaState } from '@buildd/shared';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -14,7 +15,37 @@ const MAX_CYCLES_PER_CHAIN = 5;
 /** Debounce window (ms) to prevent concurrent re-triggers */
 const DEBOUNCE_MS = 10_000;
 
-export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit';
+export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit' | 'criteria_blocked';
+
+/**
+ * Guard: returns false if the mission has goalCriteria whose stored overall is not 'pass'.
+ * Posts a missionNote explaining the block when it fires.
+ * Returns true when safe to complete (no criteria, or criteria already pass).
+ */
+async function checkGoalCriteriaGuard(missionId: string, goalCriteria: unknown, goalCriteriaState: unknown): Promise<boolean> {
+  const criteria = Array.isArray(goalCriteria) ? goalCriteria : [];
+  if (criteria.length === 0) return true; // no criteria → allow completion
+
+  const state = goalCriteriaState as GoalCriteriaState | null;
+  if (state?.overall === 'pass') return true; // criteria verified → allow
+
+  const overall = state?.overall ?? 'not evaluated';
+  const failDetail = state?.criteria
+    ?.filter(c => c.verdict !== 'pass')
+    .map(c => `• [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`)
+    .join('\n') ?? 'No criteria state stored yet.';
+
+  await db.insert(missionNotes).values({
+    missionId,
+    authorType: 'system',
+    type: 'warning',
+    title: 'Mission completion blocked by goal criteria',
+    body: `Overall: ${overall}\n\nThe mission reached an all-tasks-terminal state but its goal criteria are not fully satisfied. It will remain active until criteria pass.\n\n${failDetail}`,
+    status: 'open',
+  } as any).catch(e => console.error('[mission-loop] Failed to post criteria-block note:', e));
+
+  return false;
+}
 
 /**
  * Evaluate whether a mission should start another planning cycle after
@@ -39,7 +70,7 @@ export async function maybeRetriggerMission(
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true },
+    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true, goalCriteria: true, goalCriteriaState: true },
   });
 
   if (!mission || mission.status !== 'active') {
@@ -163,6 +194,9 @@ export async function maybeRetriggerMission(
     const hasDeliverables = workTasks.some(t => t.status === 'completed');
 
     if (allDone && hasDeliverables) {
+      const canComplete = await checkGoalCriteriaGuard(missionId, mission.goalCriteria, mission.goalCriteriaState);
+      if (!canComplete) return { action: 'criteria_blocked' };
+
       await db
         .update(missions)
         .set({ status: 'completed', updatedAt: new Date() })
@@ -236,6 +270,9 @@ export async function maybeRetriggerMission(
   );
 
   if (allDeliverablesDone) {
+    const canComplete = await checkGoalCriteriaGuard(missionId, mission.goalCriteria, mission.goalCriteriaState);
+    if (!canComplete) return { action: 'criteria_blocked' };
+
     await db
       .update(missions)
       .set({ status: 'completed', updatedAt: new Date() })

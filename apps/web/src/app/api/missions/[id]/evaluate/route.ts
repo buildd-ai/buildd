@@ -174,10 +174,11 @@ Respond with exactly this JSON shape:
 }
 
 function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
-  const evaluated = criteria.filter(r => r.verdict !== 'NOT_EVALUATED');
-  if (evaluated.length === 0) return 'UNVERIFIED';
-  if (evaluated.some(r => r.verdict === 'fail')) return 'fail';
-  if (evaluated.every(r => r.verdict === 'pass')) return 'pass';
+  if (criteria.length === 0) return 'pass';
+  if (criteria.some(r => r.verdict === 'fail')) return 'fail';
+  // NOT_EVALUATED means "we could not check this" — that is not a pass
+  if (criteria.some(r => r.verdict === 'NOT_EVALUATED')) return 'UNVERIFIED';
+  if (criteria.every(r => r.verdict === 'pass')) return 'pass';
   return 'UNVERIFIED';
 }
 
@@ -371,7 +372,7 @@ export async function POST(
         }
       }
 
-      // Recalculate overall after LLM upgrades (NOT_EVALUATED excluded from calculation)
+      // Recalculate overall after LLM upgrades (remaining NOT_EVALUATED blocks 'pass')
       (state as any).overall = recalculateOverall(state.criteria);
     }
 

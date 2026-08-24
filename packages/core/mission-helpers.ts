@@ -206,14 +206,13 @@ export function evaluateGoalCriteria(
     });
   }
 
-  // NOT_EVALUATED criteria (e.g. description types awaiting LLM) are excluded from
-  // the overall verdict so they don't permanently block a passing mission.
-  const evaluated = results.filter(r => r.verdict !== 'NOT_EVALUATED');
+  // NOT_EVALUATED means "we could not check this" — it is not a pass.
+  // A mission with unevaluated criteria stays UNVERIFIED until the LLM layer upgrades them.
   const overall: CriterionVerdict =
     results.length === 0 ? 'pass'             // no criteria at all → pass
-    : evaluated.length === 0 ? 'UNVERIFIED'   // all criteria NOT_EVALUATED → ambiguous
-    : evaluated.some(r => r.verdict === 'fail') ? 'fail'
-    : evaluated.every(r => r.verdict === 'pass') ? 'pass'
+    : results.some(r => r.verdict === 'fail') ? 'fail'
+    : results.some(r => r.verdict === 'NOT_EVALUATED') ? 'UNVERIFIED'
+    : results.every(r => r.verdict === 'pass') ? 'pass'
     : 'UNVERIFIED';
 
   return { evaluatedAt, evaluatedBy: context.evaluatedBy, overall, criteria: results };
