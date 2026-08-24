@@ -15,6 +15,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { reconcileStalePrWorkers } from '@/lib/pr-reconcile';
+import { sweepDeadZonePrs } from '@/lib/dead-zone-sweep';
 
 export const maxDuration = 60;
 
@@ -30,11 +31,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const result = await reconcileStalePrWorkers();
+    const [reconcile, deadZone] = await Promise.all([
+      reconcileStalePrWorkers(),
+      sweepDeadZonePrs(),
+    ]);
     console.log(
-      `[PrReconcile] total=${result.total} stamped=${result.stamped} closed=${result.closed} skipped=${result.skipped}`,
+      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped}`,
     );
-    return NextResponse.json({ ok: true, ...result });
+    console.log(
+      `[DeadZoneSweep] total=${deadZone.total} sparked=${deadZone.sparked} exhausted=${deadZone.exhausted} skipped=${deadZone.skipped}`,
+    );
+    return NextResponse.json({ ok: true, reconcile, deadZone });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[PrReconcile] error:', err);
