@@ -6,6 +6,7 @@ import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifac
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import type { LoopConfig } from '@buildd/shared';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -204,6 +205,12 @@ async function resolveStaleTask(
         .where(eq(tasks.id, taskId));
     }
   }
+
+  // Release path claims for the stale/orphaned task so waiting tasks can proceed.
+  // Errors are non-fatal — the reaper's primary job is task state resolution.
+  releaseAndNotify(taskId).catch(e =>
+    console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
+  );
 
   await resolveCompletedTask(taskId, workspaceId);
 }

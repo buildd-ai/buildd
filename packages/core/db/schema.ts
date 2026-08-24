@@ -2243,4 +2243,57 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
 
+// Path claims — held file-path locks for coordinating parallel workers.
+// A row per (task, path) written by check_path_claim on success.
+// released_at IS NULL → active hold; set to NOW() on terminal task status,
+// PR merged/closed, or worker reaper. No uniqueness constraint on
+// (workspace_id, path) because conflict detection uses prefix matching in
+// application code via pathsOverlap(). See docs/design/path-claims.md.
+export const pathClaims = pgTable('path_claims', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  path: text('path').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+}, (t) => ({
+  activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
+  taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
+}));
+
+export const pathClaimsRelations = relations(pathClaims, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaims.workspaceId], references: [workspaces.id] }),
+  task: one(tasks, { fields: [pathClaims.taskId], references: [tasks.id] }),
+}));
+
+export type PathClaim = typeof pathClaims.$inferSelect;
+export type NewPathClaim = typeof pathClaims.$inferInsert;
+
+// Waiter queue — tasks that hit a 409 on check_path_claim are registered here.
+// On release, notifyWaiters() fans out to live workers via Pusher.
+// UNIQUE on (blocking_task_id, waiting_task_id, blocked_path) prevents duplicate
+// registrations when a worker retries the same blocked claim.
+export const pathClaimWaiters = pgTable('path_claim_waiters', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  blockingTaskId: uuid('blocking_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  waitingTaskId: uuid('waiting_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  blockedPath: text('blocked_path').notNull(),
+  registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow().notNull(),
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+}, (t) => ({
+  uniqueWaiter: uniqueIndex('path_claim_waiters_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
+  blockingIdx: index('path_claim_waiters_blocking_idx').on(t.blockingTaskId),
+  starvationIdx: index('path_claim_waiters_starvation_idx').on(t.workspaceId, t.registeredAt).where(sql`${t.notifiedAt} IS NULL`),
+}));
+
+export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaimWaiters.workspaceId], references: [workspaces.id] }),
+  blockingTask: one(tasks, { fields: [pathClaimWaiters.blockingTaskId], references: [tasks.id], relationName: 'blockingClaims' }),
+  waitingTask: one(tasks, { fields: [pathClaimWaiters.waitingTaskId], references: [tasks.id], relationName: 'waitingClaims' }),
+}));
+
+export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
+export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
+
 // smoke-test-3-ci-retry-1 20260725

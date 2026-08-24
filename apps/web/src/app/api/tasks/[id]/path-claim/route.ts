@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
+import { tasks, missionNotes } from '@buildd/core/db/schema';
+import { and, eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { pathsOverlap } from '@buildd/core/path-overlap';
+import {
+  checkPathClaimConflict,
+  insertClaims,
+  registerWaiter,
+} from '@buildd/core/path-claim';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CLAIM_RETRIES = 3;
@@ -21,13 +25,14 @@ const MAX_CLAIM_RETRIES = 3;
  * Success — all paths are unclaimed by active sibling tasks:
  *   200 { claimed: true, pathManifest: string[] }
  *   The task's pathManifest is atomically extended with the new paths via CAS.
+ *   path_claims rows are inserted for each new path.
  *
- * Conflict — at least one path overlaps an active sibling task's manifest:
+ * Conflict — at least one path overlaps an active path_claims row:
  *   409 { claimed: false, blockingTaskId: string, blockingTaskTitle: string,
- *          blockingMissionId: string | null, message: string }
- *   The caller should report blocked. blockingMissionId is non-null when the
- *   blocker belongs to a different mission; in that case a cross-mission
- *   dependsOn is a significant call — escalate to a human or organizer.
+ *          blockingMissionId: string | null, message: string,
+ *          deadlock?: true, cycle?: string[] }
+ *   The caller is automatically registered as a waiter. On release a
+ *   path_claim_released Pusher event fires on the workspace channel.
  *
  * Siblings are scoped to the workspace (not restricted to the same mission).
  */
@@ -70,6 +75,15 @@ export async function POST(
   }
   const paths = rawPaths as string[];
 
+  // Wildcard claims are not supported — '**' is advisory-only and must not
+  // become a held lock that blocks the entire workspace.
+  if (paths.includes('**')) {
+    return NextResponse.json(
+      { error: 'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.' },
+      { status: 400 }
+    );
+  }
+
   let currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, title: true },
@@ -95,43 +109,69 @@ export async function POST(
   }
 
   for (let attempt = 0; attempt < MAX_CLAIM_RETRIES; attempt++) {
-    // Scope is always workspace-wide. A path conflict between tasks in different
-    // missions is just as real as one within the same mission — narrowing to
-    // missionId was the bug that let two missions rewrite the same file silently.
-    // missionId is included in the columns so the response can report whether the
-    // blocker is in-mission or cross-mission, which helps the caller decide how
-    // to escalate (dependsOn edge vs. human / organizer intervention).
-    const siblings = await db.query.tasks.findMany({
-      where: and(
-        eq(tasks.workspaceId, currentTask.workspaceId),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-        isNotNull(tasks.pathManifest),
-        ne(tasks.id, id),
-      ),
-      columns: { id: true, title: true, pathManifest: true, missionId: true },
-    });
+    // Check active path_claims rows for conflicts (workspace-scoped).
+    // This replaces the old tasks.pathManifest sibling scan — held locks are
+    // now in path_claims, not inferred from manifest + status combinations.
+    const conflict = await checkPathClaimConflict(
+      currentTask.workspaceId,
+      id,
+      paths,
+    );
 
-    for (const sibling of siblings) {
-      if (!sibling.pathManifest?.length) continue;
-      if (pathsOverlap(paths, sibling.pathManifest as string[])) {
-        const isCrossMission =
-          sibling.missionId !== null &&
-          currentTask.missionId !== null &&
-          sibling.missionId !== currentTask.missionId;
-        const message = isCrossMission
-          ? `Paths overlap with task "${sibling.title}" (${sibling.id.slice(0, 8)}) in a different mission (${sibling.missionId!.slice(0, 8)}). Report blocked with blockingTaskId and blockingMissionId — a dependsOn edge across missions is a significant coordination decision; escalate to a human or the organizer.`
-          : `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`;
-        return NextResponse.json(
-          {
-            claimed: false,
-            blockingTaskId: sibling.id,
-            blockingTaskTitle: sibling.title,
-            blockingMissionId: sibling.missionId ?? null,
-            message,
-          },
-          { status: 409 }
-        );
+    if (conflict) {
+      // Fetch blocker details for the response
+      const blocker = await db.query.tasks.findFirst({
+        where: eq(tasks.id, conflict.blockingTaskId),
+        columns: { id: true, title: true, missionId: true },
+      });
+
+      // Auto-register as waiter (deadlock check included)
+      const waiterResult = await registerWaiter(
+        conflict.blockingTaskId,
+        id,
+        conflict.blockingPath,
+        currentTask.workspaceId,
+      );
+
+      const isCrossMission =
+        blocker?.missionId !== null &&
+        blocker?.missionId !== undefined &&
+        currentTask.missionId !== null &&
+        currentTask.missionId !== undefined &&
+        blocker?.missionId !== currentTask.missionId;
+
+      const message = isCrossMission
+        ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`
+        : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`;
+
+      const response: Record<string, unknown> = {
+        claimed: false,
+        blockingTaskId: conflict.blockingTaskId,
+        blockingTaskTitle: blocker?.title ?? null,
+        blockingMissionId: blocker?.missionId ?? null,
+        message,
+      };
+
+      if ('deadlock' in waiterResult && waiterResult.deadlock) {
+        response.deadlock = true;
+        response.cycle = waiterResult.cycle;
+        // Post a warning for human resolution (best-effort)
+        if (currentTask.missionId) {
+          try {
+            await db.insert(missionNotes).values({
+              missionId: currentTask.missionId,
+              taskId: id,
+              authorType: 'system',
+              type: 'warning',
+              title: 'Deadlock detected in path claims',
+              body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
+              status: 'open',
+            });
+          } catch { /* non-fatal */ }
+        }
       }
+
+      return NextResponse.json(response, { status: 409 });
     }
 
     const existingManifest = (currentTask.pathManifest as string[] | null) ?? [];
@@ -145,8 +185,7 @@ export async function POST(
     const updatedManifest = [...existingManifest, ...newPaths];
 
     // Atomic CAS: write only if pathManifest hasn't changed since we read it.
-    // Two concurrent workers racing on the same unclaimed path will both
-    // attempt this UPDATE; only one wins — the other retries.
+    // This serializes concurrent calls from the same task and prevents double-insertion.
     const [updated] = await db
       .update(tasks)
       .set({ pathManifest: updatedManifest })
@@ -159,11 +198,12 @@ export async function POST(
       .returning({ id: tasks.id });
 
     if (updated) {
+      // Insert path_claims rows for the newly claimed paths
+      await insertClaims(currentTask.workspaceId, id, newPaths);
       return NextResponse.json({ claimed: true, pathManifest: updatedManifest });
     }
 
-    // CAS failed — another worker modified the manifest concurrently.
-    // Re-read the task and retry (up to MAX_CLAIM_RETRIES times).
+    // CAS failed — another concurrent call modified the manifest. Re-read and retry.
     if (attempt < MAX_CLAIM_RETRIES - 1) {
       const refreshed = await db.query.tasks.findFirst({
         where: eq(tasks.id, id),

@@ -43,6 +43,7 @@ import type { LoopHistoryEntry } from '@buildd/shared';
 import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -1716,6 +1717,11 @@ export async function PATCH(
       .update(accounts)
       .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
       .where(eq(accounts.id, account.id));
+  }
+
+  // Release path claims on terminal status so waiting tasks can proceed.
+  if (isTerminalStatus && worker.taskId) {
+    await releaseAndNotify(worker.taskId);
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has

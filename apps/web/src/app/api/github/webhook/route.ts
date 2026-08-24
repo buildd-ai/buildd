@@ -33,6 +33,7 @@ import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -642,6 +643,15 @@ async function handlePullRequestEvent(event: {
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
+
+    // Release path claims when a PR is merged or closed — the task's file
+    // edits are either landed (merged) or abandoned (closed), so held locks
+    // should unblock waiting tasks.
+    if (worker.taskId) {
+      releaseAndNotify(worker.taskId).catch(e =>
+        console.error(`[webhook] releaseAndNotify failed for task ${worker.taskId}:`, e),
+      );
+    }
 
     // Close any open changeIntent rows for this PR — surfaces are now free.
     closeIntentsForPr(worker.workspaceId, pr.number).catch(e =>

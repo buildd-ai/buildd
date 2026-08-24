@@ -178,4 +178,33 @@ describe('findBlockingPr', () => {
     ]);
     expect(result).toBeNull();
   });
+
+  it('returns null when candidate manifest is ["**"] (advisory-only)', () => {
+    // A task with "**" hasn't declared specific scope — should not be blocked.
+    const result = findBlockingPr(['**'], [
+      { pathManifest: ['packages/core/schema.ts'], prNumber: 42, prUrl: 'url42' },
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when a sibling PR task manifest is ["**"] (advisory-only)', () => {
+    // A sibling with "**" hasn't declared specific scope — should not block others.
+    const result = findBlockingPr(
+      ['packages/core/schema.ts'],
+      [{ pathManifest: ['**'], prNumber: 99, prUrl: 'url99' }],
+    );
+    expect(result).toBeNull();
+  });
+
+  it('blocks on a real overlap even when wildcard siblings are present', () => {
+    // Wildcard sibling is skipped, but a specific-overlap sibling still blocks.
+    const result = findBlockingPr(
+      ['src/foo.ts'],
+      [
+        { pathManifest: ['**'], prNumber: 1, prUrl: 'url1' },  // skipped (wildcard)
+        { pathManifest: ['src/foo.ts'], prNumber: 2, prUrl: 'url2' }, // blocks
+      ],
+    );
+    expect(result).toEqual({ prNumber: 2, prUrl: 'url2' });
+  });
 });
