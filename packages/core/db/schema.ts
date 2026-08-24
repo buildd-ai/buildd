@@ -2243,9 +2243,12 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
 
-// Durable held-lock records for worker path ownership.
-// One row per (task, path). releasedAt IS NULL means the claim is active.
-// See docs/design/path-claims.md.
+// Path claims — held file-path locks for coordinating parallel workers.
+// A row per (task, path) written by check_path_claim on success.
+// released_at IS NULL → active hold; set to NOW() on terminal task status,
+// PR merged/closed, or worker reaper. No uniqueness constraint on
+// (workspace_id, path) because conflict detection uses prefix matching in
+// application code via pathsOverlap(). See docs/design/path-claims.md.
 export const pathClaims = pgTable('path_claims', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2255,18 +2258,22 @@ export const pathClaims = pgTable('path_claims', {
   releasedAt: timestamp('released_at', { withTimezone: true }),
   releaseReason: text('release_reason'),
 }, (t) => ({
-  // Hot path: overlap check queries all active claims in a workspace.
-  activeIdx: index('path_claims_active_idx').on(t.workspaceId).where(sql`${t.releasedAt} IS NULL`),
-  // Release sweep: release all claims for a given task.
+  activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
+}));
+
+export const pathClaimsRelations = relations(pathClaims, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaims.workspaceId], references: [workspaces.id] }),
+  task: one(tasks, { fields: [pathClaims.taskId], references: [tasks.id] }),
 }));
 
 export type PathClaim = typeof pathClaims.$inferSelect;
 export type NewPathClaim = typeof pathClaims.$inferInsert;
 
-// Waiter queue: tasks blocked on a path claim, waiting to be notified on release.
-// One row per (blockingTaskId, waitingTaskId, blockedPath). UNIQUE prevents double-registration.
-// See docs/design/path-claims.md.
+// Waiter queue — tasks that hit a 409 on check_path_claim are registered here.
+// On release, notifyWaiters() fans out to live workers via Pusher.
+// UNIQUE on (blocking_task_id, waiting_task_id, blocked_path) prevents duplicate
+// registrations when a worker retries the same blocked claim.
 export const pathClaimWaiters = pgTable('path_claim_waiters', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2276,10 +2283,15 @@ export const pathClaimWaiters = pgTable('path_claim_waiters', {
   registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow().notNull(),
   notifiedAt: timestamp('notified_at', { withTimezone: true }),
 }, (t) => ({
-  // UNIQUE guard: idempotent ON CONFLICT DO NOTHING for repeat 409s on same paths.
   uniqueWaiter: uniqueIndex('pcw_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
-  // Fan-out query: "all un-notified waiters for this blocking task".
   blockingTaskOpenIdx: index('pcw_blocking_task_idx').on(t.blockingTaskId).where(sql`${t.notifiedAt} IS NULL`),
+  starvationIdx: index('path_claim_waiters_starvation_idx').on(t.workspaceId, t.registeredAt).where(sql`${t.notifiedAt} IS NULL`),
+}));
+
+export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaimWaiters.workspaceId], references: [workspaces.id] }),
+  blockingTask: one(tasks, { fields: [pathClaimWaiters.blockingTaskId], references: [tasks.id], relationName: 'blockingClaims' }),
+  waitingTask: one(tasks, { fields: [pathClaimWaiters.waitingTaskId], references: [tasks.id], relationName: 'waitingClaims' }),
 }));
 
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;

@@ -27,7 +27,8 @@ import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window
 import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
-import { findBlockingPr } from '@buildd/core/path-overlap';
+import { findBlockingPr, pathsOverlap } from '@buildd/core/path-overlap';
+import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
@@ -857,6 +858,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Pre-fetch active path_claims per workspace for the path-overlap backstop.
+  // path_claims holds actual file locks written by check_path_claim; this
+  // backstop defers a pending task whose pathManifest overlaps any held lock,
+  // even if the locking task hasn't opened a PR yet.
+  const activePathClaimsByWorkspace = new Map<string, Map<string, string[]>>();
+  if (openPrWorkspaceIds.length > 0) {
+    await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
+      try {
+        const byTask = await getActiveClaimsByWorkspace(wsId);
+        if (byTask.size > 0) activePathClaimsByWorkspace.set(wsId, byTask);
+      } catch (err) {
+        console.warn(`[claim] getActiveClaimsByWorkspace failed for workspace ${wsId}:`, err);
+      }
+    }));
+  }
+
   // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
   // a mission. Used by three claim-loop guards:
@@ -922,10 +939,10 @@ export async function POST(req: NextRequest) {
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
 
-    // Path-overlap backstop: if this task declares a pathManifest and any open PR
-    // in the same workspace comes from a task with an overlapping manifest, defer
-    // this claim. Prevents two tasks from editing the same file in parallel when
-    // the orchestrator forgot to serialize them with dependsOn edges.
+    // Path-overlap backstop (layer 1): if this task declares a pathManifest and
+    // any open PR in the same workspace comes from a task with an overlapping
+    // manifest, defer this claim. Prevents two tasks editing the same file in
+    // parallel when the orchestrator forgot to serialize them with dependsOn edges.
     // (Regression guard for the PRs #1126/#1129 incident.)
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
@@ -935,6 +952,28 @@ export async function POST(req: NextRequest) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         deferrals.path_overlap++;
         continue;
+      }
+
+      // Path-overlap backstop (layer 2): also check active path_claims rows.
+      // This catches tasks that are running but haven't opened a PR yet — the
+      // window between task start and PR open where layer 1 would miss them.
+      // Skip '**' manifests — wildcard tasks are advisory-only.
+      if (!taskManifest.includes('**')) {
+        const activeClaims = activePathClaimsByWorkspace.get(task.workspaceId);
+        if (activeClaims) {
+          let blockedByActiveClaim = false;
+          for (const [claimingTaskId, claimedPaths] of activeClaims) {
+            if (claimingTaskId === task.id) continue; // own claims never block self
+            if (claimedPaths.includes('**')) continue; // advisory-only
+            if (pathsOverlap(taskManifest, claimedPaths)) {
+              console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+              deferrals.path_overlap++;
+              blockedByActiveClaim = true;
+              break;
+            }
+          }
+          if (blockedByActiveClaim) continue;
+        }
       }
     }
 

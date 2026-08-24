@@ -1,10 +1,9 @@
 /**
  * Tests for the check_path_claim tool in the MCP route handler.
  *
- * Mirrors the coverage in apps/web/src/app/api/tasks/[id]/path-claim/route.test.ts
- * — the two implementations share the same sibling-overlap logic and must not
- * drift. The note in the PR description flags the duplication for a future
- * extraction into a shared helper (spec task).
+ * The MCP handler now delegates conflict detection and claim insertion to
+ * @buildd/core/path-claim, matching the REST endpoint at
+ * apps/web/src/app/api/tasks/[id]/path-claim/route.ts.
  */
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
@@ -21,8 +20,6 @@ const OTHER_MISSION_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
-const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
-const mockPathClaimsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockReturning = mock(() => Promise.resolve([{ id: TASK_ID }]));
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
@@ -31,13 +28,15 @@ const mockTasksUpdate = mock(() => ({
     })),
   })),
 }));
+const mockInsert = mock(() => ({
+  values: mock(() => Promise.resolve([])),
+}));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
 
-const mockInsert = mock(() => ({
-  values: mock(() => ({
-    onConflictDoNothing: mock(() => Promise.resolve()),
-  })),
-}));
+// path-claim module mocks
+const mockCheckPathClaimConflict = mock(async () => null as any);
+const mockInsertClaims = mock(async () => [] as string[]);
+const mockRegisterWaiter = mock(async () => ({ registered: true }));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -51,9 +50,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findFirst: mockWorkersFindFirst },
       tasks: {
         findFirst: mockTasksFindFirst,
-        findMany: mockTasksFindMany,
       },
-      pathClaims: { findMany: mockPathClaimsFindMany },
     },
     update: mockTasksUpdate,
     insert: mockInsert,
@@ -65,6 +62,12 @@ mock.module('@buildd/core/db', () => ({
       })),
     })),
   },
+}));
+
+mock.module('@buildd/core/path-claim', () => ({
+  checkPathClaimConflict: mockCheckPathClaimConflict,
+  insertClaims: mockInsertClaims,
+  registerWaiter: mockRegisterWaiter,
 }));
 
 mock.module('@buildd/core/knowledge-store', () => ({
@@ -107,7 +110,6 @@ function makeToolCallRequest(toolArgs: unknown, workerId = WORKER_ID) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      // MCP Streamable HTTP transport requires both accept types
       'Accept': 'application/json, text/event-stream',
       Authorization: 'Bearer bld_test',
     },
@@ -147,19 +149,21 @@ describe('check_path_claim MCP handler', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
-    mockTasksFindMany.mockReset();
-    mockPathClaimsFindMany.mockReset();
     mockReturning.mockReset();
     mockTasksUpdate.mockReset();
     mockInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockCheckPathClaimConflict.mockReset();
+    mockInsertClaims.mockReset();
+    mockRegisterWaiter.mockReset();
 
-    // Default: authenticated, worker resolves to task, CAS succeeds
+    // Default: authenticated, worker resolves to task, no conflict, CAS succeeds
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
     mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID });
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
-    mockTasksFindMany.mockResolvedValue([]);
-    mockPathClaimsFindMany.mockResolvedValue([]);
+    mockCheckPathClaimConflict.mockResolvedValue(null);
+    mockInsertClaims.mockResolvedValue(['src/new.ts']);
+    mockRegisterWaiter.mockResolvedValue({ registered: true });
     mockReturning.mockResolvedValue([{ id: TASK_ID }]);
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({
@@ -169,24 +173,44 @@ describe('check_path_claim MCP handler', () => {
       })),
     });
     mockInsert.mockReturnValue({
-      values: mock(() => ({
-        onConflictDoNothing: mock(() => Promise.resolve()),
-      })),
+      values: mock(() => Promise.resolve([])),
     });
     mockWorkspacesFindFirst.mockResolvedValue(null);
   });
 
   it('returns isError when no worker context', async () => {
-    // Call without ?worker= param — the handler requires a worker context
     const body: any = await callTool({ paths: ['src/foo.ts'] }, '');
     const result = body.result;
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('worker');
   });
 
+  it('returns isError when paths is empty', async () => {
+    const body: any = await callTool({ paths: [] });
+    const result = body.result;
+    expect(result.isError).toBe(true);
+  });
+
+  // ── Wildcard guard ──────────────────────────────────────────────────────────
+
+  it('returns isError for wildcard "**" paths', async () => {
+    const body: any = await callTool({ paths: ['**'] });
+    const result = body.result;
+    expect(result.isError).toBe(true);
+    const text = JSON.parse(result.content[0].text);
+    expect(text.error).toContain('Wildcard');
+  });
+
+  it('returns isError when "**" mixed with specific paths', async () => {
+    const body: any = await callTool({ paths: ['src/foo.ts', '**'] });
+    const result = body.result;
+    expect(result.isError).toBe(true);
+  });
+
+  // ── Claim success ───────────────────────────────────────────────────────────
+
   it('claims unclaimed paths and extends pathManifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/existing.ts'] }));
-    mockPathClaimsFindMany.mockResolvedValue([]);
 
     const body: any = await callTool({ paths: ['src/new.ts'] });
     const result = JSON.parse(body.result.content[0].text);
@@ -195,99 +219,85 @@ describe('check_path_claim MCP handler', () => {
     expect(result.pathManifest).toContain('src/new.ts');
   });
 
-  it('blocks on a same-mission sibling with overlapping manifest', async () => {
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
-      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: MISSION_ID });
-    mockPathClaimsFindMany.mockResolvedValue([
-      { taskId: SIBLING_ID, path: 'src/shared.ts' },
-    ]);
+  it('inserts path_claims rows on successful claim', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: null }));
 
-    const body: any = await callTool({ paths: ['src/shared.ts'] });
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.claimed).toBe(false);
-    expect(result.blockingTaskId).toBe(SIBLING_ID);
-    expect(result.blockingMissionId).toBe(MISSION_ID);
-    expect(result.message).toContain('dependsOn');
-    expect(result.message).not.toContain('different mission');
-  });
-
-  it('blocks on a cross-mission sibling — workspace scope catches it', async () => {
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
-      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Cross-mission task', missionId: OTHER_MISSION_ID });
-    mockPathClaimsFindMany.mockResolvedValue([
-      { taskId: SIBLING_ID, path: 'src/shared.ts' },
-    ]);
-
-    const body: any = await callTool({ paths: ['src/shared.ts'] });
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.claimed).toBe(false);
-    expect(result.blockingTaskId).toBe(SIBLING_ID);
-    expect(result.blockingMissionId).toBe(OTHER_MISSION_ID);
-    expect(result.message).toContain('different mission');
-  });
-
-  it('response carries blockingMissionId for cross-mission blocker', async () => {
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
-      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Other mission task', missionId: OTHER_MISSION_ID });
-    mockPathClaimsFindMany.mockResolvedValue([
-      { taskId: SIBLING_ID, path: 'pkg/core/schema.ts' },
-    ]);
-
-    const body: any = await callTool({ paths: ['pkg/core/schema.ts'] });
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.blockingMissionId).toBe(OTHER_MISSION_ID);
-  });
-
-  it('orphan task (null missionId) blocks against mission-owned sibling', async () => {
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ missionId: null }))
-      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Mission-owned sibling', missionId: MISSION_ID });
-    mockPathClaimsFindMany.mockResolvedValue([
-      { taskId: SIBLING_ID, path: 'src/shared.ts' },
-    ]);
-
-    const body: any = await callTool({ paths: ['src/shared.ts'] });
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.claimed).toBe(false);
-    expect(result.blockingTaskId).toBe(SIBLING_ID);
-    expect(result.blockingMissionId).toBe(MISSION_ID);
-  });
-
-  it('mission-owned task blocks against orphan sibling (null missionId)', async () => {
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
-      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Orphan sibling', missionId: null });
-    mockPathClaimsFindMany.mockResolvedValue([
-      { taskId: SIBLING_ID, path: 'src/shared.ts' },
-    ]);
-
-    const body: any = await callTool({ paths: ['src/shared.ts'] });
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.claimed).toBe(false);
-    expect(result.blockingTaskId).toBe(SIBLING_ID);
-    expect(result.blockingMissionId).toBeNull();
+    await callTool({ paths: ['src/new.ts'] });
+    expect(mockInsertClaims).toHaveBeenCalledTimes(1);
+    expect(mockInsertClaims).toHaveBeenCalledWith(WORKSPACE_ID, TASK_ID, ['src/new.ts']);
   });
 
   it('does not add duplicate paths already in manifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/foo.ts'] }));
-    mockPathClaimsFindMany.mockResolvedValue([]);
 
     const body: any = await callTool({ paths: ['src/foo.ts'] });
     const result = JSON.parse(body.result.content[0].text);
     expect(result.claimed).toBe(true);
     expect(result.pathManifest).toEqual(['src/foo.ts']);
+    expect(mockInsertClaims).not.toHaveBeenCalled();
   });
 
-  it('skips sibling with null pathManifest', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask());
-    // A task with null pathManifest has no path_claims rows — empty result means no block
-    mockPathClaimsFindMany.mockResolvedValue([]);
+  // ── Conflict / waiter registration ─────────────────────────────────────────
 
-    const body: any = await callTool({ paths: ['src/foo.ts'] });
+  it('returns claimed=false when paths conflict with an active claim', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/shared.ts',
+    });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID })) // worker task
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: MISSION_ID }); // blocker
+
+    const body: any = await callTool({ paths: ['src/shared.ts'] });
     const result = JSON.parse(body.result.content[0].text);
-    expect(result.claimed).toBe(true);
+    expect(result.claimed).toBe(false);
+    expect(result.blockingTaskId).toBe(SIBLING_ID);
+  });
+
+  it('registers requester as waiter on conflict', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/shared.ts',
+    });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask())
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: null });
+
+    await callTool({ paths: ['src/shared.ts'] });
+    expect(mockRegisterWaiter).toHaveBeenCalledWith(
+      SIBLING_ID, TASK_ID, 'src/shared.ts', WORKSPACE_ID,
+    );
+  });
+
+  it('cross-mission conflict includes blockingMissionId and mentions different mission', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/shared.ts',
+    });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Cross', missionId: OTHER_MISSION_ID });
+
+    const body: any = await callTool({ paths: ['src/shared.ts'] });
+    const result = JSON.parse(body.result.content[0].text);
+    expect(result.blockingMissionId).toBe(OTHER_MISSION_ID);
+    expect(result.message).toContain('different mission');
+  });
+
+  it('deadlock flag propagates in conflict response', async () => {
+    mockCheckPathClaimConflict.mockResolvedValue({
+      blockingTaskId: SIBLING_ID,
+      blockingPath: 'src/x.ts',
+    });
+    const cycle = [TASK_ID, SIBLING_ID, TASK_ID];
+    mockRegisterWaiter.mockResolvedValue({ deadlock: true, cycle });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: null }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'B', missionId: null });
+
+    const body: any = await callTool({ paths: ['src/x.ts'] });
+    const result = JSON.parse(body.result.content[0].text);
+    expect(result.deadlock).toBe(true);
+    expect(result.cycle).toEqual(cycle);
   });
 });
