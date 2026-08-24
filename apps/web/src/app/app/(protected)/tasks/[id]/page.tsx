@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces } from '@buildd/core/db/schema';
-import { eq, desc, inArray, asc, ne, and } from 'drizzle-orm';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
 import { deriveDisplayStatus } from '@/lib/task-timestamps';
 import { deriveTaskPhase } from '@/lib/task-presentation';
 import Link from 'next/link';
@@ -20,6 +20,7 @@ import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
+import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
@@ -92,6 +93,21 @@ export default async function TaskDetailPage({
   const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
   if (!access) {
     notFound();
+  }
+
+  // For non-mission tasks: count open question notes (drives "Waiting on you" badge)
+  let openQuestionCount = 0;
+  if (!task.missionId) {
+    const [row] = await db
+      .select({ c: count() })
+      .from(missionNotes)
+      .where(and(
+        eq(missionNotes.taskId, id),
+        isNull(missionNotes.missionId),
+        eq(missionNotes.type, 'question'),
+        eq(missionNotes.status, 'open'),
+      ));
+    openQuestionCount = Number(row?.c ?? 0);
   }
 
   // Fetch dependency tasks if dependsOn has entries
@@ -257,9 +273,13 @@ export default async function TaskDetailPage({
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
   const isTerminal = task.status === 'completed' || task.status === 'failed';
-  const displayStatus = isTerminal
+  const baseDisplayStatus = isTerminal
     ? task.status
     : deriveDisplayStatus(task.status, activeWorker?.status);
+  // Override to "Waiting on you" when a non-mission task has open question notes
+  const displayStatus = openQuestionCount > 0 && !isTerminal
+    ? 'waiting_on_you'
+    : baseDisplayStatus;
 
   const initiative = task.mission?.initiative ?? null;
 
@@ -808,6 +828,15 @@ export default async function TaskDetailPage({
           status={task.status}
           result={task.result as Record<string, unknown> | null}
         />
+
+        {/* Agent Questions — task-scoped notes of type=question (non-mission tasks only) */}
+        {!task.missionId && (
+          <TaskQuestionFeed
+            taskId={task.id}
+            activeWorkerId={activeWorker?.id ?? null}
+            activeWorkerStatus={activeWorker?.status ?? null}
+          />
+        )}
 
         {/* Active Worker */}
         {activeWorker && (
