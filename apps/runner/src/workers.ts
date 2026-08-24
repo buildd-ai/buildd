@@ -1558,6 +1558,9 @@ export class WorkerManager {
     // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
     // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
     let cbmCacheDir: string | undefined;
+    // Buffer CLI stderr lines so they surface in get_error_traces on process failure.
+    // The normal logging path (console.log) keeps them in server logs only.
+    const cliStderrBuffer: string[] = [];
 
     try {
       // Fetch workspace git config from server
@@ -2361,6 +2364,8 @@ export class WorkerManager {
         ...(outputFormat ? { outputFormat } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
+          const trimmed = data.trim();
+          if (trimmed) cliStderrBuffer.push(trimmed);
         },
         // Resume previous session if provided (loads full conversation history from disk).
         // Claude-only: the Codex backend resumes via runStreamed's resumeThreadId
@@ -3189,6 +3194,20 @@ If something is missing or incomplete, describe what and fix it now.`;
         // the task over (Codex) / holds it until reset instead of hard-failing.
         const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
           errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
+        // Steering-delivery crash: the CLI rejected a malformed spawn invocation
+        // (e.g. --session-id + --resume without --fork-session). This is an infra
+        // failure — must not consume a task retry attempt.
+        const stderrJoined = cliStderrBuffer.join('\n');
+        const isSteeringDeliveryCrash = stderrJoined.includes('--session-id can only be used with');
+        // Flush buffered CLI stderr into error traces so get_error_traces surfaces them.
+        if (cliStderrBuffer.length > 0) {
+          worker.pendingErrorTraces ??= [];
+          worker.pendingErrorTraces.push({
+            pattern: 'cli_spawn_error',
+            excerpt: stderrJoined.slice(0, 500),
+            source: 'stderr',
+          });
+        }
         // A provision-gate block carries a stable failure classification — surface
         // it as structured resultMeta so the server/organizer can act on the code
         // (escalate a missing secret vs. retry a flaky readiness) rather than
@@ -3201,6 +3220,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
+          ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+          ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
           ...spanPayload,

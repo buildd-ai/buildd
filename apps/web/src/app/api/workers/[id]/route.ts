@@ -558,13 +558,15 @@ export async function PATCH(
   // Classify exit cause for taxonomy — written to the worker record on terminal update.
   // budget_limited:    task auto-resumes; not a real failure; excluded from retry caps.
   // sandbox_mount_gap: bwrap path missing; task requeued; excluded from retry caps.
+  // infra_failure:     set by stale-worker cleanup OR when steeringDelivery=true.
   // code_failure:      default for any other terminal failure.
-  // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
   const isSandboxMountGap = body.sandboxMountGap === true;
+  const isSteeringDelivery = body.steeringDelivery === true;
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
+      steeringDelivery: isSteeringDelivery,
     });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
