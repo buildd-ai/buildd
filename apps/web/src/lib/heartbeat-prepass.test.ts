@@ -340,4 +340,113 @@ describe('evaluateHeartbeatPrepass', () => {
     });
     expect(result.action).toBe('skip_blocked');
   });
+
+  // ── Goal criteria guard (DEFECT 1 — heartbeat prepass path) ──
+
+  it('returns skip_criteria_blocked when all deliverables done but goalCriteria overall is fail', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({
+      ...BASE_INPUT,
+      goalCriteria: [{ type: 'all_prs_merged' }],
+      goalCriteriaState: {
+        overall: 'fail',
+        criteria: [{ index: 0, type: 'all_prs_merged', verdict: 'fail', evidence: '1 PR not yet merged' }],
+      },
+    });
+    expect(result.action).toBe('skip_criteria_blocked');
+    if (result.action === 'skip_criteria_blocked') {
+      expect(result.reason).toContain('fail');
+    }
+  });
+
+  it('returns skip_criteria_blocked when all deliverables done but criteria are NOT_EVALUATED (DEFECT 2)', async () => {
+    // 6dc41ced fixture: 3 description criteria NOT_EVALUATED + 1 all_prs_merged
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+      { title: 'Write tests', mode: 'execution', status: 'cancelled', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({
+      ...BASE_INPUT,
+      goalCriteria: [
+        { type: 'description', description: 'All acceptance criteria met' },
+        { type: 'description', description: 'No regressions' },
+        { type: 'description', description: 'Docs updated' },
+        { type: 'all_prs_merged' },
+      ],
+      goalCriteriaState: {
+        overall: 'UNVERIFIED',
+        criteria: [
+          { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 3, type: 'all_prs_merged', verdict: 'fail', evidence: '1 PR not yet merged' },
+        ],
+      },
+    });
+    expect(result.action).toBe('skip_criteria_blocked');
+  });
+
+  it('returns skip_criteria_blocked when goalCriteriaState is absent but goalCriteria exists', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({
+      ...BASE_INPUT,
+      goalCriteria: [{ type: 'description', description: 'Goal met' }],
+      goalCriteriaState: null,
+    });
+    expect(result.action).toBe('skip_criteria_blocked');
+    if (result.action === 'skip_criteria_blocked') {
+      expect(result.reason).toContain('not_evaluated');
+    }
+  });
+
+  it('returns skip_complete when goalCriteria is empty (no criteria configured)', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({
+      ...BASE_INPUT,
+      goalCriteria: [],
+      goalCriteriaState: null,
+    });
+    expect(result.action).toBe('skip_complete');
+  });
+
+  it('returns skip_complete when goalCriteria is absent (ordinary mission, must not regress)', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_complete');
+  });
+
+  it('returns skip_complete when all criteria pass', async () => {
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({
+      ...BASE_INPUT,
+      goalCriteria: [{ type: 'all_prs_merged' }],
+      goalCriteriaState: {
+        overall: 'pass',
+        criteria: [{ index: 0, type: 'all_prs_merged', verdict: 'pass' }],
+      },
+    });
+    expect(result.action).toBe('skip_complete');
+  });
 });
