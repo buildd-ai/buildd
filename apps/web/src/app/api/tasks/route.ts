@@ -27,6 +27,7 @@ import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
+import { detectProseGate } from '@buildd/core/prose-gate';
 
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
@@ -352,6 +353,25 @@ export async function POST(req: NextRequest) {
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    // Prose-gate lint: reject if description declares a dependency gate in prose but dependsOn
+    // is empty. This catches descriptions like "Gated on task X merging" with no dependsOn edges.
+    // fileAnywayReason (non-blank) bypasses the lint, matching the existing dedupe-bypass convention,
+    // and is forwarded unchanged to the subject intake handler so both bypasses work from one param.
+    if (description && !(typeof fileAnywayReason === 'string' && fileAnywayReason.trim())) {
+      const gate = detectProseGate(description);
+      if (gate.phrase !== null && (!Array.isArray(dependsOn) || dependsOn.length === 0)) {
+        const idHint = gate.taskIds.length > 0
+          ? ` Task IDs found near the gate: ${gate.taskIds.join(', ')}.`
+          : '';
+        return NextResponse.json(
+          {
+            error: `Description declares a dependency gate ("${gate.phrase}" matched) but dependsOn is empty.${idHint} Express this gate as dependsOn edges, or pass fileAnywayReason to bypass.`,
+          },
+          { status: 400 },
+        );
+      }
     }
 
     const verificationCommand = typeof incomingContext?.verificationCommand === 'string'

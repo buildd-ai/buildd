@@ -2197,4 +2197,132 @@ describe('POST /api/tasks', () => {
     expect(captured().pathManifest).toEqual(['**']);
     expect(captured().dependsOn).toContain('sibling-task-A');
   });
+
+  // ── Prose-gate lint ────────────────────────────────────────────────────────
+  // Verbatim descriptions from the motivating incidents (mission 6dc41ced)
+  const INCIDENT_222e9216 =
+    'Gated on the spec (b984dedf) merging and on the workspace-scope fix (9bc6ebd6) merging — ' +
+    'this task edits the same route files, so it must not run in parallel with them.';
+  const INCIDENT_ca0b692e = 'Gated on the spec merging.';
+
+  function setupBasicCreation() {
+    const createdTask = { id: 'task-1', workspaceId: 'ws-1', title: 'T', status: 'pending' };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [createdTask]) })),
+    });
+    return createdTask;
+  }
+
+  describe('prose-gate lint', () => {
+    it('rejects task 222e9216 description with empty dependsOn (verbatim incident)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: { workspaceId: 'ws-1', title: 'Gated task', description: INCIDENT_222e9216 },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('dependsOn');
+      expect(data.error).toContain('gated on');
+    });
+
+    it('rejects task ca0b692e description with empty dependsOn (verbatim incident)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: { workspaceId: 'ws-1', title: 'Spec gate', description: INCIDENT_ca0b692e },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('dependsOn');
+    });
+
+    it('rejects gate phrase with empty dependsOn and names extracted task IDs in error', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Gated task',
+          description: 'Gated on deadbeef and cafebabe completing.',
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('deadbeef');
+      expect(data.error).toContain('cafebabe');
+    });
+
+    it('gate phrase + dependsOn → created', async () => {
+      setupBasicCreation();
+      // dep validation returns the dep task
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'dep-task-1' }]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Gated task',
+          description: INCIDENT_ca0b692e,
+          dependsOn: ['dep-task-1'],
+        },
+      }));
+
+      expect(response.status).toBe(200);
+    });
+
+    it('no gate phrase + empty dependsOn → created', async () => {
+      setupBasicCreation();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Plain task',
+          description: 'Implement the new pagination endpoint for the task list.',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+    });
+
+    it('incidental mention of a sibling task without gating language → created', async () => {
+      setupBasicCreation();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Auth refactor',
+          description: 'Implement the new auth flow, similar to what was done in task abc12345.',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+    });
+
+    it('fileAnywayReason bypass → created (lint skipped)', async () => {
+      setupBasicCreation();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Gated task',
+          description: INCIDENT_222e9216,
+          fileAnywayReason: 'dependsOn edges will be added once the upstream task IDs are known',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+    });
+  });
 });
