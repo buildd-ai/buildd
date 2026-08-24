@@ -22,6 +22,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
+const mockPathClaimsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockReturning = mock(() => Promise.resolve([{ id: TASK_ID }]));
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
@@ -31,6 +32,12 @@ const mockTasksUpdate = mock(() => ({
   })),
 }));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
+
+const mockInsert = mock(() => ({
+  values: mock(() => ({
+    onConflictDoNothing: mock(() => Promise.resolve()),
+  })),
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -46,8 +53,10 @@ mock.module('@buildd/core/db', () => ({
         findFirst: mockTasksFindFirst,
         findMany: mockTasksFindMany,
       },
+      pathClaims: { findMany: mockPathClaimsFindMany },
     },
     update: mockTasksUpdate,
+    insert: mockInsert,
     select: mock(() => ({
       from: mock(() => ({
         where: mock(() => ({
@@ -139,8 +148,10 @@ describe('check_path_claim MCP handler', () => {
     mockWorkersFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
     mockTasksFindMany.mockReset();
+    mockPathClaimsFindMany.mockReset();
     mockReturning.mockReset();
     mockTasksUpdate.mockReset();
+    mockInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
 
     // Default: authenticated, worker resolves to task, CAS succeeds
@@ -148,12 +159,18 @@ describe('check_path_claim MCP handler', () => {
     mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID });
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     mockTasksFindMany.mockResolvedValue([]);
+    mockPathClaimsFindMany.mockResolvedValue([]);
     mockReturning.mockResolvedValue([{ id: TASK_ID }]);
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({
         where: mock(() => ({
           returning: mockReturning,
         })),
+      })),
+    });
+    mockInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoNothing: mock(() => Promise.resolve()),
       })),
     });
     mockWorkspacesFindFirst.mockResolvedValue(null);
@@ -169,7 +186,7 @@ describe('check_path_claim MCP handler', () => {
 
   it('claims unclaimed paths and extends pathManifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/existing.ts'] }));
-    mockTasksFindMany.mockResolvedValue([]);
+    mockPathClaimsFindMany.mockResolvedValue([]);
 
     const body: any = await callTool({ paths: ['src/new.ts'] });
     const result = JSON.parse(body.result.content[0].text);
@@ -179,9 +196,11 @@ describe('check_path_claim MCP handler', () => {
   });
 
   it('blocks on a same-mission sibling with overlapping manifest', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Sibling', pathManifest: ['src/shared.ts'], missionId: MISSION_ID },
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: MISSION_ID });
+    mockPathClaimsFindMany.mockResolvedValue([
+      { taskId: SIBLING_ID, path: 'src/shared.ts' },
     ]);
 
     const body: any = await callTool({ paths: ['src/shared.ts'] });
@@ -194,9 +213,11 @@ describe('check_path_claim MCP handler', () => {
   });
 
   it('blocks on a cross-mission sibling — workspace scope catches it', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Cross-mission task', pathManifest: ['src/shared.ts'], missionId: OTHER_MISSION_ID },
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Cross-mission task', missionId: OTHER_MISSION_ID });
+    mockPathClaimsFindMany.mockResolvedValue([
+      { taskId: SIBLING_ID, path: 'src/shared.ts' },
     ]);
 
     const body: any = await callTool({ paths: ['src/shared.ts'] });
@@ -208,9 +229,11 @@ describe('check_path_claim MCP handler', () => {
   });
 
   it('response carries blockingMissionId for cross-mission blocker', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Other mission task', pathManifest: ['pkg/core/schema.ts'], missionId: OTHER_MISSION_ID },
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Other mission task', missionId: OTHER_MISSION_ID });
+    mockPathClaimsFindMany.mockResolvedValue([
+      { taskId: SIBLING_ID, path: 'pkg/core/schema.ts' },
     ]);
 
     const body: any = await callTool({ paths: ['pkg/core/schema.ts'] });
@@ -219,9 +242,11 @@ describe('check_path_claim MCP handler', () => {
   });
 
   it('orphan task (null missionId) blocks against mission-owned sibling', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: null }));
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Mission-owned sibling', pathManifest: ['src/shared.ts'], missionId: MISSION_ID },
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: null }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Mission-owned sibling', missionId: MISSION_ID });
+    mockPathClaimsFindMany.mockResolvedValue([
+      { taskId: SIBLING_ID, path: 'src/shared.ts' },
     ]);
 
     const body: any = await callTool({ paths: ['src/shared.ts'] });
@@ -232,9 +257,11 @@ describe('check_path_claim MCP handler', () => {
   });
 
   it('mission-owned task blocks against orphan sibling (null missionId)', async () => {
-    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ missionId: MISSION_ID }));
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Orphan sibling', pathManifest: ['src/shared.ts'], missionId: null },
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Orphan sibling', missionId: null });
+    mockPathClaimsFindMany.mockResolvedValue([
+      { taskId: SIBLING_ID, path: 'src/shared.ts' },
     ]);
 
     const body: any = await callTool({ paths: ['src/shared.ts'] });
@@ -246,7 +273,7 @@ describe('check_path_claim MCP handler', () => {
 
   it('does not add duplicate paths already in manifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/foo.ts'] }));
-    mockTasksFindMany.mockResolvedValue([]);
+    mockPathClaimsFindMany.mockResolvedValue([]);
 
     const body: any = await callTool({ paths: ['src/foo.ts'] });
     const result = JSON.parse(body.result.content[0].text);
@@ -256,9 +283,8 @@ describe('check_path_claim MCP handler', () => {
 
   it('skips sibling with null pathManifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
-    mockTasksFindMany.mockResolvedValue([
-      { id: SIBLING_ID, title: 'Sibling', pathManifest: null, missionId: null },
-    ]);
+    // A task with null pathManifest has no path_claims rows — empty result means no block
+    mockPathClaimsFindMany.mockResolvedValue([]);
 
     const body: any = await callTool({ paths: ['src/foo.ts'] });
     const result = JSON.parse(body.result.content[0].text);

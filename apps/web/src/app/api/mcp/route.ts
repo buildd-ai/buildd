@@ -22,8 +22,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
-import { workspaces, teams, workers as workersTable, tasks } from "@buildd/core/db/schema";
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { workspaces, teams, workers as workersTable, tasks, pathClaims, pathClaimWaiters } from "@buildd/core/db/schema";
+import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { pathsOverlap } from "@buildd/core/path-overlap";
 import {
   handleBuilddAction,
@@ -656,6 +656,14 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         }
         const paths = rawPaths as string[];
 
+        // The ** sentinel is advisory-only and cannot be held as a specific lock.
+        if (paths.includes('**')) {
+          return {
+            content: [{ type: "text" as const, text: "Wildcard ** claims are not supported. Declare specific paths." }],
+            isError: true,
+          };
+        }
+
         // Resolve taskId from the worker row
         const workerRow = await db.query.workers.findFirst({
           where: eq(workersTable.id, workerId),
@@ -686,42 +694,72 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           };
         }
 
+        // Capture workspaceId once — mcpTask may be re-assigned in the CAS retry loop.
+        const mcpWorkspaceId = mcpTask.workspaceId;
+
+        // Fetch all active path_claims in this workspace, excluding the caller's own claims.
+        const activeClaims = await db.query.pathClaims.findMany({
+          where: and(
+            eq(pathClaims.workspaceId, mcpWorkspaceId),
+            isNull(pathClaims.releasedAt),
+            ne(pathClaims.taskId, taskId),
+          ),
+          columns: { taskId: true, path: true },
+        });
+
+        // Group claim paths by taskId for pathsOverlap check.
+        const claimsByTask = new Map<string, string[]>();
+        for (const claim of activeClaims) {
+          const existing = claimsByTask.get(claim.taskId) ?? [];
+          existing.push(claim.path);
+          claimsByTask.set(claim.taskId, existing);
+        }
+
+        for (const [claimTaskId, claimPaths] of claimsByTask) {
+          if (pathsOverlap(paths, claimPaths)) {
+            const blockingTask = await db.query.tasks.findFirst({
+              where: eq(tasks.id, claimTaskId),
+              columns: { id: true, title: true, missionId: true },
+            });
+
+            const blockingMissionId = blockingTask?.missionId ?? null;
+            const isCrossMission =
+              blockingMissionId !== null &&
+              mcpTask.missionId !== null &&
+              blockingMissionId !== mcpTask.missionId;
+            const message = isCrossMission
+              ? `Paths overlap with task "${blockingTask?.title}" (${claimTaskId.slice(0, 8)}) in a different mission (${blockingMissionId!.slice(0, 8)}). Report blocked with blockingTaskId and blockingMissionId — a dependsOn edge across missions is a significant coordination decision; escalate to a human or the organizer.`
+              : `Paths overlap with sibling task "${blockingTask?.title}" (${claimTaskId.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`;
+
+            // Register the caller as a waiter on the blocking task's claims.
+            const overlappingPaths = paths.filter((p) => claimPaths.some((cp) => pathsOverlap([p], [cp])));
+            if (overlappingPaths.length > 0) {
+              await db
+                .insert(pathClaimWaiters)
+                .values(
+                  overlappingPaths.map((p) => ({
+                    workspaceId: mcpWorkspaceId,
+                    blockingTaskId: claimTaskId,
+                    waitingTaskId: taskId,
+                    blockedPath: p,
+                  }))
+                )
+                .onConflictDoNothing();
+            }
+
+            const result = {
+              claimed: false,
+              blockingTaskId: claimTaskId,
+              blockingTaskTitle: blockingTask?.title ?? null,
+              blockingMissionId,
+              message,
+            };
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          }
+        }
+
         const MCP_CLAIM_RETRIES = 3;
         for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
-          // Scope is always workspace-wide — same logic as the REST path-claim
-          // route. missionId is included so the response can distinguish
-          // in-mission vs. cross-mission blockers for the caller.
-          const siblings = await db.query.tasks.findMany({
-            where: and(
-              eq(tasks.workspaceId, mcpTask.workspaceId),
-              inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-              isNotNull(tasks.pathManifest),
-              ne(tasks.id, taskId),
-            ),
-            columns: { id: true, title: true, pathManifest: true, missionId: true },
-          });
-
-          for (const sibling of siblings) {
-            if (!sibling.pathManifest?.length) continue;
-            if (pathsOverlap(paths, sibling.pathManifest as string[])) {
-              const isCrossMission =
-                sibling.missionId !== null &&
-                mcpTask.missionId !== null &&
-                sibling.missionId !== mcpTask.missionId;
-              const message = isCrossMission
-                ? `Paths overlap with task "${sibling.title}" (${sibling.id.slice(0, 8)}) in a different mission (${sibling.missionId!.slice(0, 8)}). Report blocked with blockingTaskId and blockingMissionId — a dependsOn edge across missions is a significant coordination decision; escalate to a human or the organizer.`
-                : `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`;
-              const result = {
-                claimed: false,
-                blockingTaskId: sibling.id,
-                blockingTaskTitle: sibling.title,
-                blockingMissionId: sibling.missionId ?? null,
-                message,
-              };
-              return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-            }
-          }
-
           const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
           const existingSet = new Set(existingManifest);
           const newPaths = paths.filter((p) => !existingSet.has(p));
@@ -735,6 +773,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           const updatedManifest = [...existingManifest, ...newPaths];
 
           // Atomic CAS: write only if pathManifest hasn't changed since we read it.
+          // Retained for backward compatibility — the claim-route backstop reads tasks.pathManifest.
           const [updated] = await db
             .update(tasks)
             .set({ pathManifest: updatedManifest })
@@ -747,6 +786,18 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             .returning({ id: tasks.id });
 
           if (updated) {
+            // Insert one path_claims row per new path (idempotent via ON CONFLICT DO NOTHING).
+            await db
+              .insert(pathClaims)
+              .values(
+                newPaths.map((p) => ({
+                  workspaceId: mcpWorkspaceId,
+                  taskId,
+                  path: p,
+                }))
+              )
+              .onConflictDoNothing();
+
             return {
               content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
             };
