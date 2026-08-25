@@ -15,6 +15,7 @@ export type Stage =
   | 'MERGE'
   | 'VERIFY'
   | 'DONE'
+  | 'CLOSED'
   | 'FAILED'
   | 'CANCELLED';
 
@@ -49,7 +50,8 @@ export function deriveStage(input: StageInput): Stage {
   if (taskStatus === 'completed' && prUrl) {
     const isMerged = !!mergedAt || prLifecycleStatus === 'merged';
     const isClosed = prLifecycleStatus === 'closed';
-    if (isMerged || isClosed) return 'DONE';
+    if (isMerged) return 'DONE';
+    if (isClosed) return 'CLOSED';
     if (prLifecycleStatus === 'ci_running') return 'CI';
     return 'REVIEW';
   }
@@ -83,6 +85,7 @@ const STAGE_CONFIG: Record<Stage, ChipConfig> = {
   MERGE:        { label: 'Merge',       variant: 'outlined', colorCls: 'text-accent-text border-accent' },
   VERIFY:       { label: 'Verify',      variant: 'outlined', colorCls: 'text-status-warning border-status-warning' },
   DONE:         { label: 'Done',        variant: 'muted',    colorCls: 'text-status-success border-status-success' },
+  CLOSED:       { label: 'Closed',      variant: 'muted',    colorCls: 'text-text-muted border-border-default' },
   FAILED:       { label: 'Failed',      variant: 'filled',   colorCls: 'bg-status-error text-white' },
   CANCELLED:    { label: 'Cancelled',   variant: 'muted',    colorCls: 'text-text-muted border-border-default' },
 };

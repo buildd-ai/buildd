@@ -2014,26 +2014,26 @@ async function handleReviewerOutcomeIfNeeded(
 
   console.log(`[reviewer] Verdict for PR #${prNumber}: ${output.verdict} (confidence ${output.confidence})`);
 
-  // Audit event — every decision is persisted as a mission note
-  if (missionId) {
-    await db.insert(missionNotes).values({
-      missionId,
-      taskId: originalTaskId,
-      authorType: 'system',
-      type: output.verdict === 'approve'
-        ? 'reviewer_approved'
-        : output.verdict === 'request-changes'
-          ? 'reviewer_request_changes'
-          : 'reviewer_escalated',
-      title: output.verdict === 'approve'
-        ? `PR #${prNumber} approved by reviewer (confidence ${output.confidence.toFixed(2)})`
-        : output.verdict === 'request-changes'
-          ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
-          : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
-      body: output.feedback ?? output.escalationReason ?? output.summary,
-      status: 'open',
-    });
-  }
+  // Audit event — persisted as a mission note. missionId is nullable so we always
+  // create the note; non-mission tasks get missionId=null which is fine (missionNotes
+  // column has no NOT NULL constraint). The escalation inbox queries by taskId alone.
+  await db.insert(missionNotes).values({
+    missionId: missionId ?? null,
+    taskId: originalTaskId,
+    authorType: 'system',
+    type: output.verdict === 'approve'
+      ? 'reviewer_approved'
+      : output.verdict === 'request-changes'
+        ? 'reviewer_request_changes'
+        : 'reviewer_escalated',
+    title: output.verdict === 'approve'
+      ? `PR #${prNumber} approved by reviewer (confidence ${output.confidence.toFixed(2)})`
+      : output.verdict === 'request-changes'
+        ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
+        : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
+    body: output.feedback ?? output.escalationReason ?? output.summary,
+    status: 'open',
+  });
 
   switch (output.verdict) {
     case 'approve': {
@@ -2054,18 +2054,16 @@ async function handleReviewerOutcomeIfNeeded(
 
       if (approvePolicy?.agentReview?.gateCondition === 'approve-only') {
         // Reviewer approved but gateCondition requires human to press merge.
-        // Post a note and surface in escalation inbox — do NOT auto-merge.
-        if (missionId) {
-          await db.insert(missionNotes).values({
-            missionId,
-            taskId: originalTaskId,
-            authorType: 'system',
-            type: 'reviewer_approved',
-            title: `PR #${prNumber} approved — awaiting human merge`,
-            body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
-            status: 'open',
-          });
-        }
+        // Post a note (missionId nullable) to surface in escalation inbox — do NOT auto-merge.
+        await db.insert(missionNotes).values({
+          missionId: missionId ?? null,
+          taskId: originalTaskId,
+          authorType: 'system',
+          type: 'reviewer_approved',
+          title: `PR #${prNumber} approved — awaiting human merge`,
+          body: `Reviewer approved (confidence ${output.confidence.toFixed(2)}): ${output.summary}\n\nGate condition is 'approve-only'. Merge from the escalation inbox.`,
+          status: 'open',
+        });
         console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
         break;
       }

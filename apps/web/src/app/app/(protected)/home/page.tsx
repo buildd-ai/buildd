@@ -845,14 +845,22 @@ export default async function HomePage({
                 if (w.taskId && approvedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
                 if (!ws) return false;
-                return resolvePolicy(ws).tier === 'human';
+                if (resolvePolicy(ws).tier === 'human') return true;
+                // AC-6 fallback: a completed worker on an agent-review workspace whose reviewer
+                // produced no signal (e.g. non-mission task, note creation was skipped).
+                // Surface as UNKNOWN rather than silently dropping the row.
+                if (resolvePolicy(ws).tier === 'agent-review' && w.completedAt != null) return true;
+                return false;
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
                 const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
-                const escalationReason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
-                  ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null);
                 const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
+                // For approved items, surface the verdict text as the reason so the merge card
+                // is informative. Escalated items already carry an escalationReason.
+                const escalationReason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
+                  ?? verdictSummary
+                  ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null);
                 const waitingMinutes = w.completedAt
                   ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
                   : null;

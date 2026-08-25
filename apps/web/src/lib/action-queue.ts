@@ -58,6 +58,8 @@ export interface EscalationRawItem {
   prNumber: number | null;
   prUrl: string | null;
   policyTier: string;
+  /** Populated once a reviewer has reached a verdict. */
+  leaseState?: 'agent_approved' | 'agent_flagged' | 'pending_human';
   escalationReason: string | null;
   waitingMinutes: number | null;
   /** Set when an agent is actively resolving conflicts for this PR. */
@@ -116,10 +118,13 @@ export function buildActionQueue(
   // Escalation items carry task links, workspace context, and merge buttons — add first
   for (const item of escalationInbox) {
     const key = item.prUrl ?? `task:${item.taskId}`;
-    // RESOLVING: conflict retry is live — agent is handling it, not the human.
-    // Otherwise: human-gate = MERGE, agent-review = REVIEW.
+    // RESOLVING: conflict retry is live.
+    // Reviewer reached a verdict (approved or flagged) → human must merge → MERGE.
+    // Agent-review still pending → REVIEW. Human-gate → MERGE.
     const chip: ActionChip = item.conflictRetryTaskId
       ? 'RESOLVING'
+      : (item.leaseState === 'agent_approved' || item.leaseState === 'agent_flagged')
+      ? 'MERGE'
       : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
     map.set(key, {
       subjectKey: key,

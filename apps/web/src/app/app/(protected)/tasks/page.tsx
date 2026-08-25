@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
-import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
+import { desc, eq, inArray, and, gte, isNull, isNotNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
 import { redirect } from 'next/navigation';
@@ -226,6 +226,40 @@ export default async function TasksPage({
             }
           }
 
+          // AC-2: For completed review tasks, resolve the reviewed PR's state so the
+          // stage chip shows REVIEW/CLOSED (not DONE) while the PR is still open.
+          // The reviewer task itself has no prUrl; we read it from the original task's worker.
+          const reviewedPrByTaskId = new Map<string, { prUrl: string | null; prLifecycleStatus: string | null }>();
+          {
+            const completedReviewTasks = allTasks.filter(
+              t => t.category === 'review' && t.status === 'completed',
+            );
+            const reviewerForPairs: Array<{ reviewTaskId: string; originalTaskId: string }> = [];
+            for (const t of completedReviewTasks) {
+              const ctx = (t.context || {}) as Record<string, unknown>;
+              const reviewerFor = ctx.reviewerFor as string | undefined;
+              if (reviewerFor) reviewerForPairs.push({ reviewTaskId: t.id, originalTaskId: reviewerFor });
+            }
+            if (reviewerForPairs.length > 0) {
+              const origIds = [...new Set(reviewerForPairs.map(p => p.originalTaskId))];
+              const origWorkers = await db.query.workers.findMany({
+                where: and(inArray(workers.taskId, origIds), isNotNull(workers.prUrl)),
+                columns: { taskId: true, prUrl: true, prLifecycleStatus: true },
+                orderBy: [desc(workers.startedAt)],
+              });
+              const origPrByTaskId = new Map<string, { prUrl: string | null; prLifecycleStatus: string | null }>();
+              for (const w of origWorkers) {
+                if (w.taskId && !origPrByTaskId.has(w.taskId)) {
+                  origPrByTaskId.set(w.taskId, { prUrl: w.prUrl, prLifecycleStatus: w.prLifecycleStatus ?? null });
+                }
+              }
+              for (const { reviewTaskId, originalTaskId } of reviewerForPairs) {
+                const pr = origPrByTaskId.get(originalTaskId);
+                if (pr) reviewedPrByTaskId.set(reviewTaskId, pr);
+              }
+            }
+          }
+
           // Chain data — only for non-terminal tasks (completed rows don't need it)
           const nonTerminalTaskIds = allTasks
             .filter(t => !['completed', 'failed', 'cancelled'].includes(t.status))
@@ -301,6 +335,14 @@ export default async function TasksPage({
               }
             }
 
+            // For completed review tasks, substitute the reviewed PR's state so that
+            // StageChip shows REVIEW/CLOSED instead of DONE while the PR is still open.
+            const reviewedPr = t.category === 'review' ? reviewedPrByTaskId.get(t.id) : null;
+            const effectivePrUrl = reviewedPr?.prUrl || result?.prUrl || null;
+            const effectivePrLifecycleStatus = reviewedPr?.prUrl
+              ? (reviewedPr.prLifecycleStatus ?? null)
+              : (result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null);
+
             return {
               id: t.id,
               title: t.title,
@@ -309,9 +351,9 @@ export default async function TasksPage({
               createdAt: t.createdAt.toISOString(),
               updatedAt: t.updatedAt.toISOString(),
               workspaceName: displayWorkspaceName(wsNameMap.get(t.workspaceId) || 'Unknown'),
-              prUrl: result?.prUrl || null,
+              prUrl: effectivePrUrl,
               prNumber: result?.prNumber || null,
-              prLifecycleStatus: result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null,
+              prLifecycleStatus: effectivePrLifecycleStatus,
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,

@@ -62,9 +62,24 @@ describe('buildActionQueue', () => {
     expect(result).toHaveLength(2);
   });
 
-  it('assigns REVIEW chip to agent-review policy tier', () => {
+  it('assigns REVIEW chip to agent-review policy tier with no leaseState', () => {
     const result = buildActionQueue([], [escalationItem({ policyTier: 'agent-review' })]);
     expect(result[0].chip).toBe('REVIEW');
+  });
+
+  it('assigns REVIEW chip to agent-review with leaseState=pending_human', () => {
+    const result = buildActionQueue([], [escalationItem({ policyTier: 'agent-review', leaseState: 'pending_human' })]);
+    expect(result[0].chip).toBe('REVIEW');
+  });
+
+  it('assigns MERGE chip to agent-review with leaseState=agent_approved (reviewer done, human must merge)', () => {
+    const result = buildActionQueue([], [escalationItem({ policyTier: 'agent-review', leaseState: 'agent_approved' })]);
+    expect(result[0].chip).toBe('MERGE');
+  });
+
+  it('assigns MERGE chip to agent-review with leaseState=agent_flagged (escalated, human must decide)', () => {
+    const result = buildActionQueue([], [escalationItem({ policyTier: 'agent-review', leaseState: 'agent_flagged' })]);
+    expect(result[0].chip).toBe('MERGE');
   });
 
   it('assigns MERGE chip to human policy tier', () => {
