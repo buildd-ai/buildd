@@ -17,6 +17,7 @@ import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup'
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
+import { StageChip, deriveStage } from '@/components/StageChip';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import { computeMissionProgress, crossedMilestone } from '@buildd/core/mission-helpers';
@@ -116,6 +117,9 @@ export default async function HomePage({
     workerName: string;
     timestamp: Date;
     missionTitle: string | null;
+    prUrl: string | null;
+    prLifecycleStatus: string | null;
+    mergedAt: Date | null;
   }[] = [];
 
   let missions: {
@@ -501,6 +505,9 @@ export default async function HomePage({
             workerName: [w.workspace?.name, w.task?.roleSlug].filter(Boolean).join(' · ') || w.name,
             timestamp: w.completedAt || w.updatedAt,
             missionTitle: (w.task as any)?.mission?.title || null,
+            prUrl: w.prUrl ?? null,
+            prLifecycleStatus: w.prLifecycleStatus ?? null,
+            mergedAt: w.mergedAt ?? null,
           }));
 
         // Missions with task progress + health
@@ -1739,7 +1746,16 @@ export default async function HomePage({
             ) : (
               <div className="card">
                 {recentActivity.map((event, i) => {
-                  const statusKey = event.type === 'completed' ? 'completed' : 'failed';
+                  // For completed tasks with an open PR, show the PR lifecycle stage
+                  // rather than a green 'Done' badge \u2014 the task isn't truly done until merged.
+                  const activityChip = event.type === 'completed' && event.prUrl
+                    ? <StageChip stage={deriveStage({
+                        taskStatus: 'completed',
+                        prUrl: event.prUrl,
+                        prLifecycleStatus: event.prLifecycleStatus,
+                        mergedAt: event.mergedAt ? event.mergedAt.toISOString() : null,
+                      })} />
+                    : <StatusBadge status={event.type === 'completed' ? 'completed' : 'failed'} />;
 
                   const row = (
                     <>
@@ -1755,7 +1771,7 @@ export default async function HomePage({
                         </div>
                       </div>
                       <div className="flex-shrink-0">
-                        <StatusBadge status={statusKey} />
+                        {activityChip}
                       </div>
                     </>
                   );
