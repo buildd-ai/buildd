@@ -68,7 +68,7 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
-import { evaluateAutoMergeSafety, escalateConflictExhaustion } from './auto-merge';
+import { evaluateAutoMergeSafety, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -234,6 +234,82 @@ describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   });
 });
 
+describe('evaluateAutoMergeSafety generated-path exclusion', () => {
+  const POLICY: MergePolicy = {
+    tier: 'auto-threshold',
+    threshold: { maxLines: 800, denyPaths: [] },
+  };
+
+  it('drizzle meta snapshot lines are excluded from the line count', async () => {
+    // Source change: 100 lines. Snapshot: 9,413 lines. Total would be 9,513 — over cap.
+    // After exclusion: 100 lines — under cap → should pass.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/feature.ts', additions: 100, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, POLICY),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('still blocks when non-generated lines alone exceed the cap', async () => {
+    // Source change: 900 lines (over the 800 cap) + snapshot.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/feature.ts', additions: 900, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, POLICY),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('900'),
+    });
+  });
+
+  it('drizzle/ in escalateToPaths still escalates — generated exclusion does NOT weaken the gate', async () => {
+    // Regression: the generated-path exclusion must only affect line counting,
+    // not the escalateToPaths deny gate.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0001.sql', additions: 10, deletions: 0 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: false,
+      reason: 'drops column foo',
+    });
+
+    const policy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['packages/core/drizzle/'] },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('drops column foo'),
+    });
+  });
+});
+
 // ── escalateConflictExhaustion ────────────────────────────────────────────────
 
 describe('escalateConflictExhaustion', () => {
@@ -319,6 +395,91 @@ describe('escalateConflictExhaustion', () => {
   it('Pushover URL points to the buildd task page', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
+    const url = (mockNotify.mock.calls[0][0] as any).url as string;
+    expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+});
+
+// ── escalateReviewerExhaustion ────────────────────────────────────────────────
+
+describe('escalateReviewerExhaustion', () => {
+  const TASK_ID = 'task-rev-456';
+  const REPO = 'acme/my-app';
+  const PR_NUMBER = 99;
+  const HEAD_SHA = 'cafe1234567890abcdef';
+  const MAX_ITERATIONS = 3;
+
+  const baseTask = {
+    id: TASK_ID,
+    missionId: null as string | null,
+    title: 'feat: add search',
+    context: {},
+  };
+
+  beforeEach(() => {
+    mockNotify.mockReset();
+    capturedInsertValues = [];
+    mockUpdateReturns = [];
+    mockFindFirst = mock(() => baseTask);
+  });
+
+  it('returns early without firing Pushover when task is not found', async () => {
+    mockFindFirst = mock(() => null);
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('fires Pushover on first call when CAS succeeds', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const call = mockNotify.mock.calls[0][0] as any;
+    expect(call.app).toBe('tasks');
+    expect(call.priority).toBe(0);
+    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.message).toContain('feat: add search');
+  });
+
+  it('does NOT fire Pushover when CAS returns empty (already escalated for this headSha)', async () => {
+    mockUpdateReturns = [[]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: exactly one Pushover across three concurrent exhaustion observations', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }], [], []];
+    await Promise.all([
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+    ]);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts a reviewer_escalated note when task has a missionId', async () => {
+    mockFindFirst = mock(() => ({ ...baseTask, missionId: 'mission-xyz' }));
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Missing mock');
+    expect(capturedInsertValues).toHaveLength(1);
+    expect(capturedInsertValues[0].type).toBe('reviewer_escalated');
+    expect(capturedInsertValues[0].missionId).toBe('mission-xyz');
+    expect(capturedInsertValues[0].taskId).toBe(TASK_ID);
+    expect(capturedInsertValues[0].status).toBe('open');
+    expect(capturedInsertValues[0].title).toContain(`PR #${PR_NUMBER}`);
+    expect(capturedInsertValues[0].body).toContain('Missing mock');
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires Pushover but inserts NO note when task has no missionId', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(capturedInsertValues).toHaveLength(0);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pushover URL points to the buildd task page', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
     const url = (mockNotify.mock.calls[0][0] as any).url as string;
     expect(url).toContain(`/app/tasks/${TASK_ID}`);
   });

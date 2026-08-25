@@ -255,6 +255,10 @@ export async function POST(req: NextRequest) {
             ...(typeof prDetail.additions === 'number' ? { linesAdded: prDetail.additions } : {}),
             ...(typeof prDetail.deletions === 'number' ? { linesRemoved: prDetail.deletions } : {}),
             ...(typeof prDetail.changed_files === 'number' ? { filesChanged: prDetail.changed_files } : {}),
+            // Backfill base SHA if not yet recorded — needed by base-rewrite detector
+            ...(typeof prDetail.base?.sha === 'string' && !worker.prOpenedBaseSha
+              ? { prOpenedBaseSha: prDetail.base.sha }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
@@ -342,6 +346,8 @@ export async function POST(req: NextRequest) {
         ...(typeof prData.additions === 'number' ? { linesAdded: prData.additions } : {}),
         ...(typeof prData.deletions === 'number' ? { linesRemoved: prData.deletions } : {}),
         ...(typeof prData.changed_files === 'number' ? { filesChanged: prData.changed_files } : {}),
+        // Base branch SHA at PR open time — used by the base-history-rewrite detector
+        ...(typeof prData.base?.sha === 'string' ? { prOpenedBaseSha: prData.base.sha } : {}),
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));

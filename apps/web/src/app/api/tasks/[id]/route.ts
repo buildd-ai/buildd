@@ -193,7 +193,22 @@ export async function PATCH(
     if (priority !== undefined) updateData.priority = priority;
     // Agent backend override for this task. 'claude' | 'codex' set it; null/'' clears
     // it (fall back to mission/role/workspace default). The runner reads it at claim.
-    if (backend !== undefined) updateData.backend = backend === 'claude' || backend === 'codex' ? backend : null;
+    if (backend !== undefined) {
+      const nextBackend = backend === 'claude' || backend === 'codex' ? backend : null;
+      updateData.backend = nextBackend;
+
+      // A budget/rate-limit pause parks the task behind a start_at floor set to
+      // the WALLED provider's reset. Moving the task to another provider has to
+      // lift that floor too, or the switch appears to do nothing until the old
+      // provider resets — the "can't switch to Claude" trap.
+      const taskCtx = (task.context || {}) as Record<string, unknown>;
+      const currentBackend = task.backend || 'claude';
+      if (taskCtx.budgetExhausted && (nextBackend || 'claude') !== currentBackend) {
+        const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = taskCtx;
+        updateData.startAt = null;
+        updateData.context = { ...restCtx, switchedBackendFrom: currentBackend };
+      }
+    }
     if (project !== undefined) updateData.project = project;
     if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
     // Link (or unlink) the task to an external issue tracker item (e.g. a Linear

@@ -354,6 +354,28 @@ describe('PATCH /api/missions/[id]', () => {
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
+  it('rejects maxConcurrentTasks > 20', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: 21 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
+  it('accepts maxConcurrentTasks = 20 (ceiling)', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentTasks: 20 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+  });
+
   it('rejects invalid status', async () => {
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',

@@ -47,7 +47,9 @@ mock.module('drizzle-orm', () => ({
 
 import {
   fetchLivePrStats,
+  fetchEffectivePrStats,
   checkContentAlreadyUpstream,
+  checkBaseHistoryRewritten,
   findSuccessorPr,
   runSupersessionPrecheck,
 } from './supersession-check';
@@ -128,6 +130,42 @@ describe('fetchLivePrStats', () => {
   it('returns null on GitHub API error', async () => {
     mockGithubApi.mockRejectedValueOnce(new Error('GitHub down'));
     expect(await fetchLivePrStats(1, 'org/repo', 42)).toBeNull();
+  });
+});
+
+// ── fetchEffectivePrStats ─────────────────────────────────────────────────────
+
+describe('fetchEffectivePrStats', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  it('returns effective stats excluding generated path files', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'apps/web/src/lib/foo.ts', additions: 100, deletions: 5 },
+      { filename: 'packages/core/drizzle/0001.sql', additions: 10, deletions: 0 },
+      { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+      { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+    ]);
+    const stats = await fetchEffectivePrStats(1, 'org/repo', 42);
+    // Only the first two files should count (snapshot and journal excluded)
+    expect(stats).toEqual({ filesChanged: 2, linesAdded: 110, linesRemoved: 5 });
+  });
+
+  it('returns zero counts when all files are generated', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+    ]);
+    const stats = await fetchEffectivePrStats(1, 'org/repo', 42);
+    expect(stats).toEqual({ filesChanged: 0, linesAdded: 0, linesRemoved: 0 });
+  });
+
+  it('returns null when GitHub returns null', async () => {
+    mockGithubApi.mockResolvedValueOnce(null);
+    expect(await fetchEffectivePrStats(1, 'org/repo', 42)).toBeNull();
+  });
+
+  it('returns null on GitHub API error', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub down'));
+    expect(await fetchEffectivePrStats(1, 'org/repo', 42)).toBeNull();
   });
 });
 
@@ -253,13 +291,12 @@ describe('runSupersessionPrecheck', () => {
   });
 
   it('returns superseded=true when both detectors fire', async () => {
-    // Drift check: live stats are 100x larger
+    // Drift check: live stats are 100x larger than recorded (175 lines)
+    // fetchEffectivePrStats → files array (non-generated, high line count)
     mockGithubApi
-      .mockResolvedValueOnce({            // fetchLivePrStats → PR
-        changed_files: 64,
-        additions: 21685,
-        deletions: 438,
-      })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE) // checkContentAlreadyUpstream → PR
       .mockResolvedValueOnce({            // checkContentAlreadyUpstream → compare
         ahead_by: 3,
@@ -275,7 +312,9 @@ describe('runSupersessionPrecheck', () => {
 
   it('returns superseded=false when only drift fires (no content_upstream)', async () => {
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] }); // real diff
 
@@ -288,7 +327,9 @@ describe('runSupersessionPrecheck', () => {
   it('returns superseded=false when only content_upstream fires (no drift)', async () => {
     // Live stats similar to recorded — drift does not fire
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 2, additions: 180, deletions: 10 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/small.ts', additions: 180, deletions: 10 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // ahead_by=0
 
@@ -300,7 +341,7 @@ describe('runSupersessionPrecheck', () => {
 
   it('fails open when GitHub API returns null for live stats (no signal)', async () => {
     mockGithubApi
-      .mockResolvedValueOnce(null)        // fetchLivePrStats → no PR
+      .mockResolvedValueOnce(null)        // fetchEffectivePrStats → null (no files)
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] });
 
@@ -309,9 +350,32 @@ describe('runSupersessionPrecheck', () => {
     expect(result.signals).not.toContain('drift_ratio');
   });
 
+  it('does not fire drift when live inflation is entirely from generated paths', async () => {
+    // Worker reported 175 lines; live PR shows 9,588 total but 9,413 are snapshot JSON.
+    // Effective live = 175 lines (same as recorded) → ratio ~1x → drift must not fire.
+    mockGithubApi
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/feature.ts', additions: 100, deletions: 5 },
+        { filename: 'packages/core/drizzle/0001.sql', additions: 70, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+      ])
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 1, files: [{ filename: 'feature.ts' }] }); // real diff
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      recordedStats: { filesChanged: 2, linesAdded: 164, linesRemoved: 11 },
+    });
+    expect(result.superseded).toBe(false);
+    expect(result.signals).not.toContain('drift_ratio');
+  });
+
   it('includes successorPrNumber when superseded and a sibling merged PR is found', async () => {
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] });
 
@@ -330,7 +394,9 @@ describe('runSupersessionPrecheck', () => {
   it('uses configurable threshold', async () => {
     // Same 100x drift but threshold raised to 200 → drift should NOT fire
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // content fires
 
@@ -342,5 +408,139 @@ describe('runSupersessionPrecheck', () => {
     expect(result.superseded).toBe(false);
     expect(result.signals).not.toContain('drift_ratio');
     expect(result.signals).toContain('content_upstream');
+  });
+
+  it('returns baseRewritten=false when prOpenedBaseSha is not provided', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] });
+
+    const result = await runSupersessionPrecheck(BASE_PARAMS);
+    expect(result.baseRewritten).toBe(false);
+    expect(result.signals).not.toContain('base_rewritten');
+  });
+
+  // Regression for the PR #1797 / Aug 25 force-push pattern:
+  // drift fires (180x), ahead_by > 0 (branch genuinely ahead), base SHA orphaned.
+  it('detects base_rewritten when drift fires, content not upstream, and base SHA diverged', async () => {
+    // fetchEffectivePrStats: per-file breakdown, 180x drift after generated paths
+    mockGithubApi
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/foo.ts', additions: 34776, deletions: 462 },
+      ])
+      // checkContentAlreadyUpstream: PR fetch
+      .mockResolvedValueOnce(PR_RESPONSE)
+      // checkContentAlreadyUpstream: compare → branch IS ahead with real diff
+      .mockResolvedValueOnce({ ahead_by: 1, files: [{ filename: 'docs/sdk.md' }] })
+      // checkBaseHistoryRewritten: PR fetch (gets current base SHA)
+      .mockResolvedValueOnce({ base: { ref: 'dev', sha: 'newbase111' }, head: { sha: 'abc123' } })
+      // checkBaseHistoryRewritten: compare → diverged
+      .mockResolvedValueOnce({ status: 'diverged' });
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      prOpenedBaseSha: 'oldbase222',
+    });
+
+    expect(result.superseded).toBe(false);
+    expect(result.baseRewritten).toBe(true);
+    expect(result.signals).toContain('drift_ratio');
+    expect(result.signals).toContain('base_rewritten');
+    expect(result.signals).not.toContain('content_upstream');
+    expect(result.currentBaseSha).toBe('newbase111');
+  });
+
+  it('does not run base-rewrite check when superseded (content_upstream fired)', async () => {
+    // Both drift + content_upstream fire → supersession, not base rewrite path
+    mockGithubApi
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // content fires → superseded
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      prOpenedBaseSha: 'oldbase222',
+    });
+
+    expect(result.superseded).toBe(true);
+    expect(result.baseRewritten).toBe(false);
+    expect(result.signals).not.toContain('base_rewritten');
+    // GitHub API should only have been called 3 times (no base-rewrite check)
+    expect(mockGithubApi).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── checkBaseHistoryRewritten ─────────────────────────────────────────────────
+
+const PR_WITH_BASE = {
+  base: { ref: 'dev', sha: 'currenttip123' },
+  head: { sha: 'abc123' },
+};
+
+describe('checkBaseHistoryRewritten', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  it('returns { rewritten: true } when compare status is diverged', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)     // PR fetch
+      .mockResolvedValueOnce({ status: 'diverged' });  // compare
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: true, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: false } when compare status is behind (normal fast-forward)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockResolvedValueOnce({ status: 'behind' });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: false, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: false } when compare status is identical', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockResolvedValueOnce({ status: 'identical' });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: false, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: true } when compare returns 404 (SHA gone)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockRejectedValueOnce(new Error('GitHub API error: 404 Not Found'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: true, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns null when PR fetch fails', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('network error'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when PR has no base.ref', async () => {
+    mockGithubApi.mockResolvedValueOnce({ base: {}, head: { sha: 'abc' } });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when compare fails with non-404 error', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockRejectedValueOnce(new Error('GitHub API error: 500 Internal Server Error'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
   });
 });

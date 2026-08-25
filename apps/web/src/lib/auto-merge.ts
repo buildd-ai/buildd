@@ -8,11 +8,12 @@
 
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notify } from '@/lib/pushover';
 import type { MergePolicy } from '@buildd/shared';
+import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
@@ -109,8 +110,10 @@ export async function evaluateAutoMergeSafety(
     }
   }
 
-  const NOISE_PATTERNS = [/^packages\/core\/drizzle\/meta\//, /\.lock$/, /^bun\.lockb$/];
-  const sourceFiles = files.filter((f) => !NOISE_PATTERNS.some((p) => p.test(f.filename)));
+  const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
+  const sourceFiles = files.filter(
+    (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
+  );
   const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
   if (totalLines > maxLines) {
     return {
@@ -325,6 +328,102 @@ export async function escalateConflictExhaustion(
   });
 
   console.log(`[conflict-retry] escalated PR #${prNumber}@${headSha.slice(0, 7)} for task ${taskId}`);
+}
+
+/**
+ * Emit escalation when reviewer-requested-changes retries are exhausted.
+ *
+ * Idempotent: CAS on tasks.context.reviewerExhaustedHeadSha — fires at most
+ * once per (taskId, headSha). A new headSha after a push resets the guard so
+ * a fresh review cycle can escalate independently.
+ *
+ * Exported alongside escalateConflictExhaustion to share the same doctrine:
+ * machine-detected blocker → reviewer_escalated note + Pushover, never silence.
+ */
+export async function escalateReviewerExhaustion(
+  taskId: string,
+  repoFullName: string,
+  prNumber: number,
+  headSha: string,
+  maxIterations: number,
+  lastFeedback: string | null | undefined,
+): Promise<void> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, missionId: true, title: true, context: true },
+  });
+  if (!task) return;
+
+  // Atomic dedup: only one escalation per (taskId, headSha)
+  const [claimed] = await db
+    .update(tasks)
+    .set({
+      context: sql`COALESCE(context, '{}'::jsonb) || jsonb_build_object('reviewerExhaustedHeadSha', ${headSha}::text)`,
+    })
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        or(
+          sql`context IS NULL`,
+          sql`context->>'reviewerExhaustedHeadSha' IS NULL`,
+          sql`context->>'reviewerExhaustedHeadSha' != ${headSha}`,
+        ),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  if (!claimed) {
+    console.log(`[reviewer] escalation already fired for task ${taskId} PR #${prNumber}@${headSha.slice(0, 7)}`);
+    return;
+  }
+
+  const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
+
+  if (task.missionId) {
+    await db.insert(missionNotes).values({
+      missionId: task.missionId,
+      taskId: task.id,
+      authorType: 'system',
+      type: 'reviewer_escalated',
+      title: `PR #${prNumber} — reviewer retries exhausted (${maxIterations}/${maxIterations})`,
+      body: `Reviewer requested changes ${maxIterations} time${maxIterations === 1 ? '' : 's'} — automated fix attempts exhausted. Human review required.\n\n${lastFeedback ? `Last feedback: ${lastFeedback}` : ''}\n\nPR: ${prUrl}`,
+      status: 'open',
+    });
+  }
+
+  notify({
+    app: 'tasks',
+    title: `PR #${prNumber}: reviewer retries exhausted`,
+    message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
+    url: taskUrl,
+    urlTitle: 'View task',
+    priority: 0,
+  });
+
+  console.log(`[reviewer] exhaustion escalated PR #${prNumber}@${headSha.slice(0, 7)} for task ${taskId}`);
+}
+
+/**
+ * Returns true when an active (pending/assigned/in_progress) reviewer-dispatched
+ * fix task already exists for the given PR.
+ *
+ * Call this guard in `sweepDeadZonePrs` (and any other sweep that might try to
+ * spark a fix task) to prevent two agents landing on the same branch concurrently.
+ */
+export async function hasActiveReviewerFixTask(
+  workspaceId: string,
+  prNumber: number,
+): Promise<boolean> {
+  const existing = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.reviewerRetryPrNumber, prNumber),
+      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+    ),
+    columns: { id: true },
+  });
+  return existing != null;
 }
 
 export { escalateSupersession } from '@/lib/conflict-retry';

@@ -799,6 +799,10 @@ export const tasks = pgTable('tasks', {
   // from multiple paths (auto-merge, human merge); only one retry task per PR+SHA.
   conflictRetryPrNumber: integer('conflict_retry_pr_number'),
   conflictRetryHeadSha: text('conflict_retry_head_sha'),
+  // Stable identity for reviewer-requested-changes retries. The reviewer may re-run
+  // on the same headSha; only one fix task per (workspace, PR, headSha).
+  reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
+  reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
@@ -889,6 +893,9 @@ export const tasks = pgTable('tasks', {
   conflictRetryEventIdx: uniqueIndex('tasks_conflict_retry_event_unique')
     .on(t.workspaceId, t.conflictRetryPrNumber, t.conflictRetryHeadSha)
     .where(sql`${t.conflictRetryPrNumber} IS NOT NULL AND ${t.conflictRetryHeadSha} IS NOT NULL`),
+  reviewerRetryEventIdx: uniqueIndex('tasks_reviewer_retry_event_unique')
+    .on(t.workspaceId, t.reviewerRetryPrNumber, t.reviewerRetryHeadSha)
+    .where(sql`${t.reviewerRetryPrNumber} IS NOT NULL AND ${t.reviewerRetryHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
@@ -1001,6 +1008,10 @@ export const workers = pgTable('workers', {
   // Null = never checked (or pre-migration). Used by the read-through refresh to
   // skip workers that were polled within the last 5 minutes.
   prLastCheckedAt: timestamp('pr_last_checked_at', { withTimezone: true }),
+  // Base branch SHA at the time the PR was opened (captured by create_pr).
+  // Used by the base-history-rewrite detector to identify force-pushes that
+  // orphan the PR's merge base.
+  prOpenedBaseSha: text('pr_opened_base_sha'),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -1908,6 +1919,37 @@ export const tenantBudgets = pgTable('tenant_budgets', {
 
 export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
+}));
+
+// Provider pause log — one row per observed budget/rate-limit (or auth) wall on
+// a specific agent backend. Append-only: the active pause for a backend is the
+// newest row whose resetsAt is still in the future. Rows are pruned lazily.
+//
+// Why a per-backend table rather than more columns on accounts: each provider
+// has its own pool. Before this table a Codex rate-limit was recorded on
+// accounts.budgetExhaustedAt (the Claude/OAuth pool), so one provider running
+// dry paused the other and failover had nowhere to go. Failover reads this to
+// pick a backend that is not itself walled — see apps/web/src/lib/backend-failover.ts.
+export const backendPauses = pgTable('backend_pauses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Provenance only — a provider pool is team-wide, so reads are not scoped by
+  // workspace. Kept for "which workspace hit the wall" in the UI/debugging.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  backend: agentBackendEnum('backend').notNull(),
+  /** 'budget' (session/rate-limit) | 'auth' (credential rejected). */
+  reason: text('reason').notNull().default('budget'),
+  pausedAt: timestamp('paused_at', { withTimezone: true }).defaultNow().notNull(),
+  resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
+  sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
+}));
+
+export const backendPausesRelations = relations(backendPauses, ({ one }) => ({
+  team: one(teams, { fields: [backendPauses.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [backendPauses.workspaceId], references: [workspaces.id] }),
 }));
 
 // OAuth budget episodes — one row per observed session/budget exhaustion on a

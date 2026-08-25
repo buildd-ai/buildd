@@ -18,6 +18,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, inArray } from 'drizzle-orm';
+import { isGeneratedPath } from '@buildd/shared';
 
 export const DEFAULT_SUPERSESSION_DRIFT_RATIO = 10;
 
@@ -33,13 +34,21 @@ export interface SupersessionResult {
   /** True when both detectors fired — retry should be halted. */
   superseded: boolean;
   /** Which detectors fired. */
-  signals: Array<'drift_ratio' | 'content_upstream'>;
+  signals: Array<'drift_ratio' | 'content_upstream' | 'base_rewritten'>;
   /** Lines ratio (live / recorded). Undefined when recorded total is 0. */
   driftRatioLines?: number;
   /** File count ratio (live / recorded). Undefined when recorded total is 0. */
   driftRatioFiles?: number;
   /** Merged PR number that appears to have landed the same change, if found. */
   successorPrNumber?: number | null;
+  /**
+   * True when the base branch was force-pushed since the PR was opened.
+   * Distinct from supersession: the PR's own changes are intact, but the
+   * merge-base was rewritten, inflating the diff with re-attributed commits.
+   */
+  baseRewritten: boolean;
+  /** Current SHA of the base branch tip at check time (when base_rewritten fired). */
+  currentBaseSha?: string;
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -93,6 +102,37 @@ export async function fetchLivePrStats(
 }
 
 /**
+ * Fetch live PR diff stats from GitHub, excluding generated paths.
+ *
+ * Uses the per-file breakdown (up to 300 files) to strip generated artifacts
+ * (e.g. Drizzle snapshot JSON) before summing additions/deletions. This prevents
+ * a 9k-line snapshot from inflating the drift ratio against a small recorded stat.
+ *
+ * Returns null on failure — treat as no-signal for the drift check.
+ */
+export async function fetchEffectivePrStats(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<DiffStats | null> {
+  try {
+    const { githubApi } = await import('@/lib/github');
+    const files: Array<{ filename: string; additions: number; deletions: number }> =
+      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
+    if (!Array.isArray(files)) return null;
+
+    const sourceFiles = files.filter((f) => !isGeneratedPath(f.filename));
+    return {
+      filesChanged: sourceFiles.length,
+      linesAdded: sourceFiles.reduce((s, f) => s + (f.additions || 0), 0),
+      linesRemoved: sourceFiles.reduce((s, f) => s + (f.deletions || 0), 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Returns true when the PR branch has no net diff vs its base branch.
  *
  * Uses `GET /repos/{owner}/{repo}/compare/{base}...{head}`:
@@ -132,6 +172,49 @@ export async function checkContentAlreadyUpstream(
     if (changedFiles === 0) return true;
 
     return false;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true when the base branch was force-pushed after the PR was opened.
+ *
+ * Calls `GET /repos/{owner}/{repo}/compare/{prOpenedBaseSha}...{currentBaseBranch}`:
+ * - `status === 'diverged'`: prOpenedBaseSha is NOT an ancestor of the current base
+ *   → base history was rewritten (force push).
+ * - 404 on the compare: prOpenedBaseSha no longer exists in the repo → conclusive.
+ * - `status === 'behind'` or `'identical'`: normal case; base just got new commits.
+ *
+ * Returns null on GitHub API failure — treat as no-signal (fail-open).
+ */
+export async function checkBaseHistoryRewritten(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+  prOpenedBaseSha: string,
+): Promise<{ rewritten: boolean; currentBaseSha?: string } | null> {
+  try {
+    const { githubApi } = await import('@/lib/github');
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (!pr?.base?.ref) return null;
+    const baseBranch: string = pr.base.ref;
+    // GitHub keeps pr.base.sha current — reflects the tip after a force push.
+    const currentBaseSha: string | undefined = typeof pr.base.sha === 'string' ? pr.base.sha : undefined;
+
+    try {
+      const compare = await githubApi(
+        installationId,
+        `/repos/${repoFullName}/compare/${prOpenedBaseSha}...${encodeURIComponent(baseBranch)}`,
+      );
+      if (!compare) return null;
+      return { rewritten: (compare.status as string) === 'diverged', currentBaseSha };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      // 404 means prOpenedBaseSha is gone from the repo — conclusively rewritten.
+      if (msg.includes('404')) return { rewritten: true, currentBaseSha };
+      return null;
+    }
   } catch {
     return null;
   }
@@ -213,6 +296,12 @@ export interface RunSupersessionPrecheckParams {
   /** Workspace + task IDs for successor search. */
   workspaceId: string;
   taskId: string;
+  /**
+   * Base branch SHA recorded when the PR was opened (workers.prOpenedBaseSha).
+   * When provided and drift fired without content_upstream, the base-rewrite
+   * detector checks whether this SHA is still an ancestor of the base branch.
+   */
+  prOpenedBaseSha?: string | null;
 }
 
 /**
@@ -236,14 +325,17 @@ export async function runSupersessionPrecheck(
     driftRatioThreshold = DEFAULT_SUPERSESSION_DRIFT_RATIO,
     workspaceId,
     taskId,
+    prOpenedBaseSha,
   } = params;
 
-  const signals: Array<'drift_ratio' | 'content_upstream'> = [];
+  const signals: Array<'drift_ratio' | 'content_upstream' | 'base_rewritten'> = [];
   let driftRatioLines: number | undefined;
   let driftRatioFiles: number | undefined;
 
   // ── 1. Drift ratio (fast heuristic) ──────────────────────────────────────
-  const liveStats = await fetchLivePrStats(installationId, repoFullName, prNumber);
+  // Use per-file stats with generated paths excluded so snapshot JSON doesn't
+  // inflate the ratio against the worker's recorded count.
+  const liveStats = await fetchEffectivePrStats(installationId, repoFullName, prNumber);
 
   if (liveStats) {
     const recordedLines = recordedStats.linesAdded + recordedStats.linesRemoved;
@@ -271,5 +363,30 @@ export async function runSupersessionPrecheck(
     successorPrNumber = await findSuccessorPr(workspaceId, taskId, prNumber).catch(() => null);
   }
 
-  return { superseded, signals, driftRatioLines, driftRatioFiles, successorPrNumber };
+  // ── 3. Base-history rewrite (distinct from supersession) ─────────────────
+  // Fires when: drift ratio detected AND content NOT already upstream AND
+  // the recorded base SHA is no longer an ancestor of the base branch.
+  // This pattern matches a force-push that orphaned the PR's merge base
+  // (not a supersession — the PR's own changes are still unique).
+  let baseRewritten = false;
+  let currentBaseSha: string | undefined;
+  if (
+    prOpenedBaseSha &&
+    signals.includes('drift_ratio') &&
+    !signals.includes('content_upstream')
+  ) {
+    const rewriteResult = await checkBaseHistoryRewritten(
+      installationId,
+      repoFullName,
+      prNumber,
+      prOpenedBaseSha,
+    );
+    if (rewriteResult?.rewritten === true) {
+      signals.push('base_rewritten');
+      baseRewritten = true;
+      currentBaseSha = rewriteResult.currentBaseSha;
+    }
+  }
+
+  return { superseded, signals, driftRatioLines, driftRatioFiles, successorPrNumber, baseRewritten, currentBaseSha };
 }

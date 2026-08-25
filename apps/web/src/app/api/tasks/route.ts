@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { desc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
+import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -110,7 +110,7 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
-    const terminalStatuses = ['completed', 'failed'];
+    const terminalStatuses = ['completed', 'failed', 'cancelled'];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
 
@@ -159,6 +159,7 @@ export async function GET(req: NextRequest) {
           // Claimable (pending) first, then running, then other active
           sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
           desc(tasks.priority),
+          asc(tasks.id),
         )
         .limit(limit)
         .offset(offset),

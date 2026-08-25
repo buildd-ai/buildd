@@ -478,6 +478,28 @@ describe('POST /api/missions', () => {
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
+  it('rejects maxConcurrentTasks > 20', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad Cap', maxConcurrentTasks: 21 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('maxConcurrentTasks');
+  });
+
+  it('accepts maxConcurrentTasks = 20 (ceiling)', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Max Cap Mission', maxConcurrentTasks: 20 }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+  });
+
   it('does NOT auto-start when created with status=paused (paused-on-create regression)', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',

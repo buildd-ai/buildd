@@ -4,6 +4,7 @@ import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
+import { buildWorkspaceStateContext, type OrganizerCause, type WorkspaceStateCauseData } from './workspace-state-context';
 import { LIVE_WORKER_STATUSES } from './task-timestamps';
 
 // Operational-only schema: no free-text string fields that could capture email
@@ -710,6 +711,23 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     descParts.push('\nUse `buildd` action: get_artifact to fetch full content.');
   }
 
+  // Situational awareness — inject current workspace state scoped to the trigger cause.
+  // Gives the organizer a live picture of sibling missions, held path claims, open PRs,
+  // parent initiative, and budget pressure without a full workspace dump on every pass.
+  if (mission.workspaceId) {
+    const cause = (templateContext?.cause as OrganizerCause | undefined) ?? 'mission_evaluate';
+    const causeData = (templateContext?.causeData as WorkspaceStateCauseData | undefined) ?? {};
+    const wsStateBlock = await buildWorkspaceStateContext({
+      missionId: mission.id,
+      workspaceId: mission.workspaceId,
+      teamId: mission.teamId,
+      initiativeId: mission.initiativeId ?? null,
+      cause,
+      causeData,
+    }).catch(() => '');
+    if (wsStateBlock) descParts.push(wsStateBlock);
+  }
+
   // Knowledge bridge — inject relevant prior work retrieved from the KnowledgeStore.
   // Queries memory, task, pr, and code corpora. Also runs a path-based PR lookup when
   // active tasks carry pathManifests (composes with overlap serialization from PR #1130).
@@ -1145,6 +1163,19 @@ Only create child tasks when the work requires:
       const r = t.result as Record<string, unknown>;
       descParts.push(`- [${t.title}] PR #${r.prNumber}: ${r.prUrl}`);
     }
+  }
+
+  // Situational awareness — workspace state scoped to the trigger cause.
+  if (mission.workspaceId && mission.teamId) {
+    const hbCause = 'mission_evaluate' as OrganizerCause;
+    const wsStateBlock = await buildWorkspaceStateContext({
+      missionId: mission.id,
+      workspaceId: mission.workspaceId,
+      teamId: mission.teamId,
+      initiativeId: null,
+      cause: hbCause,
+    }).catch(() => '');
+    if (wsStateBlock) descParts.push(wsStateBlock);
   }
 
   // Prior-work retrieval — inject on every heartbeat so the organizer can apply the

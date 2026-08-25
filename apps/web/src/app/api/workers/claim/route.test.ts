@@ -40,6 +40,8 @@ const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockOauthEpisodesFindMany = mock(() => [] as any[]);
+const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
 
 function makeSelectChain(result: any[] = []) {
   const chain: any = {};
@@ -97,6 +99,9 @@ mock.module('@buildd/core/db', () => ({
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
       tenantBudgets: { findFirst: mock(() => null as any) },
+      // Provider pause log (backend_pauses) — empty means every pool is open.
+      backendPauses: { findMany: (...a: any[]) => mockBackendPausesFindMany(...a) },
+      accounts: { findFirst: (...a: any[]) => mockAccountsFindFirst(...a) },
       workspaceSkills: {
         findMany: mockWorkspaceSkillsFindMany,
         findFirst: mockWorkspaceSkillsFindFirst,
@@ -151,6 +156,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
+  backendPauses: { teamId: 'teamId', backend: 'backend', resetsAt: 'resetsAt' },
   oauthBudgetEpisodes: { accountId: 'accountId', exhaustedAt: 'exhaustedAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
@@ -634,6 +640,107 @@ describe('POST /api/workers/claim', () => {
       // at reset time instead of stalling on its hourly fallback.
       expect(data.diagnostics.reason).toBe('budget_exhausted');
       expect(data.budgetResetsAt).toBeTruthy();
+    });
+
+    // Reverse direction. Codex has its own pool, so a Codex rate-limit must not
+    // strand the task the way it did on 2026-08-25 — Claude is right there.
+    it('routes a Codex-walled task to Claude while the Claude pool is open', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    // The capability filter drops Codex tasks on runners without Codex, so the
+    // escape has to happen before it or a walled Codex task is invisible fleet-wide.
+    it('lets a Claude-only runner pick up a Codex-walled task', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
+      mockHasCodexCredential.mockResolvedValue(false);   // this runner has no Codex at all
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'claude-only-runner' },   // no backend:codex capability
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    it('leaves a Codex-walled task pending when Claude is walled too', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+        { backend: 'claude', resetsAt: new Date(Date.now() + 4 * 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+      // The runner must learn WHEN to come back — the earliest of the two walls,
+      // not a bare race_lost (2026-07-11 stall class).
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(new Date(data.budgetResetsAt).getTime()).toBeLessThan(Date.now() + 2 * 60 * 60 * 1000);
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    // A Claude-walled task must not be funnelled onto a Codex pool that is also dry.
+    it('does not fail over to Codex while Codex is rate-limited', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+      mockBackendPausesFindMany.mockResolvedValue([]);
     });
 
     it('does not start a second Codex worker when the workspace already has one active', async () => {

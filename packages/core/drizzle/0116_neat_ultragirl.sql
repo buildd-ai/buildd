@@ -1,0 +1,3 @@
+ALTER TABLE "tasks" ADD COLUMN "reviewer_retry_pr_number" integer;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "reviewer_retry_head_sha" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "tasks_reviewer_retry_event_unique" ON "tasks" USING btree ("workspace_id","reviewer_retry_pr_number","reviewer_retry_head_sha") WHERE "tasks"."reviewer_retry_pr_number" IS NOT NULL AND "tasks"."reviewer_retry_head_sha" IS NOT NULL;

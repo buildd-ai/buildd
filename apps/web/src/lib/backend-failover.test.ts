@@ -1,0 +1,141 @@
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// Only the db handle is mocked: the real schema + real drizzle operators are
+// used so this test cannot drift from the actual column names, and so it does
+// not leak a partial module mock into the rest of the suite.
+const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
+const mockTenantBudgetsFindFirst = mock(() => Promise.resolve(null as any));
+const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+let insertedPauses: any[] = [];
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      backendPauses: { findMany: mockBackendPausesFindMany },
+      accounts: { findFirst: mockAccountsFindFirst },
+      tenantBudgets: { findFirst: mockTenantBudgetsFindFirst },
+      secrets: { findMany: mockSecretsFindMany },
+    },
+    insert: () => ({ values: (vals: any) => { insertedPauses.push(vals); return Promise.resolve(); } }),
+    delete: () => ({ where: () => Promise.resolve() }),
+  },
+}));
+
+const {
+  getActiveBackendPauses,
+  isBackendConfigured,
+  recordBackendPause,
+  resolveFailoverBackend,
+} = await import('./backend-failover');
+
+const HOUR = 60 * 60 * 1000;
+const scope = { teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1' };
+
+beforeEach(() => {
+  insertedPauses = [];
+  mockBackendPausesFindMany.mockResolvedValue([]);
+  mockAccountsFindFirst.mockResolvedValue(null);
+  mockTenantBudgetsFindFirst.mockResolvedValue(null);
+  mockSecretsFindMany.mockResolvedValue([]);
+});
+
+describe('recordBackendPause', () => {
+  it('writes the wall against the backend that hit it', async () => {
+    const resetsAt = new Date(Date.now() + HOUR);
+    await recordBackendPause({ backend: 'codex', scope, resetsAt, reason: 'budget', sourceWorkerId: 'worker-1' });
+    expect(insertedPauses).toHaveLength(1);
+    expect(insertedPauses[0]).toMatchObject({
+      teamId: 'team-1', workspaceId: 'ws-1', backend: 'codex', reason: 'budget', sourceWorkerId: 'worker-1',
+    });
+  });
+
+  it('is a no-op without a team, and for a backend that cannot be dispatched', async () => {
+    await recordBackendPause({ backend: 'codex', scope: {}, resetsAt: new Date() });
+    await recordBackendPause({ backend: 'openrouter', scope, resetsAt: new Date() });
+    expect(insertedPauses).toHaveLength(0);
+  });
+});
+
+describe('getActiveBackendPauses', () => {
+  it('keeps the furthest-out row per backend and ignores nothing else', async () => {
+    const soon = new Date(Date.now() + HOUR);
+    const later = new Date(Date.now() + 4 * HOUR);
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'codex', resetsAt: later, reason: 'budget' },
+      { backend: 'codex', resetsAt: soon, reason: 'budget' },
+      { backend: 'claude', resetsAt: soon, reason: 'budget' },
+    ]);
+    const pauses = await getActiveBackendPauses(scope);
+    expect(pauses.get('codex')?.resetsAt).toEqual(later);
+    expect(pauses.get('claude')?.resetsAt).toEqual(soon);
+  });
+
+  it('folds in the legacy per-account Claude session flag', async () => {
+    const resetsAt = new Date(Date.now() + 2 * HOUR);
+    mockAccountsFindFirst.mockResolvedValue({ budgetExhaustedAt: new Date(), budgetResetsAt: resetsAt });
+    const pauses = await getActiveBackendPauses(scope);
+    expect(pauses.get('claude')?.resetsAt).toEqual(resetsAt);
+  });
+
+  it('ignores an account flag whose reset has already passed', async () => {
+    mockAccountsFindFirst.mockResolvedValue({
+      budgetExhaustedAt: new Date(Date.now() - 6 * HOUR),
+      budgetResetsAt: new Date(Date.now() - HOUR),
+    });
+    expect((await getActiveBackendPauses(scope)).size).toBe(0);
+  });
+
+  it('uses the tenant budget row instead of the account flag in multi-tenant mode', async () => {
+    const resetsAt = new Date(Date.now() + 3 * HOUR);
+    mockTenantBudgetsFindFirst.mockResolvedValue({ budgetResetsAt: resetsAt });
+    mockAccountsFindFirst.mockResolvedValue({ budgetExhaustedAt: new Date(), budgetResetsAt: new Date(Date.now() + 9 * HOUR) });
+    const pauses = await getActiveBackendPauses({ ...scope, tenantId: 'tenant-9' });
+    expect(pauses.get('claude')?.resetsAt).toEqual(resetsAt);
+  });
+});
+
+describe('isBackendConfigured', () => {
+  it('treats Claude as always available — it runs on the account credentials', async () => {
+    expect(await isBackendConfigured('claude', scope)).toBe(true);
+  });
+
+  it('requires a stored credential for Codex', async () => {
+    expect(await isBackendConfigured('codex', scope)).toBe(false);
+    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  it('refuses a backend the runner cannot execute yet', async () => {
+    expect(await isBackendConfigured('openrouter', scope)).toBe(false);
+  });
+});
+
+describe('resolveFailoverBackend', () => {
+  it('moves a Codex-walled task to Claude', async () => {
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'codex', resetsAt: new Date(Date.now() + HOUR), reason: 'budget' },
+    ]);
+    expect((await resolveFailoverBackend({ from: 'codex', scope })).backend).toBe('claude');
+  });
+
+  it('moves a Claude-walled task to Codex when a credential exists', async () => {
+    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    expect((await resolveFailoverBackend({ from: 'claude', scope })).backend).toBe('codex');
+  });
+
+  it('reports the reason when the only alternative is walled as well', async () => {
+    const claudeReset = new Date(Date.now() + 4 * HOUR);
+    mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt: claudeReset, reason: 'budget' }]);
+    const decision = await resolveFailoverBackend({ from: 'codex', scope });
+    expect(decision.backend).toBeNull();
+    expect(decision.blocked).toEqual([{ backend: 'claude', reason: 'paused', pausedUntil: claudeReset }]);
+  });
+
+  it('respects a busy provider slot the caller reports', async () => {
+    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    const decision = await resolveFailoverBackend({ from: 'claude', scope, busy: { codex: true } });
+    expect(decision.backend).toBeNull();
+    expect(decision.blocked[0]).toMatchObject({ backend: 'codex', reason: 'busy' });
+  });
+});
