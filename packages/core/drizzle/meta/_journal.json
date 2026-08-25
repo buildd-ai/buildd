@@ -827,6 +827,13 @@
       "when": 1787625822737,
       "tag": "0117_condemned_johnny_blaze",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1787672635493,
+      "tag": "0118_puzzling_killmonger",
+      "breakpoints": true
     }
   ]
 }

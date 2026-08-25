@@ -27,6 +27,7 @@ import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window
 import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
+import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap } from '@buildd/core/path-overlap';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
@@ -434,15 +435,42 @@ export async function POST(req: NextRequest) {
     return enabled;
   };
 
+  // Memoized per-team provider pause log (budget/rate-limit walls recorded by the
+  // worker-report route). A walled provider is never a dispatch target, in either
+  // direction — that is what keeps a task from bouncing onto a pool that is dry.
+  const teamPauseCache = new Map<string, Map<AgentBackend, ActivePause>>();
+  const teamPauses = async (teamId?: string): Promise<Map<AgentBackend, ActivePause>> => {
+    if (!teamId) return new Map();
+    const cached = teamPauseCache.get(teamId);
+    if (cached) return cached;
+    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id });
+    teamPauseCache.set(teamId, pauses);
+    return pauses;
+  };
+
   // Apply the team toggle's SAFE direction up front: if a task's backend is
   // disabled team-wide and the fallback is Claude, rewrite it to Claude now —
   // before the capability filter — so a Codex task with Codex disabled isn't
   // dropped for lacking Codex capability. (The Claude→Codex direction needs a
   // credential + the per-workspace slot, so it stays in the dispatch loop below.)
   for (const task of claimableTasks) {
-    const enabled = await teamEnabledBackends((task as any).workspace?.teamId);
+    const taskTeam = (task as any).workspace?.teamId as string | undefined;
+    const enabled = await teamEnabledBackends(taskTeam);
     if (maskBackend((task as any).backend as AgentBackend, enabled) === 'claude' && (task as any).backend !== 'claude') {
       (task as any).backend = 'claude';
+      continue;
+    }
+    // Same reasoning for a provider that is rate-limited rather than disabled: a
+    // Codex task whose pool is walled runs on Claude instead. Rewriting here (not
+    // in the dispatch loop) matters because the capability filter below drops
+    // Codex tasks on runners without Codex — a walled Codex task would otherwise
+    // be invisible to every Claude-only runner in the fleet.
+    if ((task as any).backend === 'codex' && (!enabled || enabled.includes('claude'))) {
+      const pauses = await teamPauses(taskTeam);
+      if (pauses.has('codex') && !pauses.has('claude')) {
+        (task as any).backend = 'claude';
+        console.log(`[claim] Provider pause: task ${task.id} → Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
+      }
     }
   }
 
@@ -811,11 +839,12 @@ export async function POST(req: NextRequest) {
     return available;
   };
 
-  // Flip a task to Codex in-memory, respecting credential availability and the
-  // ≤1-Codex-per-workspace throttle. Shared by the provider toggle and budget
-  // failover. Returns true if the flip happened.
+  // Flip a task to Codex in-memory, respecting credential availability, the
+  // ≤1-Codex-per-workspace throttle, and an active Codex rate-limit. Shared by
+  // the provider toggle and budget failover. Returns true if the flip happened.
   const tryFlipToCodex = async (task: any, teamId?: string, wsId?: string): Promise<boolean> => {
     const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
+    if (teamId && (await teamPauses(teamId)).has('codex')) return false;
     if (wsId && teamId && codexFree && await workspaceHasCodex({ teamId, accountId: account.id, workspaceId: wsId })) {
       task.backend = 'codex';
       codexFlippedWorkspaces.add(wsId);
@@ -1066,36 +1095,54 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Determine whether this task is currently blocked by Claude budget/session
-    // exhaustion (Codex-backend tasks are never blocked — separate credit pool).
+    // Is the CLAUDE pool walled right now? Computed for every task, not just
+    // Claude ones: a Codex task that hits its own wall needs to know whether
+    // Claude is a viable escape (and vice versa). Each provider has its own pool.
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
-    const isCodexTask = (task as any).backend === 'codex';
-    let claudeBudgetBlocked = false;
+    const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
+    let claudePoolBlocked = false;
 
-    if (!isCodexTask) {
-      if (accountBudgetExhausted && !tenantCtx?.tenantId) {
-        // Account's own OAuth session/budget is exhausted.
-        claudeBudgetBlocked = true;
-      } else if (tenantCtx?.tenantId) {
-        const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
-        if (workspaceTeamId) {
-          const tenantBudget = await db.query.tenantBudgets.findFirst({
-            where: and(
-              eq(tenantBudgets.tenantId, tenantCtx.tenantId),
-              eq(tenantBudgets.teamId, workspaceTeamId),
-            ),
-          });
-          if (tenantBudget) {
-            if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
-              // Budget has reset — clean up the record
-              await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
-            } else {
-              claudeBudgetBlocked = true;
-            }
+    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
+      // Account's own OAuth session/budget is exhausted.
+      claudePoolBlocked = true;
+    } else if (tenantCtx?.tenantId) {
+      const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (workspaceTeamId) {
+        const tenantBudget = await db.query.tenantBudgets.findFirst({
+          where: and(
+            eq(tenantBudgets.tenantId, tenantCtx.tenantId),
+            eq(tenantBudgets.teamId, workspaceTeamId),
+          ),
+        });
+        if (tenantBudget) {
+          if (new Date() >= new Date(tenantBudget.budgetResetsAt)) {
+            // Budget has reset — clean up the record
+            await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
+          } else {
+            claudePoolBlocked = true;
           }
         }
       }
     }
+    // Walls recorded against Claude in the pause log (e.g. a team running on a
+    // managed Claude credential rather than this account's own session).
+    const pauses = await teamPauses(taskTeamId);
+    if (pauses.has('claude')) claudePoolBlocked = true;
+
+    // Codex wall → escape to Claude while its pool is open, rather than claiming
+    // onto a provider that will immediately report a rate-limit.
+    if ((task as any).backend === 'codex' && pauses.has('codex')) {
+      if (claudeEnabledForTeam && !claudePoolBlocked) {
+        (task as any).backend = 'claude';
+        console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
+      } else {
+        deferrals.budget_paused++;
+        continue;
+      }
+    }
+
+    const isCodexTask = (task as any).backend === 'codex';
+    const claudeBudgetBlocked = !isCodexTask && claudePoolBlocked;
 
     // Proactive budget failover: rather than skip a Claude task until the session/
     // budget resets, route it to Codex *now* when (a) the workspace has a Codex
@@ -1335,10 +1382,22 @@ export async function POST(req: NextRequest) {
     // 2026-07-11 "work not picked up after budget is back" stall: 10 pending
     // Claude tasks idle for the full 5h window + up to another hour.)
     // Surface the reset time so the runner can schedule a resume poll for it.
-    if (accountBudgetExhausted) {
+    // Same signal for a wall on any OTHER provider: every candidate was deferred
+    // by `budget_paused`, so the runner needs the earliest reset across the pauses
+    // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
+    if (accountBudgetExhausted || deferrals.budget_paused > 0) {
+      let resetsAt: string | null = account.budgetResetsAt
+        ? new Date(account.budgetResetsAt).toISOString()
+        : null;
+      for (const pauses of teamPauseCache.values()) {
+        for (const pause of pauses.values()) {
+          const iso = pause.resetsAt.toISOString();
+          if (!resetsAt || iso < resetsAt) resetsAt = iso;
+        }
+      }
       return NextResponse.json({
         workers: [],
-        budgetResetsAt: account.budgetResetsAt,
+        budgetResetsAt: resetsAt,
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
     }

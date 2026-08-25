@@ -367,6 +367,77 @@ describe('PATCH /api/tasks/[id]', () => {
     mockWorkersFindFirst.mockResolvedValue(null);
   });
 
+  // A budget/rate-limit pause parks the task behind a start_at floor for the
+  // WALLED provider's reset. Switching provider must lift that floor, or the
+  // switch silently does nothing until the old provider's reset comes round.
+  describe('manual backend switch clears the paused provider\'s deferral', () => {
+    const pausedCodexTask = () => ({
+      id: TASK_ID,
+      title: 'Daily finance digest',
+      workspaceId: 'ws-1',
+      status: 'pending',
+      backend: 'codex',
+      startAt: new Date(Date.now() + 3 * 60 * 60 * 1000),
+      context: { budgetExhausted: true, budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString() },
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    function captureUpdate() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          sets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      return sets;
+    }
+
+    it('lifts the start_at floor and the paused flag when the backend changes', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(pausedCodexTask());
+      const sets = captureUpdate();
+
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'claude' } }), TASK_ID);
+      expect(res.status).toBe(200);
+
+      expect(sets[0]?.backend).toBe('claude');
+      expect(sets[0]?.startAt).toBeNull();
+      expect(sets[0]?.context?.budgetExhausted).toBeUndefined();
+      expect(sets[0]?.context?.budgetResetsAt).toBeUndefined();
+      // Provenance kept so the banner/history can explain the manual override.
+      expect(sets[0]?.context?.switchedBackendFrom).toBe('codex');
+    });
+
+    it('leaves the deferral alone when the backend is unchanged', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(pausedCodexTask());
+      const sets = captureUpdate();
+
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'codex', title: 'x' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.startAt).toBeUndefined();
+      expect(sets[0]?.context).toBeUndefined();
+    });
+
+    it('does not touch start_at for a task that is not budget-paused', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue({
+        ...pausedCodexTask(),
+        context: {},                                       // scheduled, not paused
+      });
+      const sets = captureUpdate();
+
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'claude' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.backend).toBe('claude');
+      expect(sets[0]?.startAt).toBeUndefined();
+    });
+  });
+
   it('returns 401 when no auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue(null);
