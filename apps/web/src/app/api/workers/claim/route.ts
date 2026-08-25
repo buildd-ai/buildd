@@ -340,6 +340,11 @@ export async function POST(req: NextRequest) {
   // workers on OTHER tasks in the same workspace has reached the workspace's
   // maxConcurrentTasks (default 3). Repo-less workspaces (coordination, etc.) never
   // have a repo so the inner EXISTS is false → count 0 → never serialized.
+  // Workspace concurrency cap. A mission may raise the effective cap above the
+  // workspace default (e.g. a 6-task mission under a workspace cap of 3 gets
+  // effective cap = 6). GREATEST ensures the mission value can only raise, never
+  // lower, the workspace baseline — per-mission downward capping is handled by the
+  // mission-level gate in the dispatch loop below.
   claimableConditions.push(
     sql`(
       SELECT COUNT(*) FROM ${workers} w2
@@ -352,9 +357,13 @@ export async function POST(req: NextRequest) {
         WHERE ws.id = t3.workspace_id
         AND ws.repo IS NOT NULL
       )
-    ) < (
-      SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-      WHERE ws2.id = ${tasks.workspaceId}
+    ) < GREATEST(
+      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
+       WHERE ws2.id = ${tasks.workspaceId}),
+      COALESCE(
+        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
+        0
+      )
     )`
   );
 
@@ -1022,10 +1031,14 @@ export async function POST(req: NextRequest) {
     // serialized). Each task is worktree-isolated, so the cap only bounds how many
     // branches run in parallel on one repo.
     // capExempt=true in context allows one-time bypass (set by /start with capExempt flag).
+    // A mission may raise the effective cap above the workspace default; use the same
+    // GREATEST logic as the SQL prefilter so in-batch behaviour is consistent.
     const isCapExempt = taskContext?.capExempt === true;
     const taskWorkspace = (task as any).workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
     if (taskWorkspace?.repo && !isCapExempt) {
-      const cap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+      const workspaceCap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+      const missionCap = taskMissionId ? (missionClaimMap.get(taskMissionId)?.maxConcurrentTasks ?? 0) : 0;
+      const cap = Math.max(workspaceCap, missionCap);
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
         deferrals.workspace_cap++;
         continue;

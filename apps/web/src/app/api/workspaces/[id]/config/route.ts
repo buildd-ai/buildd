@@ -126,6 +126,7 @@ export async function GET(
                 gitConfig: true,
                 configStatus: true,
                 releaseConfig: true,
+                maxConcurrentTasks: true,
             },
         });
 
@@ -137,6 +138,8 @@ export async function GET(
             gitConfig: workspace.gitConfig,
             configStatus: workspace.configStatus,
             releaseConfig: workspace.releaseConfig ?? null,
+            maxConcurrentTasks: workspace.maxConcurrentTasks ?? 3,
+            maxConcurrentTasksSource: workspace.maxConcurrentTasks != null ? 'explicit' : 'default',
         });
     } catch (error) {
         console.error('Get workspace config error:', error);
