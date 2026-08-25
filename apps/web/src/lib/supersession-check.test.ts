@@ -424,9 +424,9 @@ describe('runSupersessionPrecheck', () => {
   // Regression for the PR #1797 / Aug 25 force-push pattern:
   // drift fires (180x), ahead_by > 0 (branch genuinely ahead), base SHA orphaned.
   it('detects base_rewritten when drift fires, content not upstream, and base SHA diverged', async () => {
-    // fetchLivePrStats: 180x drift
+    // fetchEffectivePrStats → files array with 180x drift vs recorded (175 lines)
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 78, additions: 34776, deletions: 462 })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/big-file.ts', additions: 34776, deletions: 462 }])
       // checkContentAlreadyUpstream: PR fetch
       .mockResolvedValueOnce(PR_RESPONSE)
       // checkContentAlreadyUpstream: compare → branch IS ahead with real diff
@@ -451,8 +451,9 @@ describe('runSupersessionPrecheck', () => {
 
   it('does not run base-rewrite check when superseded (content_upstream fired)', async () => {
     // Both drift + content_upstream fire → supersession, not base rewrite path
+    // fetchEffectivePrStats → files array with 126x drift vs recorded (175 lines)
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 }])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // content fires → superseded
 
