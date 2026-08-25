@@ -18,6 +18,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, inArray } from 'drizzle-orm';
+import { isGeneratedPath } from '@buildd/shared';
 
 export const DEFAULT_SUPERSESSION_DRIFT_RATIO = 10;
 
@@ -86,6 +87,37 @@ export async function fetchLivePrStats(
       filesChanged: pr.changed_files ?? 0,
       linesAdded: pr.additions ?? 0,
       linesRemoved: pr.deletions ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch live PR diff stats from GitHub, excluding generated paths.
+ *
+ * Uses the per-file breakdown (up to 300 files) to strip generated artifacts
+ * (e.g. Drizzle snapshot JSON) before summing additions/deletions. This prevents
+ * a 9k-line snapshot from inflating the drift ratio against a small recorded stat.
+ *
+ * Returns null on failure — treat as no-signal for the drift check.
+ */
+export async function fetchEffectivePrStats(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<DiffStats | null> {
+  try {
+    const { githubApi } = await import('@/lib/github');
+    const files: Array<{ filename: string; additions: number; deletions: number }> =
+      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
+    if (!Array.isArray(files)) return null;
+
+    const sourceFiles = files.filter((f) => !isGeneratedPath(f.filename));
+    return {
+      filesChanged: sourceFiles.length,
+      linesAdded: sourceFiles.reduce((s, f) => s + (f.additions || 0), 0),
+      linesRemoved: sourceFiles.reduce((s, f) => s + (f.deletions || 0), 0),
     };
   } catch {
     return null;
@@ -243,7 +275,9 @@ export async function runSupersessionPrecheck(
   let driftRatioFiles: number | undefined;
 
   // ── 1. Drift ratio (fast heuristic) ──────────────────────────────────────
-  const liveStats = await fetchLivePrStats(installationId, repoFullName, prNumber);
+  // Use per-file stats with generated paths excluded so snapshot JSON doesn't
+  // inflate the ratio against the worker's recorded count.
+  const liveStats = await fetchEffectivePrStats(installationId, repoFullName, prNumber);
 
   if (liveStats) {
     const recordedLines = recordedStats.linesAdded + recordedStats.linesRemoved;
