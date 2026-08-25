@@ -870,7 +870,9 @@ export const tasks = pgTable('tasks', {
   // 'work': deliverable task counted in mission progress.
   // 'attempt': CI retry or reviewer pass; collapses under its parent in all tallies.
   // 'bookkeeping': coordination/housekeeping; excluded from progress denominator.
-  taskClass: text('task_class').notNull().default('work').$type<'work' | 'attempt' | 'bookkeeping'>(),
+  // 'system': internal evaluator/housekeeping task (criteria eval, etc.); excluded from all
+  // mission progress counts and criteria checks.
+  taskClass: text('task_class').notNull().default('work').$type<'work' | 'attempt' | 'bookkeeping' | 'system'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

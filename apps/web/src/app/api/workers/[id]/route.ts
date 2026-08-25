@@ -22,7 +22,7 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
-import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
+import { autoEvaluateMissionOnCompletion, handleCriteriaEvalOutcome } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
@@ -446,7 +446,7 @@ export async function PATCH(
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, taskClass: tasks.taskClass, context: tasks.context })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1440,6 +1440,19 @@ export async function PATCH(
         if (taskMissionId) {
           await autoEvaluateMissionOnCompletion(taskMissionId);
         }
+      });
+
+      // When a system evaluator task completes, write its criteria verdicts back
+      // to the mission's goalCriteriaState. Only fires for taskClass='system' tasks
+      // with an evaluatorForMissionId in context.
+      await runStep('criteria-eval-outcome', async () => {
+        if (status !== 'completed') return;
+        const taskRow = terminalTaskRow[0];
+        if (!taskRow || taskRow.taskClass !== 'system') return;
+        const ctx = taskRow.context as Record<string, unknown> | null;
+        const evalMissionId = ctx?.evaluatorForMissionId as string | undefined;
+        if (!evalMissionId) return;
+        await handleCriteriaEvalOutcome(evalMissionId, body.structuredOutput);
       });
 
       // Reconciliation sweep on retry completion: if this task had a subject

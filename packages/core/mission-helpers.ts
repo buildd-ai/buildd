@@ -206,12 +206,12 @@ export function evaluateGoalCriteria(
     });
   }
 
-  // NOT_EVALUATED means "we could not check this" — it is not a pass.
-  // A mission with unevaluated criteria stays UNVERIFIED until the LLM layer upgrades them.
+  // NOT_EVALUATED / PENDING means "we could not check this yet" — not a pass.
+  // A mission with unevaluated or in-flight criteria stays UNVERIFIED.
   const overall: CriterionVerdict =
     results.length === 0 ? 'pass'             // no criteria at all → pass
     : results.some(r => r.verdict === 'fail') ? 'fail'
-    : results.some(r => r.verdict === 'NOT_EVALUATED') ? 'UNVERIFIED'
+    : results.some(r => r.verdict === 'NOT_EVALUATED' || r.verdict === 'PENDING') ? 'UNVERIFIED'
     : results.every(r => r.verdict === 'pass') ? 'pass'
     : 'UNVERIFIED';
 

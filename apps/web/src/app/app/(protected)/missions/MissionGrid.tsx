@@ -107,7 +107,7 @@ export interface MissionItem {
   initiativeName: string | null;
   priority: number;
   goalCriteriaCount: number;
-  goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null;
+  goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   skyline: MissionSkylineData | null;
   normalizationSlots: number;
 }
@@ -550,7 +550,7 @@ function FilterTabBar({
 }
 
 /* ── Verification pill — compact indicator for goal criteria state ── */
-function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null }) {
+function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null }) {
   if (criteriaCount === 0) return null;
   if (overall === 'pass') {
     return (
@@ -570,6 +570,13 @@ function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; o
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted/60 font-mono text-[10px] rounded-sm" title="Criteria set — no evaluator available">
         – No evaluator
+      </span>
+    );
+  }
+  if (overall === 'PENDING') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default/70 text-text-muted/70 font-mono text-[10px] rounded-sm" title="Evaluation in progress">
+        ⋯ Evaluating
       </span>
     );
   }

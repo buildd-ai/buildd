@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, GoalCriteriaEvidenceRef, CriterionVerdict } from '@buildd/shared';
+import { hasTeamOAuthCredential, dispatchProseEvaluator, buildContextHash } from '@/lib/mission-criteria-eval';
 
 const RATE_LIMIT_PER_HOUR = 6;
 const LLM_MODEL = 'claude-haiku-4-5-20251001';
@@ -176,8 +177,8 @@ Respond with exactly this JSON shape:
 function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
   if (criteria.length === 0) return 'pass';
   if (criteria.some(r => r.verdict === 'fail')) return 'fail';
-  // NOT_EVALUATED means "we could not check this" — that is not a pass
-  if (criteria.some(r => r.verdict === 'NOT_EVALUATED')) return 'UNVERIFIED';
+  // NOT_EVALUATED / PENDING means "we could not check this yet" — not a pass
+  if (criteria.some(r => r.verdict === 'NOT_EVALUATED' || r.verdict === 'PENDING')) return 'UNVERIFIED';
   if (criteria.every(r => r.verdict === 'pass')) return 'pass';
   return 'UNVERIFIED';
 }
@@ -316,27 +317,27 @@ export async function POST(
     );
 
     if (llmEligible.length > 0) {
+      const completedTasks: EvidenceTask[] = missionTasks
+        .filter(t => t.status === 'completed')
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          summary: (t.result as any)?.summary as string | undefined,
+        }));
+
+      const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
+        id: a.id,
+        title: a.title,
+        type: a.type,
+        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+      }));
+
+      const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
+        index: c.index,
+        text: criterionText(criteria[c.index] as GoalCriterion),
+      }));
+
       if (anthropicApiKey) {
-        const completedTasks: EvidenceTask[] = missionTasks
-          .filter(t => t.status === 'completed')
-          .map(t => ({
-            id: t.id,
-            title: t.title,
-            summary: (t.result as any)?.summary as string | undefined,
-          }));
-
-        const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
-          id: a.id,
-          title: a.title,
-          type: a.type,
-          contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
-        }));
-
-        const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
-          index: c.index,
-          text: criterionText(criteria[c.index] as GoalCriterion),
-        }));
-
         const llmVerdicts = await judgeWithLLM(
           llmInputs,
           mission.title,
@@ -361,8 +362,49 @@ export async function POST(
             cs.evidence = 'LLM returned no verdict for this criterion';
           }
         }
+      } else if (await hasTeamOAuthCredential(mission.teamId)) {
+        // No API key but OAuth is available: dispatch a system evaluator task and
+        // return PENDING verdicts. The evaluator writes back the final verdict on completion.
+        const contextHash = buildContextHash(
+          criteria as GoalCriterion[],
+          completedTasks,
+          evidenceArtifacts,
+        );
+
+        const evaluatorTaskId = await dispatchProseEvaluator(
+          {
+            id: mission.id,
+            title: mission.title,
+            description: mission.description ?? null,
+            workspaceId: mission.workspaceId,
+          },
+          llmInputs,
+          completedTasks,
+          evidenceArtifacts,
+          llmEligible.map(c => c.index),
+        );
+
+        if (evaluatorTaskId) {
+          for (const c of llmEligible) {
+            const cs = state.criteria.find(s => s.index === c.index);
+            if (cs) {
+              cs.verdict = 'PENDING';
+              cs.evidence = 'Evaluation dispatched — evaluator task running';
+              (cs as any).evaluatorTaskId = evaluatorTaskId;
+            }
+          }
+          (state as any).contextHash = contextHash;
+        } else {
+          for (const c of llmEligible) {
+            const cs = state.criteria.find(s => s.index === c.index);
+            if (cs) {
+              cs.verdict = 'NOT_EVALUATED';
+              cs.evidence = 'Evaluator dispatch failed — no workspace configured';
+            }
+          }
+        }
       } else {
-        // No API key — mark all LLM-eligible criteria as NOT_EVALUATED
+        // No API key and no OAuth — mark as NOT_EVALUATED (inconclusive, not failure)
         for (const c of llmEligible) {
           const cs = state.criteria.find(s => s.index === c.index);
           if (cs) {
@@ -372,7 +414,7 @@ export async function POST(
         }
       }
 
-      // Recalculate overall after LLM upgrades (remaining NOT_EVALUATED blocks 'pass')
+      // Recalculate overall after LLM upgrades (PENDING / NOT_EVALUATED block 'pass')
       (state as any).overall = recalculateOverall(state.criteria);
     }
 

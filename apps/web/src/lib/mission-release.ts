@@ -1,11 +1,13 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
-import { eq, and, isNull, inArray, count } from 'drizzle-orm';
+import { eq, and, isNull, inArray, count, ne } from 'drizzle-orm';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
 
-// Count tasks in the mission that are not yet terminal (pending, assigned, or in_progress).
+// Count non-system tasks in the mission that are not yet terminal (pending, assigned, or in_progress).
+// System tasks (taskClass='system', e.g. criteria evaluators) are excluded so they do not
+// block autoEvaluateMissionOnCompletion when all real work tasks are done.
 export async function countPendingTasksForMission(missionId: string): Promise<number> {
   const result = await db
     .select({ count: count() })
@@ -13,7 +15,8 @@ export async function countPendingTasksForMission(missionId: string): Promise<nu
     .where(
       and(
         eq(tasks.missionId, missionId),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+        ne(tasks.taskClass, 'system'),
       )
     );
   return Number(result[0]?.count ?? 0);

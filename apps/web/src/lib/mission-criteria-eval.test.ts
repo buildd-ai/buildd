@@ -10,8 +10,11 @@ const mockMissionFindFirst = mock((): any => null);
 const mockTaskFindMany = mock((): any[] => []);
 const mockWorkerFindMany = mock((): any[] => []);
 const mockArtifactFindMany = mock((): any[] => []);
+const mockSecretsFindFirst = mock((): any => null); // no OAuth by default
+const mockWorkspacesFindFirst = mock((): any => null);
 let updatedMissionData: any = null;
 let insertedNoteValues: any = null;
+let insertedTaskValues: any = null;
 const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
     updatedMissionData = data;
@@ -24,6 +27,12 @@ const mockNotesInsert = mock(() => ({
     return Promise.resolve();
   }),
 }));
+const mockTasksInsert = mock(() => ({
+  values: mock((vals: any) => {
+    insertedTaskValues = vals;
+    return { returning: mock(() => Promise.resolve([{ id: 'new-eval-task-id' }])) };
+  }),
+}));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -32,10 +41,16 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findMany: mockTaskFindMany },
       workers: { findMany: mockWorkerFindMany },
       artifacts: { findMany: mockArtifactFindMany },
+      secrets: { findFirst: mockSecretsFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     select: () => ({ from: () => ({ where: mockPendingSelectWhere }) }),
     update: () => mockMissionsUpdate(),
-    insert: () => mockNotesInsert(),
+    insert: (table: any) => {
+      // Route to different mocks based on which table is being inserted into
+      if (table === 'tasks') return mockTasksInsert();
+      return mockNotesInsert();
+    },
   },
 }));
 
@@ -58,13 +73,22 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   artifacts: 'artifacts',
   missionNotes: 'missionNotes',
+  secrets: 'secrets',
+  workspaces: 'workspaces',
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b }),
   and: (...args: any[]) => args,
+  or: (...args: any[]) => args,
+  isNull: (a: any) => ({ isNull: a }),
   inArray: (a: any, b: any) => ({ a, b }),
+  ne: (a: any, b: any) => ({ ne: { a, b } }),
   count: () => ({ type: 'count' }),
+}));
+
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mock(() => Promise.resolve()),
 }));
 
 import { autoEvaluateMissionOnCompletion } from './mission-criteria-eval';
@@ -76,15 +100,20 @@ describe('autoEvaluateMissionOnCompletion', () => {
     mockTaskFindMany.mockReset();
     mockWorkerFindMany.mockReset();
     mockArtifactFindMany.mockReset();
+    mockSecretsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockMissionsUpdate.mockReset();
     mockNotesInsert.mockReset();
+    mockTasksInsert.mockReset();
     mockEvaluateGoalCriteria.mockReset();
     updatedMissionData = null;
     insertedNoteValues = null;
+    insertedTaskValues = null;
 
     mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockTaskFindMany.mockResolvedValue([]);
     mockWorkerFindMany.mockResolvedValue([]);
+    mockSecretsFindFirst.mockResolvedValue(null); // no OAuth by default
     mockArtifactFindMany.mockResolvedValue([]);
     mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
       evaluatedAt: '2026-08-12T00:00:00.000Z',
@@ -343,5 +372,82 @@ describe('autoEvaluateMissionOnCompletion', () => {
     expect(updatedMissionData).not.toBeNull();
     expect(updatedMissionData.status).toBe('completed');
     expect(updatedMissionData.goalCriteriaState.overall).toBe('pass');
+  });
+
+  it('dispatches evaluator task and sets PENDING when OAuth credential is available (no API key)', async () => {
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockSecretsFindFirst.mockResolvedValue({ id: 'secret-1' }); // OAuth available
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'test', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => Promise.resolve([{ id: 'eval-task-123' }])),
+      })),
+    });
+    mockMissionFindFirst.mockResolvedValue({
+      id: 'mission-oauth',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      title: 'OAuth Mission',
+      description: null,
+      goalCriteria: [
+        { type: 'description', description: 'All tests pass', label: 'Tests' },
+      ],
+      goalCriteriaState: null,
+      autoVerify: null,
+      workingBranch: null,
+      status: 'active',
+    });
+
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-25T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'UNVERIFIED',
+      criteria: [
+        { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'Awaiting LLM evaluation' },
+      ],
+    }));
+
+    await autoEvaluateMissionOnCompletion('mission-oauth');
+
+    // State saved with PENDING overall (not yet evaluated, dispatch in flight)
+    expect(updatedMissionData).not.toBeNull();
+    expect(updatedMissionData.status).toBeUndefined(); // must NOT complete
+    expect(updatedMissionData.goalCriteriaState.overall).toBe('UNVERIFIED');
+    expect(updatedMissionData.goalCriteriaState.criteria[0].verdict).toBe('PENDING');
+    expect(updatedMissionData.goalCriteriaState.criteria[0].evaluatorTaskId).toBe('eval-task-123');
+  });
+
+  it('falls back to NOT_EVALUATED when neither API key nor OAuth is available', async () => {
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockSecretsFindFirst.mockResolvedValue(null); // no OAuth
+    mockMissionFindFirst.mockResolvedValue({
+      id: 'mission-noop',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      title: 'No Creds Mission',
+      description: null,
+      goalCriteria: [
+        { type: 'description', description: 'Quality bar met', label: 'Quality' },
+      ],
+      goalCriteriaState: null,
+      autoVerify: null,
+      workingBranch: null,
+      status: 'active',
+    });
+
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-25T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'UNVERIFIED',
+      criteria: [
+        { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'Awaiting LLM evaluation' },
+      ],
+    }));
+
+    await autoEvaluateMissionOnCompletion('mission-noop');
+
+    expect(updatedMissionData).not.toBeNull();
+    expect(updatedMissionData.goalCriteriaState.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(updatedMissionData.goalCriteriaState.criteria[0].evidence).toBe('LLM evaluator not configured');
   });
 });
