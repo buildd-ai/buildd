@@ -8,7 +8,10 @@
  *
  * Flow per PR:
  *   1. Worker has open PR + originating task is terminal.
- *   2. GitHub says mergeable_state = 'dirty'.
+ *   2a. GitHub says mergeable_state = 'dirty' (merge conflicts), OR
+ *   2b. GitHub says mergeable_state = 'blocked' AND at least one check-run on the
+ *       current head SHA has completed with a failure conclusion (CI-failing / red).
+ *       Pending/queued checks do NOT qualify — only completed failures.
  *   3a. No active conflict retry → spark one (reuse conflict-retry machinery).
  *   3b. Retries exhausted → stamp prLifecycleStatus='conflict'; escalation inbox
  *       surfaces it as a BLOCKED card.
@@ -52,6 +55,33 @@ export function classifyDeadZoneAction(
   if (activeRetryCount > 0) return 'skip';
   if (completedRetryCount >= maxIterations) return 'exhaust';
   return 'spark';
+}
+
+/**
+ * Pure: is a PR in a "red" (CI-failing) state?
+ *
+ * A PR is red when mergeable_state is 'blocked' AND at least one check run on
+ * the current head SHA has completed with a failure conclusion. Transient
+ * states (queued, in_progress) are NOT failures — a PR blocked only because
+ * checks are still running must not trigger a spark.
+ *
+ * This distinguishes "failing" from "not yet green":
+ *   failing   → status='completed', conclusion in {failure, action_required, timed_out}
+ *   pending   → status in {queued, in_progress}, conclusion=null  → not red
+ *   never ran → no check runs at all                              → not red
+ */
+export function isRedPr(
+  mergeableState: string | null,
+  checkRuns: Array<{ status: string; conclusion: string | null }>,
+): boolean {
+  if (mergeableState !== 'blocked') return false;
+  return checkRuns.some(
+    (cr) =>
+      cr.status === 'completed' &&
+      (cr.conclusion === 'failure' ||
+        cr.conclusion === 'action_required' ||
+        cr.conclusion === 'timed_out'),
+  );
 }
 
 /**
@@ -203,8 +233,20 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // PR open but not dirty — update check time and skip
-        if (pr.mergeable_state !== 'dirty') {
+        const isDirty = pr.mergeable_state === 'dirty';
+        let isRed = false;
+
+        if (!isDirty && pr.mergeable_state === 'blocked') {
+          // Folded into the existing per-PR fetch — no second poller.
+          const checkRunsData = await githubApi(
+            installationId,
+            `/repos/${repo}/commits/${pr.head.sha}/check-runs`,
+          ) as { check_runs: Array<{ status: string; conclusion: string | null }> };
+          isRed = isRedPr(pr.mergeable_state, checkRunsData.check_runs ?? []);
+        }
+
+        // PR is clean, pending, or blocked for non-CI reasons — skip.
+        if (!isDirty && !isRed) {
           await db.update(workers)
             .set({ prLastCheckedAt: now, updatedAt: now })
             .where(eq(workers.id, worker.id));
@@ -212,7 +254,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // Dirty — stamp prLifecycleStatus='conflict' + conflictDetectedAt (if new)
+        // Dirty or red — stamp prLifecycleStatus='conflict' + conflictDetectedAt (if new)
         if (worker.prLifecycleStatus !== 'conflict') {
           await db.update(workers)
             .set({

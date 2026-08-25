@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyDeadZoneAction,
   isDeadZoneCandidate,
+  isRedPr,
 } from './dead-zone-sweep';
 
 // ── classifyDeadZoneAction ────────────────────────────────────────────────────
@@ -77,6 +78,96 @@ describe('isDeadZoneCandidate', () => {
 
   it('returns false when the PR is closed', () => {
     expect(isDeadZoneCandidate('completed', openPr, null, 'closed')).toBe(false);
+  });
+});
+
+// ── isRedPr ───────────────────────────────────────────────────────────────────
+
+describe('isRedPr', () => {
+  const failedRun = { status: 'completed', conclusion: 'failure' };
+  const actionRequiredRun = { status: 'completed', conclusion: 'action_required' };
+  const timedOutRun = { status: 'completed', conclusion: 'timed_out' };
+  const successRun = { status: 'completed', conclusion: 'success' };
+  const skippedRun = { status: 'completed', conclusion: 'skipped' };
+  const queuedRun = { status: 'queued', conclusion: null };
+  const inProgressRun = { status: 'in_progress', conclusion: null };
+
+  it('returns false when mergeable_state is not blocked', () => {
+    expect(isRedPr('dirty', [failedRun])).toBe(false);
+    expect(isRedPr('clean', [failedRun])).toBe(false);
+    expect(isRedPr('unstable', [failedRun])).toBe(false);
+    expect(isRedPr(null, [failedRun])).toBe(false);
+  });
+
+  it('returns false when checks are pending/queued — not yet green, not failing', () => {
+    expect(isRedPr('blocked', [queuedRun])).toBe(false);
+    expect(isRedPr('blocked', [inProgressRun])).toBe(false);
+    expect(isRedPr('blocked', [queuedRun, inProgressRun])).toBe(false);
+  });
+
+  it('returns false when no check runs at all (blocked for another reason)', () => {
+    expect(isRedPr('blocked', [])).toBe(false);
+  });
+
+  it('returns false when all completed checks passed or were skipped', () => {
+    expect(isRedPr('blocked', [successRun])).toBe(false);
+    expect(isRedPr('blocked', [skippedRun])).toBe(false);
+    expect(isRedPr('blocked', [successRun, skippedRun])).toBe(false);
+  });
+
+  it('returns true when blocked and at least one check completed with failure', () => {
+    expect(isRedPr('blocked', [failedRun])).toBe(true);
+    expect(isRedPr('blocked', [actionRequiredRun])).toBe(true);
+    expect(isRedPr('blocked', [timedOutRun])).toBe(true);
+  });
+
+  it('returns true when some checks pass but at least one fails', () => {
+    expect(isRedPr('blocked', [successRun, failedRun])).toBe(true);
+    expect(isRedPr('blocked', [skippedRun, timedOutRun])).toBe(true);
+  });
+
+  it('returns false when mergeable_state is dirty even if check runs are failing (dirty wins)', () => {
+    // In practice GitHub returns one state, but guard: dirty takes the dirty path.
+    expect(isRedPr('dirty', [failedRun])).toBe(false);
+  });
+});
+
+// ── Red path: end-to-end predicate composition ────────────────────────────────
+
+describe('dead zone red path (CI-failing)', () => {
+  const redChecks = [{ status: 'completed', conclusion: 'failure' }];
+
+  it('red + terminal + no active worker → spark (exactly once)', () => {
+    expect(isRedPr('blocked', redChecks)).toBe(true);
+    expect(classifyDeadZoneAction(0, 0)).toBe('spark');
+  });
+
+  it('red + active conflict retry in flight → no spark', () => {
+    expect(isRedPr('blocked', redChecks)).toBe(true);
+    expect(classifyDeadZoneAction(1, 0)).toBe('skip');
+  });
+
+  it('red + already-has-open-conflict-task → no spark', () => {
+    expect(isRedPr('blocked', redChecks)).toBe(true);
+    expect(classifyDeadZoneAction(1, 2)).toBe('skip');
+  });
+
+  it('checks pending/queued → isRedPr false, sweep skips', () => {
+    const pendingChecks = [{ status: 'queued', conclusion: null }];
+    expect(isRedPr('blocked', pendingChecks)).toBe(false);
+  });
+
+  it('red AND dirty simultaneously → isRedPr returns false (dirty path handles it)', () => {
+    // GitHub returns one mergeable_state; if dirty, isRedPr is never consulted.
+    // Guard: even if both flags were somehow set, dirty path fires first.
+    expect(isRedPr('dirty', redChecks)).toBe(false);
+    // dirty path via classifyDeadZoneAction:
+    expect(classifyDeadZoneAction(0, 0)).toBe('spark');
+  });
+
+  it('retries exhausted on the red path → BLOCKED Home card', () => {
+    expect(isRedPr('blocked', redChecks)).toBe(true);
+    expect(classifyDeadZoneAction(0, 3)).toBe('exhaust');
   });
 });
 
