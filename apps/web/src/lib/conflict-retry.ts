@@ -233,6 +233,8 @@ export interface DispatchConflictRetryResult {
   superseded?: boolean;
   /** The PR that appears to have already landed the change, if identifiable. */
   successorPrNumber?: number | null;
+  /** True when the base branch was force-pushed after the PR was opened. */
+  baseRewritten?: boolean;
 }
 
 /**
@@ -273,7 +275,7 @@ export async function dispatchConflictRetry(
   // Fetch the worker for branch info and recorded diff stats
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, workerId),
-    columns: { id: true, branch: true, prNumber: true, filesChanged: true, linesAdded: true, linesRemoved: true },
+    columns: { id: true, branch: true, prNumber: true, filesChanged: true, linesAdded: true, linesRemoved: true, prOpenedBaseSha: true },
   });
   if (!worker || !worker.branch) {
     console.warn(`[conflict-retry] worker ${workerId} not found or has no branch — skipping dispatch`);
@@ -299,6 +301,7 @@ export async function dispatchConflictRetry(
         ?? DEFAULT_SUPERSESSION_DRIFT_RATIO,
       workspaceId,
       taskId,
+      prOpenedBaseSha: worker.prOpenedBaseSha ?? null,
     }).catch(err => {
       console.warn(`[conflict-retry] supersession precheck failed for PR #${prNumber} (non-fatal):`, err);
       return null;
@@ -322,6 +325,27 @@ export async function dispatchConflictRetry(
         dispatched: false,
         superseded: true,
         successorPrNumber: precheck.successorPrNumber,
+      };
+    }
+
+    if (precheck?.baseRewritten && worker.prOpenedBaseSha) {
+      console.log(
+        `[conflict-retry] base history rewrite detected for PR #${prNumber}` +
+        ` (old SHA: ${worker.prOpenedBaseSha.slice(0, 12)},` +
+        ` new tip: ${precheck.currentBaseSha?.slice(0, 12) ?? 'unknown'}) — halting retry chain`,
+      );
+      await escalateBaseRewrite(
+        taskId,
+        repoFullName,
+        prNumber,
+        worker.prOpenedBaseSha,
+        precheck.currentBaseSha,
+      ).catch(err =>
+        console.error(`[conflict-retry] escalateBaseRewrite failed for PR #${prNumber}:`, err),
+      );
+      return {
+        dispatched: false,
+        baseRewritten: true,
       };
     }
   }
@@ -481,4 +505,85 @@ export async function escalateSupersession(
   });
 
   console.log(`[supersession] escalated PR #${prNumber} for task ${taskId}${successorPrNumber ? ` (successor: #${successorPrNumber})` : ''}`);
+}
+
+/**
+ * Escalate when the base branch was force-pushed after the PR was opened.
+ *
+ * Per-PR escalation (not workspace-level): the precheck runs per-PR in the
+ * conflict-retry flow, and the recommended action (cherry-pick specific commits)
+ * is PR-specific. Deduped at the task level by baseRewriteEscalatedPrNumber in
+ * task.context — a second conflict-retry attempt will not send a second notice.
+ *
+ * Blast radius note: a single force-push orphans every open PR at once. If N
+ * PRs are in conflict-retry simultaneously, N escalations fire. Each names the
+ * correct old/new SHAs and recommends cherry-pick for that specific PR — a
+ * workspace-level notice would lose that per-PR precision without reducing noise
+ * meaningfully, since each PR still needs individual cherry-pick action.
+ */
+export async function escalateBaseRewrite(
+  taskId: string,
+  repoFullName: string,
+  prNumber: number,
+  prOpenedBaseSha: string,
+  currentBaseSha: string | undefined,
+): Promise<void> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, missionId: true, title: true, context: true },
+  });
+  if (!task) return;
+
+  // Atomic dedup: only one escalation per (taskId, prNumber)
+  const [claimed] = await db
+    .update(tasks)
+    .set({
+      context: sql`COALESCE(context, '{}'::jsonb) || jsonb_build_object('baseRewriteEscalatedPrNumber', ${prNumber}::int)`,
+    })
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        or(
+          sql`context IS NULL`,
+          sql`context->>'baseRewriteEscalatedPrNumber' IS NULL`,
+        ),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  if (!claimed) {
+    console.log(`[base-rewrite] escalation already fired for task ${taskId} PR #${prNumber}`);
+    return;
+  }
+
+  const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
+  const oldSha = prOpenedBaseSha.slice(0, 12);
+  const newSha = currentBaseSha ? currentBaseSha.slice(0, 12) : 'unknown';
+  const shaLine = currentBaseSha
+    ? `Old base SHA: \`${oldSha}\`  →  New tip: \`${newSha}\``
+    : `Recorded base SHA: \`${oldSha}\` is no longer an ancestor of the base branch.`;
+
+  if (task.missionId) {
+    await db.insert(missionNotes).values({
+      missionId: task.missionId,
+      taskId: task.id,
+      authorType: 'system',
+      type: 'reviewer_escalated',
+      title: `PR #${prNumber} — BASE REWRITTEN · cherry-pick?`,
+      body: `The base branch was force-pushed after this PR was opened. The PR diff is now inflated by re-attributed commits that were already merged into the base before the force push.\n\n${shaLine}\n\n**Recommended action**: cherry-pick only the agent's own commit(s) onto a fresh branch cut from the current base — do NOT rebase the full PR, which would carry the re-attributed commits along.\n\nPR: ${prUrl}`,
+      status: 'open',
+    });
+  }
+
+  notify({
+    app: 'tasks',
+    title: `PR #${prNumber}: BASE REWRITTEN · cherry-pick?`,
+    message: `${task.title}\nBase branch force-pushed (${oldSha}→${newSha}). Cherry-pick own commits onto fresh base.`,
+    url: taskUrl,
+    urlTitle: 'View task',
+    priority: 0,
+  });
+
+  console.log(`[base-rewrite] escalated PR #${prNumber} for task ${taskId} (old: ${oldSha}, new: ${newSha})`);
 }

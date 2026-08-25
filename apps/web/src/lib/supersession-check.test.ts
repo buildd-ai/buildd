@@ -49,6 +49,7 @@ import {
   fetchLivePrStats,
   fetchEffectivePrStats,
   checkContentAlreadyUpstream,
+  checkBaseHistoryRewritten,
   findSuccessorPr,
   runSupersessionPrecheck,
 } from './supersession-check';
@@ -407,5 +408,133 @@ describe('runSupersessionPrecheck', () => {
     expect(result.superseded).toBe(false);
     expect(result.signals).not.toContain('drift_ratio');
     expect(result.signals).toContain('content_upstream');
+  });
+
+  it('returns baseRewritten=false when prOpenedBaseSha is not provided', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] });
+
+    const result = await runSupersessionPrecheck(BASE_PARAMS);
+    expect(result.baseRewritten).toBe(false);
+    expect(result.signals).not.toContain('base_rewritten');
+  });
+
+  // Regression for the PR #1797 / Aug 25 force-push pattern:
+  // drift fires (180x), ahead_by > 0 (branch genuinely ahead), base SHA orphaned.
+  it('detects base_rewritten when drift fires, content not upstream, and base SHA diverged', async () => {
+    // fetchLivePrStats: 180x drift
+    mockGithubApi
+      .mockResolvedValueOnce({ changed_files: 78, additions: 34776, deletions: 462 })
+      // checkContentAlreadyUpstream: PR fetch
+      .mockResolvedValueOnce(PR_RESPONSE)
+      // checkContentAlreadyUpstream: compare → branch IS ahead with real diff
+      .mockResolvedValueOnce({ ahead_by: 1, files: [{ filename: 'docs/sdk.md' }] })
+      // checkBaseHistoryRewritten: PR fetch (gets current base SHA)
+      .mockResolvedValueOnce({ base: { ref: 'dev', sha: 'newbase111' }, head: { sha: 'abc123' } })
+      // checkBaseHistoryRewritten: compare → diverged
+      .mockResolvedValueOnce({ status: 'diverged' });
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      prOpenedBaseSha: 'oldbase222',
+    });
+
+    expect(result.superseded).toBe(false);
+    expect(result.baseRewritten).toBe(true);
+    expect(result.signals).toContain('drift_ratio');
+    expect(result.signals).toContain('base_rewritten');
+    expect(result.signals).not.toContain('content_upstream');
+    expect(result.currentBaseSha).toBe('newbase111');
+  });
+
+  it('does not run base-rewrite check when superseded (content_upstream fired)', async () => {
+    // Both drift + content_upstream fire → supersession, not base rewrite path
+    mockGithubApi
+      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // content fires → superseded
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      prOpenedBaseSha: 'oldbase222',
+    });
+
+    expect(result.superseded).toBe(true);
+    expect(result.baseRewritten).toBe(false);
+    expect(result.signals).not.toContain('base_rewritten');
+    // GitHub API should only have been called 3 times (no base-rewrite check)
+    expect(mockGithubApi).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── checkBaseHistoryRewritten ─────────────────────────────────────────────────
+
+const PR_WITH_BASE = {
+  base: { ref: 'dev', sha: 'currenttip123' },
+  head: { sha: 'abc123' },
+};
+
+describe('checkBaseHistoryRewritten', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  it('returns { rewritten: true } when compare status is diverged', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)     // PR fetch
+      .mockResolvedValueOnce({ status: 'diverged' });  // compare
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: true, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: false } when compare status is behind (normal fast-forward)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockResolvedValueOnce({ status: 'behind' });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: false, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: false } when compare status is identical', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockResolvedValueOnce({ status: 'identical' });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: false, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns { rewritten: true } when compare returns 404 (SHA gone)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockRejectedValueOnce(new Error('GitHub API error: 404 Not Found'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toEqual({ rewritten: true, currentBaseSha: 'currenttip123' });
+  });
+
+  it('returns null when PR fetch fails', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('network error'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when PR has no base.ref', async () => {
+    mockGithubApi.mockResolvedValueOnce({ base: {}, head: { sha: 'abc' } });
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when compare fails with non-404 error', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce(PR_WITH_BASE)
+      .mockRejectedValueOnce(new Error('GitHub API error: 500 Internal Server Error'));
+
+    const result = await checkBaseHistoryRewritten(1, 'org/repo', 42, 'oldbase111');
+    expect(result).toBeNull();
   });
 });
