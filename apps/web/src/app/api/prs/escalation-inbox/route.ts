@@ -16,12 +16,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces, missionNotes } from '@buildd/core/db/schema';
-import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,7 +56,7 @@ export async function GET(_req: NextRequest) {
     },
     with: {
       task: {
-        columns: { id: true, title: true, missionId: true },
+        columns: { id: true, title: true, missionId: true, status: true },
       },
     },
   });
@@ -162,6 +163,45 @@ export async function GET(_req: NextRequest) {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Dead zone exhausted detection ─────────────────────────────────────────
+  // Workers where: task is terminal + PR went dirty (prLifecycleStatus='conflict')
+  // + no active conflict retry + 3 retries already done → BLOCKED card.
+  const deadZoneExhaustedMap = new Map<string, { lastRetryTaskId: string | null }>();
+
+  const terminalConflictWorkers = openPrWorkers.filter(w => {
+    if (w.prLifecycleStatus !== 'conflict' || w.prNumber == null) return false;
+    if (conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return false; // active retry running
+    const taskStatus = (w.task as any)?.status as string | undefined;
+    return taskStatus != null && ['completed', 'failed', 'cancelled'].includes(taskStatus);
+  });
+
+  if (terminalConflictWorkers.length > 0) {
+    const tcPrNumbers = terminalConflictWorkers.map(w => w.prNumber).filter(Boolean) as number[];
+    const allRetries = await db.query.tasks.findMany({
+      where: and(
+        inArray(tasks.workspaceId, wsIds),
+        inArray(tasks.conflictRetryPrNumber, tcPrNumbers),
+      ),
+      columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, status: true },
+      orderBy: [desc(tasks.createdAt)],
+    });
+
+    for (const w of terminalConflictWorkers) {
+      if (!w.prNumber) continue;
+      const retries = allRetries.filter(
+        t => t.workspaceId === w.workspaceId && t.conflictRetryPrNumber === w.prNumber,
+      );
+      const completedRetries = retries.filter(t =>
+        ['completed', 'failed', 'cancelled'].includes(t.status),
+      );
+      if (completedRetries.length >= DEFAULT_MAX_CONFLICT_ITERATIONS) {
+        // completedRetries is sorted desc by createdAt — first = most recent
+        deadZoneExhaustedMap.set(w.id, { lastRetryTaskId: completedRetries[0]?.id ?? null });
+      }
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const items = openPrWorkers
     .filter(w => {
       if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged') return false;
@@ -174,6 +214,9 @@ export async function GET(_req: NextRequest) {
 
       // Items with a live conflict retry are included but rendered as RESOLVING
       if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
+
+      // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
+      if (deadZoneExhaustedMap.has(w.id)) return true;
 
       if (w.taskId && escalationMap.has(w.taskId)) return true;
       // Include agent-approved items (approve-only gate) so the human can merge
@@ -193,6 +236,7 @@ export async function GET(_req: NextRequest) {
         : null;
 
       const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+      const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
 
       const leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human' =
         approval ? 'agent_approved'
@@ -210,12 +254,17 @@ export async function GET(_req: NextRequest) {
         prUrl: w.prUrl,
         policyTier: policy.tier,
         leaseState,
-        escalationReason: escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null),
+        escalationReason: deadZoneInfo
+          ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
+          : (escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null)),
         verdictSummary: approval?.summary ?? null,
         waitingMinutes,
         // Conflict retry fields — present when an agent is actively resolving conflicts
         conflictRetryTaskId: conflictRetry?.taskId ?? null,
         conflictRetryIteration: conflictRetry?.iteration ?? null,
+        // Dead zone fields — present when retries are exhausted (BLOCKED card)
+        deadZoneExhausted: !!deadZoneInfo,
+        deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
       };
     });
 
