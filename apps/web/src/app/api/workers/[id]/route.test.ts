@@ -164,6 +164,8 @@ const mockTenantBudgetsInsert = mock(() => ({
 // Track all db.insert calls for reviewer outcome assertions
 let lastInsertTable: any = null;
 let lastInsertValues: any = null;
+// Controls whether onConflictDoNothing returns a row (default) or null (dedup suppressed)
+let mockInsertConflictDoNothingResult: 'row' | 'empty' = 'row';
 const mockGenericInsert = mock((table: any) => {
   // Delegate tenant budget inserts to the existing mock so existing tests still work
   // (schema mock returns an object for tenantBudgets, not a string)
@@ -172,9 +174,15 @@ const mockGenericInsert = mock((table: any) => {
   return {
     values: mock((values: any) => {
       lastInsertValues = values;
+      const row = { id: 'new-task-id', ...values };
       return {
         onConflictDoUpdate: mock(() => Promise.resolve()),
-        returning: mock(() => Promise.resolve([{ id: 'new-task-id', ...values }])),
+        onConflictDoNothing: mock(() => ({
+          returning: mock(() =>
+            Promise.resolve(mockInsertConflictDoNothingResult === 'row' ? [row] : []),
+          ),
+        })),
+        returning: mock(() => Promise.resolve([row])),
       };
     }),
   };
@@ -275,8 +283,10 @@ mock.module('@/lib/mission-release', () => ({
 
 // Phase 2: reviewer outcome mocks
 const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+const mockEscalateReviewerExhaustion = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
+  escalateReviewerExhaustion: mockEscalateReviewerExhaustion,
 }));
 
 // Own the merge-policy resolution for this file. Other test files (e.g.
@@ -2939,9 +2949,12 @@ describe('PATCH /api/workers/[id]', () => {
       // Reset insert tracking
       lastInsertTable = null;
       lastInsertValues = null;
+      mockInsertConflictDoNothingResult = 'row';
       mockGenericInsert.mockClear();
       mockTryAutoMergeWorkerPr.mockReset();
       mockTryAutoMergeWorkerPr.mockResolvedValue(undefined);
+      mockEscalateReviewerExhaustion.mockReset();
+      mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
       mockNotify.mockReset();
       mockDispatchNewTask.mockReset();
       mockDispatchNewTask.mockResolvedValue(undefined);
@@ -3074,6 +3087,9 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastInsertValues.context?.baseBranch).toBe('buildd/original-branch');
       expect(lastInsertValues.context?.iteration).toBe(1);
       // Retry task should not open a new branch — baseBranch is the existing branch
+      // Dedup key fields must be set so a second reviewer completion is a no-op
+      expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
+      expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
     });
 
     it('escalate: sends Pushover and does not create retry task', async () => {
@@ -3099,9 +3115,89 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       // No retry task — escalated instead
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
-      // Pushover fired for escalation
-      expect(mockNotify).toHaveBeenCalledTimes(1);
-      expect(mockNotify.mock.calls[0][0].title).toMatch(/escalated/i);
+      // escalateReviewerExhaustion called (handles CAS dedup + note + Pushover)
+      expect(mockEscalateReviewerExhaustion).toHaveBeenCalledTimes(1);
+      expect(mockEscalateReviewerExhaustion.mock.calls[0][2]).toBe(42); // prNumber
+    });
+
+    it('request-changes: dedup suppresses second fix task for same headSha', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // onConflictDoNothing returns empty — simulate duplicate
+      mockInsertConflictDoNothingResult = 'empty';
+      mockTasksFindFirst
+        .mockResolvedValueOnce({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        })
+        .mockResolvedValueOnce({
+          id: 'original-task-1',
+          title: 'Build feature X',
+          description: 'Description',
+          missionId: 'mission-1',
+          pathManifest: null,
+        });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Duplicate suppressed — no dispatch
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('request-changes: new headSha starts a fresh fix cycle', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // Replace default implementation with a version using a new headSha (def456)
+      // so all tasks.findFirst fallback calls return the reviewer task correctly.
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'def456',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        }),
+      );
+      // originalTask lookup uses the once queue
+      mockTasksFindFirst.mockResolvedValueOnce({
+        id: 'original-task-1',
+        title: 'Build feature X',
+        description: 'Description',
+        missionId: 'mission-1',
+        pathManifest: null,
+      });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      // Dedup fields reflect the new headSha
+      expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
+      expect(lastInsertValues.reviewerRetryHeadSha).toBe('def456');
     });
 
     it('skips reviewer outcome for non-reviewer tasks', async () => {

@@ -68,7 +68,7 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
-import { evaluateAutoMergeSafety, escalateConflictExhaustion } from './auto-merge';
+import { evaluateAutoMergeSafety, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -319,6 +319,91 @@ describe('escalateConflictExhaustion', () => {
   it('Pushover URL points to the buildd task page', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
+    const url = (mockNotify.mock.calls[0][0] as any).url as string;
+    expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+});
+
+// ── escalateReviewerExhaustion ────────────────────────────────────────────────
+
+describe('escalateReviewerExhaustion', () => {
+  const TASK_ID = 'task-rev-456';
+  const REPO = 'acme/my-app';
+  const PR_NUMBER = 99;
+  const HEAD_SHA = 'cafe1234567890abcdef';
+  const MAX_ITERATIONS = 3;
+
+  const baseTask = {
+    id: TASK_ID,
+    missionId: null as string | null,
+    title: 'feat: add search',
+    context: {},
+  };
+
+  beforeEach(() => {
+    mockNotify.mockReset();
+    capturedInsertValues = [];
+    mockUpdateReturns = [];
+    mockFindFirst = mock(() => baseTask);
+  });
+
+  it('returns early without firing Pushover when task is not found', async () => {
+    mockFindFirst = mock(() => null);
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('fires Pushover on first call when CAS succeeds', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const call = mockNotify.mock.calls[0][0] as any;
+    expect(call.app).toBe('tasks');
+    expect(call.priority).toBe(0);
+    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.message).toContain('feat: add search');
+  });
+
+  it('does NOT fire Pushover when CAS returns empty (already escalated for this headSha)', async () => {
+    mockUpdateReturns = [[]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: exactly one Pushover across three concurrent exhaustion observations', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }], [], []];
+    await Promise.all([
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+      escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null),
+    ]);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts a reviewer_escalated note when task has a missionId', async () => {
+    mockFindFirst = mock(() => ({ ...baseTask, missionId: 'mission-xyz' }));
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Missing mock');
+    expect(capturedInsertValues).toHaveLength(1);
+    expect(capturedInsertValues[0].type).toBe('reviewer_escalated');
+    expect(capturedInsertValues[0].missionId).toBe('mission-xyz');
+    expect(capturedInsertValues[0].taskId).toBe(TASK_ID);
+    expect(capturedInsertValues[0].status).toBe('open');
+    expect(capturedInsertValues[0].title).toContain(`PR #${PR_NUMBER}`);
+    expect(capturedInsertValues[0].body).toContain('Missing mock');
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires Pushover but inserts NO note when task has no missionId', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    expect(capturedInsertValues).toHaveLength(0);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pushover URL points to the buildd task page', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
     const url = (mockNotify.mock.calls[0][0] as any).url as string;
     expect(url).toContain(`/app/tasks/${TASK_ID}`);
   });

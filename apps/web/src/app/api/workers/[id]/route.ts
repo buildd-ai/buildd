@@ -27,7 +27,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
 import { hasCodexCredential } from '@/lib/codex-credential';
-import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
+import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
@@ -2098,26 +2098,18 @@ async function handleReviewerOutcomeIfNeeded(
     case 'request-changes': {
       // BT-8: Request-changes path — create retry task on the SAME branch
       if (currentIteration >= maxIterations) {
-        // Iteration cap exceeded — escalate instead of retrying
+        // Iteration cap exceeded — escalate using the shared reviewer exhaustion path.
+        // escalateReviewerExhaustion is CAS-deduped on (taskId, headSha) so concurrent
+        // reviewer completions on the same SHA fire exactly one escalation.
         console.log(`[reviewer] Iteration cap (${maxIterations}) reached for PR #${prNumber} — escalating`);
-        if (missionId) {
-          await db.insert(missionNotes).values({
-            missionId,
-            taskId: originalTaskId,
-            authorType: 'system',
-            type: 'reviewer_escalated',
-            title: `PR #${prNumber} escalated: max reviewer iterations (${maxIterations}) reached`,
-            body: `Reviewer requested changes ${maxIterations} times. Human review required.\n\nLast feedback: ${output.feedback ?? '(none)'}`,
-            status: 'open',
-          });
-        }
-        notify({
-          app: 'alerts',
-          title: `PR #${prNumber} escalated (retry cap)`,
-          message: `Reviewer requested changes ${maxIterations} times — needs a human.\nPR: ${prUrl}`,
-          url: prUrl,
-          urlTitle: 'View PR',
-        });
+        await escalateReviewerExhaustion(
+          originalTaskId,
+          repoFullName,
+          prNumber,
+          headSha,
+          maxIterations,
+          output.feedback ?? null,
+        );
         return;
       }
 
@@ -2141,6 +2133,9 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
+      // partial unique index so a second reviewer completion on the same headSha is a
+      // no-op. A new headSha after the fix push starts a fresh cycle (new row).
       const [retryTask] = await db
         .insert(tasks)
         .values({
@@ -2150,6 +2145,8 @@ async function handleReviewerOutcomeIfNeeded(
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,
           taskClass: 'attempt',
+          reviewerRetryPrNumber: prNumber,
+          reviewerRetryHeadSha: headSha,
           context: {
             iteration: currentIteration + 1,
             maxIterations,
@@ -2171,16 +2168,21 @@ async function handleReviewerOutcomeIfNeeded(
           status: 'pending',
           creationSource: 'webhook',
         })
+        .onConflictDoNothing()
         .returning();
 
-      if (retryTask) {
-        const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, workspaceId),
-        });
-        if (workspace) {
-          await dispatchNewTask(retryTask, workspace);
-          console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber} (iteration ${currentIteration + 1}/${maxIterations})`);
-        }
+      if (!retryTask) {
+        // Duplicate — another reviewer completion on the same headSha already dispatched.
+        console.log(`[reviewer] Duplicate suppressed: fix task already exists for PR #${prNumber}@${headSha.slice(0, 7)}`);
+        return;
+      }
+
+      const workspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+      });
+      if (workspace) {
+        await dispatchNewTask(retryTask, workspace);
+        console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
       }
       break;
     }

@@ -799,6 +799,10 @@ export const tasks = pgTable('tasks', {
   // from multiple paths (auto-merge, human merge); only one retry task per PR+SHA.
   conflictRetryPrNumber: integer('conflict_retry_pr_number'),
   conflictRetryHeadSha: text('conflict_retry_head_sha'),
+  // Stable identity for reviewer-requested-changes retries. The reviewer may re-run
+  // on the same headSha; only one fix task per (workspace, PR, headSha).
+  reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
+  reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review'>(),
   project: text('project'),
@@ -889,6 +893,9 @@ export const tasks = pgTable('tasks', {
   conflictRetryEventIdx: uniqueIndex('tasks_conflict_retry_event_unique')
     .on(t.workspaceId, t.conflictRetryPrNumber, t.conflictRetryHeadSha)
     .where(sql`${t.conflictRetryPrNumber} IS NOT NULL AND ${t.conflictRetryHeadSha} IS NOT NULL`),
+  reviewerRetryEventIdx: uniqueIndex('tasks_reviewer_retry_event_unique')
+    .on(t.workspaceId, t.reviewerRetryPrNumber, t.reviewerRetryHeadSha)
+    .where(sql`${t.reviewerRetryPrNumber} IS NOT NULL AND ${t.reviewerRetryHeadSha} IS NOT NULL`),
   // Partial unique index — prevents duplicate concurrent planning tasks for the same mission.
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
