@@ -1008,6 +1008,10 @@ export const workers = pgTable('workers', {
   // Null = never checked (or pre-migration). Used by the read-through refresh to
   // skip workers that were polled within the last 5 minutes.
   prLastCheckedAt: timestamp('pr_last_checked_at', { withTimezone: true }),
+  // Base branch SHA at the time the PR was opened (captured by create_pr).
+  // Used by the base-history-rewrite detector to identify force-pushes that
+  // orphan the PR's merge base.
+  prOpenedBaseSha: text('pr_opened_base_sha'),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
