@@ -177,8 +177,21 @@ export async function POST(
     // (assigned/failed/pending) without duplicating .set() logic.
     const switchedBackend = requestedBackend && requestedBackend !== task.backend;
     if (switchedBackend) {
+      // Switching provider also lifts a budget/rate-limit deferral belonging to
+      // the OLD provider: start_at was set to that provider's reset, so leaving
+      // it in place would park the task despite the switch.
+      const reassignCtx = (task.context || {}) as Record<string, unknown>;
+      const liftPause = reassignCtx.budgetExhausted === true;
+      const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = reassignCtx;
       await db.update(tasks)
-        .set({ backend: requestedBackend, updatedAt: new Date() })
+        .set({
+          backend: requestedBackend,
+          updatedAt: new Date(),
+          ...(liftPause && {
+            startAt: null,
+            context: { ...restCtx, switchedBackendFrom: task.backend || 'claude' },
+          }),
+        })
         .where(eq(tasks.id, taskId));
     }
 

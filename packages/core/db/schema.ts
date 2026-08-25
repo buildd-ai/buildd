@@ -1921,6 +1921,37 @@ export const tenantBudgetsRelations = relations(tenantBudgets, ({ one }) => ({
   team: one(teams, { fields: [tenantBudgets.teamId], references: [teams.id] }),
 }));
 
+// Provider pause log — one row per observed budget/rate-limit (or auth) wall on
+// a specific agent backend. Append-only: the active pause for a backend is the
+// newest row whose resetsAt is still in the future. Rows are pruned lazily.
+//
+// Why a per-backend table rather than more columns on accounts: each provider
+// has its own pool. Before this table a Codex rate-limit was recorded on
+// accounts.budgetExhaustedAt (the Claude/OAuth pool), so one provider running
+// dry paused the other and failover had nowhere to go. Failover reads this to
+// pick a backend that is not itself walled — see apps/web/src/lib/backend-failover.ts.
+export const backendPauses = pgTable('backend_pauses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Provenance only — a provider pool is team-wide, so reads are not scoped by
+  // workspace. Kept for "which workspace hit the wall" in the UI/debugging.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  backend: agentBackendEnum('backend').notNull(),
+  /** 'budget' (session/rate-limit) | 'auth' (credential rejected). */
+  reason: text('reason').notNull().default('budget'),
+  pausedAt: timestamp('paused_at', { withTimezone: true }).defaultNow().notNull(),
+  resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
+  sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
+}));
+
+export const backendPausesRelations = relations(backendPauses, ({ one }) => ({
+  team: one(teams, { fields: [backendPauses.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [backendPauses.workspaceId], references: [workspaces.id] }),
+}));
+
 // OAuth budget episodes — one row per observed session/budget exhaustion on a
 // seat-based (OAuth) account, recording how much work the window actually held.
 // Seat auth reports no cost, so this is the only usable signal for "how many

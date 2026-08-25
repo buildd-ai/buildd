@@ -26,7 +26,8 @@ import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { measureOauthWindow } from '@/lib/oauth-budget-window';
-import { hasCodexCredential } from '@/lib/codex-credential';
+import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
+import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -617,7 +618,29 @@ export async function PATCH(
     const tenantCtx = budgetTaskCtx.tenantContext as { tenantId?: string } | undefined;
     const teamId = (taskForBudget?.workspace as any)?.teamId as string | undefined;
 
-    if (tenantCtx?.tenantId && teamId) {
+    // WHICH pool ran dry matters. Every provider has its own; recording a Codex
+    // rate-limit on accounts.budget_exhausted_at (the Claude/OAuth pool) used to
+    // pause Claude as well, so a Codex wall left failover with nowhere to go and
+    // the task sat until the Codex reset. The pause log is per backend.
+    const walledBackend = (taskForBudget?.backend || 'claude') as 'claude' | 'codex';
+    const budgetScope = {
+      teamId,
+      accountId: account.id,
+      workspaceId: taskForBudget?.workspaceId,
+      tenantId: tenantCtx?.tenantId,
+    };
+    await recordBackendPause({
+      backend: walledBackend,
+      scope: budgetScope,
+      resetsAt: budgetResetsAt,
+      reason: 'budget',
+      sourceWorkerId: id,
+    });
+
+    // The account/tenant flags and the OAuth pacing episode describe Claude
+    // session capacity only, so they are written for Claude walls exclusively.
+    const isClaudePoolWall = walledBackend === 'claude';
+    if (isClaudePoolWall && tenantCtx?.tenantId && teamId) {
       // Tenant-level budget exhaustion: upsert into tenantBudgets
       await db
         .insert(tenantBudgets)
@@ -635,7 +658,7 @@ export async function PATCH(
             updatedAt: new Date(),
           },
         });
-    } else if (account.authType === 'oauth') {
+    } else if (isClaudePoolWall && account.authType === 'oauth') {
       // Account-level budget exhaustion: set flag (first-writer wins)
       const exhaustedAt = new Date();
       const flipped = await db
@@ -696,23 +719,38 @@ export async function PATCH(
       }
     }
 
-    // Codex failover: if the workspace has a Codex credential and the task
-    // isn't already on Codex, flip it to backend='codex' so it's claimable
-    // immediately rather than waiting for the Claude session/budget to reset.
-    // Codex uses a separate credit pool, and the claim route exempts
-    // backend==='codex' tasks from the Claude budget gate. Non-fatal: any
-    // failure here leaves the task on Claude to retry after the reset.
-    let failoverBackend: 'codex' | undefined;
-    if (taskForBudget?.backend !== 'codex' && taskForBudget?.workspaceId && teamId) {
+    // Provider failover, either direction: move the task to any other enabled,
+    // configured, un-walled backend so it is claimable NOW instead of waiting
+    // out this provider's reset. Each provider has its own pool, so a Codex wall
+    // is escaped via Claude exactly as a Claude wall is escaped via Codex.
+    // Non-fatal: with no usable alternative the task stays put and retries on reset.
+    let failoverBackend: 'claude' | 'codex' | undefined;
+    // Earliest moment ANY other provider frees up. When nothing can take the task
+    // now, waking at that moment beats sleeping through our own (later) reset —
+    // the claim route re-runs the same failover decision when the task wakes.
+    let earliestAlternateReset: Date | null = null;
+    if (taskForBudget?.workspaceId && teamId) {
       try {
-        const codexAvailable = await hasCodexCredential({
-          teamId,
-          accountId: account.id,
-          workspaceId: taskForBudget.workspaceId,
+        const decision = await resolveFailoverBackend({
+          from: walledBackend,
+          scope: budgetScope,
+          enabledBackends: await teamEnabledBackends(teamId),
         });
-        if (codexAvailable) failoverBackend = 'codex';
+        for (const blocked of decision.blocked) {
+          if (blocked.reason !== 'paused' || !blocked.pausedUntil) continue;
+          if (!earliestAlternateReset || blocked.pausedUntil < earliestAlternateReset) {
+            earliestAlternateReset = blocked.pausedUntil;
+          }
+        }
+        if (decision.backend) failoverBackend = decision.backend;
+        else if (decision.blocked.length > 0) {
+          console.log(
+            `[workers PATCH] No failover for task ${worker.taskId} (${walledBackend} walled): ` +
+            decision.blocked.map(b => `${b.backend}=${b.reason}`).join(', '),
+          );
+        }
       } catch (err) {
-        console.warn(`[workers PATCH] Codex failover check failed for task ${worker.taskId}:`, err);
+        console.warn(`[workers PATCH] Failover resolution failed for task ${worker.taskId}:`, err);
       }
     }
 
@@ -730,9 +768,13 @@ export async function PATCH(
         updatedAt: new Date(),
         ...(failoverBackend && { backend: failoverBackend }),
         ...(!failoverBackend && {
-          startAt: taskForBudget?.startAt && taskForBudget.startAt > budgetResetsAt
-            ? taskForBudget.startAt
-            : budgetResetsAt,
+          startAt: (() => {
+            const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
+              ? earliestAlternateReset
+              : budgetResetsAt;
+            // An explicit deferral floor already on the task still wins.
+            return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
+          })(),
         }),
         context: {
           ...existingCtx,
@@ -747,7 +789,10 @@ export async function PATCH(
       .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
     if (failoverBackend) {
-      console.log(`[workers PATCH] Task ${worker.taskId} failed over to Codex after Claude budget/session exhaustion`);
+      console.log(
+        `[workers PATCH] Task ${worker.taskId} failed over from ${walledBackend} to ${failoverBackend} ` +
+        'after budget/session exhaustion',
+      );
     }
 
     isBudgetReset = true;
@@ -756,11 +801,13 @@ export async function PATCH(
     // auto-retries on reset) — not a generic failure. The normal completion-notify
     // block below is skipped for budget resets, so alert here with the backend +
     // reset time so the operator sees "paused until X", not a misleading failure.
-    const backendLabel = (taskForBudget as any)?.backend === 'codex' ? 'Codex' : 'Claude';
+    const walledLabel = backendLabel(walledBackend);
     notify({
       app: 'alerts',
-      title: `⏳ ${backendLabel} budget/rate-limit hit`,
-      message: `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
+      title: `⏳ ${walledLabel} budget/rate-limit hit`,
+      message: failoverBackend
+        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
+        : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',
       priority: 0,
@@ -856,23 +903,31 @@ export async function PATCH(
 
         if (
           !alreadyFlipped &&
-          currentBackend !== 'codex' &&
           authTeamId &&
           authTask?.workspaceId &&
           authTask?.status !== 'cancelled'
         ) {
           try {
-            const codexAvailable = await hasCodexCredential({
-              teamId: authTeamId,
-              accountId: account.id,
-              workspaceId: authTask.workspaceId,
+            // Same registry-driven choice as the budget path: the credential that
+            // was rejected belongs to ONE provider, so any other enabled and
+            // configured backend can carry the task.
+            const authDecision = await resolveFailoverBackend({
+              from: currentBackend,
+              scope: {
+                teamId: authTeamId,
+                accountId: account.id,
+                workspaceId: authTask.workspaceId,
+                tenantId: (authTaskCtx.tenantContext as { tenantId?: string } | undefined)?.tenantId,
+              },
+              enabledBackends: await teamEnabledBackends(authTeamId),
             });
-            if (codexAvailable) {
+            const authFailoverBackend = authDecision.backend;
+            if (authFailoverBackend) {
               await db
                 .update(tasks)
                 .set({
                   status: 'pending',
-                  backend: 'codex',
+                  backend: authFailoverBackend,
                   claimedBy: null,
                   claimedAt: null,
                   expiresAt: null,
@@ -889,11 +944,11 @@ export async function PATCH(
 
               isAuthFailover = true;
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
-              console.log(`[workers PATCH] Task ${worker.taskId} failed over to Codex after auth failure (${authSeverity})`);
+              console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
               notify({
                 app: 'alerts',
-                title: '🔑 Auth failure — failing over to Codex',
-                message: `Task re-queued on Codex after ${currentBackend || 'claude'} auth failure.\n${(error || '').slice(0, 150)}`,
+                title: `🔑 Auth failure — failing over to ${backendLabel(authFailoverBackend)}`,
+                message: `Task re-queued on ${backendLabel(authFailoverBackend)} after ${backendLabel(currentBackend)} auth failure.\n${(error || '').slice(0, 150)}`,
                 url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/tasks/${worker.taskId}`,
                 urlTitle: 'View task',
                 priority: 0,

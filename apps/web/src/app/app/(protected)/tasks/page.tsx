@@ -10,6 +10,7 @@ import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
+import { backendLabel } from '@buildd/core/backend-policy';
 
 export default async function TasksPage({
   searchParams,
@@ -319,7 +320,7 @@ export default async function TasksPage({
               missionId: t.missionId || null,
               missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,
               budgetPaused,
-              budgetBackend: t.backend === 'codex' ? 'Codex' : 'Claude',
+              budgetBackend: backendLabel(t.backend),
               budgetResetsAt: budgetPaused ? ((ctx.budgetResetsAt as string | undefined) || null) : null,
               startAt: t.startAt?.toISOString() || null,
               loopIteration: t.loopConfig ? t.loopIteration : null,

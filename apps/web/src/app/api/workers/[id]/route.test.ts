@@ -94,7 +94,12 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
       // Lazy wrapper: this mock.module factory runs before the const below is initialised.
       oauthBudgetEpisodes: { findFirst: (...args: any[]) => mockOauthEpisodesFindFirst(...args) },
+      // Provider pause log + account budget flag, read by @/lib/backend-failover
+      // when it decides which backend a walled task can move to.
+      backendPauses: { findMany: (...args: any[]) => mockBackendPausesFindMany(...args) },
+      accounts: { findFirst: (...args: any[]) => mockAccountsFindFirst(...args) },
     },
+    delete: () => ({ where: mock(() => Promise.resolve()) }),
     update: (table: any) => {
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts') return mockAccountsUpdate();
@@ -119,6 +124,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -136,18 +142,37 @@ mock.module('@/lib/oauth-budget-window', () => ({
 }));
 
 const mockOauthEpisodesFindFirst = mock(() => Promise.resolve(null as any));
+// Active provider pauses (backend_pauses rows) + the legacy per-account Claude
+// budget flag. Empty/none by default: every backend's pool is open.
+const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
+// Pause inserts are routed here so they never clobber `lastInsertValues`, which
+// existing tests use to assert the OAuth episode row.
+let lastBackendPauseValues: any = null;
+const mockBackendPausesInsert = mock(() => ({
+  values: mock((values: any) => {
+    lastBackendPauseValues = values;
+    return Promise.resolve();
+  }),
+}));
 // The OAuth budget flip is `update ... where budget_exhausted_at is null`
 // `.returning()`: a returned row means this request won the race and owns the
 // episode record. Default to winning; tests override to simulate a loser.
 let accountsUpdateReturning: any[] = [{ id: 'account-1' }];
+// Every accounts.set payload this request wrote — the budget flag is not the
+// only thing that updates accounts, so tests assert on the payload, not the count.
+let accountsUpdateSets: any[] = [];
 const mockAccountsUpdate = mock(() => ({
-  set: mock(() => ({
-    where: mock(() => {
-      const p: any = Promise.resolve();
-      p.returning = mock(() => Promise.resolve(accountsUpdateReturning));
-      return p;
-    }),
-  })),
+  set: mock((vals?: any) => {
+    accountsUpdateSets.push(vals);
+    return {
+      where: mock(() => {
+        const p: any = Promise.resolve();
+        p.returning = mock(() => Promise.resolve(accountsUpdateReturning));
+        return p;
+      }),
+    };
+  }),
 }));
 const mockTeamsUpdate = mock(() => ({
   set: mock(() => ({
@@ -170,6 +195,7 @@ const mockGenericInsert = mock((table: any) => {
   // Delegate tenant budget inserts to the existing mock so existing tests still work
   // (schema mock returns an object for tenantBudgets, not a string)
   if (table?.tenantId === 'tenantId') return mockTenantBudgetsInsert();
+  if (table === 'backendPauses') return mockBackendPausesInsert();
   lastInsertTable = table;
   return {
     values: mock((values: any) => {
@@ -203,6 +229,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workerErrorTraces: { workerId: 'workerId' },
   missions: 'missions',
   taskSchedules: 'taskSchedules',
+  backendPauses: 'backendPauses',
 }));
 
 mock.module('@/lib/github', () => ({
@@ -2328,6 +2355,137 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastInsertValues?.exhaustedAt).toBeUndefined();
       // Losing the race must not stop the task from being re-queued.
       expect(mockTasksUpdate).toHaveBeenCalled();
+    });
+
+    // A Codex rate-limit used to be written to accounts.budget_exhausted_at — the
+    // Claude/OAuth pool — which paused Claude too and left failover nowhere to go.
+    it('records a Codex wall against Codex only, never the Claude/OAuth account flag', async () => {
+      mockAccountsUpdate.mockClear();
+      accountsUpdateSets = [];
+      lastBackendPauseValues = null;
+      lastInsertValues = null;
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'moa-ops' },
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit - resets 11:20am (UTC)", budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      // The Claude pool is untouched: no account flag, no OAuth episode.
+      expect(accountsUpdateSets.some((v: any) => v?.budgetExhaustedAt)).toBe(false);
+      expect(lastInsertValues?.windowStartedAt).toBeUndefined();
+      // The wall is recorded against Codex, with the reset the agent reported.
+      expect(lastBackendPauseValues?.backend).toBe('codex');
+      expect(lastBackendPauseValues?.teamId).toBe('team-1');
+      expect(lastBackendPauseValues?.reason).toBe('budget');
+      expect(lastBackendPauseValues?.resetsAt).toBeInstanceOf(Date);
+    });
+
+    it('fails a Codex-walled task over to Claude instead of deferring it', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([]);   // Claude pool open
+      mockAccountsFindFirst.mockResolvedValue(null);
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'moa-ops' },
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit - resets 11:20am (UTC)", budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue?.backend).toBe('claude');
+      expect(requeue?.context?.failedOverFrom).toBe('codex');
+      expect(requeue?.context?.failoverReason).toBe('budget_exhausted');
+      // Failing over means claimable NOW — no deferral floor.
+      expect(requeue?.startAt).toBeUndefined();
+    });
+
+    it('defers instead of failing over when the alternative backend is walled too', async () => {
+      // Claude is itself rate-limited until 15:20 — the exact case that made
+      // "just switch to Claude" impossible on 2026-08-25.
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'claude', resetsAt: new Date(Date.now() + 4 * 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'moa-ops' },
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit - resets 11:20am (UTC)", budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue?.backend).toBeUndefined();          // stays on Codex
+      expect(requeue?.startAt).toBeInstanceOf(Date);     // waits for its own reset
+      expect(requeue?.context?.budgetExhausted).toBe(true);
+    });
+
+    it('wakes at the alternate provider\'s reset when that lands before its own', async () => {
+      const claudeReset = new Date(Date.now() + 30 * 60 * 1000);   // Claude frees in 30m
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'claude', resetsAt: claudeReset, reason: 'budget' },
+      ]);
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'moa-ops' },
+      });
+
+      // Codex is walled for ~5h; Claude for 30m. The task should not sleep 5h.
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'usage limit reached', budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue?.startAt?.getTime()).toBe(claudeReset.getTime());
+      mockBackendPausesFindMany.mockResolvedValue([]);
     });
 
     it('fires a distinct budget/rate-limit alert (backend + reset) instead of "Task failed"', async () => {

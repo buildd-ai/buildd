@@ -20,6 +20,7 @@ import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
 import TaskAutoRefresh from './TaskAutoRefresh';
+import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
@@ -31,6 +32,8 @@ import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
+import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -319,8 +322,45 @@ export default async function TaskDetailPage({
   });
   const isBlocked = task.status === 'pending' && unresolvedDeps.length > 0;
   const isBudgetPaused = task.status === 'pending' && !!(task.context as any)?.budgetExhausted;
-  const budgetBackendLabel = task.backend === 'codex' ? 'Codex' : 'Claude';
+  const budgetBackendLabel = backendLabel(task.backend);
   const budgetResetsAtIso = (task.context as any)?.budgetResetsAt as string | undefined;
+
+  // Provider switch offered on the pause banner: which OTHER backend could take
+  // this task right now. Same availability data the automatic failover uses, so
+  // the button never promises a provider the claim route would refuse.
+  let switchOptions: BackendOption[] = [];
+  if (isBudgetPaused) {
+    const teamId = (task.workspace as any)?.teamId as string | undefined;
+    const scope = {
+      teamId,
+      // The account whose credentials last ran this task — its Claude session
+      // flag is part of "is Claude walled right now".
+      accountId: taskWorkers[0]?.accountId ?? null,
+      workspaceId: task.workspaceId,
+      tenantId: ((task.context as any)?.tenantContext as { tenantId?: string } | undefined)?.tenantId,
+    };
+    const [availability, enabled] = await Promise.all([
+      getBackendAvailability(scope),
+      teamEnabledBackends(teamId),
+    ]);
+    const candidates = new Set(failoverCandidates(task.backend as any, enabled));
+    switchOptions = availability
+      .filter(a => candidates.has(a.backend))
+      .map((a) => {
+        const paused = a.pausedUntil && a.pausedUntil > new Date() ? a.pausedUntil : null;
+        return {
+          backend: a.backend,
+          label: backendLabel(a.backend),
+          available: a.configured && !paused,
+          pausedUntil: paused?.toISOString() ?? null,
+          blockedReason: !a.configured
+            ? 'no credential configured'
+            : paused
+              ? `rate-limited until ${paused.toISOString().slice(11, 16)} UTC`
+              : undefined,
+        } satisfies BackendOption;
+      });
+  }
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
@@ -602,6 +642,9 @@ export default async function TaskDetailPage({
                 ? <>Retries ~<LocalTime iso={budgetResetsAtIso} suffix="." /></>
                 : 'Auto-retries when it resets.'}
             </div>
+            {switchOptions.length > 0 && (
+              <SwitchBackendButton taskId={id} options={switchOptions} />
+            )}
           </div>
         )}
 
