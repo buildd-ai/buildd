@@ -13,6 +13,7 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notify } from '@/lib/pushover';
 import type { MergePolicy } from '@buildd/shared';
+import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
@@ -109,8 +110,10 @@ export async function evaluateAutoMergeSafety(
     }
   }
 
-  const NOISE_PATTERNS = [/^packages\/core\/drizzle\/meta\//, /\.lock$/, /^bun\.lockb$/];
-  const sourceFiles = files.filter((f) => !NOISE_PATTERNS.some((p) => p.test(f.filename)));
+  const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
+  const sourceFiles = files.filter(
+    (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
+  );
   const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
   if (totalLines > maxLines) {
     return {

@@ -47,6 +47,7 @@ mock.module('drizzle-orm', () => ({
 
 import {
   fetchLivePrStats,
+  fetchEffectivePrStats,
   checkContentAlreadyUpstream,
   findSuccessorPr,
   runSupersessionPrecheck,
@@ -128,6 +129,42 @@ describe('fetchLivePrStats', () => {
   it('returns null on GitHub API error', async () => {
     mockGithubApi.mockRejectedValueOnce(new Error('GitHub down'));
     expect(await fetchLivePrStats(1, 'org/repo', 42)).toBeNull();
+  });
+});
+
+// ── fetchEffectivePrStats ─────────────────────────────────────────────────────
+
+describe('fetchEffectivePrStats', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  it('returns effective stats excluding generated path files', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'apps/web/src/lib/foo.ts', additions: 100, deletions: 5 },
+      { filename: 'packages/core/drizzle/0001.sql', additions: 10, deletions: 0 },
+      { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+      { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+    ]);
+    const stats = await fetchEffectivePrStats(1, 'org/repo', 42);
+    // Only the first two files should count (snapshot and journal excluded)
+    expect(stats).toEqual({ filesChanged: 2, linesAdded: 110, linesRemoved: 5 });
+  });
+
+  it('returns zero counts when all files are generated', async () => {
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+    ]);
+    const stats = await fetchEffectivePrStats(1, 'org/repo', 42);
+    expect(stats).toEqual({ filesChanged: 0, linesAdded: 0, linesRemoved: 0 });
+  });
+
+  it('returns null when GitHub returns null', async () => {
+    mockGithubApi.mockResolvedValueOnce(null);
+    expect(await fetchEffectivePrStats(1, 'org/repo', 42)).toBeNull();
+  });
+
+  it('returns null on GitHub API error', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub down'));
+    expect(await fetchEffectivePrStats(1, 'org/repo', 42)).toBeNull();
   });
 });
 
@@ -253,13 +290,12 @@ describe('runSupersessionPrecheck', () => {
   });
 
   it('returns superseded=true when both detectors fire', async () => {
-    // Drift check: live stats are 100x larger
+    // Drift check: live stats are 100x larger than recorded (175 lines)
+    // fetchEffectivePrStats → files array (non-generated, high line count)
     mockGithubApi
-      .mockResolvedValueOnce({            // fetchLivePrStats → PR
-        changed_files: 64,
-        additions: 21685,
-        deletions: 438,
-      })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE) // checkContentAlreadyUpstream → PR
       .mockResolvedValueOnce({            // checkContentAlreadyUpstream → compare
         ahead_by: 3,
@@ -275,7 +311,9 @@ describe('runSupersessionPrecheck', () => {
 
   it('returns superseded=false when only drift fires (no content_upstream)', async () => {
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] }); // real diff
 
@@ -288,7 +326,9 @@ describe('runSupersessionPrecheck', () => {
   it('returns superseded=false when only content_upstream fires (no drift)', async () => {
     // Live stats similar to recorded — drift does not fire
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 2, additions: 180, deletions: 10 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/small.ts', additions: 180, deletions: 10 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // ahead_by=0
 
@@ -300,7 +340,7 @@ describe('runSupersessionPrecheck', () => {
 
   it('fails open when GitHub API returns null for live stats (no signal)', async () => {
     mockGithubApi
-      .mockResolvedValueOnce(null)        // fetchLivePrStats → no PR
+      .mockResolvedValueOnce(null)        // fetchEffectivePrStats → null (no files)
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 5, files: [{ filename: 'a.ts' }] });
 
@@ -309,9 +349,32 @@ describe('runSupersessionPrecheck', () => {
     expect(result.signals).not.toContain('drift_ratio');
   });
 
+  it('does not fire drift when live inflation is entirely from generated paths', async () => {
+    // Worker reported 175 lines; live PR shows 9,588 total but 9,413 are snapshot JSON.
+    // Effective live = 175 lines (same as recorded) → ratio ~1x → drift must not fire.
+    mockGithubApi
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/feature.ts', additions: 100, deletions: 5 },
+        { filename: 'packages/core/drizzle/0001.sql', additions: 70, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+      ])
+      .mockResolvedValueOnce(PR_RESPONSE)
+      .mockResolvedValueOnce({ ahead_by: 1, files: [{ filename: 'feature.ts' }] }); // real diff
+
+    const result = await runSupersessionPrecheck({
+      ...BASE_PARAMS,
+      recordedStats: { filesChanged: 2, linesAdded: 164, linesRemoved: 11 },
+    });
+    expect(result.superseded).toBe(false);
+    expect(result.signals).not.toContain('drift_ratio');
+  });
+
   it('includes successorPrNumber when superseded and a sibling merged PR is found', async () => {
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] });
 
@@ -330,7 +393,9 @@ describe('runSupersessionPrecheck', () => {
   it('uses configurable threshold', async () => {
     // Same 100x drift but threshold raised to 200 → drift should NOT fire
     mockGithubApi
-      .mockResolvedValueOnce({ changed_files: 64, additions: 21685, deletions: 438 })
+      .mockResolvedValueOnce([            // fetchEffectivePrStats → files
+        { filename: 'apps/web/src/lib/foo.ts', additions: 21685, deletions: 438 },
+      ])
       .mockResolvedValueOnce(PR_RESPONSE)
       .mockResolvedValueOnce({ ahead_by: 0, files: [] }); // content fires
 

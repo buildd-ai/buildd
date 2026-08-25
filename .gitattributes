@@ -2,3 +2,6 @@
 *.sh text eol=lf
 *.bash text eol=lf
 *.zsh text eol=lf
+
+# Generated Drizzle ORM snapshot files — collapse in GitHub PR diff view
+packages/core/drizzle/meta/** linguist-generated=true

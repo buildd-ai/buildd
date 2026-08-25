@@ -234,6 +234,82 @@ describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   });
 });
 
+describe('evaluateAutoMergeSafety generated-path exclusion', () => {
+  const POLICY: MergePolicy = {
+    tier: 'auto-threshold',
+    threshold: { maxLines: 800, denyPaths: [] },
+  };
+
+  it('drizzle meta snapshot lines are excluded from the line count', async () => {
+    // Source change: 100 lines. Snapshot: 9,413 lines. Total would be 9,513 — over cap.
+    // After exclusion: 100 lines — under cap → should pass.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/feature.ts', additions: 100, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, POLICY),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('still blocks when non-generated lines alone exceed the cap', async () => {
+    // Source change: 900 lines (over the 800 cap) + snapshot.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/lib/feature.ts', additions: 900, deletions: 0 },
+        { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, POLICY),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('900'),
+    });
+  });
+
+  it('drizzle/ in escalateToPaths still escalates — generated exclusion does NOT weaken the gate', async () => {
+    // Regression: the generated-path exclusion must only affect line counting,
+    // not the escalateToPaths deny gate.
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0001.sql', additions: 10, deletions: 0 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: false,
+      reason: 'drops column foo',
+    });
+
+    const policy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['packages/core/drizzle/'] },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('drops column foo'),
+    });
+  });
+});
+
 // ── escalateConflictExhaustion ────────────────────────────────────────────────
 
 describe('escalateConflictExhaustion', () => {
