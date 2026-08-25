@@ -61,7 +61,7 @@ export async function inspectPullRequestMigrations(params: {
       `/repos/${params.repoFullName}/pulls/${params.prNumber}/files`,
     )) as GitHubPullRequestFile[];
   } catch {
-    return { safe: false, reason: 'could not inspect complete PR file list' };
+    return { safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list' };
   }
 
   const allMigrationFiles = completeFiles.filter((file) =>
@@ -71,6 +71,7 @@ export async function inspectPullRequestMigrations(params: {
   if (removedMigration) {
     return {
       safe: false,
+      operationClass: 'CONTRACT',
       reason: `deletes generated migration ${removedMigration.filename}`,
     };
   }
@@ -80,6 +81,7 @@ export async function inspectPullRequestMigrations(params: {
   if (changedExistingMigration) {
     return {
       safe: false,
+      operationClass: 'CONTRACT',
       reason: `modifies existing migration ${changedExistingMigration.filename}`,
     };
   }
@@ -87,7 +89,7 @@ export async function inspectPullRequestMigrations(params: {
   const touchesSchema = completeFiles.some(
     (file) => file.filename === 'packages/core/db/schema.ts',
   );
-  if (!touchesSchema && migrationFiles.length === 0) return { safe: true };
+  if (!touchesSchema && migrationFiles.length === 0) return { safe: true, operationClass: 'EXPAND' };
 
   const filesWithContent: PullRequestMigrationFile[] = completeFiles.map((file) => ({
     filename: file.filename,
@@ -114,7 +116,7 @@ export async function inspectPullRequestMigrations(params: {
     );
     for (const pull of pulls) {
       if (typeof pull !== 'object' || pull === null || !('number' in pull)) {
-        return { safe: false, reason: 'could not check migration number collisions' };
+        return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
       }
       if (pull.number === params.prNumber) continue;
       const files = (await listAll(
@@ -129,7 +131,7 @@ export async function inspectPullRequestMigrations(params: {
       );
     }
   } catch {
-    return { safe: false, reason: 'could not check migration number collisions' };
+    return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
   }
 
   return classifyPullRequestMigrations(filesWithContent, openMigrationPaths);

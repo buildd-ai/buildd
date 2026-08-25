@@ -30,7 +30,7 @@ describe('inspectPullRequestMigrations', () => {
         headSha: 'abc123',
         files: [],
       }),
-    ).resolves.toEqual({ safe: true });
+    ).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
     expect(mockGithubApi.mock.calls[1][1]).toContain(
       '/contents/packages/core/drizzle/0094_safe.sql?ref=abc123',
     );
@@ -60,6 +60,7 @@ describe('inspectPullRequestMigrations', () => {
       }),
     ).resolves.toEqual({
       safe: false,
+      operationClass: 'CONTRACT',
       reason:
         'migration number collision: 0094_safe.sql conflicts with open PR migration 0094_collision.sql',
     });
@@ -83,6 +84,7 @@ describe('inspectPullRequestMigrations', () => {
       }),
     ).resolves.toEqual({
       safe: false,
+      operationClass: 'CONTRACT',
       reason: 'deletes generated migration packages/core/drizzle/0094_safe.sql',
     });
     expect(mockGithubApi).toHaveBeenCalledTimes(1);
@@ -106,6 +108,7 @@ describe('inspectPullRequestMigrations', () => {
       }),
     ).resolves.toEqual({
       safe: false,
+      operationClass: 'CONTRACT',
       reason: 'modifies existing migration packages/core/drizzle/0094_safe.sql',
     });
     expect(mockGithubApi).toHaveBeenCalledTimes(1);
