@@ -17,6 +17,7 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
@@ -1117,11 +1118,9 @@ async function maybeDispatchReviewer(
       });
       if (row) mission = row as { mergePolicy?: import('@buildd/shared').MergePolicy | null };
     }
-    const policy = resolvePolicy(workspace, mission);
+    const basePolicy = resolvePolicy(workspace, mission);
 
-    if (policy.tier !== 'agent-review') return false;
-
-    // Fetch PR files for pre-flight check
+    // Fetch PR files first (needed for policyConfig override AND pre-flight check)
     let prFiles: Array<{ filename: string }> = [];
     try {
       const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
@@ -1130,7 +1129,17 @@ async function maybeDispatchReviewer(
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
 
-    // BT-10: Pre-flight escalation guard
+    // Apply semantic risk-class policy override (policyConfig supersedes escalateToPaths)
+    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
+    const policy = applyPolicyConfigToMergePolicy(
+      basePolicy,
+      policyConfig,
+      prFiles.map((f) => f.filename),
+    );
+
+    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
+
+    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -1138,9 +1147,11 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
     });
-    const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety);
-    if (preflight.shouldEscalate) {
-      console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${preflight.reason}`);
+    const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
+    const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
+    if (shouldEscalateToHuman) {
+      const reason = preflight.shouldEscalate ? preflight.reason : `workspace policy requires human review`;
+      console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${reason}`);
       if (task.missionId) {
         await db.insert(missionNotes).values({
           missionId: task.missionId,
@@ -1148,7 +1159,7 @@ async function maybeDispatchReviewer(
           authorType: 'system',
           type: 'reviewer_escalated',
           title: `PR #${pr.number} escalated to human (pre-flight)`,
-          body: preflight.reason,
+          body: reason,
           status: 'open',
         });
         await notifyMissionPrReady(task.missionId, {
@@ -1157,18 +1168,20 @@ async function maybeDispatchReviewer(
           prNumber: pr.number,
           headSha: pr.head.sha,
           reason: 'auto_merge_blocked',
-          message: `${task.title} — ${preflight.reason}`,
+          message: `${task.title} — ${reason}`,
         });
       }
       notify({
         app: 'alerts',
         title: `PR #${pr.number} escalated`,
-        message: preflight.reason,
+        message: reason,
         url: pr.html_url,
         urlTitle: 'View PR',
       });
       return true; // handled — skip auto-merge
     }
+
+    if (policy.tier !== 'agent-review') return false;
 
     // iteration/maxIterations are stored in task.context JSONB (not columns)
     const taskCtx = (task.context ?? {}) as Record<string, unknown>;
@@ -1194,6 +1207,7 @@ async function maybeDispatchReviewer(
       reviewerRole: policy.agentReview!.reviewerRole,
       installationId,
       repoFullName,
+      policyConfig: policyConfig ?? undefined,
     });
 
     if (reviewerTask) {

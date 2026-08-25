@@ -283,6 +283,10 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
+  // Semantic risk-class policy — supersedes mergePolicy.agentReview.escalateToPaths when set.
+  // Paths are derived by init scan; never hand-typed. Reviewer sees class intent, not raw globs.
+  policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
