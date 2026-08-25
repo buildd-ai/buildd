@@ -133,8 +133,56 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
   });
 });
 
-describe('evaluateAutoMergeSafety schema deny paths (tier 1 threshold.denyPaths)', () => {
-  beforeEach(() => {
+describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)', () => {
+  // Migration inspection runs regardless of denyPaths / escalateToPaths config.
+  // drizzle/ removed from escalateToPaths does NOT weaken the gate.
+
+  it('EXPAND migration passes without drizzle/ in denyPaths', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/db/schema.ts', additions: 2, deletions: 0 },
+        { filename: 'packages/core/drizzle/0094_safe.sql', additions: 1, deletions: 0 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true, operationClass: 'EXPAND' });
+
+    const policy: MergePolicy = {
+      tier: 'auto-threshold',
+      threshold: { denyPaths: [] },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTRACT migration blocks even without drizzle/ in denyPaths (AC-6)', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0095_drop.sql', additions: 1, deletions: 0 },
+      ]);
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops column missions.legacy_mode',
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'drops column missions.legacy_mode',
+    });
+    expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the specific destructive migration reason', async () => {
     mockGithubApi.mockReset();
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
@@ -143,28 +191,14 @@ describe('evaluateAutoMergeSafety schema deny paths (tier 1 threshold.denyPaths)
         { filename: 'packages/core/drizzle/0094_safe.sql', additions: 1, deletions: 0 },
       ]);
     mockInspectPullRequestMigrations.mockReset();
-    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
-  });
-
-  it('allows additive SQL through a schema-specific deny path', async () => {
-    const policy: MergePolicy = {
-      tier: 'auto-threshold',
-      threshold: { denyPaths: ['packages/core/db/schema.ts', 'packages/core/drizzle/'] },
-    };
-    await expect(
-      evaluateAutoMergeSafety(...params, policy),
-    ).resolves.toEqual({ ok: true });
-    expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns the specific destructive migration reason', async () => {
     mockInspectPullRequestMigrations.mockResolvedValue({
       safe: false,
+      operationClass: 'CONTRACT',
       reason: 'drops column missions.legacy_mode',
     });
     const policy: MergePolicy = {
       tier: 'auto-threshold',
-      threshold: { denyPaths: ['packages/core/db/schema.ts'] },
+      threshold: { denyPaths: [] },
     };
     await expect(
       evaluateAutoMergeSafety(...params, policy),
@@ -174,6 +208,22 @@ describe('evaluateAutoMergeSafety schema deny paths (tier 1 threshold.denyPaths)
     });
   });
 
+  it('does not call inspector for a PR with no migration files or schema.ts', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'apps/web/src/app/page.tsx', additions: 5, deletions: 2 },
+      ])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    mockInspectPullRequestMigrations.mockReset();
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+    expect(mockInspectPullRequestMigrations).not.toHaveBeenCalled();
+  });
+
   it('does not narrow an ordinary deny path', async () => {
     mockGithubApi.mockReset();
     mockGithubApi
@@ -181,6 +231,7 @@ describe('evaluateAutoMergeSafety schema deny paths (tier 1 threshold.denyPaths)
       .mockResolvedValueOnce([
         { filename: '.github/workflows/build.yml', additions: 2, deletions: 0 },
       ]);
+    mockInspectPullRequestMigrations.mockReset();
     const policy: MergePolicy = {
       tier: 'auto-threshold',
       threshold: { denyPaths: ['.github/workflows/'] },
@@ -281,28 +332,25 @@ describe('evaluateAutoMergeSafety generated-path exclusion', () => {
     });
   });
 
-  it('drizzle/ in escalateToPaths still escalates — generated exclusion does NOT weaken the gate', async () => {
-    // Regression: the generated-path exclusion must only affect line counting,
-    // not the escalateToPaths deny gate.
+  it('CONTRACT migration in a drizzle file still escalates — generated-path line exclusion does NOT weaken the operation-class gate', async () => {
+    // Regression: line-count exclusion of generated paths must never bypass the
+    // migration operation-class inspector. A CONTRACT migration always blocks.
     mockGithubApi.mockReset();
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce([
-        { filename: 'packages/core/drizzle/0001.sql', additions: 10, deletions: 0 },
+        { filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 10, deletions: 0 },
       ])
       .mockResolvedValueOnce({ mergeable_state: 'clean' });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({
       safe: false,
+      operationClass: 'CONTRACT',
       reason: 'drops column foo',
     });
 
-    const policy: MergePolicy = {
-      tier: 'agent-review',
-      agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['packages/core/drizzle/'] },
-    };
     await expect(
-      evaluateAutoMergeSafety(...params, policy),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('drops column foo'),

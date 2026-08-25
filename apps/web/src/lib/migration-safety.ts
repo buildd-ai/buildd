@@ -1,6 +1,8 @@
+export type OperationClass = 'EXPAND' | 'CONTRACT';
+
 export type MigrationSafety =
-  | { safe: true }
-  | { safe: false; reason: string };
+  | { safe: true; operationClass: 'EXPAND' }
+  | { safe: false; reason: string; operationClass: 'CONTRACT' };
 
 const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
 
@@ -36,20 +38,21 @@ function statements(sql: string): string[] {
 /**
  * Conservatively classify generated Postgres migration SQL.
  *
- * Only a deliberately small additive grammar is accepted. Everything else
- * escalates, including valid SQL we do not explicitly understand.
+ * Returns EXPAND for purely additive, reversible changes.
+ * Returns CONTRACT for any destructive or irreversible statement.
+ * Unknown statements fail closed: CONTRACT.
  */
 export function classifyMigrationSql(sql: string): MigrationSafety {
   const parsed = statements(sql);
   if (parsed.length === 0) {
-    return { safe: false, reason: 'generated migration contains no SQL statements' };
+    return { safe: false, operationClass: 'CONTRACT', reason: 'generated migration contains no SQL statements' };
   }
 
   for (const statement of parsed) {
     let match: RegExpExecArray | null;
 
     match = /^DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(statement);
-    if (match) return { safe: false, reason: `drops table ${identifier(match[1])}` };
+    if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops table ${identifier(match[1])}` };
 
     match =
       /^ALTER\s+TABLE\s+(?:ONLY\s+)?("?[a-zA-Z_][\w$]*"?)\s+DROP\s+COLUMN(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(
@@ -58,6 +61,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `drops column ${identifier(match[1])}.${identifier(match[2])}`,
       };
     }
@@ -69,6 +73,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `renames column ${identifier(match[1])}.${identifier(match[2])} to ${identifier(match[3])}`,
       };
     }
@@ -80,6 +85,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `renames table ${identifier(match[1])} to ${identifier(match[2])}`,
       };
     }
@@ -91,6 +97,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `changes type of ${identifier(match[1])}.${identifier(match[2])}`,
       };
     }
@@ -102,6 +109,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `adds NOT NULL constraint to existing column ${identifier(match[1])}.${identifier(match[2])}`,
       };
     }
@@ -112,6 +120,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     if (match) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `runs data migration ${match[1].split(/\s/)[0].toUpperCase()} on ${identifier(match[2])}`,
       };
     }
@@ -128,6 +137,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
       if (/\bNOT\s+NULL\b/i.test(definition) && !/\bDEFAULT\b/i.test(definition)) {
         return {
           safe: false,
+          operationClass: 'CONTRACT',
           reason: `adds NOT NULL column without default ${identifier(match[1])}.${identifier(match[2])}`,
         };
       }
@@ -140,11 +150,12 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
 
     return {
       safe: false,
+      operationClass: 'CONTRACT',
       reason: `ambiguous migration statement: ${statement.slice(0, 120)}`,
     };
   }
 
-  return { safe: true };
+  return { safe: true, operationClass: 'EXPAND' };
 }
 
 export interface PullRequestMigrationFile {
@@ -160,8 +171,10 @@ export function classifyPullRequestMigrations(
   const touchesSchema = files.some((file) => file.filename === 'packages/core/db/schema.ts');
 
   if (touchesSchema && migrations.length === 0) {
-    return { safe: false, reason: 'schema changed without a generated SQL migration' };
+    return { safe: false, operationClass: 'CONTRACT', reason: 'schema changed without a generated SQL migration' };
   }
+
+  const results: MigrationSafety[] = [];
 
   for (const migration of migrations) {
     const number = getMigrationNumber(migration.filename)!;
@@ -171,6 +184,7 @@ export function classifyPullRequestMigrations(
     if (collision) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `migration number collision: ${migration.filename.split('/').at(-1)} conflicts with open PR migration ${collision.split('/').at(-1)}`,
       };
     }
@@ -178,13 +192,30 @@ export function classifyPullRequestMigrations(
     if (migration.content === undefined) {
       return {
         safe: false,
+        operationClass: 'CONTRACT',
         reason: `could not inspect generated migration ${migration.filename}`,
       };
     }
 
-    const safety = classifyMigrationSql(migration.content);
-    if (!safety.safe) return safety;
+    results.push(classifyMigrationSql(migration.content));
   }
 
-  return { safe: true };
+  const firstContract = results.find((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
+  const hasExpand = results.some((r) => r.safe);
+
+  // Reject PRs that mix EXPAND and CONTRACT migrations. Each operation class must
+  // travel in its own PR: land additive changes first, then the destructive cleanup
+  // once no code reads the old column/table.
+  if (firstContract && hasExpand) {
+    return {
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason:
+        `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then land the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
+    };
+  }
+
+  if (firstContract) return firstContract;
+
+  return { safe: true, operationClass: 'EXPAND' };
 }
