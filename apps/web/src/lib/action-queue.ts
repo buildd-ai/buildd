@@ -1,4 +1,4 @@
-export type ActionChip = 'MERGE' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'RESOLVING';
+export type ActionChip = 'MERGE' | 'BLOCKED' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'RESOLVING';
 
 export interface ResolvedEscalationItem {
   workerId: string;
@@ -63,6 +63,10 @@ export interface EscalationRawItem {
   /** Set when an agent is actively resolving conflicts for this PR. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
+  /** Set when conflict-resolution retries are exhausted — PR needs human action. */
+  deadZoneExhausted?: boolean;
+  /** The last conflict retry task ID — used as the CTA target on BLOCKED cards. */
+  deadZoneLastRetryTaskId?: string | null;
 }
 
 export interface ActionQueueItem {
@@ -90,11 +94,16 @@ export interface ActionQueueItem {
   /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
+  /** Set when chip === 'BLOCKED' — retries exhausted, human decision required. */
+  deadZoneExhausted?: boolean;
+  /** Link target for the BLOCKED card's primary CTA. */
+  deadZoneLastRetryTaskId?: string | null;
 }
 
 // Chip display order: lower index = shown first.
+// BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
-const CHIP_ORDER: ActionChip[] = ['MERGE', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
+const CHIP_ORDER: ActionChip[] = ['MERGE', 'BLOCKED', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
 
 /**
  * Merges waitingOnYou items and escalationInbox items into a single
@@ -116,11 +125,14 @@ export function buildActionQueue(
   // Escalation items carry task links, workspace context, and merge buttons — add first
   for (const item of escalationInbox) {
     const key = item.prUrl ?? `task:${item.taskId}`;
+    // BLOCKED: conflict-resolution retries exhausted — human must decide.
     // RESOLVING: conflict retry is live — agent is handling it, not the human.
     // Otherwise: human-gate = MERGE, agent-review = REVIEW.
-    const chip: ActionChip = item.conflictRetryTaskId
-      ? 'RESOLVING'
-      : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
+    const chip: ActionChip = item.deadZoneExhausted
+      ? 'BLOCKED'
+      : item.conflictRetryTaskId
+        ? 'RESOLVING'
+        : item.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE';
     map.set(key, {
       subjectKey: key,
       chip,
@@ -134,6 +146,8 @@ export function buildActionQueue(
       escalationReason: item.escalationReason,
       conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
+      deadZoneExhausted: item.deadZoneExhausted ?? undefined,
+      deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
     });
   }
 

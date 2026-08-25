@@ -13,6 +13,7 @@ import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
 import type { ResolvedEscalationItem } from '@/lib/action-queue';
+import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -711,7 +712,7 @@ export default async function HomePage({
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
             ),
             columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, completedAt: true },
-            with: { task: { columns: { id: true, title: true, missionId: true } } },
+            with: { task: { columns: { id: true, title: true, missionId: true, status: true } } },
           });
 
           if (openPrWorkers.length > 0) {
@@ -811,6 +812,44 @@ export default async function HomePage({
             }
             // ───────────────────────────────────────────────────────────────────
 
+            // ── Dead zone exhausted detection ────────────────────────────────────
+            // Workers where: task is terminal + PR went dirty (prLifecycleStatus='conflict')
+            // + no active conflict retry + 3 retries already done → BLOCKED card.
+            const deadZoneExhaustedMap = new Map<string, { lastRetryTaskId: string | null }>();
+
+            const terminalConflictWorkers = openPrWorkers.filter(w => {
+              if (w.prLifecycleStatus !== 'conflict' || w.prNumber == null) return false;
+              if (conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return false;
+              const taskStatus = (w.task as any)?.status as string | undefined;
+              return taskStatus != null && ['completed', 'failed', 'cancelled'].includes(taskStatus);
+            });
+
+            if (terminalConflictWorkers.length > 0) {
+              const tcPrNumbers = terminalConflictWorkers.map(w => w.prNumber).filter(Boolean) as number[];
+              const allRetries = await db.query.tasks.findMany({
+                where: and(
+                  inArray(tasks.workspaceId, wsIds),
+                  inArray(tasks.conflictRetryPrNumber, tcPrNumbers),
+                ),
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, status: true },
+                orderBy: [desc(tasks.createdAt)],
+              });
+
+              for (const w of terminalConflictWorkers) {
+                if (!w.prNumber) continue;
+                const retries = allRetries.filter(
+                  t => t.workspaceId === w.workspaceId && t.conflictRetryPrNumber === w.prNumber,
+                );
+                const completedRetries = retries.filter(t =>
+                  ['completed', 'failed', 'cancelled'].includes(t.status),
+                );
+                if (completedRetries.length >= DEFAULT_MAX_CONFLICT_ITERATIONS) {
+                  deadZoneExhaustedMap.set(w.id, { lastRetryTaskId: completedRetries[0]?.id ?? null });
+                }
+              }
+            }
+            // ─────────────────────────────────────────────────────────────────────
+
             // Build agent-reviewing cards (shown in Right Now, not in the human queue)
             agentReviewingPrs = openPrWorkers
               .filter(w => w.taskId && agentReviewingTaskIds.has(w.taskId))
@@ -841,6 +880,8 @@ export default async function HomePage({
                 if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
                 // Include if a conflict retry is live (renders as RESOLVING)
                 if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
+                // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
+                if (deadZoneExhaustedMap.has(w.id)) return true;
                 if (w.taskId && escalatedMap.has(w.taskId)) return true;
                 if (w.taskId && approvedMap.has(w.taskId)) return true;
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -861,6 +902,7 @@ export default async function HomePage({
                   : escalationReason && policy.tier !== 'human' ? 'agent_flagged'
                   : 'pending_human';
                 const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+                const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
                 return {
                   workerId: w.id,
                   taskId: w.taskId ?? '',
@@ -871,11 +913,15 @@ export default async function HomePage({
                   prUrl: w.prUrl,
                   policyTier: policy.tier,
                   leaseState,
-                  escalationReason,
+                  escalationReason: deadZoneInfo
+                    ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
+                    : escalationReason,
                   verdictSummary,
                   waitingMinutes,
                   conflictRetryTaskId: conflictRetry?.taskId ?? null,
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
+                  deadZoneExhausted: !!deadZoneInfo,
+                  deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                 };
               })
               .slice(0, 10);
@@ -1342,6 +1388,57 @@ export default async function HomePage({
                                 </a>
                               )}
                             </div>
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (item.chip === 'BLOCKED') {
+                      return (
+                        <div
+                          key={item.subjectKey}
+                          className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
+                                  Blocked
+                                </span>
+                                {item.workspaceName && (
+                                  <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                                )}
+                              </div>
+                              {item.taskTitle && (
+                                <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">
+                                  {item.taskId ? (
+                                    <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                      {item.taskTitle}
+                                    </Link>
+                                  ) : item.taskTitle}
+                                </div>
+                              )}
+                              <p className="text-[12px] text-text-secondary mt-0.5">
+                                {item.escalationReason ?? 'Conflict-resolution retries exhausted — manual intervention required'}
+                              </p>
+                              {item.prUrl && (
+                                <a
+                                  href={item.prUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                                >
+                                  PR #{item.prNumber} ↗
+                                </a>
+                              )}
+                            </div>
+                            {item.deadZoneLastRetryTaskId && (
+                              <Link
+                                href={`/app/tasks/${item.deadZoneLastRetryTaskId}`}
+                                className="shrink-0 text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap"
+                              >
+                                Last attempt
+                              </Link>
+                            )}
                           </div>
                         </div>
                       );
