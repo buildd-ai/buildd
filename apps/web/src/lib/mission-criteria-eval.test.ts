@@ -39,15 +39,17 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+const mockEvaluateGoalCriteria = mock((_mission: any, _criteria: any, context: any) => ({
+  evaluatedAt: '2026-08-12T00:00:00.000Z',
+  evaluatedBy: context.evaluatedBy,
+  overall: 'pass',
+  criteria: [
+    { index: 0, type: 'no_open_tasks', verdict: 'pass', evidence: 'All 3 tasks are done.' },
+  ],
+}));
+
 mock.module('@buildd/core/mission-helpers', () => ({
-  evaluateGoalCriteria: mock((_mission: any, _criteria: any, context: any) => ({
-    evaluatedAt: '2026-08-12T00:00:00.000Z',
-    evaluatedBy: context.evaluatedBy,
-    overall: 'pass',
-    criteria: [
-      { index: 0, type: 'no_open_tasks', verdict: 'pass', evidence: 'All 3 tasks are done.' },
-    ],
-  })),
+  evaluateGoalCriteria: mockEvaluateGoalCriteria,
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -76,6 +78,7 @@ describe('autoEvaluateMissionOnCompletion', () => {
     mockArtifactFindMany.mockReset();
     mockMissionsUpdate.mockReset();
     mockNotesInsert.mockReset();
+    mockEvaluateGoalCriteria.mockReset();
     updatedMissionData = null;
     insertedNoteValues = null;
 
@@ -83,6 +86,14 @@ describe('autoEvaluateMissionOnCompletion', () => {
     mockTaskFindMany.mockResolvedValue([]);
     mockWorkerFindMany.mockResolvedValue([]);
     mockArtifactFindMany.mockResolvedValue([]);
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-12T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'pass',
+      criteria: [
+        { index: 0, type: 'no_open_tasks', verdict: 'pass', evidence: 'All 3 tasks are done.' },
+      ],
+    }));
     mockMissionsUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
         updatedMissionData = data;
@@ -217,5 +228,120 @@ describe('autoEvaluateMissionOnCompletion', () => {
     await autoEvaluateMissionOnCompletion('mission-1');
 
     expect(updatedMissionData).not.toBeNull();
+  });
+
+  // ── DEFECT 2: NOT_EVALUATED criteria must not vacuously pass ───────────────
+
+  it('does NOT auto-complete when all description criteria are NOT_EVALUATED (no LLM key)', async () => {
+    // Fixture: 3 description criteria NOT_EVALUATED + 1 all_prs_merged fail — mirrors 6dc41ced
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockMissionFindFirst.mockResolvedValue({
+      id: 'mission-6dc41ced',
+      title: 'Test Mission',
+      description: null,
+      goalCriteria: [
+        { type: 'description', description: 'All PRs merged', label: 'CI green' },
+        { type: 'description', description: 'No open issues', label: 'No issues' },
+        { type: 'description', description: 'Docs updated', label: 'Docs' },
+        { type: 'all_prs_merged', label: 'PRs merged' },
+      ],
+      goalCriteriaState: null,
+      autoVerify: null,
+      workingBranch: null,
+      status: 'active',
+    });
+
+    // evaluateGoalCriteria returns 3 NOT_EVALUATED + 1 fail (as mission-helpers would)
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-24T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'fail',
+      criteria: [
+        { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 3, type: 'all_prs_merged', verdict: 'fail', evidence: '4 PR(s) not yet merged', label: 'PRs merged' },
+      ],
+    }));
+
+    await autoEvaluateMissionOnCompletion('mission-6dc41ced');
+
+    // State should be persisted but status must NOT be set to completed
+    expect(updatedMissionData).not.toBeNull();
+    expect(updatedMissionData.status).toBeUndefined();
+    expect(updatedMissionData.goalCriteriaState.overall).toBe('fail');
+  });
+
+  it('does NOT auto-complete when description criteria are NOT_EVALUATED even if mechanical pass', async () => {
+    // 3 description criteria NOT_EVALUATED + 1 mechanical criterion passes
+    // This tests that NOT_EVALUATED blocks 'pass' — the core of DEFECT 2
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockMissionFindFirst.mockResolvedValue({
+      id: 'mission-defect2',
+      title: 'Test Mission',
+      description: null,
+      goalCriteria: [
+        { type: 'description', description: 'Quality bar met', label: 'Quality' },
+        { type: 'description', description: 'Coverage targets hit', label: 'Coverage' },
+        { type: 'description', description: 'Perf benchmarks pass', label: 'Perf' },
+        { type: 'no_open_tasks', label: 'No open tasks' },
+      ],
+      goalCriteriaState: null,
+      autoVerify: null,
+      workingBranch: null,
+      status: 'active',
+    });
+
+    // evaluateGoalCriteria returns 3 NOT_EVALUATED + 1 mechanical pass
+    // Without the fix this used to yield overall='pass' (NOT_EVALUATED were excluded from calc)
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-24T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'UNVERIFIED',
+      criteria: [
+        { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+        { index: 3, type: 'no_open_tasks', verdict: 'pass', evidence: 'All tasks complete' },
+      ],
+    }));
+
+    await autoEvaluateMissionOnCompletion('mission-defect2');
+
+    expect(updatedMissionData).not.toBeNull();
+    // Must NOT complete: NOT_EVALUATED criteria should block the 'pass' verdict
+    expect(updatedMissionData.status).toBeUndefined();
+    // recalculateOverall should return 'UNVERIFIED' — NOT_EVALUATED is present
+    expect(updatedMissionData.goalCriteriaState.overall).toBe('UNVERIFIED');
+  });
+
+  it('auto-completes when all criteria pass (including after LLM upgrade)', async () => {
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockMissionFindFirst.mockResolvedValue({
+      id: 'mission-pass',
+      title: 'Test Mission',
+      description: null,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'All done' }],
+      goalCriteriaState: null,
+      autoVerify: null,
+      workingBranch: null,
+      status: 'active',
+    });
+
+    // evaluateGoalCriteria returns all pass (no LLM-eligible criteria)
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-24T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'pass',
+      criteria: [
+        { index: 0, type: 'no_open_tasks', verdict: 'pass', evidence: 'All tasks done.' },
+      ],
+    }));
+
+    await autoEvaluateMissionOnCompletion('mission-pass');
+
+    expect(updatedMissionData).not.toBeNull();
+    expect(updatedMissionData.status).toBe('completed');
+    expect(updatedMissionData.goalCriteriaState.overall).toBe('pass');
   });
 });

@@ -19,6 +19,10 @@ export interface RunnerHeartbeat {
   maxConcurrentWorkers: number;
   /** How the runner connects: push_only = no inbound HTTP (headless/NAT), reachable = has inbound HTTP server. */
   connectivity: 'reachable' | 'push_only';
+  /** Whether bwrap sandboxing is active on this runner. null = probe not yet run. */
+  sandboxEnabled: boolean | null;
+  /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
+  sandboxProbeAt: string | null;
 }
 
 // 3× the 60-second liveness ping interval — absorbs transient network hiccups.

@@ -209,7 +209,7 @@ describe('evaluateGoalCriteria — description criterion', () => {
     expect(state.criteria[0].label).toBe('Gaps resolved');
   });
 
-  it('overall=pass when structural criterion passes and description is NOT_EVALUATED', () => {
+  it('overall=UNVERIFIED when structural criterion passes but description is NOT_EVALUATED', () => {
     const criteria: GoalCriterion[] = [
       { type: 'no_open_tasks' },
       { type: 'description', description: 'BM25 lexical search is functional' },
@@ -217,8 +217,8 @@ describe('evaluateGoalCriteria — description criterion', () => {
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
     expect(state.criteria[0].verdict).toBe('pass');
     expect(state.criteria[1].verdict).toBe('NOT_EVALUATED');
-    // NOT_EVALUATED excluded from overall — only no_open_tasks (pass) counts
-    expect(state.overall).toBe('pass');
+    // NOT_EVALUATED blocks 'pass' — overall is UNVERIFIED until LLM evaluates the description
+    expect(state.overall).toBe('UNVERIFIED');
   });
 
   it('overall=fail when structural criterion fails even with description NOT_EVALUATED', () => {
@@ -264,7 +264,7 @@ describe('evaluateGoalCriteria — overall verdict logic', () => {
     expect(state.overall).toBe('UNVERIFIED');
   });
 
-  it('overall=pass when all evaluated criteria pass (NOT_EVALUATED excluded)', () => {
+  it('overall=UNVERIFIED when structural criterion passes but description is NOT_EVALUATED', () => {
     const criteria: GoalCriterion[] = [
       { type: 'no_open_tasks' },   // pass
       { type: 'description', description: 'some free-form check' }, // NOT_EVALUATED
@@ -272,8 +272,8 @@ describe('evaluateGoalCriteria — overall verdict logic', () => {
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
     expect(state.criteria[0].verdict).toBe('pass');
     expect(state.criteria[1].verdict).toBe('NOT_EVALUATED');
-    // NOT_EVALUATED excluded → overall determined by no_open_tasks alone
-    expect(state.overall).toBe('pass');
+    // NOT_EVALUATED blocks 'pass' — the LLM layer must upgrade it before the mission can complete
+    expect(state.overall).toBe('UNVERIFIED');
   });
 
   it('overall=UNVERIFIED when all criteria are NOT_EVALUATED', () => {

@@ -118,8 +118,15 @@ export function findBlockingPr(
 ): { prNumber: number | null; prUrl: string | null } | null {
   if (candidateManifest.length === 0) return null;
 
+  // '**' in the candidate manifest means the task hasn't declared specific scope.
+  // Treat as advisory-only — don't block a broad task on other tasks' specific paths.
+  if (candidateManifest.includes('**')) return null;
+
   for (const t of openPrTasks) {
     if (!t.pathManifest?.length) continue;
+    // '**' in a sibling manifest is also advisory — the sibling hasn't declared
+    // specific scope, so it cannot legitimately claim to block all paths.
+    if ((t.pathManifest as string[]).includes('**')) continue;
     if (pathsOverlap(candidateManifest, t.pathManifest)) {
       return { prNumber: t.prNumber ?? null, prUrl: t.prUrl ?? null };
     }

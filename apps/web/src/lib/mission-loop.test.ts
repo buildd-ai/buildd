@@ -9,6 +9,7 @@ let selectResults: any[][] = [];
 let selectCallCount = 0;
 let tasksFindManyResults: any[][] = [];
 let tasksFindManyCallCount = 0;
+let insertedNoteData: any[] = [];
 
 // Injected directly — no mock.module needed for mission-run
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'new-task' } }));
@@ -78,7 +79,7 @@ mock.module('@buildd/core/db', () => ({
       }),
     }),
     insert: () => ({
-      values: () => Promise.resolve([]),
+      values: (v: any) => { insertedNoteData.push(v); return Promise.resolve([]); },
     }),
   },
 }));
@@ -107,6 +108,7 @@ function resetAll() {
   selectCallCount = 0;
   tasksFindManyResults = [];
   tasksFindManyCallCount = 0;
+  insertedNoteData = [];
   mockRunMission.mockReset();
   mockRunMission.mockImplementation(() => Promise.resolve({ task: { id: 'new-task' } }));
   mockTriggerEvent.mockReset();
@@ -599,6 +601,131 @@ describe('mission-loop', () => {
       'mission:loop_completed',
       expect.objectContaining({ reason: 'dormancy_auto_complete' })
     );
+  });
+
+  // ── Goal-criteria guard tests (DEFECTS 1 & 2) ─────────────────────────────
+
+  it('allows dormancy auto-complete when mission has no goalCriteria (regression guard)', async () => {
+    missionFindFirstResult = {
+      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
+      goalCriteria: null, goalCriteriaState: null,
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    tasksFindManyResults = [
+      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('allows dormancy auto-complete when goalCriteriaState.overall is pass', async () => {
+    missionFindFirstResult = {
+      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
+      goalCriteria: [{ type: 'all_prs_merged' }],
+      goalCriteriaState: { overall: 'pass', criteria: [{ index: 0, type: 'all_prs_merged', verdict: 'pass' }] },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    tasksFindManyResults = [
+      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('blocks dormancy auto-complete when goalCriteriaState.overall is fail (DEFECT 1)', async () => {
+    // Fixture: 3 description criteria NOT_EVALUATED + 1 all_prs_merged fail — mirrors mission 6dc41ced
+    missionFindFirstResult = {
+      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
+      goalCriteria: [
+        { type: 'description', description: 'All PRs merged and CI green', label: 'CI green' },
+        { type: 'description', description: 'No open issues', label: 'No issues' },
+        { type: 'description', description: 'Docs updated', label: 'Docs' },
+        { type: 'all_prs_merged', label: 'PRs merged' },
+      ],
+      goalCriteriaState: {
+        overall: 'fail',
+        criteria: [
+          { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 3, type: 'all_prs_merged', verdict: 'fail', evidence: '4 PR(s) not yet merged', label: 'PRs merged' },
+        ],
+      },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    // All tasks cancelled — this is the scenario from the incident
+    tasksFindManyResults = [
+      [
+        { title: 'Build feature A', mode: 'execution', status: 'completed' },
+        { title: 'Build feature B', mode: 'execution', status: 'cancelled' },
+        { title: 'Build feature C', mode: 'execution', status: 'cancelled' },
+      ],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('criteria_blocked');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    // Should have posted a warning note
+    const warningNote = insertedNoteData.find((n: any) => n.type === 'warning');
+    expect(warningNote).toBeDefined();
+    expect(warningNote.title).toBe('Mission completion blocked by goal criteria');
+    expect(warningNote.missionId).toBe('m1');
+  });
+
+  it('blocks dormancy auto-complete when criteria are NOT_EVALUATED (DEFECT 2)', async () => {
+    // 3 description criteria all NOT_EVALUATED, no failing mechanical criteria
+    missionFindFirstResult = {
+      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
+      goalCriteria: [
+        { type: 'description', description: 'All PRs merged and CI green', label: 'CI green' },
+        { type: 'description', description: 'No open issues', label: 'No issues' },
+        { type: 'description', description: 'Docs updated', label: 'Docs' },
+      ],
+      goalCriteriaState: {
+        overall: 'UNVERIFIED',
+        criteria: [
+          { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+          { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
+        ],
+      },
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    tasksFindManyResults = [
+      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('criteria_blocked');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    const warningNote = insertedNoteData.find((n: any) => n.type === 'warning');
+    expect(warningNote).toBeDefined();
+    expect(warningNote.title).toBe('Mission completion blocked by goal criteria');
+  });
+
+  it('blocks dormancy auto-complete when goalCriteriaState is null (criteria never evaluated)', async () => {
+    missionFindFirstResult = {
+      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
+      goalCriteria: [{ type: 'all_prs_merged' }],
+      goalCriteriaState: null, // never evaluated
+    };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    tasksFindManyResults = [
+      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('criteria_blocked');
+    expect(mockRunMission).not.toHaveBeenCalled();
   });
 
   it('does not auto-complete when only cancelled deliverables exist (no successes)', async () => {

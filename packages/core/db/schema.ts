@@ -288,6 +288,12 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // Supersession precheck: ratio threshold for the drift-ratio detector.
+  // When live GitHub PR stats are ≥ this multiple larger than recorded stats,
+  // the drift detector fires. Requires content-already-upstream to also fire
+  // before the retry chain is halted. Default: 10 (10×).
+  supersessionDriftRatioThreshold?: number;
+
   // Data classification for privacy enforcement. Absent / 'standard' = normal retention.
   // 'sensitive' = structured-only retention: free-text fields (progress messages, summaries,
   // artifacts, error traces) are dropped at the control-plane boundary; only schema-validated
@@ -1160,6 +1166,8 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
+  sandboxEnabled: boolean('sandbox_enabled'),
+  sandboxProbeAt: timestamp('sandbox_probe_at', { withTimezone: true }),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1190,7 +1198,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'orchestration_manual' | 'budget_exhausted'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_criteria_blocked' | 'orchestration_manual' | 'budget_exhausted'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -2234,5 +2242,59 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 }));
 
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
+
+// Path claims — held file-path locks for coordinating parallel workers.
+// A row per (task, path) written by check_path_claim on success.
+// released_at IS NULL → active hold; set to NOW() on terminal task status,
+// PR merged/closed, or worker reaper. No uniqueness constraint on
+// (workspace_id, path) because conflict detection uses prefix matching in
+// application code via pathsOverlap(). See docs/design/path-claims.md.
+export const pathClaims = pgTable('path_claims', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  path: text('path').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  releaseReason: text('release_reason'),
+}, (t) => ({
+  activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
+  taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
+}));
+
+export const pathClaimsRelations = relations(pathClaims, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaims.workspaceId], references: [workspaces.id] }),
+  task: one(tasks, { fields: [pathClaims.taskId], references: [tasks.id] }),
+}));
+
+export type PathClaim = typeof pathClaims.$inferSelect;
+export type NewPathClaim = typeof pathClaims.$inferInsert;
+
+// Waiter queue — tasks that hit a 409 on check_path_claim are registered here.
+// On release, notifyWaiters() fans out to live workers via Pusher.
+// UNIQUE on (blocking_task_id, waiting_task_id, blocked_path) prevents duplicate
+// registrations when a worker retries the same blocked claim.
+export const pathClaimWaiters = pgTable('path_claim_waiters', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  blockingTaskId: uuid('blocking_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  waitingTaskId: uuid('waiting_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  blockedPath: text('blocked_path').notNull(),
+  registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow().notNull(),
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+}, (t) => ({
+  uniqueWaiter: uniqueIndex('pcw_unique_idx').on(t.blockingTaskId, t.waitingTaskId, t.blockedPath),
+  blockingTaskOpenIdx: index('pcw_blocking_task_idx').on(t.blockingTaskId).where(sql`${t.notifiedAt} IS NULL`),
+  starvationIdx: index('path_claim_waiters_starvation_idx').on(t.workspaceId, t.registeredAt).where(sql`${t.notifiedAt} IS NULL`),
+}));
+
+export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) => ({
+  workspace: one(workspaces, { fields: [pathClaimWaiters.workspaceId], references: [workspaces.id] }),
+  blockingTask: one(tasks, { fields: [pathClaimWaiters.blockingTaskId], references: [tasks.id], relationName: 'blockingClaims' }),
+  waitingTask: one(tasks, { fields: [pathClaimWaiters.waitingTaskId], references: [tasks.id], relationName: 'waitingClaims' }),
+}));
+
+export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
+export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725

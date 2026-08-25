@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { archiveStaleDoneMissions } from '@/lib/mission-archive';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces, missionNotes } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { describeError } from '@buildd/core/describe-error';
@@ -429,6 +429,8 @@ export async function GET(req: NextRequest) {
             gateCondition: true,
             dependencyMetAt: true,
             orchestrationMode: true,
+            goalCriteria: true,
+            goalCriteriaState: true,
           },
         });
 
@@ -556,6 +558,8 @@ export async function GET(req: NextRequest) {
               gateCondition: (linkedMission.gateCondition as 'merged' | 'completed') ?? 'merged',
               dependencyMetAt: linkedMission.dependencyMetAt ?? null,
               lastHeartbeatStateHash: schedule.lastHeartbeatStateHash ?? null,
+              goalCriteria: linkedMission.goalCriteria,
+              goalCriteriaState: linkedMission.goalCriteriaState,
             });
 
             if (prepass.action === 'skip_complete') {
@@ -565,6 +569,21 @@ export async function GET(req: NextRequest) {
                 console.error(`[heartbeat-prepass] unblock failed for ${linkedMission.id}:`, e)
               );
               await triggerEvent(channels.mission(linkedMission.id), events.MISSION_LOOP_COMPLETED, { missionId: linkedMission.id, reason: 'heartbeat_prepass_complete' });
+              deterministicHeartbeatSkips++;
+              skipped++;
+              continue;
+            }
+
+            if (prepass.action === 'skip_criteria_blocked') {
+              await db.insert(missionNotes).values({
+                missionId: linkedMission.id,
+                authorType: 'system',
+                type: 'warning',
+                title: 'Mission completion blocked by goal criteria',
+                body: `The heartbeat found all deliverable tasks terminal, but goal criteria are not satisfied (${prepass.reason}). The mission will remain active until criteria pass.`,
+                status: 'open',
+              } as any).catch(e => console.error(`[heartbeat-prepass] note insert failed for ${linkedMission.id}:`, e));
+              await db.update(taskSchedules).set({ lastDeferralReason: 'heartbeat_criteria_blocked', lastDeferredAt: now, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
               deterministicHeartbeatSkips++;
               skipped++;
               continue;

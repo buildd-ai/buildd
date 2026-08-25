@@ -185,6 +185,8 @@ export class BuilddClient {
     summary?: string;
     // Budget exhaustion signal
     budgetExhausted?: boolean;
+    // Steering-delivery crash: classify as infra_failure (must not consume retry)
+    steeringDelivery?: boolean;
     // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
     // The server (completion route) consumes this to decide the loop state transition.
     verificationEvidence?: Record<string, unknown>;
@@ -451,10 +453,16 @@ export class BuilddClient {
     activeWorkerCount: number,
     environment?: WorkerEnvironment,
     redactionCounts?: Record<string, number>,
+    sandboxEnabled?: boolean | null,
+    sandboxProbeAt?: string | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
     const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
     if (redactionCounts && Object.keys(redactionCounts).length > 0) {
       payload.redactionCounts = redactionCounts;
+    }
+    if (sandboxProbeAt !== null && sandboxProbeAt !== undefined) {
+      payload.sandboxEnabled = sandboxEnabled;
+      payload.sandboxProbeAt = sandboxProbeAt;
     }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',

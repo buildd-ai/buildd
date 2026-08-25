@@ -43,6 +43,7 @@ import type { LoopHistoryEntry } from '@buildd/shared';
 import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -557,13 +558,15 @@ export async function PATCH(
   // Classify exit cause for taxonomy — written to the worker record on terminal update.
   // budget_limited:    task auto-resumes; not a real failure; excluded from retry caps.
   // sandbox_mount_gap: bwrap path missing; task requeued; excluded from retry caps.
+  // infra_failure:     set by stale-worker cleanup OR when steeringDelivery=true.
   // code_failure:      default for any other terminal failure.
-  // (infra_failure / reassigned are set by stale-worker cleanup, not here.)
   const isSandboxMountGap = body.sandboxMountGap === true;
+  const isSteeringDelivery = body.steeringDelivery === true;
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
+      steeringDelivery: isSteeringDelivery,
     });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
@@ -1718,6 +1721,11 @@ export async function PATCH(
       .where(eq(accounts.id, account.id));
   }
 
+  // Release path claims on terminal status so waiting tasks can proceed.
+  if (isTerminalStatus && worker.taskId) {
+    await releaseAndNotify(worker.taskId);
+  }
+
   // Mission cost-budget gate: check whether the mission's cumulative spend has
   // crossed its costBudgetUsd cap. Only fires on terminal worker status so we
   // read a stable, post-update cost from the DB. Never kills running workers —
@@ -1748,6 +1756,20 @@ export async function PATCH(
         columns: { context: true },
       }))?.context as Record<string, unknown> | null
     : null;
+
+  // Drain pending worker-to-worker messages so they can be returned in the response.
+  // Messages are stored in tasks.context.pendingWorkerMessages by send_worker_message (MCP).
+  // Clear them atomically before returning so they are delivered exactly once.
+  const pendingWorkerMessages = Array.isArray(taskContext?.pendingWorkerMessages)
+    ? (taskContext.pendingWorkerMessages as unknown[])
+    : [];
+  if (pendingWorkerMessages.length > 0 && worker.taskId) {
+    await db
+      .update(tasks)
+      .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })
+      .where(eq(tasks.id, worker.taskId));
+  }
+
   const isHeartbeatOk =
     taskContext?.heartbeat === true &&
     status === 'completed' &&
@@ -1938,10 +1960,11 @@ export async function PATCH(
 
   const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
 
-  // Return worker with any pending instructions and output warnings
+  // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    ...(pendingWorkerMessages.length > 0 ? { pendingMessages: pendingWorkerMessages } : {}),
     ...(outputWarning ? { outputWarning } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
@@ -2067,7 +2090,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
-        threshold: approvePolicy?.threshold,
+        policy: approvePolicy!,
       });
       break;
     }

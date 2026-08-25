@@ -7,26 +7,29 @@
  */
 
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, missionNotes } from '@buildd/core/db/schema';
+import { eq, and, or, sql } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
+import { notify } from '@/lib/pushover';
 import type { MergePolicy } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
-import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-
-const DEFAULT_AUTO_MERGE_MAX_LINES = 800;
+import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
  * Returns `{ ok: true }` when all safety rails pass, `{ ok: false, reason }` otherwise.
+ *
+ * Path checks are routed through the resolved policy:
+ *   - tier 1 (auto-threshold): threshold.denyPaths
+ *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  threshold: MergePolicy['threshold'] | null | undefined,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // CI completeness check — verify no check runs are still pending or failing.
   try {
@@ -61,8 +64,11 @@ export async function evaluateAutoMergeSafety(
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
   }
 
-  const denyPaths = threshold?.denyPaths ?? [];
-  const maxLines = threshold?.maxLines ?? DEFAULT_AUTO_MERGE_MAX_LINES;
+  const denyPaths =
+    policy.tier === 'agent-review'
+      ? (policy.agentReview?.escalateToPaths ?? [])
+      : (policy.threshold?.denyPaths ?? []);
+  const maxLines = policy.threshold?.maxLines ?? 800;
 
   let files: Array<{ filename: string; additions: number; deletions: number }> = [];
   try {
@@ -143,11 +149,11 @@ export async function tryAutoMergeWorkerPr(params: {
   prNumber: number;
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
-  threshold: MergePolicy['threshold'] | null | undefined;
+  policy: MergePolicy;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, threshold } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, threshold);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 
@@ -167,6 +173,10 @@ export async function tryAutoMergeWorkerPr(params: {
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
         if (dispatchResult.dispatched) return;
+        if (dispatchResult.superseded) {
+          // Supersession detected — escalateSupersession already fired inside dispatch
+          return;
+        }
         if (dispatchResult.disabled) {
           // Feature disabled — fall through to mission notification so human sees it
         } else if (dispatchResult.exhausted) {
@@ -209,14 +219,22 @@ export async function tryAutoMergeWorkerPr(params: {
     if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
       const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
       if (workspaceId) {
-        await dispatchConflictRetry({
+        const dispatchResult = await dispatchConflictRetry({
           workerId: worker.id,
           taskId: worker.taskId,
           prNumber,
           headSha,
           repoFullName,
           workspaceId,
-        }).catch(err => console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err));
+        }).catch(err => {
+          console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
+          return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
+        });
+        if (dispatchResult.superseded) {
+          // Supersession detected — escalateSupersession already fired inside dispatch
+        } else if (dispatchResult.exhausted && worker.taskId) {
+          await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
+        }
       }
     }
   }
@@ -230,7 +248,17 @@ async function resolveWorkspaceId(taskId: string): Promise<string | null> {
   return task?.workspaceId ?? null;
 }
 
-async function escalateConflictExhaustion(
+/**
+ * Emit escalation when conflict-retry attempts are exhausted.
+ *
+ * Idempotent: atomic CAS on tasks.context.conflictExhaustedHeadSha ensures
+ * exactly one Pushover and one reviewer_escalated note per (taskId, headSha),
+ * even when concurrent webhooks or retried requests trigger this simultaneously.
+ *
+ * Exported so it can be called from all merge paths (auto-merge, MCP merge_pr,
+ * human-triggered merge) without writing parallel escalation logic.
+ */
+export async function escalateConflictExhaustion(
   taskId: string,
   repoFullName: string,
   prNumber: number,
@@ -238,16 +266,65 @@ async function escalateConflictExhaustion(
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { missionId: true, title: true },
+    columns: { id: true, missionId: true, title: true, context: true },
   });
-  if (task?.missionId) {
-    await notifyMissionPrReady(task.missionId, {
-      title: 'Merge conflicts — retry limit reached, human action required',
-      prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
-      prNumber,
-      headSha,
-      reason: 'auto_merge_blocked',
-      message: `${task.title} — conflict resolution retries exhausted. Human must rebase, abandon, or supersede.`,
+  if (!task) return;
+
+  // Atomic dedup: only one escalation per (taskId, headSha)
+  const [claimed] = await db
+    .update(tasks)
+    .set({
+      context: sql`COALESCE(context, '{}'::jsonb) || jsonb_build_object('conflictExhaustedHeadSha', ${headSha}::text)`,
+    })
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        or(
+          sql`context IS NULL`,
+          sql`context->>'conflictExhaustedHeadSha' IS NULL`,
+          sql`context->>'conflictExhaustedHeadSha' != ${headSha}`,
+        ),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  if (!claimed) {
+    console.log(`[conflict-retry] escalation already fired for task ${taskId} PR #${prNumber}@${headSha.slice(0, 7)}`);
+    return;
+  }
+
+  const ctx = (task.context ?? {}) as Record<string, unknown>;
+  const maxIterations =
+    typeof ctx.maxConflictIterations === 'number'
+      ? ctx.maxConflictIterations
+      : DEFAULT_MAX_CONFLICT_ITERATIONS;
+  const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
+
+  // Create reviewer_escalated note → surfaces the PR in the "Waiting on You" inbox
+  if (task.missionId) {
+    await db.insert(missionNotes).values({
+      missionId: task.missionId,
+      taskId: task.id,
+      authorType: 'system',
+      type: 'reviewer_escalated',
+      title: `PR #${prNumber} — conflict retries exhausted (${maxIterations}/${maxIterations})`,
+      body: `Attempted ${maxIterations} time${maxIterations === 1 ? '' : 's'} to resolve merge conflicts automatically — still conflicted.\n\nChoose one:\n- **Resolve conflicts** — rebase the branch and re-dispatch\n- **Close as superseded** — close this PR and open a fresh one\n- **Abandon PR** — close without replacement`,
+      status: 'open',
     });
   }
+
+  // Fire Pushover regardless of mission membership
+  notify({
+    app: 'tasks',
+    title: `PR #${prNumber}: conflict retries exhausted`,
+    message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
+    url: taskUrl,
+    urlTitle: 'View task',
+    priority: 0,
+  });
+
+  console.log(`[conflict-retry] escalated PR #${prNumber}@${headSha.slice(0, 7)} for task ${taskId}`);
 }
+
+export { escalateSupersession } from '@/lib/conflict-retry';

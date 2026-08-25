@@ -1,8 +1,59 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// ── DB mock setup (hoisted before imports) ────────────────────────────────────
+
+const mockTaskFindFirst = mock(() => Promise.resolve(null) as any);
+const mockWorkerFindFirst = mock(() => Promise.resolve(null) as any);
+const mockWorkspaceFindFirst = mock(() => Promise.resolve(null) as any);
+const mockTaskFindMany = mock(() => Promise.resolve([]) as any);
+let capturedInsertValues: any = null;
+const mockInsertReturning = mock(() => Promise.resolve([{ id: 'new-task-id' }]) as any);
+const mockInsertOnConflict = mock(() => ({ returning: mockInsertReturning }));
+const mockInsertValues = mock((vals: any) => {
+  capturedInsertValues = vals;
+  return { onConflictDoNothing: mockInsertOnConflict };
+});
+const mockInsert = mock(() => ({ values: mockInsertValues }));
+
+const mockDispatchNewTask = mock(() => Promise.resolve());
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      tasks: {
+        findFirst: (...args: any[]) => mockTaskFindFirst(...args),
+        findMany: (...args: any[]) => mockTaskFindMany(...args),
+      },
+      workers: { findFirst: (...args: any[]) => mockWorkerFindFirst(...args) },
+      workspaces: { findFirst: (...args: any[]) => mockWorkspaceFindFirst(...args) },
+    },
+    insert: (...args: any[]) => mockInsert(...args),
+  },
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  tasks: 'tasks',
+  workers: 'workers',
+  workspaces: 'workspaces',
+}));
+
+mock.module('drizzle-orm', () => ({
+  eq: (...args: any[]) => args,
+  and: (...args: any[]) => args,
+  inArray: (...args: any[]) => args,
+  isNotNull: (field: any) => ({ isNotNull: field }),
+}));
+
+// Keep real path-overlap for meaningful overlap tests
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
 import {
   classifyMergeFailure,
   isAutoResolveMergeConflictsEnabled,
   buildConflictRetryTask,
+  dispatchConflictRetry,
   DEFAULT_MAX_CONFLICT_ITERATIONS,
 } from './conflict-retry';
 import type { ConflictRetryInput } from './conflict-retry';
@@ -214,5 +265,212 @@ describe('buildConflictRetryTask', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result!.description).toContain('https://github.com/acme/app/pull/42');
     expect(result!.description).toContain('Attempt 1 of 3');
+  });
+
+  describe('pathManifest derivation', () => {
+    it("inherits the original task's pathManifest when present", () => {
+      const input = makeInput({
+        originalTask: {
+          id: 'task-abc',
+          title: 'feat: add dark mode',
+          description: null,
+          workspaceId: 'ws-1',
+          context: null,
+          missionId: 'mission-1',
+          pathManifest: ['apps/web/src/**', 'packages/core/**'],
+        },
+      });
+      const result = buildConflictRetryTask(input);
+      expect(result!.pathManifest).toEqual(['apps/web/src/**', 'packages/core/**']);
+    });
+
+    it("defaults to ['**'] for mission tasks without a pathManifest", () => {
+      const result = buildConflictRetryTask(makeInput());
+      expect(result!.pathManifest).toEqual(['**']);
+    });
+
+    it('returns null pathManifest for standalone tasks without a pathManifest', () => {
+      const input = makeInput({
+        originalTask: {
+          id: 'task-abc',
+          title: 'feat: add dark mode',
+          description: null,
+          workspaceId: 'ws-1',
+          context: null,
+          missionId: null,
+          pathManifest: null,
+        },
+      });
+      const result = buildConflictRetryTask(input);
+      expect(result!.pathManifest).toBeNull();
+    });
+  });
+});
+
+// ── dispatchConflictRetry ─────────────────────────────────────────────────────
+
+const BASE_PARAMS = {
+  workerId: 'worker-id',
+  taskId: 'task-id',
+  prNumber: 99,
+  headSha: 'sha-abc123',
+  repoFullName: 'acme/app',
+  workspaceId: 'ws-1',
+};
+
+const MOCK_WORKSPACE = { id: 'ws-1', gitConfig: null };
+const MOCK_TASK = {
+  id: 'task-id',
+  title: 'feat: some feature',
+  description: 'Do the thing.',
+  workspaceId: 'ws-1',
+  context: null,
+  missionId: 'mission-1',
+  parentTaskId: null,
+  pathManifest: null,
+};
+const MOCK_WORKER = { id: 'worker-id', branch: 'buildd/task-id-some-feature', prNumber: 99 };
+
+describe('dispatchConflictRetry', () => {
+  beforeEach(() => {
+    capturedInsertValues = null;
+    mockTaskFindFirst.mockReset();
+    mockWorkerFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockReset();
+    mockTaskFindMany.mockReset();
+    mockInsert.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertOnConflict.mockReset();
+    mockInsertReturning.mockReset();
+    mockDispatchNewTask.mockReset();
+
+    mockWorkspaceFindFirst.mockResolvedValue(MOCK_WORKSPACE);
+    mockTaskFindFirst.mockResolvedValue(MOCK_TASK);
+    mockWorkerFindFirst.mockResolvedValue(MOCK_WORKER);
+    mockTaskFindMany.mockResolvedValue([]);
+
+    mockInsert.mockReturnValue({ values: mockInsertValues });
+    mockInsertValues.mockImplementation((vals: any) => {
+      capturedInsertValues = vals;
+      return { onConflictDoNothing: mockInsertOnConflict };
+    });
+    mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
+    mockInsertReturning.mockResolvedValue([{ id: 'new-task-id', ...capturedInsertValues }]);
+    mockDispatchNewTask.mockResolvedValue(undefined);
+  });
+
+  it('sets subjectAnchor fields on the inserted task', async () => {
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues).not.toBeNull();
+    expect(capturedInsertValues.subjectKind).toBe('pull_request');
+    expect(capturedInsertValues.subjectPrNumber).toBe(99);
+    expect(capturedInsertValues.subjectHeadSha).toBe('sha-abc123');
+    expect(capturedInsertValues.subjectBranch).toBe('buildd/task-id-some-feature');
+    expect(capturedInsertValues.subjectDedupeScope).toBe('active');
+  });
+
+  it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      // Exact directory prefix — pathsOverlap does literal prefix matching, not glob expansion
+      pathManifest: ['apps/web/src/lib'],
+      missionId: 'mission-1',
+    });
+    // Sibling declares a file inside that directory — prefix overlap fires
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['sibling-task-id']);
+  });
+
+  it('does not populate dependsOn when no sibling tasks overlap', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      pathManifest: ['apps/web/src/lib'],
+      missionId: 'mission-1',
+    });
+    // Sibling is in a completely separate area — no overlap
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'other-task-id', pathManifest: ['apps/runner/src/workers.ts'] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+  });
+
+  it('sets pathManifest on the inserted task', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      pathManifest: ['packages/core/db'],
+      missionId: null,
+    });
+    mockTaskFindMany.mockResolvedValue([]);
+
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(capturedInsertValues.pathManifest).toEqual(['packages/core/db']);
+  });
+
+  it("defaults pathManifest to ['**'] for mission tasks without an explicit pathManifest", async () => {
+    // MOCK_TASK has pathManifest: null and missionId: 'mission-1'
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(capturedInsertValues.pathManifest).toEqual(['**']);
+  });
+
+  it("conflict retry for manifest-less mission task serialises against sibling with ['**'] via dependsOn", async () => {
+    // Regression test for the #1759/#1763 ping-pong loop:
+    // Both tasks were filed by the organizer without a pathManifest (pre-PR #1773).
+    // PR #1780 ensures retries default to ['**'] for mission tasks and run the
+    // overlap check — so when a sibling also carries ['**'], a dependsOn edge is
+    // added and the two tasks are serialized instead of ping-ponging forever.
+    //
+    // MOCK_TASK already has: pathManifest: null, missionId: 'mission-1'
+    // Sibling is the other half of the ping-pong pair, also with ['**']
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'sibling-mission-task', pathManifest: ['**'] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    // Retry inherits ['**'] sentinel via the missionId fallback (PR #1780)
+    expect(capturedInsertValues.pathManifest).toEqual(['**']);
+    // ['**'] overlaps ['**'] → dependsOn edge added → tasks serialized, no more ping-pong
+    expect(capturedInsertValues.dependsOn).toContain('sibling-mission-task');
+  });
+
+  it('returns dispatched=false when workspace is not found', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue(null);
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(result.dispatched).toBe(false);
+  });
+
+  it('returns disabled=true when autoResolveMergeConflicts is false', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { autoResolveMergeConflicts: false },
+    });
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(result.dispatched).toBe(false);
+    expect(result.disabled).toBe(true);
+  });
+
+  it('returns exhausted=true when iteration cap is reached', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      context: { conflictIteration: 3 },
+    });
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(result.dispatched).toBe(false);
+    expect(result.exhausted).toBe(true);
   });
 });

@@ -13,6 +13,7 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { escalateConflictExhaustion } from '@/lib/auto-merge';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -594,8 +595,15 @@ export async function PUT(req: NextRequest) {
           console.error(`[github/pr] conflict-retry dispatch failed for PR #${prNumber}:`, err);
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
+        if (dispatchResult.superseded) {
+          // escalateSupersession already fired inside dispatchConflictRetry
+        } else if (dispatchResult.exhausted && worker.taskId) {
+          await escalateConflictExhaustion(worker.taskId, repo.fullName, prNumber, headSha);
+        }
         const message = dispatchResult.dispatched
           ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
+          : dispatchResult.superseded
+          ? `PR #${prNumber} appears superseded — its changes are already in base. Escalated for human review.`
           : dispatchResult.exhausted
           ? `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Human action required.`
           : result.message;
@@ -604,6 +612,7 @@ export async function PUT(req: NextRequest) {
           merged: false,
           message,
           conflictRetryDispatched: dispatchResult.dispatched,
+          conflictSuperseded: dispatchResult.superseded,
           conflictExhausted: dispatchResult.exhausted,
           pr: { number: prNumber, url: worker.prUrl ?? null },
         });

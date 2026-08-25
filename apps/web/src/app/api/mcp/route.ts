@@ -23,8 +23,12 @@ import {
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
 import { workspaces, teams, workers as workersTable, tasks } from "@buildd/core/db/schema";
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
-import { pathsOverlap } from "@buildd/core/path-overlap";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import {
+  checkPathClaimConflict,
+  insertClaims,
+  registerWaiter,
+} from "@buildd/core/path-claim";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -324,6 +328,53 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
       });
     }
 
+    // send_worker_message is available to worker and admin tokens (not trigger-only tokens).
+    if (accountLevel === 'worker' || accountLevel === 'admin') {
+      tools.push({
+        name: "send_worker_message",
+        description: `Send a structured message to another active task worker in the same workspace.
+
+Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
+
+Messages are delivered on the recipient's next update_progress check-in as pendingMessages[].
+Sender is resolved automatically from your ?worker= context — do not pass it as a parameter.
+Cross-workspace targeting is rejected (data isolation rule, not a nicety).
+Recipient terminal → returns { delivered: false, reason: "recipient_terminal" }.
+Rate limit: 5 messages per sender per minute per recipient task (retryAfter in error).
+Body size limit: 2 KB. Hop cap: 5 (prevents ping-pong loops — messages with hopCount >= 5 are dropped).
+
+Requires a worker context (?worker=<workerId> in the MCP URL).`,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            recipientTaskId: {
+              type: "string" as const,
+              description: "Task ID of the recipient. Must share a workspaceId with your task.",
+            },
+            type: {
+              type: "string" as const,
+              enum: ["path_blocked_on_you", "path_released", "question", "answer"],
+              description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
+            },
+            body: {
+              type: "object" as const,
+              description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
+            },
+            hopCount: {
+              type: "number" as const,
+              description: "Hop count for forwarded messages (0-based). Omit for new messages. Messages with hopCount >= 5 are dropped to prevent loops.",
+            },
+          },
+          required: ["recipientTaskId", "type", "body"],
+        },
+      });
+    }
+
     if (!isSensitive) {
       tools.push(
         {
@@ -609,6 +660,14 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         }
         const paths = rawPaths as string[];
 
+        // Wildcard claims are not supported — '**' is advisory-only.
+        if (paths.includes('**')) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks." }) }],
+            isError: true,
+          };
+        }
+
         // Resolve taskId from the worker row
         const workerRow = await db.query.workers.findFirst({
           where: eq(workersTable.id, workerId),
@@ -641,30 +700,51 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
 
         const MCP_CLAIM_RETRIES = 3;
         for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
-          // Scope siblings to the same mission when the task has one; fall back
-          // to workspace scope for tasks that are not under any mission.
-          const siblings = await db.query.tasks.findMany({
-            where: and(
-              eq(tasks.workspaceId, mcpTask.workspaceId),
-              mcpTask.missionId ? eq(tasks.missionId, mcpTask.missionId) : undefined,
-              inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-              isNotNull(tasks.pathManifest),
-              ne(tasks.id, taskId),
-            ),
-            columns: { id: true, title: true, pathManifest: true },
-          });
+          // Check active path_claims rows for conflicts (workspace-scoped).
+          // Held locks are now in path_claims, not inferred from tasks.pathManifest.
+          const conflict = await checkPathClaimConflict(
+            mcpTask.workspaceId,
+            taskId,
+            paths,
+          );
 
-          for (const sibling of siblings) {
-            if (!sibling.pathManifest?.length) continue;
-            if (pathsOverlap(paths, sibling.pathManifest as string[])) {
-              const result = {
-                claimed: false,
-                blockingTaskId: sibling.id,
-                blockingTaskTitle: sibling.title,
-                message: `Paths overlap with sibling task "${sibling.title}" (${sibling.id.slice(0, 8)}). Report blocked with blockingTaskId so a dependsOn edge can be added.`,
-              };
-              return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          if (conflict) {
+            const blocker = await db.query.tasks.findFirst({
+              where: eq(tasks.id, conflict.blockingTaskId),
+              columns: { id: true, title: true, missionId: true },
+            });
+
+            // Auto-register as waiter (deadlock check included)
+            const waiterResult = await registerWaiter(
+              conflict.blockingTaskId,
+              taskId,
+              conflict.blockingPath,
+              mcpTask.workspaceId,
+            );
+
+            const isCrossMission =
+              blocker?.missionId !== null && blocker?.missionId !== undefined &&
+              mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
+              blocker?.missionId !== mcpTask.missionId;
+
+            const message = isCrossMission
+              ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_claim_released event will fire on the workspace channel when the path is free.`
+              : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_claim_released event will fire on the workspace channel when the path is free.`;
+
+            const result: Record<string, unknown> = {
+              claimed: false,
+              blockingTaskId: conflict.blockingTaskId,
+              blockingTaskTitle: blocker?.title ?? null,
+              blockingMissionId: blocker?.missionId ?? null,
+              message,
+            };
+
+            if ('deadlock' in waiterResult && waiterResult.deadlock) {
+              result.deadlock = true;
+              result.cycle = waiterResult.cycle;
             }
+
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
           }
 
           const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
@@ -692,6 +772,8 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             .returning({ id: tasks.id });
 
           if (updated) {
+            // Insert path_claims rows for the newly claimed paths
+            await insertClaims(mcpTask.workspaceId, taskId, newPaths);
             return {
               content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
             };
@@ -715,6 +797,203 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ claimed: false, error: "Concurrent update conflict. Please retry." }) }],
+        };
+      } else if (name === "send_worker_message") {
+        // Requires worker or admin token — trigger tokens don't run agent work
+        if (accountLevel === 'trigger') {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: 'forbidden', reason: 'send_worker_message requires worker or admin token level' }) }],
+            isError: true,
+          };
+        }
+        if (!workerId) {
+          return {
+            content: [{ type: "text" as const, text: "send_worker_message requires a worker context. Reconnect with ?worker=<workerId> in the MCP URL." }],
+            isError: true,
+          };
+        }
+
+        const recipientTaskId = args?.recipientTaskId as string | undefined;
+        const msgType = args?.type as string | undefined;
+        const msgBody = args?.body as Record<string, unknown> | undefined;
+        const incomingHopCount = typeof args?.hopCount === 'number' ? Math.floor(args.hopCount as number) : 0;
+
+        if (!recipientTaskId) {
+          return {
+            content: [{ type: "text" as const, text: "recipientTaskId is required." }],
+            isError: true,
+          };
+        }
+
+        const VALID_MSG_TYPES = ['path_blocked_on_you', 'path_released', 'question', 'answer'];
+        if (!msgType || !VALID_MSG_TYPES.includes(msgType)) {
+          return {
+            content: [{ type: "text" as const, text: `type must be one of: ${VALID_MSG_TYPES.join(', ')}` }],
+            isError: true,
+          };
+        }
+
+        if (!msgBody || typeof msgBody !== 'object' || Array.isArray(msgBody)) {
+          return {
+            content: [{ type: "text" as const, text: "body must be a non-null object." }],
+            isError: true,
+          };
+        }
+
+        // Size cap: body JSON must be ≤ 2 KB
+        const bodyJson = JSON.stringify(msgBody);
+        if (bodyJson.length > 2048) {
+          return {
+            content: [{ type: "text" as const, text: `body exceeds 2 KB limit (${bodyJson.length} bytes). Reduce message size.` }],
+            isError: true,
+          };
+        }
+
+        // Hop cap: max 5 forwards — prevents ping-pong loops
+        if (incomingHopCount >= 5) {
+          return {
+            content: [{ type: "text" as const, text: `Hop cap reached (hopCount=${incomingHopCount} >= 5). Message dropped to prevent ping-pong loops between workers.` }],
+            isError: true,
+          };
+        }
+
+        // Resolve sender worker → taskId
+        const senderWorker = await db.query.workers.findFirst({
+          where: eq(workersTable.id, workerId),
+          columns: { taskId: true },
+        });
+        if (!senderWorker?.taskId) {
+          return {
+            content: [{ type: "text" as const, text: "No active task found for this worker." }],
+            isError: true,
+          };
+        }
+        const senderTaskId = senderWorker.taskId;
+
+        // Cannot message your own task
+        if (recipientTaskId === senderTaskId) {
+          return {
+            content: [{ type: "text" as const, text: "Cannot send a message to your own task." }],
+            isError: true,
+          };
+        }
+
+        // Resolve sender task (need workspaceId + context for rate limit)
+        const senderTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, senderTaskId),
+          columns: { id: true, workspaceId: true, context: true },
+        });
+        if (!senderTask) {
+          return {
+            content: [{ type: "text" as const, text: "Sender task not found." }],
+            isError: true,
+          };
+        }
+
+        // Resolve recipient task
+        const recipientTask = await db.query.tasks.findFirst({
+          where: eq(tasks.id, recipientTaskId),
+          columns: { id: true, workspaceId: true, status: true, context: true },
+        });
+        if (!recipientTask) {
+          return {
+            content: [{ type: "text" as const, text: `Recipient task ${recipientTaskId} not found.` }],
+            isError: true,
+          };
+        }
+
+        // Workspace scope check — data-boundary rule, not optional
+        if (recipientTask.workspaceId !== senderTask.workspaceId) {
+          return {
+            content: [{ type: "text" as const, text: `Cross-workspace messaging is not allowed. Sender and recipient must share a workspaceId.` }],
+            isError: true,
+          };
+        }
+
+        // Terminal recipient: caller can escalate instead of waiting
+        const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
+        if (TERMINAL_STATUSES.includes(recipientTask.status)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ delivered: false, reason: 'recipient_terminal', recipientStatus: recipientTask.status }),
+            }],
+          };
+        }
+
+        // Rate limit: max 5 messages per sender per minute per recipient task.
+        // Counter stored in sender's task context to avoid a new table.
+        const nowMs = Date.now();
+        const RATE_WINDOW_MS = 60_000;
+        const MAX_PER_WINDOW = 5;
+
+        const senderCtx = (senderTask.context ?? {}) as Record<string, unknown>;
+        const rateData = (senderCtx.workerMsgRateLimit ?? {}) as {
+          windowStart?: number;
+          counts?: Record<string, number>;
+        };
+
+        let windowStart = rateData.windowStart ?? 0;
+        let counts = (rateData.counts ?? {}) as Record<string, number>;
+
+        if (nowMs - windowStart > RATE_WINDOW_MS) {
+          windowStart = nowMs;
+          counts = {};
+        }
+
+        const currentCount = counts[recipientTaskId] ?? 0;
+        if (currentCount >= MAX_PER_WINDOW) {
+          const retryAfter = Math.ceil((windowStart + RATE_WINDOW_MS - nowMs) / 1000);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: 'rate_limited',
+                message: `Max ${MAX_PER_WINDOW} messages per minute to this recipient.`,
+                retryAfter,
+              }),
+            }],
+            isError: true,
+          };
+        }
+
+        // Increment rate limit counter on sender task context
+        counts[recipientTaskId] = currentCount + 1;
+        await db
+          .update(tasks)
+          .set({ context: { ...senderCtx, workerMsgRateLimit: { windowStart, counts } } })
+          .where(eq(tasks.id, senderTaskId));
+
+        // Build structured message envelope
+        const messageId = crypto.randomUUID();
+        const workerMessage = {
+          id: messageId,
+          type: msgType,
+          fromTaskId: senderTaskId,
+          fromWorkerId: workerId,
+          sentAt: new Date().toISOString(),
+          hopCount: incomingHopCount + 1,
+          body: msgBody,
+        };
+
+        // Deliver: append to recipient task's pendingWorkerMessages in context.
+        // Drained (cleared) by the recipient worker's next PATCH update_progress call,
+        // which returns them as pendingMessages[] in the response.
+        const recipientCtx = (recipientTask.context ?? {}) as Record<string, unknown>;
+        const pendingMsgs = Array.isArray(recipientCtx.pendingWorkerMessages)
+          ? [...(recipientCtx.pendingWorkerMessages as unknown[]), workerMessage]
+          : [workerMessage];
+
+        await db
+          .update(tasks)
+          .set({ context: { ...recipientCtx, pendingWorkerMessages: pendingMsgs } })
+          .where(eq(tasks.id, recipientTaskId));
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ delivered: true, messageId, recipientTaskId }),
+          }],
         };
       } else {
         throw new Error(`Unknown tool: ${name}`);

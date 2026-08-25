@@ -5094,4 +5094,120 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
 
     expect(mockTaskSchedulesUpdate).not.toHaveBeenCalled();
   });
+
+  // ── send_worker_message delivery (pendingMessages in PATCH response) ─────
+
+  describe('pendingWorkerMessages delivery', () => {
+    const updatedWorker = {
+      id: 'worker-1',
+      status: 'running',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+    });
+
+    it('returns pendingMessages from task context on PATCH progress update', async () => {
+      const message = {
+        id: 'msg-abc',
+        type: 'question',
+        fromTaskId: 'task-sender',
+        fromWorkerId: 'worker-sender',
+        sentAt: new Date().toISOString(),
+        hopCount: 1,
+        body: { text: 'Are you changing resolvePolicy()?' },
+      };
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: [message] },
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', progress: 50 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(Array.isArray(data.pendingMessages)).toBe(true);
+      expect(data.pendingMessages).toHaveLength(1);
+      expect(data.pendingMessages[0].id).toBe('msg-abc');
+      expect(data.pendingMessages[0].type).toBe('question');
+      expect(data.pendingMessages[0].fromTaskId).toBe('task-sender');
+    });
+
+    it('does not include pendingMessages in response when context has none', async () => {
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: {},
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', progress: 50 },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pendingMessages).toBeUndefined();
+    });
+
+    it('drains multiple messages at once', async () => {
+      const messages = [
+        { id: 'msg-1', type: 'question', fromTaskId: 'task-a', fromWorkerId: 'w-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q1' } },
+        { id: 'msg-2', type: 'answer', fromTaskId: 'task-b', fromWorkerId: 'w-b', sentAt: new Date().toISOString(), hopCount: 2, body: { replyToMsgId: 'prev', text: 'a1' } },
+      ];
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: messages },
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pendingMessages).toHaveLength(2);
+      expect(data.pendingMessages[0].id).toBe('msg-1');
+      expect(data.pendingMessages[1].id).toBe('msg-2');
+    });
+  });
 });

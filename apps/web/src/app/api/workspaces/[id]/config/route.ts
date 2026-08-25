@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { parseMergePolicy } from '@buildd/shared';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
@@ -251,16 +252,10 @@ export async function POST(
             requiresPR: body.requiresPR ?? false,
             targetBranch: body.targetBranch || undefined,
             autoCreatePR: body.autoCreatePR ?? false,
-            autoMergeOnGreenCI: body.autoMergeOnGreenCI ?? true,
-            // Keep legacy field in sync so old readers still work
-            autoMergePR: body.autoMergeOnGreenCI ?? body.autoMergePR ?? false,
-            // Safety rails for autoMergeOnGreenCI (optional; not yet surfaced in the form
-            // but accepted here so they can be configured via the API).
-            ...(Array.isArray(body.autoMergeDenyPaths)
-                ? { autoMergeDenyPaths: body.autoMergeDenyPaths.filter((p: unknown) => typeof p === 'string') }
-                : {}),
-            ...(typeof body.autoMergeMaxLines === 'number' && body.autoMergeMaxLines > 0
-                ? { autoMergeMaxLines: body.autoMergeMaxLines }
+
+            // Preserve mergePolicy — managed via explicit mergePolicy field below, not legacy flags
+            ...(existing?.gitConfig?.mergePolicy
+                ? { mergePolicy: existing.gitConfig.mergePolicy }
                 : {}),
 
             // Agent instructions
@@ -349,6 +344,23 @@ export async function POST(
                   : {}),
 
         };
+
+        // mergePolicy write-path validation: unknown keys rejected, not silently stripped
+        if (body.mergePolicy !== undefined) {
+            if (body.mergePolicy === null) {
+                // Explicit null clears the policy (falls back to default at runtime)
+                gitConfig.mergePolicy = undefined;
+            } else {
+                const parsed = parseMergePolicy(body.mergePolicy);
+                if (!parsed.ok) {
+                    return NextResponse.json(
+                        { error: parsed.error, field: parsed.field },
+                        { status: 422 },
+                    );
+                }
+                gitConfig.mergePolicy = parsed.policy;
+            }
+        }
 
         await db
             .update(workspaces)

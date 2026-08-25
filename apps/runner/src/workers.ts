@@ -97,8 +97,11 @@ function parseClaimError(err: Error): { status: number; reason: string } {
 // Claude Code's sandbox makes every Bash call fail with a bwrap error. We detect
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
+let _bwrapProbeAt: string | null = null;
 /** Test-only: reset the bwrap probe cache so each test starts from a known state. */
-export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; }
+export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; _bwrapProbeAt = null; }
+/** ISO timestamp of the last bwrap probe, or null if not yet probed. */
+export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
@@ -106,6 +109,7 @@ export function isBwrapSupported(): boolean {
   if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
+    _bwrapProbeAt = new Date().toISOString();
     if (!_bwrapSupported) {
       console.log('[runner] bwrap user namespaces unavailable — will force sandbox disabled for all tasks');
     }
@@ -188,6 +192,7 @@ interface WorkerSession {
   queryInstance?: ReturnType<typeof query>;  // Stored for rewindFiles() access
   generation: number;  // Session generation counter — used to detect stale post-loop cleanup
   backend?: ClaudeBackend;  // Stored for queryInstance access after runStreamed() starts
+  sessionId: string;  // Per-invocation CLI session ID (decoupled from worker.id so bwrap retries get a fresh ID)
 }
 
 // Constants for repetition detection
@@ -662,7 +667,9 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts());
+      const probeAt = getBwrapProbeAt();
+      const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1528,9 +1535,14 @@ export class WorkerManager {
     const worktreeIdx = cwd.indexOf(worktreeMarker);
     const repoPath = worktreeIdx > 0 ? cwd.substring(0, worktreeIdx) : cwd;
 
+    // Fresh session ID per invocation so that bwrap retries (which call startSession
+    // again on the same worker object) never present an already-registered session
+    // ID to the Claude CLI. The CLI rejects duplicate IDs with exit code 1.
+    const invocationSessionId = crypto.randomUUID();
+
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
-    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation });
+    this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
 
     // bwrap auto-retry flag: set in the catch block when a bwrap_namespace_denied
     // abort fires mid-run. Signals the finally block to skip worktree cleanup and
@@ -1552,6 +1564,9 @@ export class WorkerManager {
     // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
     // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
     let cbmCacheDir: string | undefined;
+    // Buffer CLI stderr lines so they surface in get_error_traces on process failure.
+    // The normal logging path (console.log) keeps them in server logs only.
+    const cliStderrBuffer: string[] = [];
 
     try {
       // Fetch workspace git config from server
@@ -2316,7 +2331,7 @@ export class WorkerManager {
       // Build query options
       const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
-        sessionId: worker.id,
+        sessionId: invocationSessionId,
         cwd,
         model: this.config.model,
         ...(fallbackModel ? { fallbackModel } : {}),
@@ -2355,6 +2370,8 @@ export class WorkerManager {
         ...(outputFormat ? { outputFormat } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
+          const trimmed = data.trim();
+          if (trimmed) cliStderrBuffer.push(trimmed);
         },
         // Resume previous session if provided (loads full conversation history from disk).
         // Claude-only: the Codex backend resumes via runStreamed's resumeThreadId
@@ -2683,7 +2700,7 @@ export class WorkerManager {
 
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
-        sessionId: worker.id,
+        sessionId: invocationSessionId,
         cwd,
         ...(backendModel ? { model: backendModel } : {}),
         ...(maxTurns ? { maxTurns } : {}),
@@ -2764,7 +2781,7 @@ export class WorkerManager {
                 this.addMilestone(worker, { type: 'status', label: `Output requirement nudge: ${outputReq}`, ts: Date.now() });
                 worker.currentAction = `Creating ${outputReq === 'pr_required' ? 'PR' : 'deliverable'}...`;
                 this.emit({ type: 'worker_update', worker });
-                sessionRef.inputStream.enqueue(buildUserMessage(nudge, { sessionId: worker.id }));
+                sessionRef.inputStream.enqueue(buildUserMessage(nudge, { sessionId: invocationSessionId }));
                 outputReqNudged = true;
                 outputReqNudgeCount++;
               }
@@ -2819,7 +2836,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
           const sessionRef = this.sessions.get(worker.id);
           if (sessionRef) {
-            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: worker.id }));
+            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: invocationSessionId }));
           }
           continue; // Don't break — keep streaming the agent's response
         }
@@ -3183,6 +3200,20 @@ If something is missing or incomplete, describe what and fix it now.`;
         // the task over (Codex) / holds it until reset instead of hard-failing.
         const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
           errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
+        // Steering-delivery crash: the CLI rejected a malformed spawn invocation
+        // (e.g. --session-id + --resume without --fork-session). This is an infra
+        // failure — must not consume a task retry attempt.
+        const stderrJoined = cliStderrBuffer.join('\n');
+        const isSteeringDeliveryCrash = stderrJoined.includes('--session-id can only be used with');
+        // Flush buffered CLI stderr into error traces so get_error_traces surfaces them.
+        if (cliStderrBuffer.length > 0) {
+          worker.pendingErrorTraces ??= [];
+          worker.pendingErrorTraces.push({
+            pattern: 'cli_spawn_error',
+            excerpt: stderrJoined.slice(0, 500),
+            source: 'stderr',
+          });
+        }
         // A provision-gate block carries a stable failure classification — surface
         // it as structured resultMeta so the server/organizer can act on the code
         // (escalate a missing secret vs. retry a flaky readiness) rather than
@@ -3195,6 +3226,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
+          ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+          ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
           ...spanPayload,
@@ -3659,7 +3692,7 @@ If something is missing or incomplete, describe what and fix it now.`;
               const sessionRef = this.sessions.get(worker.id);
               if (sessionRef) {
                 sessionRef.inputStream.enqueue(
-                  buildUserMessage(repetitionCheck.nudgeMessage!, { sessionId: worker.id })
+                  buildUserMessage(repetitionCheck.nudgeMessage!, { sessionId: sessionRef.sessionId })
                 );
               }
               console.log(`[Worker ${worker.id}] ⚠️ Loop nudge: ${repetitionCheck.nudgeMessage}`);

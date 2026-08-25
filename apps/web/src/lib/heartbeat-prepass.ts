@@ -17,6 +17,7 @@ export type HeartbeatPrepassDecision =
   | { action: 'invoke_llm'; stateKey: string }
   | { action: 'skip_blocked'; reason: string }
   | { action: 'skip_complete' }
+  | { action: 'skip_criteria_blocked'; reason: string }
   | { action: 'skip_no_change'; stateKey: string };
 
 /**
@@ -91,6 +92,8 @@ export async function evaluateHeartbeatPrepass(input: {
   gateCondition: 'merged' | 'completed';
   dependencyMetAt: Date | null;
   lastHeartbeatStateHash: string | null;
+  goalCriteria?: unknown;
+  goalCriteriaState?: unknown;
 }): Promise<HeartbeatPrepassDecision> {
   // 1. Dependency gate — skip if upstream mission's gate condition isn't met
   const blockStatus = await isMissionBlocked({
@@ -116,6 +119,15 @@ export async function evaluateHeartbeatPrepass(input: {
     nonCancelledDeliverables.length > 0 &&
     nonCancelledDeliverables.every(t => t.status === 'completed' || t.status === 'failed')
   ) {
+    // Guard: goal criteria must pass before we complete. NOT_EVALUATED is non-pass.
+    const criteria = Array.isArray(input.goalCriteria) ? input.goalCriteria : [];
+    if (criteria.length > 0) {
+      const state = input.goalCriteriaState as { overall?: string } | null | undefined;
+      if (state?.overall !== 'pass') {
+        const overall = state?.overall ?? 'not_evaluated';
+        return { action: 'skip_criteria_blocked', reason: `goal criteria not satisfied (overall: ${overall})` };
+      }
+    }
     return { action: 'skip_complete' };
   }
 
