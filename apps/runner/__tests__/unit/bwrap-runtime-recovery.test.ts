@@ -22,10 +22,13 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 // Closure-controlled query: first-call abort for retry tests, normal otherwise.
 let queryCallCount = 0;
 let queryAbortFirstCall = false;
+// Captures the sessionId from each query() call so tests can assert no reuse.
+const capturedSessionIds: string[] = [];
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     const callNum = ++queryCallCount;
+    capturedSessionIds.push(_opts.options?.sessionId ?? '');
     const shouldAbort = queryAbortFirstCall && callNum === 1;
     return {
       streamInput: () => {},
@@ -230,6 +233,7 @@ describe('bwrap runtime recovery', () => {
     __resetBwrapSupportForTest();
     queryCallCount = 0;
     queryAbortFirstCall = false;
+    capturedSessionIds.length = 0;
     mockUpdateWorker.mockReset();
     mockUpdateWorker.mockImplementation(async () => ({}));
   });
@@ -328,5 +332,26 @@ describe('bwrap runtime recovery', () => {
 
     // Worker ends in done state, not error
     expect(worker.status).toBe('done');
+  });
+
+  test('regression: bwrap retry uses a different session ID than the first invocation', async () => {
+    // The first startSession call registers a session ID with the Claude CLI.
+    // When bwrap aborts mid-run and startSession is called again on the SAME
+    // worker, it must NOT reuse that session ID — the CLI rejects it with
+    // "Session ID already in use" (exit code 1).
+    queryAbortFirstCall = true;
+
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-session-id' });
+    worker.bwrapRetryPending = true;
+
+    await (manager as any).startSession(worker, '/tmp/test-workspace', makeTask());
+
+    expect(queryCallCount).toBe(2);
+    // Both calls must have a non-empty session ID
+    expect(capturedSessionIds[0]).toBeTruthy();
+    expect(capturedSessionIds[1]).toBeTruthy();
+    // The retry must use a DIFFERENT session ID than the first invocation
+    expect(capturedSessionIds[0]).not.toBe(capturedSessionIds[1]);
   });
 });
