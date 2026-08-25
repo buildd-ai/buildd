@@ -26,11 +26,16 @@ let mockSelectResult: any[] = [{ total: 0, pendingCount: 0 }];
 let mockSelectRowsResult: any[] = [];
 let selectCallIndex = 0;
 
-function makeSelectChain(result: () => any[]) {
+// Spy: captures every notInArray(field, values) call so tests can assert on the exclusion list.
+const notInArrayCalls: Array<{ f: any; v: any[] }> = [];
+// Spy: captures args passed to .orderBy() so tests can assert on sort stability.
+const orderByCalls: Array<any[]> = [];
+
+function makeSelectChain(result: () => any[], captureWhere?: (arg: any) => void) {
   const chain: any = {
     from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
+    where: (arg: any) => { captureWhere?.(arg); return chain; },
+    orderBy: (...args: any[]) => { orderByCalls.push(args); return chain; },
     limit: () => chain,
     offset: () => chain,
     then: (resolve: any, reject: any) => Promise.resolve(result()).then(resolve, reject),
@@ -131,7 +136,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
   inArray: (f: any, v: any[]) => ({ f, v, type: 'inArray' }),
-  notInArray: (f: any, v: any[]) => ({ f, v, type: 'notInArray' }),
+  notInArray: (f: any, v: any[]) => { notInArrayCalls.push({ f, v }); return { f, v, type: 'notInArray' }; },
   gte: (f: any, v: any) => ({ f, v, type: 'gte' }),
   lte: (f: any, v: any) => ({ f, v, type: 'lte' }),
   gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
@@ -199,6 +204,8 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
     selectCallIndex = 0;
     mockSelectResult = [{ total: 0, pendingCount: 0 }];
     mockSelectRowsResult = [];
+    notInArrayCalls.length = 0;
+    orderByCalls.length = 0;
     // Re-bind the mock: reset creates a new identity, so re-register the impl
     mockDbSelect.mockImplementation((_cols?: any) => {
       const idx = selectCallIndex++;
@@ -290,5 +297,31 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
     expect(body.hasMore).toBe(false);
     // No db.select() calls when workspaceIds is empty
     expect(mockDbSelect).not.toHaveBeenCalled();
+  });
+
+  it('excludes cancelled tasks from the active filter (notInArray includes "cancelled")', async () => {
+    const req = makeRequest({ limit: '5', status: 'active' });
+    await GET(req);
+
+    // At least one notInArray call must include 'cancelled'
+    const statusExclusion = notInArrayCalls.find(c => Array.isArray(c.v) && c.v.includes('cancelled'));
+    expect(statusExclusion).toBeDefined();
+    // Also includes completed and failed
+    expect(statusExclusion!.v).toContain('completed');
+    expect(statusExclusion!.v).toContain('failed');
+  });
+
+  it('paginated orderBy includes a stable id tiebreak to prevent duplicate rows across pages', async () => {
+    const req = makeRequest({ limit: '5', status: 'active' });
+    await GET(req);
+
+    // The rows query's orderBy should include an asc(tasks.id) tiebreak as its last arg
+    // orderByCalls[0] is from the counts query (no orderBy), orderByCalls[0] or [1] is the rows query
+    // Since only the rows select chain calls orderBy, there should be exactly one call
+    expect(orderByCalls.length).toBeGreaterThanOrEqual(1);
+    const rowsOrderByArgs = orderByCalls[orderByCalls.length - 1];
+    const lastArg = rowsOrderByArgs[rowsOrderByArgs.length - 1];
+    // The tiebreak must be an asc() expression on the id field
+    expect(lastArg).toMatchObject({ type: 'asc', f: 'id' });
   });
 });
