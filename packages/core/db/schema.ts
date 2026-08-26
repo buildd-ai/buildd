@@ -854,6 +854,10 @@ export const tasks = pgTable('tasks', {
   // Used by the orchestrator to add dependsOn edges between tasks that touch the same paths,
   // and by the claim-time guard to defer a task whose paths overlap an open PR.
   pathManifest: jsonb('path_manifest').$type<string[] | null>(),
+  // Connector IDs (subset of the role's connectorRefs) that this task MUST have available.
+  // The claim route hard-blocks only on connectors in this list; missing connectors outside
+  // it are advisory and do not prevent claiming.
+  requiredConnectors: uuid('required_connectors').array(),
   // Earliest claim time. Shared by explicit scheduling and budget-limited resume;
   // writers always retain the later floor.
   startAt: timestamp('start_at', { withTimezone: true }),

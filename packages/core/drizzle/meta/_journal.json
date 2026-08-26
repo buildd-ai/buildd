@@ -848,6 +848,13 @@
       "when": 1787709728997,
       "tag": "0120_rich_gladiator",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1787827688346,
+      "tag": "0121_flat_penance",
+      "breakpoints": true
     }
   ]
 }
