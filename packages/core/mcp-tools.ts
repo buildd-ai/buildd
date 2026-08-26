@@ -219,7 +219,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears; each criterion MUST have type (required) — one of: "all_prs_merged" | "command" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string; type-specific required fields: description→description:string, command→command:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string; example: [{type:"description",description:"All PRs merged and CI green",label:"CI green"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
-    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") } } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. [admin]',
+    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
@@ -3318,10 +3318,66 @@ export async function handleBuilddAction(
           return text(`Repository created: ${repoData.repoUrl}\nWorkspace updated with new repo URL.${repoMigrated ? `\nMission ${repoMissionId} migrated to this workspace.` : ''}`);
         }
         case 'init': {
-          // init is a runner-side action — return instructions for the agent
+          // Scan the workspace's GitHub repo and propose a semantic risk-class policy.
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
           if (!wsId) throw new Error('workspaceId is required for init');
-          return text(`Workspace ${wsId} directory will be auto-created by the runner when a task is claimed. No-repo workspaces are resolved to a persistent project directory on the runner (e.g. /home/coder/project/{workspace-name}/). To set up the project:\n1. The runner creates the directory automatically\n2. Run \`git init\` in the workspace directory\n3. Use manage_workspaces action=create_repo or action=update to link a remote repo`);
+
+          const preset = params.preset ?? 'balanced';
+
+          // Call the policy-init scan endpoint
+          let scanResult: {
+            proposed: Record<string, unknown>;
+            repoFullName: string;
+            fileCount: number;
+            detectedClassCount: number;
+            hint: string;
+          } | null = null;
+          try {
+            scanResult = await api(`/api/workspaces/${wsId}/policy-init`, {
+              method: 'POST',
+              body: JSON.stringify({
+                preset,
+                reviewerRole: params.reviewerRole,
+              }),
+            });
+          } catch (err) {
+            // Non-fatal: if the scan fails (e.g. no GitHub repo linked), return setup instructions
+            return text(
+              `Workspace ${wsId}: no GitHub repository linked or scan failed.\n\n` +
+              `To enable semantic risk-class policy detection:\n` +
+              `1. Link a GitHub repo: manage_workspaces action=update workspaceId=${wsId} repoUrl=<url>\n` +
+              `2. Re-run: manage_workspaces action=init workspaceId=${wsId} preset=${preset}\n\n` +
+              `Workspace directory is auto-created when a task is claimed.`,
+            );
+          }
+
+          if (!scanResult) {
+            return text(`policy-init scan returned no result for workspace ${wsId}`);
+          }
+
+          const { proposed, repoFullName, fileCount, detectedClassCount } = scanResult;
+
+          // Format proposed policy for human confirmation
+          const riskClasses = (proposed as any).riskClasses ?? [];
+          const classLines = riskClasses
+            .filter((c: any) => c.detectedPaths?.length > 0)
+            .map((c: any) => `  - ${c.name}: ${(c.detectedPaths as string[]).join(', ')}`)
+            .join('\n');
+
+          return text(
+            `## Proposed Policy for ${repoFullName}\n\n` +
+            `**Preset:** ${(proposed as any).preset} (${detectedClassCount}/${riskClasses.length} classes detected across ${fileCount} files)\n\n` +
+            `**Detected risk classes:**\n${classLines || '  (none detected — repo may be empty or use an unsupported ORM)'}\n\n` +
+            `**To apply:** Update the workspace config with the proposed policyConfig:\n` +
+            `\`\`\`\n` +
+            `manage_workspaces action=update workspaceId=${wsId} gitConfig={\n` +
+            `  "policyConfig": ${JSON.stringify(proposed, null, 2)}\n` +
+            `}\n` +
+            `\`\`\`\n\n` +
+            `This replaces hand-authored escalateToPaths. Paths are derived from the repo — never type them manually.\n` +
+            `To change the preset: re-run with preset=cautious or preset=autonomous.\n` +
+            `To add paths: set userPaths on any risk class entry after applying.`,
+          );
         }
         default:
           throw new Error(`Unknown workspaces action: ${wsAction}. Use one of: list, get, create, update, create_repo, init`);
