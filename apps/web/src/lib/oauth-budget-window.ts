@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { oauthBudgetEpisodes, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, gte } from 'drizzle-orm';
+import { accounts, oauthBudgetEpisodes, tasks, workers } from '@buildd/core/db/schema';
+import { and, eq, gte, inArray } from 'drizzle-orm';
 import {
   DEFAULT_MAX_SAMPLES,
   OAUTH_WINDOW_MS,
@@ -20,18 +20,42 @@ import {
 /** How far back to read worker history when sessionizing window boundaries. */
 const LOOKBACK_MS = OAUTH_WINDOW_MS * 3;
 
+/**
+ * Resolve all OAuth accountIds sharing the same seatId as the given account.
+ * Returns [account.id] when seatId is null — no grouping needed.
+ */
+export async function resolveSeatIdPeers(account: {
+  id: string;
+  teamId: string;
+  seatId: string | null;
+}): Promise<string[]> {
+  if (!account.seatId) return [account.id];
+  const rows = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(and(
+      eq(accounts.teamId, account.teamId),
+      eq(accounts.seatId, account.seatId),
+      eq(accounts.authType, 'oauth'),
+    ));
+  return rows.length > 0 ? rows.map(r => r.id) : [account.id];
+}
+
 export interface OauthWindowMeasurement {
   windowStartedAt: Date;
   usage: OauthWindowUsage;
 }
 
-/** Recent exhaustion episodes, newest first, in the shape the learner wants. */
+/**
+ * Recent exhaustion episodes across all accounts in the group, newest first.
+ * Pass a single-element array for the per-account case.
+ */
 export async function loadOauthEpisodes(
-  accountId: string,
+  accountIds: string[],
   limit = DEFAULT_MAX_SAMPLES,
 ): Promise<Array<OauthEpisode & { resetsAt: Date | null }>> {
   const rows = await db.query.oauthBudgetEpisodes.findMany({
-    where: eq(oauthBudgetEpisodes.accountId, accountId),
+    where: inArray(oauthBudgetEpisodes.accountId, accountIds),
     orderBy: (t, { desc }) => [desc(t.exhaustedAt)],
     limit,
     columns: {
@@ -60,11 +84,11 @@ export async function loadOauthEpisodes(
  * claim time, so it reflects what the worker actually ran on.
  */
 export async function measureOauthWindow(input: {
-  accountId: string;
+  accountIds: string[];
   now: Date;
   lastResetsAt: Date | null;
 }): Promise<OauthWindowMeasurement> {
-  const { accountId, now, lastResetsAt } = input;
+  const { accountIds, now, lastResetsAt } = input;
 
   const rows = await db
     .select({
@@ -77,7 +101,7 @@ export async function measureOauthWindow(input: {
     .from(workers)
     .leftJoin(tasks, eq(tasks.id, workers.taskId))
     .where(and(
-      eq(workers.accountId, accountId),
+      inArray(workers.accountId, accountIds),
       gte(workers.createdAt, new Date(now.getTime() - LOOKBACK_MS)),
     ));
 

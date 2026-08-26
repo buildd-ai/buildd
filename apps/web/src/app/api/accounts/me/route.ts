@@ -6,7 +6,7 @@ import {
   readPacingConfig,
   windowEndsAt,
 } from '@buildd/core/oauth-budget';
-import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
+import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 
 // GET /api/accounts/me - Get current account info from API key
 export async function GET(req: NextRequest) {
@@ -27,11 +27,16 @@ export async function GET(req: NextRequest) {
   if (account.authType === 'oauth') {
     const config = readPacingConfig(process.env);
     try {
-      const episodes = await loadOauthEpisodes(account.id);
+      const accountIds = await resolveSeatIdPeers({
+        id: account.id,
+        teamId: account.teamId ?? '',
+        seatId: account.seatId ?? null,
+      });
+      const episodes = await loadOauthEpisodes(accountIds);
       const capacity = learnOauthCapacity(episodes, { quantile: config.quantile });
       const now = new Date();
       const { windowStartedAt, usage } = await measureOauthWindow({
-        accountId: account.id,
+        accountIds,
         now,
         lastResetsAt: episodes[0]?.resetsAt ?? null,
       });
