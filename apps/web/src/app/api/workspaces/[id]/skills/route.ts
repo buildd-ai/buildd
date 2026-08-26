@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, or, isNull, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -71,27 +71,45 @@ export async function GET(
     try {
         const url = new URL(req.url);
         const enabledParam = url.searchParams.get('enabled');
-
-        const conditions = [eq(workspaceSkills.workspaceId, id)];
-
-        if (enabledParam === 'true') {
-            conditions.push(eq(workspaceSkills.enabled, true));
-        } else if (enabledParam === 'false') {
-            conditions.push(eq(workspaceSkills.enabled, false));
-        }
-
         const isRoleParam = url.searchParams.get('isRole');
-        if (isRoleParam === 'true') {
-            conditions.push(eq(workspaceSkills.isRole, true));
-        } else if (isRoleParam === 'false') {
-            conditions.push(eq(workspaceSkills.isRole, false));
-        }
 
-        const results = await db
+        // Resolve team for this workspace so we can include team-level rows.
+        const ws = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, id),
+            columns: { teamId: true },
+        });
+
+        const extraFilters: ReturnType<typeof eq>[] = [];
+        if (enabledParam === 'true') extraFilters.push(eq(workspaceSkills.enabled, true));
+        else if (enabledParam === 'false') extraFilters.push(eq(workspaceSkills.enabled, false));
+        if (isRoleParam === 'true') extraFilters.push(eq(workspaceSkills.isRole, true));
+        else if (isRoleParam === 'false') extraFilters.push(eq(workspaceSkills.isRole, false));
+
+        // Fetch workspace-scoped AND team-level skills in one query.
+        // Workspace-scoped rows (workspaceId = id) take precedence over team-level
+        // rows (workspaceId IS NULL, teamId = ws.teamId) for the same slug.
+        const scopeClause = ws
+            ? or(
+                eq(workspaceSkills.workspaceId, id),
+                and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId)),
+              )
+            : eq(workspaceSkills.workspaceId, id);
+
+        const allRows = await db
             .select()
             .from(workspaceSkills)
-            .where(and(...conditions))
+            .where(extraFilters.length > 0 ? and(scopeClause, ...extraFilters) : scopeClause)
             .orderBy(desc(workspaceSkills.createdAt));
+
+        // Deduplicate by slug: workspace-scoped override wins over team default.
+        const seenSlugs = new Map<string, typeof allRows[0]>();
+        for (const row of allRows) {
+            const existing = seenSlugs.get(row.slug);
+            if (!existing || (row.workspaceId !== null && existing.workspaceId === null)) {
+                seenSlugs.set(row.slug, row);
+            }
+        }
+        const results = [...seenSlugs.values()];
 
         return NextResponse.json({ skills: results });
     } catch (error) {

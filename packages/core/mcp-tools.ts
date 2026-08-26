@@ -2070,28 +2070,35 @@ export async function handleBuilddAction(
         const skills = data.skills || [];
         if (skills.length === 0) return text('No skills found.');
 
-        const summary = skills.map((s: any) => {
+        function skillLine(s: any, scopeLabel?: string): string {
           const mcpCount = s.mcpServers
             ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
             : 0;
+          const scope = s.workspaceId === null ? 'team-level' : (scopeLabel ?? '');
           const tags = [
             s.isRole ? 'role' : 'skill',
+            scope,
             s.enabled ? '' : 'DISABLED',
             s.model !== 'inherit' ? s.model : '',
             mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
           ].filter(Boolean).join(', ');
-          return `- **${s.name}** (\`${s.slug}\`) [${tags}]${s.description ? `\n  ${s.description}` : ''}`;
-        }).join('\n');
+          const suffix = scopeLabel && s.workspaceId !== null ? ` — ${scopeLabel}` : '';
+          return `- **${s.name}** (\`${s.slug}\`) [${tags}]${suffix}${s.description ? `\n  ${s.description}` : ''}`;
+        }
+
+        const summary = skills.map((s: any) => skillLine(s)).join('\n');
 
         return text(`${skills.length} skill(s):\n\n${summary}`);
       }
 
-      // No workspace — list across all accessible workspaces
+      // No workspace — list across all accessible workspaces, deduplicating
+      // team-level roles (workspaceId === null) so they appear only once.
       const wsData = await api('/api/workspaces');
       const workspaces = wsData.workspaces || [];
       if (workspaces.length === 0) return text('No workspaces found.');
 
       const allSkills: { workspace: string; skill: any }[] = [];
+      const seenTeamLevelSlugs = new Set<string>();
       for (const ws of workspaces) {
         const qp = new URLSearchParams();
         if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
@@ -2099,24 +2106,36 @@ export async function handleBuilddAction(
         const qs = qp.toString() ? `?${qp.toString()}` : '';
         const data = await api(`/api/workspaces/${ws.id}/skills${qs}`);
         for (const s of (data.skills || [])) {
-          allSkills.push({ workspace: ws.name, skill: s });
+          if (s.workspaceId === null) {
+            // Team-level role — deduplicate across all workspace calls.
+            if (!seenTeamLevelSlugs.has(s.slug)) {
+              seenTeamLevelSlugs.add(s.slug);
+              allSkills.push({ workspace: 'All workspaces (team-level)', skill: s });
+            }
+          } else {
+            allSkills.push({ workspace: ws.name, skill: s });
+          }
         }
       }
 
       if (allSkills.length === 0) return text('No skills found across any workspace.');
 
-      const summary = allSkills.map(({ workspace, skill: s }) => {
+      function skillLineCross(s: any, workspace: string): string {
         const mcpCount = s.mcpServers
           ? (Array.isArray(s.mcpServers) ? s.mcpServers.length : Object.keys(s.mcpServers).length)
           : 0;
+        const scope = s.workspaceId === null ? 'team-level' : '';
         const tags = [
           s.isRole ? 'role' : 'skill',
+          scope,
           s.enabled ? '' : 'DISABLED',
           s.model !== 'inherit' ? s.model : '',
           mcpCount > 0 ? `${mcpCount} MCP(s)` : '',
         ].filter(Boolean).join(', ');
         return `- **${s.name}** (\`${s.slug}\`) [${tags}] — ${workspace}${s.description ? `\n  ${s.description}` : ''}`;
-      }).join('\n');
+      }
+
+      const summary = allSkills.map(({ workspace, skill: s }) => skillLineCross(s, workspace)).join('\n');
 
       return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
     }
@@ -2127,11 +2146,16 @@ export async function handleBuilddAction(
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
 
+      // resolveSkillId now finds both workspace-scoped and team-level skills
+      // (the workspace skills endpoint returns effective skills: workspace override
+      // wins over team default, falling back to team-level when no override exists).
       const skillId = await resolveSkillId(api, wsId, params.slug as string);
+      // GET /api/workspaces/[id]/skills/[skillId] also falls back to team-level reads.
       const data = await api(`/api/workspaces/${wsId}/skills/${skillId}`);
       const s = data.skill;
       if (!s) throw new Error(`Skill with slug "${params.slug}" not found`);
 
+      const isTeamLevel = s.workspaceId === null;
       const payload = {
         slug: s.slug,
         name: s.name,
@@ -2150,9 +2174,16 @@ export async function handleBuilddAction(
         enabled: s.enabled,
         repoUrl: s.repoUrl ?? null,
         source: s.source ?? null,
+        // Scope metadata — workspaceId null = team-level default
+        workspaceId: s.workspaceId ?? null,
+        scope: isTeamLevel ? 'team' : 'workspace',
       };
 
-      return text(JSON.stringify(payload, null, 2));
+      const scopeNote = isTeamLevel
+        ? `\n// scope: team-level (applies to all workspaces; resolved as team default for workspace ${wsId})`
+        : `\n// scope: workspace-scoped override for ${wsId}`;
+
+      return text(`${scopeNote}\n${JSON.stringify(payload, null, 2)}`);
     }
 
     case 'update_skill': {

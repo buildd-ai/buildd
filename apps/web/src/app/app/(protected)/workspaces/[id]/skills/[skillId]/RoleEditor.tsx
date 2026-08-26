@@ -69,6 +69,7 @@ interface Skill {
   id: string;
   slug: string;
   teamId: string;
+  workspaceId: string | null;
   name: string;
   description: string | null;
   content: string;
@@ -308,6 +309,11 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflictInfo, setConflictInfo] = useState<{
+    slug: string;
+    name: string;
+    editPath: string;
+  } | null>(null);
 
   // Form state
   const [name, setName] = useState(skill.name);
@@ -330,8 +336,12 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [installing, setInstalling] = useState<string | null>(null);
   const [showBrowse, setShowBrowse] = useState(false);
 
-  // Scope (applies-to) state — workspace-scoped roles always start as 'workspace'
-  const [scope, setScope] = useState<Scope>('workspace');
+  // Scope (applies-to) state — initialized from the skill's stored workspaceId:
+  // null = team-level, string = workspace-scoped. The SkillDetailPage only loads
+  // workspace-scoped skills, so this is always 'workspace' in practice, but
+  // deriving it from the stored value makes the initialization explicit and
+  // ensures opening and saving an unmodified role is a no-op on scope.
+  const [scope, setScope] = useState<Scope>(skill.workspaceId === null ? 'team' : 'workspace');
 
   // IDs of connectors explicitly enabled for this workspace (connector_workspaces rows).
   // Used to validate that a role only mounts connectors in scope for its workspace.
@@ -416,6 +426,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   async function handleSave() {
     setSaving(true);
     setError(null);
+    setConflictInfo(null);
     try {
       const payload = {
         name,
@@ -451,6 +462,14 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
 
       if (!res.ok) {
         const data = await res.json();
+        // 409 from promotion attempt — surface the conflicting team default with a link
+        if (res.status === 409 && data.conflictingRoleId) {
+          setConflictInfo({
+            slug: data.conflictingRoleSlug,
+            name: data.conflictingRoleName,
+            editPath: data.editTeamDefaultPath,
+          });
+        }
         throw new Error(data.error || 'Failed to save');
       }
 
@@ -540,8 +559,29 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         </div>
 
         {error && (
-          <div className="mb-4 px-4 py-2 rounded-md bg-status-error/10 text-status-error text-sm">
-            {error}
+          <div className="mb-4 px-4 py-3 rounded-md bg-status-error/10 text-status-error text-sm space-y-1.5">
+            <p>{error}</p>
+            {conflictInfo && (
+              <div className="text-[12px] space-y-1">
+                <p className="text-text-secondary">
+                  A team-level role <strong>{conflictInfo.name}</strong> (<code>{conflictInfo.slug}</code>) already exists for this team.
+                </p>
+                <p className="text-text-secondary">
+                  Options:
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-text-secondary">
+                  <li>
+                    <Link href={conflictInfo.editPath} className="text-accent-text hover:underline">
+                      Edit the existing team default
+                    </Link>{' '}
+                    to incorporate your changes there.
+                  </li>
+                  <li>
+                    Keep this role as a <strong>workspace override</strong> — change &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save to keep it scoped to {workspaceName}.
+                  </li>
+                </ul>
+              </div>
+            )}
           </div>
         )}
 
