@@ -23,7 +23,7 @@ import {
   workers,
   secrets,
 } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, inArray } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, ne } from 'drizzle-orm';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
@@ -344,6 +344,51 @@ export async function checkCapabilityMatch(opts: {
     accountId: opts.accountId ?? null,
   });
   return ok ? null : 'backend:codex';
+}
+
+/**
+ * Find an alternative role in the same workspace that could run the task.
+ * Returns the slug of the first sibling role that:
+ *   - is enabled, isRole=true, different slug than blockedRoleSlug
+ *   - has no connectorRefs (or all refs pass checkConnectorRouting)
+ * Returns null when no viable alternative exists.
+ */
+export async function findAlternativeRole(
+  blockedRoleSlug: string,
+  workspaceId: string,
+  teamId: string,
+): Promise<string | null> {
+  const siblingRows = await db.query.workspaceSkills.findMany({
+    where: and(
+      eq(workspaceSkills.isRole, true),
+      eq(workspaceSkills.enabled, true),
+      eq(workspaceSkills.teamId, teamId),
+      ne(workspaceSkills.slug, blockedRoleSlug),
+      or(
+        isNull(workspaceSkills.workspaceId),
+        eq(workspaceSkills.workspaceId, workspaceId),
+      ),
+    ),
+    columns: { slug: true, workspaceId: true, connectorRefs: true },
+  });
+
+  // Deduplicate: prefer workspace-scoped row over team-level default
+  const bySlug = new Map<string, (typeof siblingRows)[number]>();
+  for (const row of siblingRows) {
+    const existing = bySlug.get(row.slug);
+    if (!existing || row.workspaceId === workspaceId) {
+      bySlug.set(row.slug, row);
+    }
+  }
+
+  for (const role of bySlug.values()) {
+    const refs = (role.connectorRefs as string[] | null) ?? [];
+    if (refs.length === 0) return role.slug;
+    const failures = await checkConnectorRouting(role.slug, workspaceId, teamId);
+    if (!failures) return role.slug;
+  }
+
+  return null;
 }
 
 /**
