@@ -32,8 +32,8 @@ export default function MobilePageHeader({
 
   return (
     <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2.5 bg-surface-2 border-b border-border-default">
-      <span className="text-[13px] font-semibold text-text-primary">{title}</span>
-      <div className="flex items-center gap-3">
+      <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-text-primary">{title}</span>
+      <div className="flex items-center gap-2">
         {workspaces.length > 0 && <WorkspaceFilter workspaces={workspaces} />}
         {teams.length > 0 && <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />}
         <UserAvatarMenu userInitial={userInitial} direction="down" />
