@@ -597,6 +597,12 @@ export const workspaces = pgTable('workspaces', {
   // journal directly to bootstrap the right initial value on first use).
   lastMigrationNumber: integer('last_migration_number').default(0).notNull(),
 
+  // When true, connector failures are advisory rather than blocking for tasks that
+  // have no requiredConnectors. The agent receives a degradedConnectors notice in its
+  // system prompt instead of the task being silently deferred. Total degradation (all
+  // connectors for the role unavailable) still holds the task regardless of this flag.
+  connectorAdvisoryMode: boolean('connector_advisory_mode').default(false).notNull(),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
