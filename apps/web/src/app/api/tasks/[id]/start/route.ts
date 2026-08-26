@@ -6,7 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch } from '@/lib/claim-gates';
+import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch, type ConnectorFailure } from '@/lib/claim-gates';
 
 /**
  * POST /api/tasks/[id]/start
@@ -136,12 +136,19 @@ export async function POST(
     const roleSlug = (task as any).roleSlug as string | null;
     const teamId = (task.workspace as any)?.teamId as string | null;
     if (roleSlug && teamId) {
-      const missingConnectors = await checkConnectorRouting(roleSlug, task.workspaceId, teamId);
-      if (missingConnectors) {
+      const connectorFailures = await checkConnectorRouting(roleSlug, task.workspaceId, teamId);
+      if (connectorFailures) {
+        const detail = connectorFailures
+          .map(f => `'${f.connectorName}' (${f.mode})`)
+          .join(', ');
         return NextResponse.json({
-          error: `Task cannot be started: role '${roleSlug}' requires connectors not available in this workspace`,
+          error: `Task cannot be started: role '${roleSlug}' has connector issues: ${detail}`,
           gateReason: 'connector_routing_mismatch',
-          missingConnectors,
+          connectorFailures: connectorFailures.map((f: ConnectorFailure) => ({
+            connectorId: f.connectorId,
+            connectorName: f.connectorName,
+            mode: f.mode,
+          })),
         }, { status: 422 });
       }
     }
