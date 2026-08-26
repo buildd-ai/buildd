@@ -518,15 +518,18 @@ export async function POST(req: NextRequest) {
   // ── Connector availability pre-filter ──────────────────────────────────────
   // Tasks whose role declares connectorRefs are only claimable by a worker in
   // a workspace where EVERY referenced connector is visible (owned or shared to
-  // this team) AND not explicitly disabled via connectorWorkspaces. Tasks with
-  // missing connectors are silently deferred so a correctly-routed worker can
-  // claim them (no hard error in batch mode). For explicit single-task claims
-  // (body.taskId set) a 422 routing_mismatch is returned immediately.
+  // this team), not explicitly disabled, has valid credentials, and is reachable.
+  // Tasks with connector failures are silently deferred so a correctly-routed or
+  // fixed-up worker can claim them later. For explicit single-task claims
+  // (body.taskId set) a 422 routing_mismatch is returned with typed failure info.
   //
-  // This mirrors the visibility logic in the connector injection block below so
-  // a task is never claimed and then dropped at MCP pre-flight for a routing
-  // reason that could have been detected here.
+  // Failure taxonomy (evaluated in order):
+  //   never_mounted      — dangling ref / wrong team / disabled for workspace
+  //   expired_or_revoked — credential missing, oauth token expired, or undecryptable
+  //   transient          — HTTP HEAD probe failed (transport=http only; 5s budget)
   const connectorMismatchTaskIds = new Set<string>();
+  // Per-task typed failures used in the 422 response for explicit taskId claims.
+  const taskConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
   {
     const rolePairs = filteredTasks
       .map(t => ({
@@ -584,10 +587,11 @@ export async function POST(req: NextRequest) {
       if (allRefIds.size > 0) {
         const refIdList = [...allRefIds];
 
-        // Batch-fetch connector metadata (id, teamId, name).
+        // Batch-fetch connector metadata — include authMode/transport/url for
+        // expired_or_revoked and transient classification.
         const preFilterConnectors = await db.query.connectors.findMany({
           where: inArray(connectors.id, refIdList),
-          columns: { id: true, teamId: true, name: true },
+          columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
         });
         const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
 
@@ -620,36 +624,170 @@ export async function POST(req: NextRequest) {
           cwEnabled.set(`${row.workspaceId}|${row.connectorId}`, row.enabled !== false);
         }
 
-        // Evaluate each task: if any required connector is missing, add to the
-        // mismatch set and log so it's visible in Vercel logs.
+        // ── expired_or_revoked: batch credential checks ───────────────────────
+        // Only runs when ENCRYPTION_KEY is present; otherwise skipped gracefully.
+        const credFailedIds = new Set<string>(); // connectors with expired/revoked creds
+        if (process.env.ENCRYPTION_KEY) {
+          const now = new Date();
+          const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+          // oauth/header connectors: mcp_connector_credential, label = connectorId
+          const authConnectors = preFilterConnectors.filter(
+            c => c.authMode === 'oauth' || c.authMode === 'header',
+          );
+          if (authConnectors.length > 0) {
+            const ownerTeamIds = [...new Set(authConnectors.map(c => c.teamId))];
+            const credSecretRows = await db.query.secrets.findMany({
+              where: and(
+                inArray(secrets.teamId, ownerTeamIds),
+                eq(secrets.purpose, 'mcp_connector_credential'),
+                inArray(secrets.label, authConnectors.map(c => c.id)),
+              ),
+              columns: { id: true, label: true, tokenExpiresAt: true, lastRefreshedAt: true },
+            });
+            const secretByConnId = new Map(
+              credSecretRows.filter(s => s.label).map(s => [s.label!, s]),
+            );
+            const credProvider = getSecretsProvider();
+
+            for (const connector of authConnectors) {
+              const secret = secretByConnId.get(connector.id);
+              if (connector.authMode === 'oauth') {
+                if (!secret) { credFailedIds.add(connector.id); continue; }
+                const expiresAt = secret.tokenExpiresAt;
+                const refreshedAt = secret.lastRefreshedAt;
+                if (expiresAt && expiresAt < now && (!refreshedAt || refreshedAt < fiveMinAgo)) {
+                  credFailedIds.add(connector.id);
+                }
+              } else {
+                // header: try decryption
+                if (!secret) { credFailedIds.add(connector.id); continue; }
+                try {
+                  const val = await credProvider.get(secret.id);
+                  if (!val) credFailedIds.add(connector.id);
+                } catch {
+                  credFailedIds.add(connector.id);
+                }
+              }
+            }
+          }
+
+          // stdio connectors: mcp_credential secrets via envMapping values
+          const stdioConnectors = preFilterConnectors.filter(
+            c => c.transport === 'stdio' && c.authMode !== 'none' && !credFailedIds.has(c.id),
+          );
+          if (stdioConnectors.length > 0) {
+            const ownerTeamIds = [...new Set(stdioConnectors.map(c => c.teamId))];
+            const envLabels = [
+              ...new Set(
+                stdioConnectors.flatMap(c => Object.values((c.envMapping as Record<string, string> | null) ?? {})),
+              ),
+            ];
+            if (envLabels.length > 0) {
+              const envSecretRows = await db.query.secrets.findMany({
+                where: and(
+                  inArray(secrets.teamId, ownerTeamIds),
+                  eq(secrets.purpose, 'mcp_credential'),
+                  inArray(secrets.label, envLabels),
+                ),
+                columns: { id: true, label: true, teamId: true },
+              });
+              const envSecretByTeamLabel = new Map(
+                envSecretRows.filter(s => s.label && s.teamId).map(s => [`${s.teamId}\0${s.label}`, s]),
+              );
+              const credProvider = getSecretsProvider();
+              for (const connector of stdioConnectors) {
+                const mapping = (connector.envMapping as Record<string, string> | null) ?? {};
+                const labels = Object.values(mapping);
+                if (labels.length === 0) continue;
+                let credOk = true;
+                for (const label of labels) {
+                  const sr = envSecretByTeamLabel.get(`${connector.teamId}\0${label}`);
+                  if (!sr) { credOk = false; break; }
+                  try {
+                    const val = await credProvider.get(sr.id);
+                    if (!val) { credOk = false; break; }
+                  } catch { credOk = false; break; }
+                }
+                if (!credOk) credFailedIds.add(connector.id);
+              }
+            }
+          }
+        }
+
+        // ── transient: HTTP HEAD probe for http connectors ────────────────────
+        // 3s per connector, 5s total budget across the entire claim call.
+        // Connectors already classified (never_mounted or expired_or_revoked)
+        // are skipped — we'll know their IDs after the pass-1 loop below.
+        // We pre-classify all http connectors that are visible and credentialed,
+        // then probe them. Store results keyed by connectorId.
+        const transientIds = new Set<string>();
+        const httpProbeCandidates = preFilterConnectors.filter(
+          c => c.transport === 'http' && !credFailedIds.has(c.id),
+        );
+        if (httpProbeCandidates.length > 0) {
+          const budgetStart = Date.now();
+          const probeBudgetMs = 5000;
+          for (const connector of httpProbeCandidates) {
+            const spent = Date.now() - budgetStart;
+            if (spent >= probeBudgetMs) {
+              transientIds.add(connector.id);
+              continue;
+            }
+            const timeoutMs = Math.min(3000, probeBudgetMs - spent);
+            const ac = new AbortController();
+            const timer = setTimeout(() => ac.abort(), timeoutMs);
+            try {
+              await fetch(connector.url, { method: 'HEAD', signal: ac.signal });
+              clearTimeout(timer);
+            } catch {
+              clearTimeout(timer);
+              transientIds.add(connector.id);
+            }
+          }
+        }
+
+        // ── Pass 1: classify per-task failures ────────────────────────────────
         for (const pair of rolePairs) {
           const refs = getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId);
           if (refs.length === 0) continue;
 
-          const missing: string[] = [];
+          const failures: Array<{ connectorId: string; connectorName: string; mode: string }> = [];
           for (const refId of refs) {
             const connector = connectorById.get(refId);
             if (!connector) {
-              missing.push(refId); // dangling ref → connector deleted or not visible
+              failures.push({ connectorId: refId, connectorName: refId, mode: 'never_mounted' });
               continue;
             }
             // Visibility check: connector must be owned by the task's team or shared to it.
             const sharedSet = sharedByTeam.get(pair.teamId) ?? new Set<string>();
             if (connector.teamId !== pair.teamId && !sharedSet.has(refId)) {
-              missing.push(connector.name);
+              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
               continue;
             }
             // Enabled check: an explicit false row disables the connector for this workspace.
             const cwKey = `${pair.taskWorkspaceId}|${refId}`;
             if (cwEnabled.has(cwKey) && !cwEnabled.get(cwKey)) {
-              missing.push(connector.name);
+              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
+              continue;
+            }
+            // Credential check
+            if (credFailedIds.has(refId)) {
+              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'expired_or_revoked' });
+              continue;
+            }
+            // Transient check
+            if (transientIds.has(refId)) {
+              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'transient' });
             }
           }
 
-          if (missing.length > 0) {
+          if (failures.length > 0) {
             connectorMismatchTaskIds.add(pair.taskId);
+            taskConnectorFailures.set(pair.taskId, failures);
+            const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
             console.log(
-              `[claim] Skipped task ${pair.taskId}: role ${pair.roleSlug} requires connectors [${missing.join(', ')}] not available in workspace ${pair.taskWorkspaceId}`,
+              `[claim] Skipped task ${pair.taskId}: role ${pair.roleSlug} has connector issues [${detail}] in workspace ${pair.taskWorkspaceId}`,
             );
           }
         }
@@ -657,16 +795,19 @@ export async function POST(req: NextRequest) {
     }
 
     // For explicit single-task claims: 422 routing_mismatch instead of silently
-    // not claiming. The caller knows which task it wanted — a clear error is
-    // more useful than an empty workers array.
+    // not claiming. The caller knows which task it wanted — a clear error with
+    // typed failure info is more useful than an empty workers array.
     if (taskId && connectorMismatchTaskIds.has(taskId)) {
       const blockedTask = filteredTasks.find(t => t.id === taskId);
       const blockedSlug = (blockedTask as any)?.roleSlug as string | null;
-      const wsId = blockedTask?.workspaceId ?? 'unknown';
+      const failures = taskConnectorFailures.get(taskId) ?? [];
+      const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ') ||
+        `role '${blockedSlug}' connector requirements not met`;
       return NextResponse.json(
         {
           error: 'routing_mismatch',
-          detail: `Task requires connectors for role '${blockedSlug}' that are not available in workspace ${wsId}`,
+          detail: `Task requires connectors for role '${blockedSlug}' that are unavailable: ${detail}`,
+          connectorFailures: failures,
         },
         { status: 422 },
       );

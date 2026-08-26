@@ -556,7 +556,9 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
-    expect(data.missingConnectors).toEqual(['connector-1']);
+    expect(data.connectorFailures).toEqual([
+      { connectorId: 'connector-1', connectorName: 'connector-1', mode: 'never_mounted' },
+    ]);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
@@ -580,7 +582,7 @@ describe('POST /api/tasks/[id]/start', () => {
     ]);
     // Connector exists but owned by a different team
     mockConnectorsFindMany.mockResolvedValue([
-      { id: 'connector-1', teamId: 'other-team', name: 'Email' },
+      { id: 'connector-1', teamId: 'other-team', name: 'Email', authMode: 'none', transport: 'http', url: 'https://email.example.com', envMapping: {} },
     ]);
     // Not shared to team-1
     mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -589,7 +591,9 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
-    expect(data.missingConnectors).toEqual(['Email']);
+    expect(data.connectorFailures).toEqual([
+      { connectorId: 'connector-1', connectorName: 'Email', mode: 'never_mounted' },
+    ]);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
