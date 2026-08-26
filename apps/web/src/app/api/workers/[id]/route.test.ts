@@ -32,6 +32,9 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
+// Direct mock for hasCodexCredential — Bun 1.4.0+ uses per-file module registries
+// so transitive @buildd/core/db mocks may not reach codex-credential.ts.
+const mockHasCodexCredential = mock(() => Promise.resolve(false));
 const mockDecrypt = mock((value: string) => value);
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
@@ -242,6 +245,10 @@ mock.module('@/lib/task-dependencies', () => ({
   // webhook tests when Bun runs the entire web suite in a single process
   // (module mocks leak across test files in Bun 1.3.14+).
   checkDependsOnResolved: mock(() => Promise.resolve()),
+}));
+
+mock.module('@/lib/codex-credential', () => ({
+  hasCodexCredential: mockHasCodexCredential,
 }));
 
 // Override webhook/route.test.ts's merge-policy module mock when Bun runs the
@@ -4693,6 +4700,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
+      mockHasCodexCredential.mockResolvedValue(false);
     });
 
     it('flips task to Codex and requeues on auth failure when Codex credential is present', async () => {
@@ -4708,8 +4716,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
-      // Codex credential present: secrets.findMany returns a row
-      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+      // Codex credential present
+      mockHasCodexCredential.mockResolvedValue(true);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -4747,8 +4755,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
-      // No Codex credential
-      mockSecretsFindMany.mockResolvedValue([]);
+      // No Codex credential (default is false, but be explicit)
+      mockHasCodexCredential.mockResolvedValue(false);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -4782,7 +4790,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // Codex credential present — but error is not auth-related
-      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+      mockHasCodexCredential.mockResolvedValue(true);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -4822,7 +4830,7 @@ describe('PATCH /api/workers/[id]', () => {
       }));
 
       // Codex credential present — but guard must prevent re-flip
-      mockSecretsFindMany.mockResolvedValue([{ tokenExpiresAt: null }]);
+      mockHasCodexCredential.mockResolvedValue(true);
 
       const req = createMockRequest({
         method: 'PATCH',
