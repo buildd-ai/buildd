@@ -173,6 +173,27 @@ const BURN_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Max OAuth accounts to probe per team (avoids fan-out on large teams). */
 const MAX_OAUTH_ACCOUNTS = 8;
 
+type OauthAccountRow = { id: string; name: string; seatId: string | null; budgetResetsAt: Date | null };
+
+/**
+ * Group OAuth account rows by seatId.
+ * Null seatId → each account is its own group (keyed by account.id).
+ * Non-null seatId → all accounts sharing the same seatId form one group.
+ * Exported for unit testing.
+ */
+export function groupOauthAccountsBySeatId(
+  accounts: OauthAccountRow[],
+): Map<string, OauthAccountRow[]> {
+  const groups = new Map<string, OauthAccountRow[]>();
+  for (const account of accounts) {
+    const key = account.seatId ?? account.id;
+    const existing = groups.get(key) ?? [];
+    existing.push(account);
+    groups.set(key, existing);
+  }
+  return groups;
+}
+
 /**
  * Compute a full budget forecast for a team.
  * Runs entirely server-side; never throws — returns partial data on errors.
@@ -200,9 +221,9 @@ export async function getBudgetForecast(
         eq(accounts.teamId, teamId),
         eq(accounts.authType, 'oauth'),
       ),
-      columns: { id: true, name: true, budgetResetsAt: true },
+      columns: { id: true, name: true, seatId: true, budgetResetsAt: true },
       limit: MAX_OAUTH_ACCOUNTS,
-    }).catch(() => [] as { id: string; name: string; budgetResetsAt: Date | null }[]),
+    }).catch(() => [] as OauthAccountRow[]),
 
     // Active missions in scope with a cost budget
     scopedWsIds.length > 0
@@ -271,12 +292,21 @@ export async function getBudgetForecast(
   const oauthSessions: OauthSessionForecast[] = [];
   const config = pacingConfig;
 
-  for (const account of (oauthAccounts as { id: string; name: string; budgetResetsAt: Date | null }[])) {
+  // Group accounts by seatId so shared-subscription rows are measured together.
+  const accountGroups = groupOauthAccountsBySeatId(oauthAccounts as OauthAccountRow[]);
+
+  for (const group of accountGroups.values()) {
     try {
-      const episodes = await loadOauthEpisodes(account.id);
+      const accountIds = group.map(a => a.id);
+      // Label with most-recently-active account name; fall back to comma-list if all unnamed.
+      const label = group.find(a => a.name)?.name || group.map(a => a.id).join(', ');
+      // Representative account for UI key (first in group)
+      const representativeId = group[0].id;
+
+      const episodes = await loadOauthEpisodes(accountIds);
       const capacity = learnOauthCapacity(episodes, { quantile: config.quantile });
       const { windowStartedAt, usage } = await measureOauthWindow({
-        accountId: account.id,
+        accountIds,
         now,
         lastResetsAt: episodes[0]?.resetsAt ?? null,
       });
@@ -286,8 +316,8 @@ export async function getBudgetForecast(
 
       oauthSessions.push({
         kind: 'oauth',
-        accountId: account.id,
-        accountName: account.name || 'Claude account',
+        accountId: representativeId,
+        accountName: label,
         pressurePct: Math.round(pressure.pct * 100),
         windowEndsAt: windowEnd.toISOString(),
         confidence,
@@ -296,7 +326,7 @@ export async function getBudgetForecast(
         state: capacity.confidence === 'none' ? 'learning' : 'active',
       });
     } catch {
-      // Skip accounts that fail rather than crashing the whole forecast
+      // Skip groups that fail rather than crashing the whole forecast
     }
   }
 

@@ -15,6 +15,12 @@ import { eq, and } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { reviewerTitle } from './task-title';
+import type { WorkspacePolicyConfig } from './workspace-policy';
+import {
+  resolveEffectivePolicyForPR,
+  findUncoveredRiskPaths,
+  buildPolicyClassPaths,
+} from './workspace-policy';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -74,6 +80,7 @@ export function isSchemaTouchingFile(filename: string): boolean {
  * Returns shouldEscalate=true when:
  *   - PR touches schema migration files (drizzle/*.sql, packages/core/db/schema.ts)
  *   - PR touches any of policy.agentReview.escalateToPaths
+ *   - PR matches a risk class with action='human' in policyConfig (when set)
  *
  * This is a fail-safe on top of the reviewer agent's own escalation logic.
  */
@@ -81,6 +88,7 @@ export function preflightEscalationCheck(
   prFiles: Array<{ filename: string }>,
   policy: MergePolicy,
   migrationSafety?: MigrationSafety,
+  policyConfig?: WorkspacePolicyConfig,
 ): { shouldEscalate: true; reason: string } | { shouldEscalate: false } {
   // The inspector loads the complete paginated file list, so honor an unsafe
   // result even if GitHub's initial files response was truncated.
@@ -93,7 +101,21 @@ export function preflightEscalationCheck(
     }
   }
 
-  // Policy deny-path check
+  // Semantic risk-class check (policyConfig supersedes escalateToPaths)
+  if (policyConfig) {
+    const fileNames = prFiles.map((f) => f.filename);
+    const match = resolveEffectivePolicyForPR(policyConfig, fileNames);
+    if (match?.action === 'human') {
+      return {
+        shouldEscalate: true,
+        reason: `PR touches ${match.matchedClass.replace(/_/g, ' ')} (${match.matchedFile}) — ${policyConfig.preset} policy requires human review`,
+      };
+    }
+    // agent-review is handled by the caller (reviewer task creation), not preflight
+    return { shouldEscalate: false };
+  }
+
+  // Legacy: policy deny-path check
   const escalateToPaths = policy.agentReview?.escalateToPaths ?? [];
   if (escalateToPaths.length > 0) {
     for (const f of prFiles) {
@@ -133,6 +155,8 @@ export interface CreateReviewerTaskParams {
   reviewerRole: string;
   installationId: number;
   repoFullName: string;
+  /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
+  policyConfig?: WorkspacePolicyConfig;
 }
 
 /**
@@ -166,6 +190,7 @@ export async function createReviewerTask(
     headSha,
     installationId,
     repoFullName,
+    policyConfig: params.policyConfig,
   });
 
   const title = reviewerTitle(prNumber, originalTask.title);
@@ -225,10 +250,11 @@ interface BuildContextParams {
   headSha: string;
   installationId: number;
   repoFullName: string;
+  policyConfig?: WorkspacePolicyConfig;
 }
 
 async function buildReviewerContext(params: BuildContextParams): Promise<string> {
-  const { originalTaskId, originalTask, prNumber, prUrl, headSha, repoFullName } = params;
+  const { originalTaskId, originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig } = params;
 
   // Fetch PR diff summary via GitHub API (lazy import avoids circular deps)
   let diffSummary = '';
@@ -286,6 +312,32 @@ async function buildReviewerContext(params: BuildContextParams): Promise<string>
     ? `Iteration: ${originalTask.iteration}/${originalTask.maxIterations ?? 3}`
     : '';
 
+  // Build policy context section
+  let policySection: string;
+  let uncoveredSection = '';
+  if (policyConfig) {
+    policySection = buildPolicyClassPaths(policyConfig);
+
+    // Self-healing: find files not covered by any risk class but risk-adjacent
+    const allFiles = diffSummary
+      .split('\n')
+      .filter((l) => l.trim().startsWith('- '))
+      .map((l) => l.trim().slice(2).split(' ')[0])
+      .filter(Boolean);
+    const uncovered = findUncoveredRiskPaths(policyConfig, allFiles);
+    if (uncovered.length > 0) {
+      const lines = uncovered.map(
+        (u) => `- \`${u.file}\` → suggested class: \`${u.suggestedClass}\``,
+      );
+      uncoveredSection = `\n## Proposed Policy Additions (self-healing)\nThe following files are risk-adjacent but not covered by any policy class.\nInclude in your escalationReason so the human can add them to the workspace policy:\n\n${lines.join('\n')}`;
+    }
+  } else {
+    policySection = `## Escalation Rules (hard — these override your confidence)
+- Escalate if the diff touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
+- Escalate if your confidence is below the workspace threshold (default 0.6)
+- Escalate if you detect a possible security issue`;
+  }
+
   return `# Reviewer Task
 
 You are reviewing PR #${prNumber} on \`${repoFullName}\`.
@@ -305,10 +357,8 @@ ${originalTask.description ?? '(no description)'}
 - SPEC CONFORMANCE: What was built must match the task description.
 - NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.
 
-## Escalation Rules (hard — these override your confidence)
-- Escalate if the diff touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
-- Escalate if your confidence is below the workspace threshold (default 0.6)
-- Escalate if you detect a possible security issue
+${policySection}
+${uncoveredSection}
 
 ${manifestSection}
 
@@ -322,6 +372,6 @@ Use your outputSchema to return:
 - \`confidence\`: 0.0–1.0
 - \`summary\`: one sentence
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
-- \`escalationReason\`: (escalate only) why a human must decide
+- \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
 `.trim();
 }

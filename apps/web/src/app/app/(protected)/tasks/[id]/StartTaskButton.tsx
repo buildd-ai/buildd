@@ -36,6 +36,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     canExempt?: boolean;
     missionId?: string;
     missingConnectors?: string[];
+    alternativeRole?: string;
     active?: number;
     cap?: number;
     queuePosition?: number;
@@ -396,7 +397,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       : gateData?.gateReason === 'mission_held'
                       ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
                       : gateData?.gateReason === 'connector_routing_mismatch'
-                      ? `The role requires connectors that are not configured in this workspace: ${gateData.missingConnectors?.join(', ')}. Contact your workspace admin.`
+                      ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
                       : gateData?.gateReason === 'workspace_cap_reached'
                       ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
                       : gateData?.error || 'This task cannot be started right now.'}

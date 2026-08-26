@@ -15,6 +15,7 @@ import { notify } from '@/lib/pushover';
 import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 
 /**
@@ -87,26 +88,33 @@ export async function evaluateAutoMergeSafety(
         .filter((path) => file.filename.startsWith(path))
         .map((path) => ({ file, path })),
     );
+    // drizzle/ and schema.ts are gated by the operation-class inspector below,
+    // not by an unconditional path block. Ordinary paths still block hard.
     const schemaSpecific = (path: string) =>
       path.includes('drizzle/') || path === 'packages/core/db/schema.ts';
     const ordinaryHit = hits.find((hit) => !schemaSpecific(hit.path));
     if (ordinaryHit) {
       return { ok: false, reason: `touches protected path (${ordinaryHit.file.filename})` };
     }
-    // Inspect whenever a schema-specific rule is configured. The inspector
-    // paginates independently, so migrations beyond GitHub's first files page
-    // cannot bypass collision/destructive-SQL checks.
-    if (denyPaths.some(schemaSpecific)) {
-      const migrationSafety = await inspectPullRequestMigrations({
-        installationId,
-        repoFullName,
-        prNumber,
-        headSha,
-        files,
-      });
-      if (!migrationSafety.safe) {
-        return { ok: false, reason: migrationSafety.reason };
-      }
+  }
+
+  // Always classify migration SQL by operation class, independent of denyPaths.
+  // EXPAND (additive-only) passes automatically; CONTRACT (destructive) escalates.
+  // This runs even when drizzle/ is absent from denyPaths, so removing it from
+  // escalateToPaths does not weaken the gate — classification is always performed.
+  const hasMigrationOrSchema = files.some(
+    (f) => isGeneratedMigrationPath(f.filename) || f.filename === 'packages/core/db/schema.ts',
+  );
+  if (hasMigrationOrSchema) {
+    const migrationSafety = await inspectPullRequestMigrations({
+      installationId,
+      repoFullName,
+      prNumber,
+      headSha,
+      files,
+    });
+    if (!migrationSafety.safe) {
+      return { ok: false, reason: migrationSafety.reason };
     }
   }
 

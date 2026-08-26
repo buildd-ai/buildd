@@ -120,7 +120,17 @@ export async function PATCH(
         });
         if (conflict) {
           return NextResponse.json(
-            { error: `A team-level role with slug "${existing.slug}" already exists` },
+            {
+              error: `A team-level role with slug "${existing.slug}" already exists`,
+              conflictingRoleId: conflict.id,
+              conflictingRoleSlug: conflict.slug,
+              conflictingRoleName: conflict.name,
+              editTeamDefaultPath: `/app/team/${conflict.slug}/settings`,
+              resolution: [
+                `Edit the existing team default at /app/team/${conflict.slug}/settings`,
+                'Or keep this role as a workspace-specific override (the current row is already a workspace override — only promote it if you want it to become the new team default)',
+              ],
+            },
             { status: 409 }
           );
         }

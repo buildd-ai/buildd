@@ -556,7 +556,9 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
-    expect(data.missingConnectors).toEqual(['connector-1']);
+    expect(data.connectorFailures).toEqual([
+      { connectorId: 'connector-1', connectorName: 'connector-1', mode: 'never_mounted' },
+    ]);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
@@ -580,7 +582,7 @@ describe('POST /api/tasks/[id]/start', () => {
     ]);
     // Connector exists but owned by a different team
     mockConnectorsFindMany.mockResolvedValue([
-      { id: 'connector-1', teamId: 'other-team', name: 'Email' },
+      { id: 'connector-1', teamId: 'other-team', name: 'Email', authMode: 'none', transport: 'http', url: 'https://email.example.com', envMapping: {} },
     ]);
     // Not shared to team-1
     mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -589,7 +591,109 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
-    expect(data.missingConnectors).toEqual(['Email']);
+    expect(data.connectorFailures).toEqual([
+      { connectorId: 'connector-1', connectorName: 'Email', mode: 'never_mounted' },
+    ]);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('includes alternativeRole in connector_routing_mismatch when sibling role has no connectorRefs', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // checkConnectorRouting: finds email-agent role with connector ref
+    mockWorkspaceSkillsFindMany
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      // findAlternativeRole: finds builder role with no connectorRefs
+      .mockResolvedValueOnce([{ slug: 'builder', workspaceId: null, connectorRefs: [] }]);
+    // Connector not found → never_mounted
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('connector_routing_mismatch');
+    expect(data.alternativeRole).toBe('builder');
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('omits alternativeRole from connector_routing_mismatch when no sibling role exists', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // checkConnectorRouting: email-agent has a failing connector
+    mockWorkspaceSkillsFindMany
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      // findAlternativeRole: no sibling roles
+      .mockResolvedValueOnce([]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('connector_routing_mismatch');
+    expect(data.alternativeRole).toBeUndefined();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('omits alternativeRole when sibling role also has connector failures', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Email Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      roleSlug: 'email-agent',
+      dependsOn: null,
+      missionId: null,
+      context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // checkConnectorRouting for email-agent: connector-1 fails
+    mockWorkspaceSkillsFindMany
+      .mockResolvedValueOnce([{ slug: 'email-agent', workspaceId: null, connectorRefs: ['connector-1'] }])
+      // findAlternativeRole: researcher sibling has its own connector ref
+      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, connectorRefs: ['connector-2'] }])
+      // checkConnectorRouting for researcher (inside findAlternativeRole): researcher role lookup
+      .mockResolvedValueOnce([{ slug: 'researcher', workspaceId: null, connectorRefs: ['connector-2'] }]);
+    // connector-1 and connector-2 both not found → never_mounted for both
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('connector_routing_mismatch');
+    expect(data.alternativeRole).toBeUndefined();
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 

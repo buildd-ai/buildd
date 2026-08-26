@@ -4083,4 +4083,185 @@ describe('entity catalog injection at claim time', () => {
       expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
     });
   });
+
+  // --- connector_advisory_mode workspace flag ---
+  // When connector_advisory_mode=true on a workspace, connector failures that
+  // don't involve hard-required connectors (task.requiredConnectors) produce a
+  // degradedConnectors payload on the claimed worker instead of blocking the claim.
+  // Safety bound: total degradation (ALL role connectors failing) still blocks.
+  describe('connector_advisory_mode', () => {
+    function setupAdvisoryBase() {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]); // no active workers
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    }
+
+    it('flag disabled (default) — connector failure blocks the task (hard mismatch)', async () => {
+      setupAdvisoryBase();
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          {
+            id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
+            roleSlug: 'researcher', requiredConnectors: null,
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: false },
+          },
+        ])
+        .mockResolvedValue([]);
+
+      // researcher role references conn-A, which is never-mounted
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'researcher', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-A'] },
+        ])
+        .mockResolvedValue([]);
+      mockConnectorsFindMany.mockResolvedValueOnce([]); // conn-A not found → never_mounted
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      // Task blocked: no workers claimed
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.connector_mismatch).toBe(1);
+    });
+
+    it('flag enabled, partial degradation — claims task with degradedConnectors in response', async () => {
+      setupAdvisoryBase();
+
+      // Role has 2 connectors: conn-A (unavailable) and conn-B (available)
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          {
+            id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
+            roleSlug: 'researcher', requiredConnectors: null,
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+          },
+        ])
+        .mockResolvedValue([]);
+
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'researcher', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-A', 'conn-B'] },
+        ])
+        .mockResolvedValue([]);
+
+      // Only conn-B is found in the DB; conn-A is a dangling ref (never_mounted).
+      // Use transport: 'stdio' so the pre-filter skips the HTTP HEAD probe for conn-B
+      // (a real fetch to a test URL would fail and make conn-B 'transient', causing
+      // total degradation and blocking advisory mode).
+      mockConnectorsFindMany.mockResolvedValueOnce([
+        { id: 'conn-B', teamId: 'team-1', name: 'GitHub', authMode: 'none', transport: 'stdio', url: null, envMapping: null },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+      // degradedConnectors carries the unavailable connector
+      const degraded = data.workers[0].degradedConnectors;
+      expect(degraded).toBeDefined();
+      expect(degraded).toHaveLength(1);
+      expect(degraded[0].name).toBe('conn-A'); // name falls back to connectorId when not in DB
+      expect(degraded[0].failureMode).toBe('never_mounted');
+      // NOT in the deferral list
+      expect(data.diagnostics?.deferrals?.connector_mismatch ?? 0).toBe(0);
+    });
+
+    it('flag enabled, total degradation (ALL connectors fail) — still blocks task', async () => {
+      setupAdvisoryBase();
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          {
+            id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
+            roleSlug: 'researcher', requiredConnectors: null,
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+          },
+        ])
+        .mockResolvedValue([]);
+
+      // Role has 1 connector: conn-A (unavailable) — total degradation
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'researcher', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-A'] },
+        ])
+        .mockResolvedValue([]);
+      mockConnectorsFindMany.mockResolvedValueOnce([]); // conn-A not found
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      // Safety bound: total degradation → still blocks even with flag on
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.connector_mismatch).toBe(1);
+    });
+
+    it('flag enabled, failing connector is in requiredConnectors — hard blocks', async () => {
+      setupAdvisoryBase();
+
+      // task explicitly requires conn-A which is unavailable
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          {
+            id: 'task-1', workspaceId: 'ws-1', title: 'Role task',
+            roleSlug: 'researcher', requiredConnectors: ['conn-A'],
+            workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, connectorAdvisoryMode: true },
+          },
+        ])
+        .mockResolvedValue([]);
+
+      // Role has 2 connectors: conn-A (unavailable) and conn-B (available)
+      mockWorkspaceSkillsFindMany
+        .mockResolvedValueOnce([
+          { slug: 'researcher', teamId: 'team-1', workspaceId: null, connectorRefs: ['conn-A', 'conn-B'] },
+        ])
+        .mockResolvedValue([]);
+      mockConnectorsFindMany.mockResolvedValueOnce([
+        // Use stdio transport so the pre-filter doesn't issue a real HTTP probe for conn-B
+        { id: 'conn-B', teamId: 'team-1', name: 'GitHub', authMode: 'none', transport: 'stdio', url: null, envMapping: null },
+      ]);
+      mockConnectorSharesFindMany.mockResolvedValueOnce([]);
+      mockConnectorWorkspacesFindMany.mockResolvedValueOnce([]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      // conn-A is in requiredConnectors → hard block despite advisory mode
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.connector_mismatch).toBe(1);
+    });
+  });
 });

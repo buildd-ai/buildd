@@ -1318,6 +1318,9 @@ export class WorkerManager {
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
     }
+    if ((claimedWorker as any).degradedConnectors?.length) {
+      worker.degradedConnectors = (claimedWorker as any).degradedConnectors;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -2158,6 +2161,17 @@ export class WorkerManager {
       });
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
+      }
+
+      // Degraded connectors (advisory mode): inform the agent which connector tools
+      // are unavailable so it can work around them or note the gap in its output.
+      const degradedConnectors = worker.degradedConnectors;
+      if (degradedConnectors && degradedConnectors.length > 0) {
+        const connectorList = degradedConnectors
+          .map(c => `- **${c.name}** (${c.failureMode})`)
+          .join('\n');
+        systemPrompt.append = (systemPrompt.append ?? '') +
+          `\n\n## Connector Availability Notice\nThe following MCP connectors are currently unavailable for this task:\n${connectorList}\nTools provided by these connectors will not be accessible. Work around their absence where possible, and note any limitations in your output.`;
       }
 
       // Tool channel policy: agents must not improvise when an MCP tool channel

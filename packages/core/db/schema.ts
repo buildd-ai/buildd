@@ -283,6 +283,10 @@ export interface WorkspaceGitConfig {
   // null / absent → fall back to legacy autoMerge* fields (backward compat).
   mergePolicy?: MergePolicy;
 
+  // Semantic risk-class policy — supersedes mergePolicy.agentReview.escalateToPaths when set.
+  // Paths are derived by init scan; never hand-typed. Reviewer sees class intent, not raw globs.
+  policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
@@ -596,6 +600,12 @@ export const workspaces = pgTable('workspaces', {
   // so concurrent branches get distinct sequential numbers. Starts at 0 (agents read the git
   // journal directly to bootstrap the right initial value on first use).
   lastMigrationNumber: integer('last_migration_number').default(0).notNull(),
+
+  // When true, connector failures are advisory rather than blocking for tasks that
+  // have no requiredConnectors. The agent receives a degradedConnectors notice in its
+  // system prompt instead of the task being silently deferred. Total degradation (all
+  // connectors for the role unavailable) still holds the task regardless of this flag.
+  connectorAdvisoryMode: boolean('connector_advisory_mode').default(false).notNull(),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1074,6 +1084,14 @@ export const workers = pgTable('workers', {
   // Mission agent-time = Σ(worker wall-clock) + Σ(backgroundAgentMs).
   // Foreground subagents are excluded — their time is already inside the parent's wall clock.
   backgroundAgentMs: integer('background_agent_ms').default(0).notNull(),
+  // Connectors that were degraded (failed health check) when this worker claimed
+  // under advisory mode (connectorAdvisoryMode=true). Persisted for audit trail.
+  degradedConnectors: jsonb('degraded_connectors').$type<Array<{
+    id: string;
+    name: string;
+    failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+    detail?: string;
+  }> | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

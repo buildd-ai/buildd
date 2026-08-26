@@ -231,6 +231,9 @@ export interface LocalWorker {
   };
   // Role config from claim route (for role env resolution)
   roleConfig?: RoleConfig;
+  // Degraded connectors (advisory mode) — connectors that are unavailable but
+  // task was allowed to proceed. Injected into system prompt in startSession.
+  degradedConnectors?: Array<{ id: string; name: string; failureMode: string }>;
   // Assertion connector metadata for mid-task re-auth (spec §F.2)
   assertionConnectors?: Array<{ name: string; mintApiUrl: string; tokenEndpoint: string }>;
   // Per-connector assertion access token cache (in-memory, per-session only)

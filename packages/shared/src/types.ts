@@ -282,6 +282,49 @@ export interface Mission {
 }
 
 // ============================================================================
+// WORKSPACE POLICY — semantic risk classes and preset tiers
+// ============================================================================
+
+/** A workspace-level policy preset. Controls how each risk class is escalated. */
+export type WorkspacePolicyPreset = 'cautious' | 'balanced' | 'autonomous';
+
+/**
+ * Universal semantic risk classes — these are the same across every repo.
+ * What paths satisfy each class is detected per-repo, never hand-typed.
+ */
+export type RiskClassName =
+  | 'destructive_schema_change'  // ORM migrations + schema files
+  | 'ci_deploy_config'           // GitHub Actions, Dockerfiles, deploy configs
+  | 'auth_and_secrets'           // Auth modules, secret loaders, .env schemas
+  | 'dependency_bump'            // Lockfiles and package manifests
+  | 'public_api_contract';       // Shared types, OpenAPI specs, public surface
+
+/** Action for a risk class within a given preset tier. */
+export type RiskClassAction = 'human' | 'agent-review' | 'auto';
+
+/** One risk class entry in a workspace policy. Paths are always detected, never typed. */
+export interface RiskClassEntry {
+  name: RiskClassName;
+  /** Auto-detected paths for this class in this repo. Set by init scan, never by user. */
+  detectedPaths: string[];
+  /** Optional user additions — visible, editable, but empty by default. */
+  userPaths?: string[];
+}
+
+/**
+ * New workspace policy model — supersedes `agentReview.escalateToPaths` when present.
+ * A single preset selects per-class escalation behavior; detected paths are derived,
+ * not authored. The reviewer sees intent ("destructive schema changes escalate here"),
+ * not a raw glob list.
+ */
+export interface WorkspacePolicyConfig {
+  preset: WorkspacePolicyPreset;
+  riskClasses: RiskClassEntry[];
+  /** Required when preset implies agent-review escalation for any class. */
+  reviewerRole?: string;
+}
+
+// ============================================================================
 // MERGE POLICY
 // ============================================================================
 
@@ -955,6 +998,17 @@ export interface AssertionConnectorEntry {
   tokenEndpoint: string;
 }
 
+/** A connector that failed availability checks but is not hard-required for the task.
+ *  Delivered when the workspace has connector_advisory_mode=true and the task has no
+ *  requiredConnectors overlap with the failing connector. The runner injects a
+ *  system-prompt notice so the agent knows which tools are unavailable. */
+export interface DegradedConnector {
+  id: string;
+  name: string;
+  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  detail?: string;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1002,6 +1056,9 @@ export interface ClaimTasksResponse {
     };
     /** Role configuration for the claimed task's assigned role */
     roleConfig?: RoleConfig;
+    /** Connectors that failed availability checks but are not hard-required (advisory mode only).
+     *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
+    degradedConnectors?: DegradedConnector[];
   }>;
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */

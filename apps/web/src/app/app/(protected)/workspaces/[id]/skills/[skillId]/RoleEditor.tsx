@@ -69,6 +69,7 @@ interface Skill {
   id: string;
   slug: string;
   teamId: string;
+  workspaceId: string | null;
   name: string;
   description: string | null;
   content: string;
@@ -308,6 +309,11 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflictInfo, setConflictInfo] = useState<{
+    slug: string;
+    name: string;
+    editPath: string;
+  } | null>(null);
 
   // Form state
   const [name, setName] = useState(skill.name);
@@ -330,12 +336,20 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   const [installing, setInstalling] = useState<string | null>(null);
   const [showBrowse, setShowBrowse] = useState(false);
 
-  // Scope (applies-to) state — workspace-scoped roles always start as 'workspace'
-  const [scope, setScope] = useState<Scope>('workspace');
+  // Scope (applies-to) state — initialized from the skill's stored workspaceId:
+  // null = team-level, string = workspace-scoped. The SkillDetailPage only loads
+  // workspace-scoped skills, so this is always 'workspace' in practice, but
+  // deriving it from the stored value makes the initialization explicit and
+  // ensures opening and saving an unmodified role is a no-op on scope.
+  const [scope, setScope] = useState<Scope>(skill.workspaceId === null ? 'team' : 'workspace');
 
   // IDs of connectors explicitly enabled for this workspace (connector_workspaces rows).
   // Used to validate that a role only mounts connectors in scope for its workspace.
   const [wsEnabledIds, setWsEnabledIds] = useState<Set<string>>(new Set());
+
+  // Live connector health: connectorId → 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured'
+  const [healthStatus, setHealthStatus] = useState<Map<string, string>>(new Map());
+  const [healthChecking, setHealthChecking] = useState(false);
 
   // Load team connectors + workspace-enabled connector ids for the scope validator.
   useEffect(() => {
@@ -384,6 +398,28 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
     );
   };
 
+  async function checkConnectorHealth() {
+    if (healthChecking || !connectorRefs.length) return;
+    setHealthChecking(true);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${workspaceId}/connector-health?roleSlug=${encodeURIComponent(skill.slug)}`,
+      );
+      if (res.ok) {
+        const data = await res.json() as { connectors?: Array<{ connectorId: string; status: string }> };
+        const map = new Map<string, string>();
+        for (const entry of data.connectors ?? []) {
+          map.set(entry.connectorId, entry.status);
+        }
+        setHealthStatus(map);
+      }
+    } catch {
+      // silent — health check is best-effort
+    } finally {
+      setHealthChecking(false);
+    }
+  }
+
   // Browse Registry → create (or reuse) a team connector, then opt the role in.
   async function installConnector(input: ConnectorCreateInput) {
     setInstalling(input.name);
@@ -416,6 +452,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   async function handleSave() {
     setSaving(true);
     setError(null);
+    setConflictInfo(null);
     try {
       const payload = {
         name,
@@ -451,6 +488,14 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
 
       if (!res.ok) {
         const data = await res.json();
+        // 409 from promotion attempt — surface the conflicting team default with a link
+        if (res.status === 409 && data.conflictingRoleId) {
+          setConflictInfo({
+            slug: data.conflictingRoleSlug,
+            name: data.conflictingRoleName,
+            editPath: data.editTeamDefaultPath,
+          });
+        }
         throw new Error(data.error || 'Failed to save');
       }
 
@@ -540,8 +585,29 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
         </div>
 
         {error && (
-          <div className="mb-4 px-4 py-2 rounded-md bg-status-error/10 text-status-error text-sm">
-            {error}
+          <div className="mb-4 px-4 py-3 rounded-md bg-status-error/10 text-status-error text-sm space-y-1.5">
+            <p>{error}</p>
+            {conflictInfo && (
+              <div className="text-[12px] space-y-1">
+                <p className="text-text-secondary">
+                  A team-level role <strong>{conflictInfo.name}</strong> (<code>{conflictInfo.slug}</code>) already exists for this team.
+                </p>
+                <p className="text-text-secondary">
+                  Options:
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-text-secondary">
+                  <li>
+                    <Link href={conflictInfo.editPath} className="text-accent-text hover:underline">
+                      Edit the existing team default
+                    </Link>{' '}
+                    to incorporate your changes there.
+                  </li>
+                  <li>
+                    Keep this role as a <strong>workspace override</strong> — change &ldquo;Applies to&rdquo; back to &ldquo;One workspace&rdquo; and save to keep it scoped to {workspaceName}.
+                  </li>
+                </ul>
+              </div>
+            )}
           </div>
         )}
 
@@ -649,13 +715,25 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-text-primary">Connectors</label>
-                <button
-                  type="button"
-                  onClick={() => setShowBrowse(!showBrowse)}
-                  className="text-[12px] text-primary hover:text-primary-hover font-medium"
-                >
-                  {showBrowse ? 'Hide Registry' : 'Browse Registry'}
-                </button>
+                <div className="flex items-center gap-3">
+                  {connectorRefs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={checkConnectorHealth}
+                      disabled={healthChecking}
+                      className="text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
+                    >
+                      {healthChecking ? 'Checking…' : healthStatus.size > 0 ? 'Recheck health' : 'Check health'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowBrowse(!showBrowse)}
+                    className="text-[12px] text-primary hover:text-primary-hover font-medium"
+                  >
+                    {showBrowse ? 'Hide Registry' : 'Browse Registry'}
+                  </button>
+                </div>
               </div>
               <p className="text-xs text-text-muted mb-2">Team MCP servers this role mounts at runtime</p>
 
@@ -727,6 +805,21 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                             </span>
                           )}
                           <ConnectorBadge authMode={connector.authMode} status={connector.status} />
+                          {healthStatus.has(connector.id) && (() => {
+                            const hs = healthStatus.get(connector.id)!;
+                            if (hs === 'ok') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
+                            );
+                            if (hs === 'auth_expired') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
+                            );
+                            if (hs === 'server_unreachable') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
+                            );
+                            return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
+                            );
+                          })()}
                         </div>
                       </button>
                       {active && !enabledHere && (

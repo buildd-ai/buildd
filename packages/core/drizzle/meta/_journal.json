@@ -834,6 +834,20 @@
       "when": 1787672635493,
       "tag": "0118_puzzling_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1787707033899,
+      "tag": "0119_ordinary_doomsday",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1787709728997,
+      "tag": "0120_rich_gladiator",
+      "breakpoints": true
     }
   ]
 }
