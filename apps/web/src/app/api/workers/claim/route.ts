@@ -23,7 +23,7 @@ import {
   windowEndsAt,
   type OauthBudgetPressure,
 } from '@buildd/core/oauth-budget';
-import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
+import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
@@ -159,11 +159,18 @@ export async function POST(req: NextRequest) {
     // so we filter non-tenant tasks in the claim loop below.
     if (account.budgetExhaustedAt) {
       if (account.budgetResetsAt && new Date() >= new Date(account.budgetResetsAt)) {
-        // Budget has reset — auto-clear the flag
+        // Budget has reset — auto-clear the flag for this account and all seatId siblings.
+        const resetWhere = account.seatId && account.teamId
+          ? and(
+              eq(accounts.teamId, account.teamId),
+              eq(accounts.seatId, account.seatId),
+              eq(accounts.authType, 'oauth'),
+            )
+          : eq(accounts.id, account.id);
         await db
           .update(accounts)
           .set({ budgetExhaustedAt: null, budgetResetsAt: null })
-          .where(eq(accounts.id, account.id));
+          .where(resetWhere!);
       }
     }
   }
@@ -842,12 +849,17 @@ export async function POST(req: NextRequest) {
   let oauthPressure: OauthBudgetPressure | null = null;
   if (account.authType === 'oauth' && pacingApplies) {
     try {
-      const episodes = await loadOauthEpisodes(account.id);
+      const accountIds = await resolveSeatIdPeers({
+        id: account.id,
+        teamId: account.teamId ?? '',
+        seatId: account.seatId ?? null,
+      });
+      const episodes = await loadOauthEpisodes(accountIds);
       const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
 
       if (capacity.confidence !== 'none') {
         const { windowStartedAt, usage } = await measureOauthWindow({
-          accountId: account.id,
+          accountIds,
           now,
           lastResetsAt: episodes[0]?.resetsAt ?? null,
         });
