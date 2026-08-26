@@ -22,7 +22,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
-import { workspaces, teams, workers as workersTable, tasks } from "@buildd/core/db/schema";
+import { workspaces, teams, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets } from "@buildd/core/db/schema";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   checkPathClaimConflict,
@@ -553,6 +553,116 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             embedder,
             api,
           });
+        }
+
+        // list_connectors: read-only connector health — handled directly to avoid
+        // adding an admin-gated REST route. Uses DB to stay at worker token level.
+        if (action === 'list_connectors') {
+          const wsId = workspaceId || await ctx.getWorkspaceId();
+          if (!wsId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_required', message: 'Cannot resolve workspace. Pass ?workspace=<id> in the MCP URL or use a workspace-pinned endpoint.' }) }],
+              isError: true,
+            };
+          }
+
+          // Resolve teamId: workspace's team (for ownership checks)
+          const ws = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, wsId),
+            columns: { teamId: true },
+          });
+          if (!ws?.teamId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_not_found' }) }],
+              isError: true,
+            };
+          }
+          const teamId = ws.teamId;
+
+          // Collect connector IDs owned by this team
+          const ownedRows = await db.query.connectors.findMany({
+            where: eq(connectors.teamId, teamId),
+            columns: { id: true },
+          });
+          const ownedIds = new Set(ownedRows.map(r => r.id));
+
+          // Collect connector IDs shared to this team
+          const shareRows = await db.query.connectorShares.findMany({
+            where: eq(connectorShares.sharedWithTeamId, teamId),
+            columns: { connectorId: true },
+          });
+          const sharedIds = new Set(shareRows.map(r => r.connectorId));
+
+          const allVisibleIds = [...new Set([...ownedIds, ...sharedIds])];
+          if (allVisibleIds.length === 0) {
+            return { content: [{ type: "text" as const, text: JSON.stringify({ connectors: [] }) }] };
+          }
+
+          // Fetch connectorWorkspaces rows for this workspace — only mounted connectors appear
+          const cwRows = await db.query.connectorWorkspaces.findMany({
+            where: and(
+              eq(connectorWorkspaces.workspaceId, wsId),
+              inArray(connectorWorkspaces.connectorId, allVisibleIds),
+            ),
+          });
+
+          if (cwRows.length === 0) {
+            return { content: [{ type: "text" as const, text: JSON.stringify({ connectors: [] }) }] };
+          }
+
+          // Fetch connector details for mounted connectors
+          const mountedIds = cwRows.map(r => r.connectorId);
+          const connectorRows = await db.query.connectors.findMany({
+            where: inArray(connectors.id, mountedIds),
+            columns: { id: true, name: true, authMode: true, teamId: true },
+          });
+          const connectorMap = new Map(connectorRows.map(c => [c.id, c]));
+
+          // Fetch credential secrets for auth-mode connectors (keyed on owner team)
+          const ownerTeamIds = [...new Set(connectorRows.map(c => c.teamId).filter(Boolean))] as string[];
+          const secretRows = ownerTeamIds.length > 0
+            ? await db.query.secrets.findMany({
+                where: and(
+                  inArray(secrets.teamId, ownerTeamIds),
+                  eq(secrets.purpose, 'mcp_connector_credential'),
+                ),
+                columns: { label: true, tokenExpiresAt: true, healthStatus: true },
+              })
+            : [];
+          const secretMap = new Map<string, { tokenExpiresAt: Date | null; healthStatus: string }>();
+          for (const s of secretRows) {
+            if (s.label) secretMap.set(s.label, { tokenExpiresAt: s.tokenExpiresAt, healthStatus: s.healthStatus });
+          }
+
+          const now = new Date();
+          const result = cwRows
+            .map(cw => {
+              const connector = connectorMap.get(cw.connectorId);
+              if (!connector) return null;
+
+              let status: 'ok' | 'auth_expired' | 'unreachable' | 'disabled';
+              if (!cw.enabled) {
+                status = 'disabled';
+              } else if (connector.authMode === 'none') {
+                status = 'ok';
+              } else {
+                const secret = secretMap.get(cw.connectorId);
+                if (!secret) {
+                  status = 'auth_expired';
+                } else if (secret.tokenExpiresAt && secret.tokenExpiresAt < now) {
+                  status = 'auth_expired';
+                } else if (secret.healthStatus === 'revoked' || secret.healthStatus === 'degraded') {
+                  status = 'unreachable';
+                } else {
+                  status = 'ok';
+                }
+              }
+
+              return { id: connector.id, name: connector.name, authMode: connector.authMode, status };
+            })
+            .filter(Boolean);
+
+          return { content: [{ type: "text" as const, text: JSON.stringify({ connectors: result }) }] };
         }
 
         return await handleBuilddAction(api, action, params, ctx);
