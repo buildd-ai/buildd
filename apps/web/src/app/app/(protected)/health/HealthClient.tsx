@@ -941,7 +941,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                     <span className="text-text-muted">·</span>
                     <span
                       className={confidenceClass(s.confidence)}
-                      title={s.confidence === 'high' ? 'High episode count — conservative floor estimate, not a certainty signal' : undefined}
+                      title={s.confidence === 'high' ? 'p25 conservative floor — routinely fires while real headroom remains; not a certainty signal' : undefined}
                     >
                       {s.confidence === 'high' ? 'calibrated' : `confidence: ${s.confidence}`}
                     </span>
@@ -965,8 +965,8 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
         {/* Collapsed learning sessions — one summary line instead of per-row cards */}
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
-            <span className="text-xs text-text-muted">
-              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} still learning
+            <span className="text-xs text-text-muted" title="No exhaustion events recorded yet — this row will calibrate automatically on first session limit hit">
+              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no data yet, will calibrate on first session hit
             </span>
           </div>
         )}
@@ -996,8 +996,11 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                 {forecast.monthly.confidence !== 'low' && (
                   <>
                     <span className="text-text-muted">·</span>
-                    <span className={confidenceClass(forecast.monthly.confidence)}>
-                      confidence: {forecast.monthly.confidence}
+                    <span
+                      className={confidenceClass(forecast.monthly.confidence)}
+                      title={forecast.monthly.confidence === 'high' ? 'p25 conservative floor — routinely fires while real headroom remains; not a certainty signal' : undefined}
+                    >
+                      {forecast.monthly.confidence === 'high' ? 'calibrated' : `confidence: ${forecast.monthly.confidence}`}
                     </span>
                   </>
                 )}
