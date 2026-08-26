@@ -6,7 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch, type ConnectorFailure } from '@/lib/claim-gates';
+import { checkConnectorRouting, findAlternativeRole, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch, type ConnectorFailure } from '@/lib/claim-gates';
 
 /**
  * POST /api/tasks/[id]/start
@@ -141,6 +141,7 @@ export async function POST(
         const detail = connectorFailures
           .map(f => `'${f.connectorName}' (${f.mode})`)
           .join(', ');
+        const alternativeRole = await findAlternativeRole(roleSlug, task.workspaceId, teamId);
         return NextResponse.json({
           error: `Task cannot be started: role '${roleSlug}' has connector issues: ${detail}`,
           gateReason: 'connector_routing_mismatch',
@@ -149,6 +150,7 @@ export async function POST(
             connectorName: f.connectorName,
             mode: f.mode,
           })),
+          ...(alternativeRole ? { alternativeRole } : {}),
         }, { status: 422 });
       }
     }

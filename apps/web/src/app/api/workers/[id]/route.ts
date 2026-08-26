@@ -25,7 +25,7 @@ import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
-import { measureOauthWindow } from '@/lib/oauth-budget-window';
+import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
@@ -673,21 +673,42 @@ export async function PATCH(
         ))
         .returning({ id: accounts.id });
 
+      // Propagate exhaustion to all sibling accounts sharing the same seatId so
+      // pacing engages for every registration, not just the one that hit the wall.
+      if (flipped.length > 0 && account.seatId && account.teamId) {
+        await db
+          .update(accounts)
+          .set({ budgetExhaustedAt: exhaustedAt, budgetResetsAt })
+          .where(and(
+            eq(accounts.teamId, account.teamId),
+            eq(accounts.seatId, account.seatId),
+            eq(accounts.authType, 'oauth'),
+            isNull(accounts.budgetExhaustedAt),
+          ));
+      }
+
       // Only the request that actually flipped the flag records the episode, so
       // N concurrent budget failures in the same window yield exactly one row.
       // Seat auth has no cost signal, so this measured usage is the only way to
       // learn where the wall is — see packages/core/oauth-budget.ts.
       if (flipped.length > 0) {
         try {
+          // Measure across the full seatId group so the episode reflects the
+          // combined window usage, not just this account's slice.
+          const accountIds = await resolveSeatIdPeers({
+            id: account.id,
+            teamId: account.teamId ?? '',
+            seatId: account.seatId ?? null,
+          });
           const prior = await db.query.oauthBudgetEpisodes.findFirst({
-            where: eq(oauthBudgetEpisodes.accountId, account.id),
+            where: inArray(oauthBudgetEpisodes.accountId, accountIds),
             orderBy: (t, { desc }) => [desc(t.exhaustedAt)],
             columns: { resetsAt: true },
           });
           // Same measurement the claim route paces against: window start inferred
           // by sessionizing worker history, usage weighted per model.
           const { windowStartedAt, usage } = await measureOauthWindow({
-            accountId: account.id,
+            accountIds,
             now: exhaustedAt,
             lastResetsAt: prior?.resetsAt ?? null,
           });

@@ -939,8 +939,11 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                 {s.confidence && s.confidence !== 'low' && (
                   <>
                     <span className="text-text-muted">·</span>
-                    <span className={confidenceClass(s.confidence)}>
-                      confidence: {s.confidence}
+                    <span
+                      className={confidenceClass(s.confidence)}
+                      title={s.confidence === 'high' ? 'High episode count — conservative floor estimate, not a certainty signal' : undefined}
+                    >
+                      {s.confidence === 'high' ? 'calibrated' : `confidence: ${s.confidence}`}
                     </span>
                   </>
                 )}
