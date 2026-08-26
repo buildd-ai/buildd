@@ -537,6 +537,8 @@ export async function POST(req: NextRequest) {
   const connectorMismatchTaskIds = new Set<string>();
   // Per-task typed failures used in the 422 response for explicit taskId claims.
   const taskConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
+  // Advisory-mode: connectors that failed but are not hard-required. Keyed by taskId.
+  const taskDegradedConnectors = new Map<string, Array<{ id: string; name: string; failureMode: string }>>();
   {
     const rolePairs = filteredTasks
       .map(t => ({
@@ -790,12 +792,38 @@ export async function POST(req: NextRequest) {
           }
 
           if (failures.length > 0) {
-            connectorMismatchTaskIds.add(pair.taskId);
             taskConnectorFailures.set(pair.taskId, failures);
-            const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
-            console.log(
-              `[claim] Skipped task ${pair.taskId}: role ${pair.roleSlug} has connector issues [${detail}] in workspace ${pair.taskWorkspaceId}`,
-            );
+
+            // Advisory-mode check: when the workspace has connectorAdvisoryMode=true,
+            // tasks with no hard-required failing connectors claim with a degradedConnectors
+            // notice instead of being blocked — unless total degradation (ALL role connectors
+            // are unavailable), which always holds the task regardless of the flag.
+            const task = filteredTasks.find(t => t.id === pair.taskId);
+            const wsAdvisory = (task as any)?.workspace?.connectorAdvisoryMode === true;
+            const requiredConnectors = (task as any)?.requiredConnectors as string[] | null ?? null;
+            const failedIds = new Set(failures.map(f => f.connectorId));
+            const hasRequiredFailure = requiredConnectors?.some(id => failedIds.has(id)) ?? false;
+            const totalDegradation = failures.length === refs.length;
+
+            if (wsAdvisory && !hasRequiredFailure && !totalDegradation) {
+              // Partial degradation in advisory mode: claim proceeds with degradedConnectors.
+              taskDegradedConnectors.set(pair.taskId, failures.map(f => ({
+                id: f.connectorId,
+                name: f.connectorName,
+                failureMode: f.mode,
+              })));
+              const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
+              console.log(
+                `[claim] Advisory: task ${pair.taskId} claiming with degraded connectors [${detail}] in workspace ${pair.taskWorkspaceId}`,
+              );
+            } else {
+              connectorMismatchTaskIds.add(pair.taskId);
+              const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
+              const reason = totalDegradation && wsAdvisory ? 'total degradation' : 'connector mismatch';
+              console.log(
+                `[claim] Skipped task ${pair.taskId} (${reason}): role ${pair.roleSlug} has connector issues [${detail}] in workspace ${pair.taskWorkspaceId}`,
+              );
+            }
           }
         }
       }
@@ -1588,6 +1616,14 @@ export async function POST(req: NextRequest) {
           : {}),
       } satisfies ClaimDiagnostics,
     });
+  }
+
+  // Attach degradedConnectors to workers that claimed under advisory mode.
+  for (const cw of claimedWorkers) {
+    const degraded = taskDegradedConnectors.get(cw.taskId);
+    if (degraded && degraded.length > 0) {
+      (cw as any).degradedConnectors = degraded;
+    }
   }
 
   // Attach open PR context from other workers in the same workspace

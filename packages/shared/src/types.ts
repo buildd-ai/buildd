@@ -998,6 +998,17 @@ export interface AssertionConnectorEntry {
   tokenEndpoint: string;
 }
 
+/** A connector that failed availability checks but is not hard-required for the task.
+ *  Delivered when the workspace has connector_advisory_mode=true and the task has no
+ *  requiredConnectors overlap with the failing connector. The runner injects a
+ *  system-prompt notice so the agent knows which tools are unavailable. */
+export interface DegradedConnector {
+  id: string;
+  name: string;
+  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  detail?: string;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1045,6 +1056,9 @@ export interface ClaimTasksResponse {
     };
     /** Role configuration for the claimed task's assigned role */
     roleConfig?: RoleConfig;
+    /** Connectors that failed availability checks but are not hard-required (advisory mode only).
+     *  Present when workspace.connectorAdvisoryMode=true and the task claimed despite connector failures. */
+    degradedConnectors?: DegradedConnector[];
   }>;
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */

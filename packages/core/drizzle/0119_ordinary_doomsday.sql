@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "connector_advisory_mode" boolean DEFAULT false NOT NULL;
