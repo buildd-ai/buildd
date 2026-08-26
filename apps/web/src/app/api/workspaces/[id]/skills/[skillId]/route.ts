@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
+import { eq, and, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -60,12 +60,30 @@ export async function GET(
     }
 
     try {
-        const skill = await db.query.workspaceSkills.findFirst({
+        // First look for a workspace-scoped skill. If not found, fall back to a
+        // team-level skill accessible from this workspace's team (read-only).
+        let skill = await db.query.workspaceSkills.findFirst({
             where: and(
                 eq(workspaceSkills.id, skillId),
                 eq(workspaceSkills.workspaceId, id)
             ),
         });
+
+        if (!skill) {
+            const ws = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { teamId: true },
+            });
+            if (ws) {
+                skill = await db.query.workspaceSkills.findFirst({
+                    where: and(
+                        eq(workspaceSkills.id, skillId),
+                        isNull(workspaceSkills.workspaceId),
+                        eq(workspaceSkills.teamId, ws.teamId),
+                    ),
+                }) ?? undefined;
+            }
+        }
 
         if (!skill) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });

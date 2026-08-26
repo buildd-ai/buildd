@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => null as any);
 const mockSkillsUpdate = mock(() => null as any);
 const mockSkillsDelete = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(false));
@@ -41,6 +42,7 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
+      workspaces: { findFirst: mockWorkspacesFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
     },
     update: mockSkillsUpdate,
@@ -52,13 +54,16 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
+  workspaces: { id: 'id', teamId: 'teamId' },
   workspaceSkills: {
     id: 'id',
     workspaceId: 'workspaceId',
+    teamId: 'teamId',
   },
 }));
 
@@ -99,8 +104,11 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    // Default: workspace not found (no team-level fallback unless test sets it up)
+    mockWorkspacesFindFirst.mockResolvedValue(null);
   });
 
   it('returns 401 when no auth', async () => {
@@ -224,11 +232,13 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
     expect(data.skill.id).toBe('skill-1');
   });
 
-  it('returns 404 when skill not found', async () => {
+  it('returns 404 when skill not found in workspace or team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    // Both workspace-scoped lookup and team-level fallback return null
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-123' });
 
     const request = createMockRequest();
     const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-999' });
@@ -237,6 +247,37 @@ describe('GET /api/workspaces/[id]/skills/[skillId]', () => {
     expect(response.status).toBe(404);
     const data = await response.json();
     expect(data.error).toBe('Skill not found');
+  });
+
+  it('falls back to team-level skill when not found in workspace', async () => {
+    const teamSkill = {
+      id: 'team-skill-1',
+      workspaceId: null,
+      teamId: 'team-123',
+      name: 'Researcher',
+      slug: 'researcher',
+      content: '# Researcher',
+      enabled: true,
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    // First call (workspace-scoped) returns null; second call (team-level) returns the skill
+    mockWorkspaceSkillsFindFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(teamSkill);
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-123' });
+
+    const request = createMockRequest();
+    const params = Promise.resolve({ id: 'ws-1', skillId: 'team-skill-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.skill.id).toBe('team-skill-1');
+    expect(data.skill.workspaceId).toBeNull();
+    expect(data.skill.name).toBe('Researcher');
   });
 
   it('returns 404 when workspace access denied for session auth', async () => {
@@ -591,6 +632,51 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     expect(response.status).toBe(404);
     const data = await response.json();
     expect(data.error).toBe('Workspace not found');
+  });
+
+  it('saving an unmodified workspace-scoped role is a no-op on scope (workspaceId unchanged)', async () => {
+    // Verifies that PATCH on a workspace-scoped skill without a workspaceId field
+    // in the body does NOT change the skill's workspaceId. The RoleEditor initializes
+    // scope from skill.workspaceId and only sends workspaceId: null when the user
+    // explicitly promotes to team-level.
+    const existingSkill = {
+      id: 'skill-1',
+      workspaceId: 'ws-1',
+      name: 'Researcher',
+      content: '# Researcher',
+      enabled: true,
+    };
+
+    const updatedSkill = { ...existingSkill }; // same workspaceId
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+
+    let capturedUpdates: any = null;
+    const mockReturning = mock(() => [updatedSkill]);
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((updates: any) => {
+      capturedUpdates = updates;
+      return { where: mockWhere };
+    });
+    mockSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    // Simulate saving without changing anything (no workspaceId in body)
+    const request = createMockRequest({
+      method: 'PATCH',
+      body: { name: 'Researcher' },
+    });
+    const params = Promise.resolve({ id: 'ws-1', skillId: 'skill-1' });
+    const response = await PATCH(request, { params });
+
+    expect(response.status).toBe(200);
+    // workspaceId must NOT appear in the updates (the handler never accepts it)
+    expect(capturedUpdates.workspaceId).toBeUndefined();
+    // The returned skill retains its original workspaceId
+    const data = await response.json();
+    expect(data.skill.workspaceId).toBe('ws-1');
   });
 });
 

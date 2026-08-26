@@ -57,19 +57,23 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), { empty: '' }),
 }));
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  workspaces: { id: 'id' },
+  workspaces: { id: 'id', teamId: 'teamId' },
   workspaceSkills: {
     id: 'id',
     workspaceId: 'workspaceId',
+    teamId: 'teamId',
     slug: 'slug',
     createdAt: 'createdAt',
     enabled: 'enabled',
+    isRole: 'isRole',
   },
 }));
 
@@ -109,16 +113,28 @@ const adminAccount = { id: 'account-123', level: 'admin' as const, teamId: 'team
 const workerAccount = { id: 'account-456', level: 'worker' as const, teamId: 'team-123' };
 const triggerAccount = { id: 'account-789', level: 'trigger' as const, teamId: 'team-123' };
 
+// Helper: set up a basic skills select mock returning given rows
+function setupSkillsSelect(rows: any[]) {
+  const mockWhere = mock(() => ({
+    orderBy: mock(() => Promise.resolve(rows)),
+  }));
+  const mockFrom = mock(() => ({ where: mockWhere }));
+  mockSkillsSelect.mockReturnValue({ from: mockFrom });
+}
+
 describe('GET /api/workspaces/[id]/skills', () => {
   beforeEach(() => {
     process.env.NODE_ENV = 'test';
     mockGetCurrentUser.mockReset();
     mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
     mockSkillsSelect.mockReset();
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
+    // Default: workspace resolves to team-123
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-123' });
   });
 
   it('returns 401 when no auth', async () => {
@@ -173,12 +189,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue(adminAccount);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-
-    const mockWhere = mock(() => ({
-      orderBy: mock(() => Promise.resolve(mockSkills)),
-    }));
-    const mockFrom = mock(() => ({ where: mockWhere }));
-    mockSkillsSelect.mockReturnValue({ from: mockFrom });
+    setupSkillsSelect(mockSkills);
 
     const request = createMockRequest({
       headers: { Authorization: 'Bearer bld_admin_xxx' },
@@ -197,18 +208,11 @@ describe('GET /api/workspaces/[id]/skills', () => {
       { id: 'skill-1', workspaceId: 'ws-1', name: 'Skill 1', slug: 'skill-1', enabled: true },
     ];
 
-    // OAuth JWTs are always resolved as admin by authenticateApiKey
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue(adminAccount);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    setupSkillsSelect(mockSkills);
 
-    const mockWhere = mock(() => ({
-      orderBy: mock(() => Promise.resolve(mockSkills)),
-    }));
-    const mockFrom = mock(() => ({ where: mockWhere }));
-    mockSkillsSelect.mockReturnValue({ from: mockFrom });
-
-    // Simulate a JWT bearer (authenticateApiKey handles the JWT path)
     const request = createMockRequest({
       headers: { Authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.fake.jwt' },
     });
@@ -228,12 +232,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
-
-    const mockWhere = mock(() => ({
-      orderBy: mock(() => Promise.resolve(mockSkills)),
-    }));
-    const mockFrom = mock(() => ({ where: mockWhere }));
-    mockSkillsSelect.mockReturnValue({ from: mockFrom });
+    setupSkillsSelect(mockSkills);
 
     const request = createMockRequest();
     const params = Promise.resolve({ id: 'ws-1' });
@@ -252,12 +251,7 @@ describe('GET /api/workspaces/[id]/skills', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(true);
-
-    const mockWhere = mock(() => ({
-      orderBy: mock(() => Promise.resolve(mockSkills)),
-    }));
-    const mockFrom = mock(() => ({ where: mockWhere }));
-    mockSkillsSelect.mockReturnValue({ from: mockFrom });
+    setupSkillsSelect(mockSkills);
 
     const request = createMockRequest({
       searchParams: { enabled: 'true' },
@@ -268,6 +262,58 @@ describe('GET /api/workspaces/[id]/skills', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.skills).toHaveLength(1);
+  });
+
+  it('includes team-level roles (workspaceId: null) merged with workspace skills', async () => {
+    // DB returns one workspace-scoped skill and one team-level role with different slugs
+    const allRows = [
+      { id: 'skill-1', workspaceId: 'ws-1', teamId: 'team-123', name: 'Builder', slug: 'builder', enabled: true },
+      { id: 'role-team', workspaceId: null, teamId: 'team-123', name: 'Researcher', slug: 'researcher', enabled: true },
+    ];
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    setupSkillsSelect(allRows);
+
+    const request = createMockRequest();
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // Both the workspace skill and the team-level role are returned
+    expect(data.skills).toHaveLength(2);
+    const slugs = data.skills.map((s: any) => s.slug);
+    expect(slugs).toContain('builder');
+    expect(slugs).toContain('researcher');
+    // Team-level role has workspaceId: null
+    const teamRole = data.skills.find((s: any) => s.slug === 'researcher');
+    expect(teamRole.workspaceId).toBeNull();
+  });
+
+  it('workspace-scoped override wins over team-level role with same slug', async () => {
+    // DB returns both a workspace override AND a team-level row for 'researcher'
+    const allRows = [
+      { id: 'override-id', workspaceId: 'ws-1', teamId: 'team-123', name: 'Researcher (override)', slug: 'researcher', enabled: true },
+      { id: 'team-id', workspaceId: null, teamId: 'team-123', name: 'Researcher', slug: 'researcher', enabled: true },
+    ];
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(true);
+    setupSkillsSelect(allRows);
+
+    const request = createMockRequest();
+    const params = Promise.resolve({ id: 'ws-1' });
+    const response = await GET(request, { params });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // Only the workspace override appears (deduplication)
+    expect(data.skills).toHaveLength(1);
+    expect(data.skills[0].id).toBe('override-id');
+    expect(data.skills[0].workspaceId).toBe('ws-1');
   });
 
   it('returns 404 when workspace access denied for session auth', async () => {
