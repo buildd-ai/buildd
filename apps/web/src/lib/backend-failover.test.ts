@@ -1,12 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// Only the db handle is mocked: the real schema + real drizzle operators are
-// used so this test cannot drift from the actual column names, and so it does
-// not leak a partial module mock into the rest of the suite.
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
 const mockTenantBudgetsFindFirst = mock(() => Promise.resolve(null as any));
-const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 let insertedPauses: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
@@ -15,11 +11,18 @@ mock.module('@buildd/core/db', () => ({
       backendPauses: { findMany: mockBackendPausesFindMany },
       accounts: { findFirst: mockAccountsFindFirst },
       tenantBudgets: { findFirst: mockTenantBudgetsFindFirst },
-      secrets: { findMany: mockSecretsFindMany },
     },
     insert: () => ({ values: (vals: any) => { insertedPauses.push(vals); return Promise.resolve(); } }),
     delete: () => ({ where: () => Promise.resolve() }),
   },
+}));
+
+// Mock hasCodexCredential directly to avoid relying on transitive @buildd/core/db
+// mock resolution — Bun 1.4.0 (CI) uses per-file module registries so transitive
+// mocks from @buildd/core/db don't propagate into codex-credential.ts's imports.
+const mockHasCodexCredential = mock(() => Promise.resolve(false));
+mock.module('@/lib/codex-credential', () => ({
+  hasCodexCredential: mockHasCodexCredential,
 }));
 
 const {
@@ -37,7 +40,7 @@ beforeEach(() => {
   mockBackendPausesFindMany.mockResolvedValue([]);
   mockAccountsFindFirst.mockResolvedValue(null);
   mockTenantBudgetsFindFirst.mockResolvedValue(null);
-  mockSecretsFindMany.mockResolvedValue([]);
+  mockHasCodexCredential.mockResolvedValue(false);
 });
 
 describe('recordBackendPause', () => {
@@ -102,7 +105,7 @@ describe('isBackendConfigured', () => {
 
   it('requires a stored credential for Codex', async () => {
     expect(await isBackendConfigured('codex', scope)).toBe(false);
-    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    mockHasCodexCredential.mockResolvedValue(true);
     expect(await isBackendConfigured('codex', scope)).toBe(true);
   });
 
@@ -120,7 +123,7 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('moves a Claude-walled task to Codex when a credential exists', async () => {
-    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    mockHasCodexCredential.mockResolvedValue(true);
     expect((await resolveFailoverBackend({ from: 'claude', scope })).backend).toBe('codex');
   });
 
@@ -133,7 +136,7 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('respects a busy provider slot the caller reports', async () => {
-    mockSecretsFindMany.mockResolvedValue([{ healthStatus: 'valid', tokenExpiresAt: null }]);
+    mockHasCodexCredential.mockResolvedValue(true);
     const decision = await resolveFailoverBackend({ from: 'claude', scope, busy: { codex: true } });
     expect(decision.backend).toBeNull();
     expect(decision.blocked[0]).toMatchObject({ backend: 'codex', reason: 'busy' });

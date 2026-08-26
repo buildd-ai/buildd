@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
@@ -32,8 +32,11 @@ mock.module('@buildd/core/secrets', () => ({
 const mockFetch = mock((_url: string, _opts?: any) => Promise.resolve({ ok: true, status: 200 }));
 mock.module('node:fetch', () => ({ default: mockFetch }));
 
-// Replace global fetch
+// Replace global fetch; restored in afterAll so Bun's shared-process test runner
+// doesn't contaminate subsequent test files (Bun 1.3.14+ shares globalThis).
+const _originalFetch = (globalThis as any).fetch;
 (globalThis as any).fetch = mockFetch;
+afterAll(() => { (globalThis as any).fetch = _originalFetch; });
 
 mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mock(() => Promise.resolve(false)),

@@ -1618,11 +1618,17 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Attach degradedConnectors to workers that claimed under advisory mode.
+  // Attach degradedConnectors to workers that claimed under advisory mode
+  // and persist them to the DB for the audit trail on the task detail page.
   for (const cw of claimedWorkers) {
     const degraded = taskDegradedConnectors.get(cw.taskId);
     if (degraded && degraded.length > 0) {
       (cw as any).degradedConnectors = degraded;
+      // Persist so the task detail page can show the badge even after completion.
+      await db
+        .update(workers)
+        .set({ degradedConnectors: degraded as any })
+        .where(eq(workers.id, cw.id));
     }
   }
 

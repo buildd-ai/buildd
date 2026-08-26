@@ -347,6 +347,10 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
   // Used to validate that a role only mounts connectors in scope for its workspace.
   const [wsEnabledIds, setWsEnabledIds] = useState<Set<string>>(new Set());
 
+  // Live connector health: connectorId → 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured'
+  const [healthStatus, setHealthStatus] = useState<Map<string, string>>(new Map());
+  const [healthChecking, setHealthChecking] = useState(false);
+
   // Load team connectors + workspace-enabled connector ids for the scope validator.
   useEffect(() => {
     let cancelled = false;
@@ -393,6 +397,28 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
       prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
     );
   };
+
+  async function checkConnectorHealth() {
+    if (healthChecking || !connectorRefs.length) return;
+    setHealthChecking(true);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${workspaceId}/connector-health?roleSlug=${encodeURIComponent(skill.slug)}`,
+      );
+      if (res.ok) {
+        const data = await res.json() as { connectors?: Array<{ connectorId: string; status: string }> };
+        const map = new Map<string, string>();
+        for (const entry of data.connectors ?? []) {
+          map.set(entry.connectorId, entry.status);
+        }
+        setHealthStatus(map);
+      }
+    } catch {
+      // silent — health check is best-effort
+    } finally {
+      setHealthChecking(false);
+    }
+  }
 
   // Browse Registry → create (or reuse) a team connector, then opt the role in.
   async function installConnector(input: ConnectorCreateInput) {
@@ -689,13 +715,25 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-text-primary">Connectors</label>
-                <button
-                  type="button"
-                  onClick={() => setShowBrowse(!showBrowse)}
-                  className="text-[12px] text-primary hover:text-primary-hover font-medium"
-                >
-                  {showBrowse ? 'Hide Registry' : 'Browse Registry'}
-                </button>
+                <div className="flex items-center gap-3">
+                  {connectorRefs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={checkConnectorHealth}
+                      disabled={healthChecking}
+                      className="text-[12px] text-text-muted hover:text-text-secondary font-medium disabled:opacity-50"
+                    >
+                      {healthChecking ? 'Checking…' : healthStatus.size > 0 ? 'Recheck health' : 'Check health'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowBrowse(!showBrowse)}
+                    className="text-[12px] text-primary hover:text-primary-hover font-medium"
+                  >
+                    {showBrowse ? 'Hide Registry' : 'Browse Registry'}
+                  </button>
+                </div>
               </div>
               <p className="text-xs text-text-muted mb-2">Team MCP servers this role mounts at runtime</p>
 
@@ -767,6 +805,21 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                             </span>
                           )}
                           <ConnectorBadge authMode={connector.authMode} status={connector.status} />
+                          {healthStatus.has(connector.id) && (() => {
+                            const hs = healthStatus.get(connector.id)!;
+                            if (hs === 'ok') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">OK</span>
+                            );
+                            if (hs === 'auth_expired') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">auth expired</span>
+                            );
+                            if (hs === 'server_unreachable') return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30">unreachable</span>
+                            );
+                            return (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">not configured</span>
+                            );
+                          })()}
                         </div>
                       </button>
                       {active && !enabledHere && (

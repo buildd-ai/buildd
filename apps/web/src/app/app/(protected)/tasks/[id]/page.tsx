@@ -648,6 +648,43 @@ export default async function TaskDetailPage({
           </div>
         )}
 
+        {/* Degraded Connectors Banner — persists even after worker completes for audit trail */}
+        {(() => {
+          const latestWorker = taskWorkers[0];
+          const degraded = latestWorker?.degradedConnectors as Array<{ id: string; name: string; failureMode: string }> | null | undefined;
+          if (!degraded || degraded.length === 0) return null;
+          const FAILURE_LABELS: Record<string, string> = {
+            never_mounted: 'not configured',
+            expired_or_revoked: 'auth expired',
+            transient: 'unreachable',
+          };
+          return (
+            <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
+              <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
+                </svg>
+                Ran with {degraded.length} degraded connector{degraded.length !== 1 ? 's' : ''}
+              </div>
+              <div className="ml-6 space-y-1">
+                {degraded.map((c) => (
+                  <div key={c.id} className="flex items-center gap-2">
+                    <Link
+                      href="/app/connections"
+                      className="text-[13px] font-medium text-status-warning hover:underline"
+                    >
+                      {c.name}
+                    </Link>
+                    <span className="text-[11px] font-mono text-text-muted">
+                      {FAILURE_LABELS[c.failureMode] ?? c.failureMode}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Loop history */}
         {task.loopConfig && (
           <LoopHistory

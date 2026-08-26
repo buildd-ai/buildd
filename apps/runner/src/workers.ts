@@ -1318,6 +1318,9 @@ export class WorkerManager {
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
     }
+    if ((claimedWorker as any).degradedConnectors?.length) {
+      worker.degradedConnectors = (claimedWorker as any).degradedConnectors;
+    }
 
     this.workers.set(worker.id, worker);
     this.emit({ type: 'worker_update', worker });
@@ -2162,8 +2165,7 @@ export class WorkerManager {
 
       // Degraded connectors (advisory mode): inform the agent which connector tools
       // are unavailable so it can work around them or note the gap in its output.
-      const degradedConnectors = (claimedWorker as any).degradedConnectors as
-        Array<{ id: string; name: string; failureMode: string }> | undefined;
+      const degradedConnectors = worker.degradedConnectors;
       if (degradedConnectors && degradedConnectors.length > 0) {
         const connectorList = degradedConnectors
           .map(c => `- **${c.name}** (${c.failureMode})`)
