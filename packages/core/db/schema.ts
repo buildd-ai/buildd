@@ -1084,6 +1084,14 @@ export const workers = pgTable('workers', {
   // Mission agent-time = Σ(worker wall-clock) + Σ(backgroundAgentMs).
   // Foreground subagents are excluded — their time is already inside the parent's wall clock.
   backgroundAgentMs: integer('background_agent_ms').default(0).notNull(),
+  // Connectors that were degraded (failed health check) when this worker claimed
+  // under advisory mode (connectorAdvisoryMode=true). Persisted for audit trail.
+  degradedConnectors: jsonb('degraded_connectors').$type<Array<{
+    id: string;
+    name: string;
+    failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+    detail?: string;
+  }> | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
