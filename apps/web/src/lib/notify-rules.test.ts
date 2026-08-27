@@ -80,6 +80,7 @@ describe('DEFAULT_NOTIFICATION_PREFERENCES', () => {
       taskCompleted: true,
       taskFailed: true,
       credentialExpired: true,
+      connectorBlocked: true,
     });
   });
 });
