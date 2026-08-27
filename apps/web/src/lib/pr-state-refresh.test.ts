@@ -176,11 +176,53 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 1, workspaceId: 'ws-no-gh', taskId: 't1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: null,
+      githubRepo: null,
+      githubInstallation: null,
+    });
 
     await refreshStaleWorkersForWorkspaces(['ws-no-gh']);
 
     expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('uses the repo-mediated installation, not the stale legacy FK', async () => {
+    // Regression (2026-08-22 freeze): a GitHub App reinstall left
+    // workspaces.githubInstallationId pointing at a dead installation. Its token
+    // is valid but has no repo access, so every PR lookup 404'd, mergedAt was
+    // never stamped, and both claim gates that read it deadlocked the queue.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'owner/repo',
+      githubRepo: { installation: { installationId: 90000002 } },
+      githubInstallation: { installationId: 90000001 },
+    });
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+
+    makeSetMock();
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(90000002, '/repos/owner/repo/pulls/42');
+  });
+
+  it('falls back to the legacy FK when the workspace has no linked repo', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'owner/repo',
+      githubRepo: null,
+      githubInstallation: { installationId: 90000001 },
+    });
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+
+    makeSetMock();
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(90000001, '/repos/owner/repo/pulls/42');
   });
 
   it('is non-fatal on GitHub error: logs and does not stamp prLastCheckedAt', async () => {

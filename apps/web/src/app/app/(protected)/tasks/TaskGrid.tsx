@@ -536,7 +536,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
         {/* Header */}
         <div className="flex items-center gap-3 px-4 mb-3">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <h1 className="text-[28px] font-bold text-text-primary shrink-0" style={{ fontFamily: 'var(--font-display, inherit)' }}>
+            <h1 className="hidden md:block text-[28px] font-bold text-text-primary shrink-0" style={{ fontFamily: 'var(--font-display, inherit)' }}>
               {missionFilter ? (missionTitle || 'Mission Tasks') : 'Activity'}
             </h1>
             {initiativeFilter && (

@@ -17,6 +17,10 @@ import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or } from 'drizzle
 import { githubApi } from '@/lib/github';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
+import {
+  WORKSPACE_INSTALLATION_WITH,
+  pickWorkspaceInstallationId,
+} from '@/lib/workspace-installation';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -107,13 +111,13 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
       columns: { repo: true },
-      with: { githubInstallation: { columns: { installationId: true } } },
+      with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    if (!ws?.repo || !ws.githubInstallation?.installationId) continue;
+    const installationId = pickWorkspaceInstallationId(ws);
+    if (!ws?.repo || !installationId) continue;
 
     const { repo } = ws;
-    const { installationId } = ws.githubInstallation;
 
     for (let i = 0; i < wsWorkers.length; i++) {
       const worker = wsWorkers[i];

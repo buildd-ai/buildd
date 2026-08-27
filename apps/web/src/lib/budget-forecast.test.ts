@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupOauthAccountsBySeatId } from './budget-forecast';
+import { groupOauthAccountsBySeatId, computeBurnRateConfidence, oauthEpisodeConfidence } from './budget-forecast';
 
 describe('groupOauthAccountsBySeatId', () => {
   const makeAccount = (id: string, seatId: string | null, name = id) => ({
@@ -61,5 +61,46 @@ describe('groupOauthAccountsBySeatId', () => {
   it('handles empty accounts list', () => {
     const groups = groupOauthAccountsBySeatId([]);
     expect(groups.size).toBe(0);
+  });
+});
+
+describe('computeBurnRateConfidence', () => {
+  it('returns low for fewer than 5 samples', () => {
+    expect(computeBurnRateConfidence([1, 2, 3])).toBe('low');
+    expect(computeBurnRateConfidence([])).toBe('low');
+  });
+
+  it('returns low when all costs are zero', () => {
+    expect(computeBurnRateConfidence([0, 0, 0, 0, 0])).toBe('low');
+  });
+
+  it('returns high for >20 low-variance samples', () => {
+    const stable = Array.from({ length: 25 }, () => 1.0);
+    expect(computeBurnRateConfidence(stable)).toBe('high');
+  });
+
+  it('returns medium for 5-20 low-variance samples', () => {
+    const stable = Array.from({ length: 10 }, () => 1.0);
+    expect(computeBurnRateConfidence(stable)).toBe('medium');
+  });
+
+  it('returns low for high-variance samples', () => {
+    // Very spread values → high coefficient of variation
+    const noisy = [0.01, 100, 0.01, 100, 0.01, 100];
+    expect(computeBurnRateConfidence(noisy)).toBe('low');
+  });
+});
+
+describe('oauthEpisodeConfidence', () => {
+  it('returns null for none — learning state, no calibration yet', () => {
+    expect(oauthEpisodeConfidence('none')).toBeNull();
+  });
+
+  it('returns low for low', () => {
+    expect(oauthEpisodeConfidence('low')).toBe('low');
+  });
+
+  it('returns high for high — displayed as calibrated in UI', () => {
+    expect(oauthEpisodeConfidence('high')).toBe('high');
   });
 });

@@ -539,6 +539,9 @@ export interface Task {
   dependsOn: string[];
   // Declared files/globs this task expects to create or modify
   pathManifest?: string[] | null;
+  // Connector IDs this task requires — subset of the role's connectorRefs.
+  // Only these connectors trigger a hard claim-block when unavailable.
+  requiredConnectors?: string[] | null;
   result: TaskResult | null;
   backend?: AgentBackend;
   requiresReview?: boolean;

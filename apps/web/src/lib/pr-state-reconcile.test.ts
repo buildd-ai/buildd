@@ -3,15 +3,19 @@ process.env.NODE_ENV = 'test';
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 let updates: Array<{ set: Record<string, unknown>; }> = [];
-let joinRows: any[] = [];
+let workspaceRows: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { missions: { findFirst: () => Promise.resolve({ id: 'm1' }) } },
+    query: {
+      missions: { findFirst: () => Promise.resolve({ id: 'm1' }) },
+      workspaces: { findMany: () => Promise.resolve(workspaceRows) },
+    },
+    // Only reconcileMissionPrState uses select() (workers ⋈ tasks by mission).
     select: () => ({
       from: () => ({
-        innerJoin: () => ({ where: () => Promise.resolve(joinRows) }),
-        where: () => Promise.resolve(joinRows),
+        innerJoin: () => ({ where: () => Promise.resolve([]) }),
+        where: () => Promise.resolve([]),
       }),
     }),
     update: () => ({
@@ -44,8 +48,14 @@ const githubApi = (res: Record<string, unknown> | Error) =>
 
 beforeEach(() => {
   updates = [];
-  // workspace → installation join
-  joinRows = [{ workspaceId: 'ws1', installationId: 155534927 }];
+  // workspace → installation, via the repo-mediated pointer
+  workspaceRows = [
+    {
+      id: 'ws1',
+      githubRepo: { installation: { installationId: 155534927 } },
+      githubInstallation: { installationId: 155534927 },
+    },
+  ];
 });
 
 describe('parsePrUrl', () => {
@@ -140,12 +150,60 @@ describe('reconcileWorkerPrState', () => {
   });
 
   it('skips workspaces with no GitHub installation instead of guessing', async () => {
-    joinRows = [];
+    workspaceRows = [];
     const res = await reconcileWorkerPrState([worker()], {
       githubApi: githubApi({ merged_at: '2026-08-21T18:56:20Z' }),
     });
 
     expect(res.fixes).toHaveLength(0);
     expect(res.unverified[0].reason).toBe('workspace has no GitHub installation');
+  });
+
+  it('skips a workspace whose only installation pointers are both empty', async () => {
+    workspaceRows = [{ id: 'ws1', githubRepo: null, githubInstallation: null }];
+    const res = await reconcileWorkerPrState([worker()], {
+      githubApi: githubApi({ merged_at: '2026-08-21T18:56:20Z' }),
+    });
+
+    expect(res.fixes).toHaveLength(0);
+    expect(res.unverified[0].reason).toBe('workspace has no GitHub installation');
+  });
+
+  // Regression (2026-08-22 freeze): a GitHub App reinstall left the legacy
+  // workspaces.githubInstallationId FK pointing at a dead installation. Its
+  // token is valid but has access to no repos, so every PR lookup 404'd — which
+  // is exactly what this reconciler exists to repair, and it was itself broken.
+  it('calls GitHub with the repo-mediated installation, not the stale legacy FK', async () => {
+    workspaceRows = [
+      {
+        id: 'ws1',
+        githubRepo: { installation: { installationId: 90000002 } },
+        githubInstallation: { installationId: 90000001 },
+      },
+    ];
+    const seen: number[] = [];
+    await reconcileWorkerPrState([worker()], {
+      githubApi: ((installationId: number) => {
+        seen.push(installationId);
+        return Promise.resolve({ merged_at: null, state: 'open' });
+      }) as any,
+    });
+
+    expect(seen).toEqual([90000002]);
+  });
+
+  it('falls back to the legacy FK when the workspace has no linked repo', async () => {
+    workspaceRows = [
+      { id: 'ws1', githubRepo: null, githubInstallation: { installationId: 90000001 } },
+    ];
+    const seen: number[] = [];
+    await reconcileWorkerPrState([worker()], {
+      githubApi: ((installationId: number) => {
+        seen.push(installationId);
+        return Promise.resolve({ merged_at: null, state: 'open' });
+      }) as any,
+    });
+
+    expect(seen).toEqual([90000001]);
   });
 });

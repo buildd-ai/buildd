@@ -345,7 +345,7 @@ export default async function MissionsPage({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
         {/* Row 1: title + active count */}
         <div className="flex items-baseline gap-3 min-w-0">
-          <h1 className="text-xl font-semibold text-text-primary font-sans">Missions</h1>
+          <h1 className="hidden md:block text-xl font-semibold text-text-primary font-sans">Missions</h1>
           <span className="text-xs text-text-secondary font-light">
             {activeCount} active
           </span>

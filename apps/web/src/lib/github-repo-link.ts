@@ -29,8 +29,20 @@ const NORMALIZED_WORKSPACE_REPO = sql`lower(
 )`;
 
 /**
- * Upserts every repo on an installation into `github_repos`, then back-links any
- * workspace that points at one of those repos but has no `githubRepoId` yet.
+ * Upserts every repo on an installation into `github_repos`, then (re-)links any
+ * workspace that names one of those repos.
+ *
+ * Re-linking is deliberate: an App uninstall/reinstall mints a NEW installation
+ * row, and a workspace that was linked under the old one must be moved onto the
+ * new one. The predicate used to be `AND w.github_repo_id IS NULL`, which pinned
+ * already-linked workspaces to the dead installation forever — its token stays
+ * valid but has access to no repos, so every GitHub call 404s. That silently
+ * froze PR lifecycle state (and therefore `workers.mergedAt`, and therefore the
+ * claim route's deps and path-overlap gates) from 2026-08-22 on.
+ *
+ * The match is still on repo full name, so a re-link only ever points a
+ * workspace at the repo it already names; the DISTINCT FROM guard keeps the
+ * write a no-op when nothing changed.
  *
  * Two round trips regardless of repo count: one multi-row upsert, one
  * `UPDATE ... FROM` join. Both are idempotent, so this is safe to call on every
@@ -90,8 +102,11 @@ export async function syncInstallationRepos(installation: {
         updated_at = now()
     FROM github_repos r
     WHERE r.installation_id = ${installation.id}::uuid
-      AND w.github_repo_id IS NULL
       AND ${NORMALIZED_WORKSPACE_REPO} = lower(r.full_name)
+      AND (
+        w.github_repo_id IS DISTINCT FROM r.id
+        OR w.github_installation_id IS DISTINCT FROM r.installation_id
+      )
     RETURNING w.id
   `);
 

@@ -198,9 +198,9 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold text-text-primary">The Team</h1>
+          <h1 className="hidden md:block text-xl md:text-3xl font-bold text-text-primary">The Team</h1>
           {totalActiveWorkerCount > 0 ? (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-status-success/10 text-status-success">
               <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />

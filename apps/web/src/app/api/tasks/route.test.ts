@@ -118,12 +118,14 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  asc: (field: any) => ({ field, type: 'asc' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   like: (field: any, pattern: any) => ({ field, pattern, type: 'like' }),
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
@@ -143,6 +145,13 @@ mock.module('@buildd/core/db/schema', () => ({
     context: 'context',
     updatedAt: 'updatedAt',
     pathManifest: 'pathManifest',
+    requiredConnectors: 'requiredConnectors',
+  },
+  workspaceSkills: {
+    slug: 'slug',
+    enabled: 'enabled',
+    workspaceId: 'workspaceId',
+    connectorRefs: 'connectorRefs',
   },
   missions: { id: 'id' },
 }));
@@ -457,7 +466,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' }); // Workspace exists, no webhook
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' }); // Workspace exists, no webhook
 
     let insertedValues: any;
     const mockReturning = mock(() => [createdTask]);
@@ -483,7 +492,7 @@ describe('POST /api/tasks', () => {
   it('validates and persists loopConfig using verificationCommand fallback', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     let inserted: any;
     mockTasksInsert.mockReturnValue({
       values: mock((values: any) => {
@@ -533,7 +542,7 @@ describe('POST /api/tasks', () => {
   it('resolves startIn server-side and echoes persisted startAt', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     let inserted: any;
     mockTasksInsert.mockReturnValue({
       values: mock((values: any) => {
@@ -573,7 +582,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'dashboard',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let insertedValues: any;
     const mockReturning = mock(() => [createdTask]);
@@ -610,7 +619,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -645,7 +654,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -682,7 +691,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -696,7 +705,7 @@ describe('POST /api/tasks', () => {
 
     expect(mockDispatchNewTask).toHaveBeenCalledWith(
       createdTask,
-      { id: 'ws-1' },
+      expect.objectContaining({ id: 'ws-1' }),
       expect.any(Object)
     );
   });
@@ -717,7 +726,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -753,7 +762,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -789,7 +798,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: 'parent-task-1',
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -830,7 +839,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: 'parent-task-1', // Derived from worker's current task
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -907,7 +916,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -933,7 +942,7 @@ describe('POST /api/tasks', () => {
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     const mockReturning = mock(() => [createdTask]);
     const mockValues = mock(() => ({ returning: mockReturning }));
@@ -967,7 +976,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -993,7 +1002,7 @@ describe('POST /api/tasks', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
     mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     let capturedValues: any = null;
     const mockValues = mock((values: any) => { capturedValues = values; return { returning: mock(() => [{ id: 'task-123', workspaceId: 'ws-1', title: 'T' }]) }; });
     mockTasksInsert.mockReturnValue({ values: mockValues });
@@ -1139,7 +1148,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
 
     let capturedValues: any = null;
@@ -1177,7 +1186,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     // Mission has pr_required, but explicit 'none' should win
     mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required' });
 
@@ -1218,7 +1227,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
 
     let capturedValues: any = null;
@@ -1255,7 +1264,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     mockMissionsFindFirst.mockClear();
 
     let capturedValues: any = null;
@@ -1336,7 +1345,7 @@ describe('POST /api/tasks', () => {
 
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -1367,7 +1376,7 @@ describe('POST /api/tasks', () => {
 
     mockGetCurrentUser.mockResolvedValue(null);
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
 
     let capturedValues: any = null;
     const mockReturning = mock(() => [createdTask]);
@@ -1566,7 +1575,7 @@ describe('POST /api/tasks', () => {
       creationSource: 'mcp',
       parentTaskId: null,
     });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
   }
 
   it('bwrap replay: first filing creates a task and stamps frictionSignature', async () => {
@@ -2208,7 +2217,7 @@ describe('POST /api/tasks', () => {
   function setupBasicCreation() {
     const createdTask = { id: 'task-1', workspaceId: 'ws-1', title: 'T', status: 'pending' };
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [createdTask]) })),
     });
@@ -2323,6 +2332,130 @@ describe('POST /api/tasks', () => {
       }));
 
       expect(response.status).toBe(200);
+    });
+  });
+
+  describe('requiredConnectors', () => {
+    function setupApiKeyAuth() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-1',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+    }
+
+    it('rejects requiredConnectors without roleSlug', async () => {
+      setupApiKeyAuth();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Email task',
+          requiredConnectors: ['conn-uuid-1'],
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('requiredConnectors requires a roleSlug');
+    });
+
+    it('rejects requiredConnectors not in role connectorRefs', async () => {
+      setupApiKeyAuth();
+      // Role has connectorRefs: ['conn-uuid-A']
+      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A'] });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Email task',
+          roleSlug: 'email-agent',
+          requiredConnectors: ['conn-uuid-NOT-IN-ROLE'],
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('not in the role');
+    });
+
+    it('creates task with valid requiredConnectors', async () => {
+      setupApiKeyAuth();
+      // Role has connectorRefs: ['conn-uuid-A', 'conn-uuid-B']
+      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A', 'conn-uuid-B'] });
+      // defaultBackend lookup returns null
+      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce(null);
+
+      let insertedValues: any;
+      const createdTask = { id: 'task-rc', workspaceId: 'ws-1', title: 'Email task', status: 'pending' };
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          insertedValues = values;
+          return { returning: mock(() => [createdTask]) };
+        }),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Email task',
+          roleSlug: 'email-agent',
+          requiredConnectors: ['conn-uuid-A'],
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(insertedValues.requiredConnectors).toEqual(['conn-uuid-A']);
+      expect(insertedValues.roleSlug).toBe('email-agent');
+    });
+
+    it('allows empty requiredConnectors without role validation', async () => {
+      setupApiKeyAuth();
+      const createdTask = { id: 'task-rc', workspaceId: 'ws-1', title: 'Task', status: 'pending' };
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({ returning: mock(() => [createdTask]) })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Task',
+          requiredConnectors: [],
+        },
+      }));
+
+      // Empty requiredConnectors with no roleSlug is allowed (empty = no requirements)
+      expect(response.status).toBe(200);
+    });
+
+    it('rejects non-array requiredConnectors', async () => {
+      setupApiKeyAuth();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Task',
+          requiredConnectors: 'not-an-array',
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('array');
     });
   });
 });
