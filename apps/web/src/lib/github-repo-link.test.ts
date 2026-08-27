@@ -32,7 +32,19 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// Spread the real module rather than returning a bare `{ listInstallationRepos }`.
+// `mock.module` replaces the module GLOBALLY for the whole test process and is
+// never undone by `mock.restore()`, so a partial stub deletes every other export
+// for any file that loads later in the same run. That is order-dependent and
+// therefore invisible locally: CI batches this file with pr-state-refresh /
+// pr-state-reconcile (both `import { githubApi } from '@/lib/github'`) and they
+// died at import with "Export named 'githubApi' not found".
+// `@buildd/core/db` is already mocked above, so importing the real module here
+// touches nothing but env reads.
+const actualGithub = await import('@/lib/github');
+
 mock.module('@/lib/github', () => ({
+  ...actualGithub,
   listInstallationRepos: (installationId: number) => {
     listedFor.push(installationId);
     return Promise.resolve(ghRepos);
