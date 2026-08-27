@@ -113,6 +113,66 @@ const prompt = await page.locator('[data-testid="worker-needs-input-prompt"]').t
 expect(prompt).toContain('authentication method');
 ```
 
+## Running Unit Tests — Always Isolated
+
+Run unit tests through the runner, never `bun test <many files>`:
+
+```bash
+bun test                       # scripts/run-unit-tests.ts — every file in its own process
+bun run scripts/run-unit-tests.ts apps/web/src/lib/foo.test.ts   # one or more specific files
+BUILDD_TEST_CONCURRENCY=8 bun test                               # default 4, max 16
+```
+
+### Why isolation is mandatory
+
+`mock.module(path, factory)` replaces a module **globally for the whole process**.
+It is hoisted, it is never undone by `mock.restore()`, and the factory's return
+value *becomes* the module — it does not merge with the real one.
+
+Two consequences, both of which have cost real debugging time:
+
+1. **A partial stub deletes exports for every file that loads later.** A test
+   that stubs `@/lib/foo` with just `{ bar }` makes every other export of
+   `@/lib/foo` disappear. The victim dies at import with
+   `SyntaxError: Export named 'baz' not found in module ...` — in a file whose
+   author never touched that stub.
+2. **A module cannot be both globally stubbed and unit-tested in one process.**
+   If nine files stub `@/lib/codex-credential` and `codex-credential.test.ts`
+   tests the real thing, one of them loses. Completing the stubs does not fix
+   this; it only converts import errors into assertion failures.
+
+Because the damage depends on load order, a shared-process run reports a
+*rotating* set of failures. Every one of those files passes on its own. As of
+2026-08-27 all 439 unit test files pass in isolated processes, while a
+single-process `bun test apps/web/src` reported dozens of failures — none of them
+real.
+
+So: a failure from the runner is a real failure. A failure from a shared-process
+run tells you nothing until you re-run that file alone.
+
+### Writing module mocks
+
+Prefer not stubbing a module that has its own unit test — inject the dependency
+instead (pass it in, or accept an override in an options bag, as
+`reconcileWorkerPrState` does with `opts.githubApi`).
+
+When you must stub, return the module's **whole** surface so the stub is harmless
+if it ever does leak:
+
+```ts
+// Good — spread the real module, override only what you assert on.
+const actual = await import('@/lib/github');
+mock.module('@/lib/github', () => ({ ...actual, listInstallationRepos: myMock }));
+
+// Bad — deletes githubApi, mergePullRequest, and everything else.
+mock.module('@/lib/github', () => ({ listInstallationRepos: myMock }));
+```
+
+For asserting on SQL shape, read the module source rather than a rendered
+predicate (see `github-repo-link.test.ts` and `required-connectors.test.ts`):
+sibling tests stub `drizzle-orm` with incompatible `sql` shapes, so anything
+built on the real tagged-template internals is load-order dependent.
+
 ## Test-Driven Development (TDD)
 
 ### Bug Fix Workflow
