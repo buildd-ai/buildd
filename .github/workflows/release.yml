@@ -16,7 +16,84 @@ on:
     - cron: '0 9 * * *'
 
 jobs:
+  prepare-changelog:
+    name: Promote CHANGELOG
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Promote [Unreleased] section
+        run: |
+          LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
+          [ -z "$LATEST_TAG" ] && LATEST_TAG="v0.0.0"
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log origin/main..dev --format='%s' --no-merges 2>/dev/null || git log --format='%s' --no-merges -50)
+          else
+            COMMITS=$(git log "${LATEST_TAG}..dev" --format='%s' --no-merges 2>/dev/null || echo "")
+          fi
+
+          BUMP="patch"
+          while IFS= read -r msg; do
+            [ -z "$msg" ] && continue
+            if echo "$msg" | grep -qiE 'BREAKING[ -]CHANGE|^[a-z]+!:'; then
+              BUMP="major"; break
+            elif echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
+              BUMP="minor"
+            fi
+          done <<< "$COMMITS"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_SEMVER="${MAJOR}.${MINOR}.${PATCH}"
+          TODAY=$(date -u +"%Y-%m-%d")
+          REPO="${{ github.repository }}"
+
+          python3 - "$NEW_SEMVER" "$TODAY" "$LATEST_TAG" "$REPO" <<'PYEOF'
+          import sys, re
+          new_ver, today, prev_tag, repo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          with open("CHANGELOG.md") as f:
+              content = f.read()
+          m = re.search(r'^## \[Unreleased\](.*?)(?=^## \[)', content, re.MULTILINE | re.DOTALL)
+          if not m or not re.search(r'^- ', m.group(1), re.MULTILINE):
+              print("  i  [Unreleased] has no entries - skipping promotion")
+              sys.exit(0)
+          content = content.replace("## [Unreleased]\n", f"## [Unreleased]\n\n## [{new_ver}] - {today}\n", 1)
+          content = re.sub(
+              r'^\[Unreleased\]:.*$',
+              f'[Unreleased]: https://github.com/{repo}/compare/v{new_ver}...HEAD\n[{new_ver}]: https://github.com/{repo}/compare/{prev_tag}...v{new_ver}',
+              content, flags=re.MULTILINE,
+          )
+          with open("CHANGELOG.md", "w") as f:
+              f.write(content)
+          print(f"  Promoted [Unreleased] -> [{new_ver}] ({today})")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet CHANGELOG.md; then
+            echo "No CHANGELOG changes to commit"
+          else
+            git add CHANGELOG.md
+            git commit -m "docs: promote CHANGELOG for upcoming release"
+            git push origin dev
+          fi
+
   release:
+    needs: prepare-changelog
     # The reusable workflow pushes a version-bump commit and opens the release
     # PR, so it declares contents:write + pull-requests:write. A called workflow
     # cannot exceed the caller's token permissions, and this repo's default

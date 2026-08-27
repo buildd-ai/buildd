@@ -232,6 +232,42 @@ SEMVER="${MAJOR}.${MINOR}.${PATCH}"
 
 echo "Current: ${LATEST_TAG} → New: ${NEW_VERSION} (${BUMP} bump)"
 
+# Promote [Unreleased] CHANGELOG section to the new version
+TODAY=$(date -u +"%Y-%m-%d")
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "buildd-ai/buildd")
+if [ -f CHANGELOG.md ] && grep -q "^## \[Unreleased\]" CHANGELOG.md; then
+  python3 - "$SEMVER" "$TODAY" "$LATEST_TAG" "$REPO" <<'PYEOF'
+import sys, re
+
+new_ver, today, prev_tag, repo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+with open("CHANGELOG.md") as f:
+    content = f.read()
+
+# Find [Unreleased] section and check it has actual entries
+m = re.search(r'^## \[Unreleased\](.*?)(?=^## \[)', content, re.MULTILINE | re.DOTALL)
+if not m or not re.search(r'^- ', m.group(1), re.MULTILINE):
+    print("  i  [Unreleased] has no entries - skipping promotion")
+    sys.exit(0)
+
+# Insert versioned header right after "## [Unreleased]\n"
+content = content.replace("## [Unreleased]\n", f"## [Unreleased]\n\n## [{new_ver}] - {today}\n", 1)
+
+# Update the [Unreleased] comparison link at the footer
+content = re.sub(
+    r'^\[Unreleased\]:.*$',
+    f'[Unreleased]: https://github.com/{repo}/compare/v{new_ver}...HEAD\n[{new_ver}]: https://github.com/{repo}/compare/{prev_tag}...v{new_ver}',
+    content,
+    flags=re.MULTILINE,
+)
+
+with open("CHANGELOG.md", "w") as f:
+    f.write(content)
+
+print(f"  Promoted [Unreleased] -> [{new_ver}] ({today})")
+PYEOF
+fi
+
 # Bump version in package.json files on dev. PACKAGE_FILES env override
 # lets the reusable workflow (buildd-ai/.github) point at any repo's layout.
 PACKAGE_FILES="${PACKAGE_FILES:-apps/runner/package.json apps/web/package.json packages/core/package.json packages/shared/package.json}"
@@ -245,9 +281,16 @@ for PKG in $PACKAGE_FILES; do
   fi
 done
 
-# Commit version bump to dev (if anything changed)
+# Commit version bump + CHANGELOG promotion to dev (if anything changed)
+COMMIT_FILES=""
 if [ -n "$BUMPED_FILES" ] && ! git diff --quiet $BUMPED_FILES 2>/dev/null; then
-  git add $BUMPED_FILES
+  COMMIT_FILES="$BUMPED_FILES"
+fi
+if ! git diff --quiet CHANGELOG.md 2>/dev/null; then
+  COMMIT_FILES="$COMMIT_FILES CHANGELOG.md"
+fi
+if [ -n "$COMMIT_FILES" ]; then
+  git add $COMMIT_FILES
   git commit -m "chore: bump version to ${NEW_VERSION}"
   git push origin dev
   echo "Committed version bump to dev"
@@ -268,8 +311,6 @@ EOF
 # Create or update PR
 EXISTING_PR=$(gh pr list --base main --head dev --json number --jq '.[0].number' 2>/dev/null || echo "")
 
-REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-
 if [ -n "$EXISTING_PR" ]; then
   gh api "repos/${REPO}/pulls/${EXISTING_PR}" --method PATCH \
     -f title="Release ${NEW_VERSION}" -f body="$BODY" --silent
@@ -285,28 +326,3 @@ fi
 # If either is bypassed, the manual escape hatches are:
 #   bun run release -- --tag        (manually tag/release main HEAD)
 #   bun run release -- --finalize   (manually reset dev to main)
-
-# Create changelog task (if BUILDD_API_KEY is available)
-BUILDD_KEY="${BUILDD_API_KEY:-}"
-if [ -z "$BUILDD_KEY" ] && [ -f .env.local ]; then
-  BUILDD_KEY=$(grep '^BUILDD_API_KEY=' .env.local 2>/dev/null | cut -d= -f2)
-fi
-
-if [ -n "$BUILDD_KEY" ]; then
-  echo ""
-  echo "📝 Creating changelog task for ${NEW_VERSION}..."
-  curl -s -X POST \
-    -H "Authorization: Bearer ${BUILDD_KEY}" \
-    -H "Content-Type: application/json" \
-    "https://buildd-three.vercel.app/api/tasks" \
-    -d "{
-      \"title\": \"Update CHANGELOG.md for ${NEW_VERSION}\",
-      \"description\": \"Release ${NEW_VERSION} was just created. Update CHANGELOG.md: move [Unreleased] entries into a [${VERSION}] section and verify all commits are accounted for.\",
-      \"category\": \"docs\",
-      \"priority\": 2,
-      \"context\": {
-        \"skillSlugs\": [\"changelog-generator\"],
-        \"releaseVersion\": \"${NEW_VERSION}\"
-      }
-    }" > /dev/null 2>&1 && echo "  ✅ Changelog task created" || echo "  ⚠️  Failed to create changelog task (non-fatal)"
-fi
