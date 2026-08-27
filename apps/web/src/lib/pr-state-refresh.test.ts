@@ -137,6 +137,33 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
   });
 
+  it('stamps mergedAt when webhook was missed for an externally-merged PR (pr_open + null prLastCheckedAt)', async () => {
+    // Regression: home page Waiting-on-You showed REVIEW for merged PRs because
+    // refreshStaleWorkersForWorkspaces was never called before openPrWorkers query.
+    // This verifies the refresh correctly stamps workers whose merge webhook was dropped.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-missed', prNumber: 1826, workspaceId: 'ws1', taskId: 'task-missed' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({
+      state: 'closed',
+      merged: true,
+      merged_at: '2026-08-27T07:00:00Z',
+    });
+
+    const setMock = makeSetMock();
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mergedAt: expect.any(Date),
+        prLifecycleStatus: 'merged',
+        prLastCheckedAt: expect.any(Date),
+      }),
+    );
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed');
+  });
+
   it('stamps closed status on closed-unmerged PR', async () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 99, workspaceId: 'ws1', taskId: 'task1' },

@@ -13,6 +13,7 @@ import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
 import type { ResolvedEscalationItem } from '@/lib/action-queue';
+import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
@@ -701,6 +702,13 @@ export default async function HomePage({
               suggestedByTaskId: ps.suggestedByTaskId,
             };
           });
+
+        // Read-through PR state refresh: catch missed merge webhooks before
+        // querying openPrWorkers so externally-merged PRs are excluded from the
+        // Waiting on You queue on this render rather than the next.
+        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
+          console.error('[home] pr-state-refresh failed (non-fatal):', err),
+        );
 
         // Escalation inbox (BT-15) + agent-review lease detection
         {
