@@ -10,7 +10,7 @@ import {
   type IntensityResult,
   type IntensityTier,
 } from '@/lib/task-presentation';
-import { StageChip, deriveStage } from '@/components/StageChip';
+import { StageChip, deriveStage, type Stage } from '@/components/StageChip';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import type { LoopState } from '@buildd/shared';
@@ -64,6 +64,13 @@ export interface TaskCardProps {
 
   /** Exit condition type from loopConfig — passed to StageChip for 'WAITING · MERGE' rendering. */
   loopExitConditionType?: string | null;
+
+  /**
+   * Override the internally derived stage. Callers with policy/reviewer context
+   * (e.g. CondensedTimeline) use this to show REVIEWING instead of OPEN when an
+   * agent review is in progress.
+   */
+  stageOverride?: Stage | null;
 
   density: 'full' | 'row' | 'inline';
 
@@ -193,6 +200,7 @@ export function TaskCard({
   currentAction,
   taskType,
   loopExitConditionType,
+  stageOverride,
   density,
   groupScoped = false,
 }: TaskCardProps) {
@@ -201,7 +209,7 @@ export function TaskCard({
   const stale = isStaleWorker(workerStatus, workerUpdatedAt, now);
 
   const isBlocked = (chain?.blockedBy?.length ?? 0) > 0;
-  const stage = deriveStage({
+  const stage = stageOverride ?? deriveStage({
     taskStatus,
     workerStatus,
     prUrl,
