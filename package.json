@@ -11,7 +11,7 @@
     "type-check": "cd apps/web && bunx tsc --noEmit",
     "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
-    "test:all": "bun test",
+    "test:all": "bun run scripts/run-unit-tests.ts",
     "test:integration": "bun test --env-file tests/.env.test apps/web/tests/integration/ apps/runner/__tests__/integration*",
     "test:e2e": "bun test --env-file tests/.env.test tests/e2e/",
     "test:cleanup": "BUILDD_TEST_SERVER=${BUILDD_TEST_SERVER:-http://localhost:3000} bun run tests/cleanup.ts",

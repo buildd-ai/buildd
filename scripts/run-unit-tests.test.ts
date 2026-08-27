@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  selectTestFiles,
   extractFailureDigest,
   formatFailureSummary,
   getTestConcurrency,
@@ -19,6 +20,42 @@ describe('isUnitTestFile', () => {
   it('excludes integration and e2e tests', () => {
     expect(isUnitTestFile('apps/web/tests/integration/tasks.test.ts')).toBe(false);
     expect(isUnitTestFile('tests/e2e/dashboard.test.ts')).toBe(false);
+  });
+});
+
+describe('selectTestFiles', () => {
+  const discovered = [
+    'apps/web/src/lib/a.test.ts',
+    'apps/web/src/lib/b.test.ts',
+    'packages/core/__tests__/c.test.ts',
+  ];
+
+  it('falls back to discovery when no files are named', () => {
+    expect(selectTestFiles([], discovered)).toEqual(discovered);
+  });
+
+  it('uses the explicitly named files, sorted', () => {
+    expect(selectTestFiles(['apps/web/src/lib/b.test.ts', 'apps/web/src/lib/a.test.ts'], discovered))
+      .toEqual(['apps/web/src/lib/a.test.ts', 'apps/web/src/lib/b.test.ts']);
+  });
+
+  it('drops named paths that are not unit tests', () => {
+    // CI passes affected-tests.sh output straight through; an integration or e2e
+    // path in that list must not be pulled into the unit run.
+    expect(selectTestFiles(
+      ['apps/web/src/lib/a.test.ts', 'tests/e2e/dashboard.test.ts', 'apps/web/tests/integration/x.test.ts'],
+      discovered,
+    )).toEqual(['apps/web/src/lib/a.test.ts']);
+  });
+
+  it('deduplicates repeated paths', () => {
+    expect(selectTestFiles(['apps/web/src/lib/a.test.ts', 'apps/web/src/lib/a.test.ts'], discovered))
+      .toEqual(['apps/web/src/lib/a.test.ts']);
+  });
+
+  it('ignores the ALL and SKIP sentinels affected-tests.sh emits', () => {
+    expect(selectTestFiles(['ALL'], discovered)).toEqual(discovered);
+    expect(selectTestFiles(['SKIP'], discovered)).toEqual([]);
   });
 });
 

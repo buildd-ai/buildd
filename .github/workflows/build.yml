@@ -107,20 +107,24 @@ jobs:
           AFFECTED=$(bash scripts/affected-tests.sh)
           echo "tests=$AFFECTED" >> "$GITHUB_OUTPUT"
 
+      # Always via scripts/run-unit-tests.ts, which runs each file in its OWN
+      # process. `bun test <many files>` shares one process, and `mock.module`
+      # replaces a module globally for that process' lifetime with no way to undo
+      # it -- so one file's partial stub deletes another file's imports, and
+      # which file dies depends on load order. That is what made this step fail
+      # on a set of tests that every developer saw pass locally. The runner also
+      # writes .test-report.log and prints a digest of failing files last.
       - name: Run tests
         if: steps.affected.outputs.tests != 'SKIP'
-        timeout-minutes: 5
+        timeout-minutes: 10
+        env:
+          BUILDD_TEST_CONCURRENCY: 8
         run: |
           TESTS="${{ steps.affected.outputs.tests }}"
-          if [ "$TESTS" = "ALL" ]; then
-            echo "Running web tests..."
-            bun test --only-failures apps/web/src
-            echo "Running runner tests..."
-            bun test --only-failures apps/runner/__tests__/unit
-          else
-            echo "Running affected tests: $TESTS"
-            bun test --only-failures $TESTS
-          fi
+          echo "Affected: $TESTS"
+          # ALL and SKIP are sentinels the script understands; a file list is
+          # passed through and filtered to unit tests.
+          bun run scripts/run-unit-tests.ts $TESTS
 
       - name: Build
         run: cd apps/web && bun run build:only

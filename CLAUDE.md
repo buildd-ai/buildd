@@ -139,11 +139,17 @@ See `docs/credentials-architecture.md` for the full spec, scoping precedence, an
 **Running tests:**
 ```bash
 bun test                                    # All unit tests (routes + runner + core)
-bun test apps/web/src/app/api/...           # Specific route test
-bun test apps/runner/__tests__/unit/        # Runner unit tests
+bun run scripts/run-unit-tests.ts <file>    # Specific file(s)
 bun run test:integration                    # Integration tests (live server)
 bun run test:e2e                            # E2E tests (full stack)
 ```
+
+`bun test` runs `scripts/run-unit-tests.ts`, which spawns **one process per test
+file**. Do NOT run `bun test <dir>` or `bun test <many files>` directly:
+`mock.module` replaces a module globally for the process and is never undone, so
+in a shared process one file's stub deletes another file's imports and the
+failures you get depend on load order. See `docs/testing.md` → "Running Unit
+Tests — Always Isolated".
 
 **On failure:** `bun test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
 ```bash
