@@ -855,6 +855,13 @@
       "when": 1787827688346,
       "tag": "0121_flat_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1787828970070,
+      "tag": "0122_giant_landau",
+      "breakpoints": true
     }
   ]
 }

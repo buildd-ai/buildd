@@ -104,7 +104,7 @@ function safeDecrypt(value: string): string | null {
 export async function getTeamPreferences(teamId: string): Promise<Record<NotifyEvent, boolean>> {
   const row = await db.query.notificationPreferences.findFirst({
     where: eq(notificationPreferences.teamId, teamId),
-    columns: { taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true },
+    columns: { taskClaimed: true, taskCompleted: true, taskFailed: true, credentialExpired: true, connectorBlocked: true },
   });
   if (!row) return { ...DEFAULT_NOTIFICATION_PREFERENCES };
   return {
@@ -112,6 +112,7 @@ export async function getTeamPreferences(teamId: string): Promise<Record<NotifyE
     taskCompleted: row.taskCompleted,
     taskFailed: row.taskFailed,
     credentialExpired: row.credentialExpired,
+    connectorBlocked: row.connectorBlocked,
   };
 }
 
@@ -268,6 +269,7 @@ export async function setTeamPreferences(
       taskCompleted: merged.taskCompleted,
       taskFailed: merged.taskFailed,
       credentialExpired: merged.credentialExpired,
+      connectorBlocked: merged.connectorBlocked,
       createdAt: now,
       updatedAt: now,
     })
@@ -278,6 +280,7 @@ export async function setTeamPreferences(
         taskCompleted: merged.taskCompleted,
         taskFailed: merged.taskFailed,
         credentialExpired: merged.credentialExpired,
+        connectorBlocked: merged.connectorBlocked,
         updatedAt: now,
       },
     });
