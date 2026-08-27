@@ -32,7 +32,19 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// Spread the real module rather than returning a bare `{ listInstallationRepos }`.
+// `mock.module` replaces the module GLOBALLY for the whole test process and is
+// never undone by `mock.restore()`, so a partial stub deletes every other export
+// for any file that loads later in the same run. That is order-dependent and
+// therefore invisible locally: CI batches this file with pr-state-refresh /
+// pr-state-reconcile (both `import { githubApi } from '@/lib/github'`) and they
+// died at import with "Export named 'githubApi' not found".
+// `@buildd/core/db` is already mocked above, so importing the real module here
+// touches nothing but env reads.
+const actualGithub = await import('@/lib/github');
+
 mock.module('@/lib/github', () => ({
+  ...actualGithub,
   listInstallationRepos: (installationId: number) => {
     listedFor.push(installationId);
     return Promise.resolve(ghRepos);
@@ -129,8 +141,22 @@ describe('syncInstallationRepos', () => {
     expect(repoNormalizer).not.toMatch(/like/i);
   });
 
-  it('only ever back-links workspaces that have no repo yet', () => {
-    expect(backLinkStatement).toContain('w.github_repo_id IS NULL');
+  it('re-links workspaces that already have a repo, so a reinstall refreshes them', () => {
+    // Regression (2026-08-22 freeze): the old predicate was
+    // `AND w.github_repo_id IS NULL`, so an App reinstall never refreshed
+    // github_installation_id on an already-linked workspace. The workspace kept
+    // pointing at the dead installation, whose token 404s on every repo call —
+    // freezing all PR lifecycle state and deadlocking the claim queue.
+    expect(backLinkStatement).not.toContain('w.github_repo_id IS NULL');
+  });
+
+  it('writes only when the workspace pointers actually differ', () => {
+    // Keeps the UPDATE idempotent and keeps RETURNING (→ linkedWorkspaceIds)
+    // meaning "changed", not "matched", so a no-op webhook reports linked: 0.
+    expect(backLinkStatement).toContain('w.github_repo_id IS DISTINCT FROM r.id');
+    expect(backLinkStatement).toContain(
+      'w.github_installation_id IS DISTINCT FROM r.installation_id',
+    );
   });
 
   it('scopes the back-link to the given installation', () => {
