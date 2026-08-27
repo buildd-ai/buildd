@@ -129,8 +129,22 @@ describe('syncInstallationRepos', () => {
     expect(repoNormalizer).not.toMatch(/like/i);
   });
 
-  it('only ever back-links workspaces that have no repo yet', () => {
-    expect(backLinkStatement).toContain('w.github_repo_id IS NULL');
+  it('re-links workspaces that already have a repo, so a reinstall refreshes them', () => {
+    // Regression (2026-08-22 freeze): the old predicate was
+    // `AND w.github_repo_id IS NULL`, so an App reinstall never refreshed
+    // github_installation_id on an already-linked workspace. The workspace kept
+    // pointing at the dead installation, whose token 404s on every repo call —
+    // freezing all PR lifecycle state and deadlocking the claim queue.
+    expect(backLinkStatement).not.toContain('w.github_repo_id IS NULL');
+  });
+
+  it('writes only when the workspace pointers actually differ', () => {
+    // Keeps the UPDATE idempotent and keeps RETURNING (→ linkedWorkspaceIds)
+    // meaning "changed", not "matched", so a no-op webhook reports linked: 0.
+    expect(backLinkStatement).toContain('w.github_repo_id IS DISTINCT FROM r.id');
+    expect(backLinkStatement).toContain(
+      'w.github_installation_id IS DISTINCT FROM r.installation_id',
+    );
   });
 
   it('scopes the back-link to the given installation', () => {

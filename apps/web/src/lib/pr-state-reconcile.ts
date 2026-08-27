@@ -1,6 +1,5 @@
 import { db } from '@buildd/core/db';
 import {
-  githubInstallations,
   missions,
   tasks,
   workers,
@@ -8,6 +7,10 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi as _githubApi } from '@/lib/github';
+import {
+  WORKSPACE_INSTALLATION_WITH,
+  pickWorkspaceInstallationId,
+} from '@/lib/workspace-installation';
 
 export interface PrStateFix {
   workerId: string;
@@ -61,15 +64,15 @@ export async function reconcileWorkerPrState(
   const workspaceIds = [...new Set(workerRows.map((w) => w.workspaceId))];
   const installationByWorkspace = new Map<string, number>();
   if (workspaceIds.length > 0) {
-    const rows = await db
-      .select({
-        workspaceId: workspaces.id,
-        installationId: githubInstallations.installationId,
-      })
-      .from(workspaces)
-      .innerJoin(githubInstallations, eq(githubInstallations.id, workspaces.githubInstallationId))
-      .where(inArray(workspaces.id, workspaceIds));
-    for (const r of rows) installationByWorkspace.set(r.workspaceId, r.installationId);
+    const rows = await db.query.workspaces.findMany({
+      where: inArray(workspaces.id, workspaceIds),
+      columns: { id: true },
+      with: WORKSPACE_INSTALLATION_WITH,
+    });
+    for (const r of rows) {
+      const installationId = pickWorkspaceInstallationId(r);
+      if (installationId) installationByWorkspace.set(r.id, installationId);
+    }
   }
 
   for (const worker of workerRows) {
