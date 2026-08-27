@@ -10,7 +10,8 @@ export type Stage =
   | 'QUEUED'
   | 'RUNNING'
   | 'WAITING_INPUT'
-  | 'REVIEW'
+  | 'REVIEWING'   // agent review is in progress (caller must set explicitly)
+  | 'OPEN'        // PR open, no active gate
   | 'CI'
   | 'MERGE'
   | 'VERIFY'
@@ -32,6 +33,8 @@ export interface StageInput {
 /**
  * Derive a Stage from task + worker state.
  * Single source of truth — callers must not fork this logic.
+ * Returns OPEN (not REVIEWING) for completed+open-PR; callers with policy
+ * context should override to REVIEWING when an agent review is in progress.
  */
 export function deriveStage(input: StageInput): Stage {
   const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked } = input;
@@ -51,7 +54,7 @@ export function deriveStage(input: StageInput): Stage {
     const isClosed = prLifecycleStatus === 'closed';
     if (isMerged || isClosed) return 'DONE';
     if (prLifecycleStatus === 'ci_running') return 'CI';
-    return 'REVIEW';
+    return 'OPEN';
   }
 
   if (taskStatus === 'completed') return 'DONE';
@@ -67,24 +70,29 @@ export function deriveStage(input: StageInput): Stage {
 
 interface ChipConfig {
   label: string;
-  /** filled = bg-color text-white; outlined = border + text only */
-  variant: 'filled' | 'outlined' | 'muted';
+  /**
+   * filled = solid bg, white text (urgent/active states)
+   * soft   = 10% opacity bg, colored text, no border (informational states)
+   * muted  = text only, no bg/border (terminal/quiet states)
+   */
+  variant: 'filled' | 'soft' | 'muted';
   colorCls: string;
   pulse?: boolean;
 }
 
 const STAGE_CONFIG: Record<Stage, ChipConfig> = {
-  BLOCKED:      { label: 'Blocked',     variant: 'filled',   colorCls: 'bg-status-warning text-white' },
-  QUEUED:       { label: 'Queued',      variant: 'muted',    colorCls: 'text-text-muted border-border-default' },
-  RUNNING:      { label: 'Running',     variant: 'filled',   colorCls: 'bg-status-running text-white', pulse: true },
-  WAITING_INPUT:{ label: 'Needs Input', variant: 'filled',   colorCls: 'bg-status-warning text-white' },
-  REVIEW:       { label: 'Review',      variant: 'outlined', colorCls: 'text-status-info border-status-info' },
-  CI:           { label: 'CI',          variant: 'outlined', colorCls: 'text-status-info border-status-info' },
-  MERGE:        { label: 'Merge',       variant: 'outlined', colorCls: 'text-accent-text border-accent' },
-  VERIFY:       { label: 'Verify',      variant: 'outlined', colorCls: 'text-status-warning border-status-warning' },
-  DONE:         { label: 'Done',        variant: 'muted',    colorCls: 'text-status-success border-status-success' },
-  FAILED:       { label: 'Failed',      variant: 'filled',   colorCls: 'bg-status-error text-white' },
-  CANCELLED:    { label: 'Cancelled',   variant: 'muted',    colorCls: 'text-text-muted border-border-default' },
+  BLOCKED:      { label: 'Blocked',    variant: 'filled', colorCls: 'bg-status-warning text-white' },
+  QUEUED:       { label: 'Queued',     variant: 'muted',  colorCls: 'text-text-muted' },
+  RUNNING:      { label: 'Running',    variant: 'filled', colorCls: 'bg-status-running text-white', pulse: true },
+  WAITING_INPUT:{ label: 'Needs Input',variant: 'filled', colorCls: 'bg-status-warning text-white' },
+  REVIEWING:    { label: 'Reviewing',  variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
+  OPEN:         { label: 'Open',       variant: 'soft',   colorCls: 'bg-accent/10 text-accent-text' },
+  CI:           { label: 'CI',         variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info' },
+  MERGE:        { label: 'Merge',      variant: 'soft',   colorCls: 'bg-accent/10 text-accent-text' },
+  VERIFY:       { label: 'Verify',     variant: 'soft',   colorCls: 'bg-status-warning/10 text-status-warning' },
+  DONE:         { label: 'Done',       variant: 'soft',   colorCls: 'bg-status-success/10 text-status-success' },
+  FAILED:       { label: 'Failed',     variant: 'filled', colorCls: 'bg-status-error text-white' },
+  CANCELLED:    { label: 'Cancelled',  variant: 'muted',  colorCls: 'text-text-muted' },
 };
 
 // ─── StageChip component ──────────────────────────────────────────────────────
@@ -102,7 +110,8 @@ export interface StageChipProps {
 
 /**
  * Canonical stage chip — the only chip implementation for task status.
- * Outlined = has a PR artifact. Filled = pre-PR, active. Muted = terminal.
+ * filled = active/urgent (pre-PR). soft = informational (has PR artifact). muted = terminal/quiet.
+ * No border treatment on any variant — badges, not buttons.
  */
 export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, loopMaxLoops, loopExitConditionType }: StageChipProps) {
   // Loop chip overrides stage chip when the loop is in flight
@@ -121,7 +130,7 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
   // Scheduled start overrides QUEUED label
   if (stage === 'QUEUED' && startAt && new Date(startAt).getTime() > Date.now()) {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border text-status-info border-status-info shrink-0">
+      <span className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide bg-status-info/10 text-status-info shrink-0">
         Starts {new Date(startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
       </span>
     );
@@ -138,18 +147,19 @@ export function StageChip({ stage, prNumber, startAt, loopIteration, loopState, 
     );
   }
 
-  if (cfg.variant === 'outlined') {
+  if (cfg.variant === 'soft') {
     return (
-      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border shrink-0 ${cfg.colorCls}`}>
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
+        {cfg.pulse && <span className="w-1.5 h-1.5 bg-current animate-status-pulse flex-shrink-0" />}
         {cfg.label}
         {prNumber && <span className="opacity-70">#{prNumber}</span>}
       </span>
     );
   }
 
-  // muted
+  // muted — text only, no bg/border
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide border shrink-0 ${cfg.colorCls}`}>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide shrink-0 ${cfg.colorCls}`}>
       {cfg.label}
     </span>
   );

@@ -37,6 +37,7 @@ import { missionNotHeld } from './held-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { buildSubjectPriorWork } from './subject-prior-work';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
+import { notifyConnectorBlocked } from './connector-block-notify';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -537,6 +538,8 @@ export async function POST(req: NextRequest) {
   const connectorMismatchTaskIds = new Set<string>();
   // Per-task typed failures used in the 422 response for explicit taskId claims.
   const taskConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
+  // Subset of taskConnectorFailures: only failures on task.requiredConnectors (for notifications).
+  const taskRequiredConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
   // Advisory-mode: connectors that failed but are not hard-required. Keyed by taskId.
   const taskDegradedConnectors = new Map<string, Array<{ id: string; name: string; failureMode: string }>>();
   {
@@ -823,6 +826,15 @@ export async function POST(req: NextRequest) {
               console.log(
                 `[claim] Skipped task ${pair.taskId} (${reason}): role ${pair.roleSlug} has connector issues [${detail}] in workspace ${pair.taskWorkspaceId}`,
               );
+              // Track required-connector failures for notifications. If the task has
+              // explicit requiredConnectors, only track failures on those IDs so the
+              // alert is specific to what the task declared as mandatory.
+              if (requiredConnectors?.length) {
+                const requiredFailures = failures.filter(f => requiredConnectors.includes(f.connectorId));
+                if (requiredFailures.length > 0) {
+                  taskRequiredConnectorFailures.set(pair.taskId, requiredFailures);
+                }
+              }
             }
           }
         }
@@ -847,6 +859,54 @@ export async function POST(req: NextRequest) {
         { status: 422 },
       );
     }
+  }
+
+  // ── Connector-block notifications (fire-and-forget) ──────────────────────
+  // For tasks blocked due to required-connector failures, notify the owning team
+  // the first time the block is detected. Dedup is tracked via
+  // task.context.connectorBlockNotifiedAt so a retry claim does not re-alert.
+  // Errors are swallowed — notifications must never delay the claim response.
+  if (taskRequiredConnectorFailures.size > 0) {
+    const notifyNow = new Date();
+    const notifyOps: Promise<void>[] = [];
+    for (const [blockedTaskId, reqFailures] of taskRequiredConnectorFailures) {
+      const blockedTask = filteredTasks.find(t => t.id === blockedTaskId);
+      if (!blockedTask) continue;
+      const teamId = (blockedTask as any).workspace?.teamId as string | undefined;
+      if (!teamId) continue;
+      const taskContext = (blockedTask.context as Record<string, unknown> | null) ?? {};
+      const alreadySent = !!taskContext.connectorBlockNotifiedAt;
+      notifyOps.push(
+        notifyConnectorBlocked(
+          {
+            teamId,
+            taskTitle: blockedTask.title,
+            workspaceName: ((blockedTask as any).workspace?.name as string | undefined) ?? blockedTask.workspaceId,
+            roleSlug: ((blockedTask as any).roleSlug as string | null) ?? '',
+            failures: reqFailures,
+          },
+          alreadySent,
+        ).then((sent) => {
+          if (!sent) return;
+          return db
+            .update(tasks)
+            .set({
+              context: {
+                ...taskContext,
+                connectorBlockNotifiedAt: notifyNow.toISOString(),
+                // Store failures so the reminder cron can reconstruct the message.
+                connectorBlockFailures: reqFailures,
+              },
+              updatedAt: notifyNow,
+            })
+            .where(eq(tasks.id, blockedTaskId))
+            .then(() => {});
+        }).catch((err) => {
+          console.warn(`[claim] connector-block notify failed for task ${blockedTaskId}:`, err);
+        }),
+      );
+    }
+    Promise.all(notifyOps).catch(() => {});
   }
 
   // Compute router inputs once per claim request. The router is pure; the

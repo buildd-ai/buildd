@@ -17,6 +17,10 @@
     {
       "path": "/api/cron/lease-expiry-guard",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/connector-block-notify",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

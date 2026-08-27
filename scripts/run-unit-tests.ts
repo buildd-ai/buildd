@@ -12,6 +12,29 @@ export function isUnitTestFile(path: string): boolean {
   );
 }
 
+/**
+ * Sentinels emitted by scripts/affected-tests.sh instead of a file list.
+ * ALL  → the change is broad enough to warrant the whole suite.
+ * SKIP → nothing testable changed.
+ */
+const ALL_SENTINEL = 'ALL';
+const SKIP_SENTINEL = 'SKIP';
+
+/**
+ * Resolves the files to run: an explicit list when CI names one, otherwise
+ * everything discovered.
+ *
+ * Non-unit paths are dropped rather than trusted — CI pipes
+ * affected-tests.sh output straight in, and an integration or e2e path in that
+ * list would be run here without its live server or env file.
+ */
+export function selectTestFiles(named: readonly string[], discovered: readonly string[]): string[] {
+  if (named.includes(SKIP_SENTINEL)) return [];
+  const explicit = named.filter(arg => arg !== ALL_SENTINEL);
+  if (explicit.length === 0) return [...discovered];
+  return [...new Set(explicit.filter(isUnitTestFile))].sort();
+}
+
 async function discoverUnitTests(): Promise<string[]> {
   const files: string[] = [];
   for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
@@ -163,7 +186,17 @@ export function formatFailureSummary(
 }
 
 async function main(): Promise<void> {
-  const files = await discoverUnitTests();
+  // Every file runs in its OWN process. That is load-bearing, not an
+  // optimisation: `mock.module` replaces a module globally for the life of a
+  // process and is never undone, so a single-process run lets one file's stub
+  // delete another file's imports. Which file breaks then depends on load
+  // order, which is why single-process runs report a rotating set of failures
+  // that all pass individually. Keep CI pointed at this script.
+  const files = selectTestFiles(Bun.argv.slice(2), await discoverUnitTests());
+  if (files.length === 0) {
+    console.log('No unit test files selected.');
+    return;
+  }
   const concurrency = getTestConcurrency(process.env.BUILDD_TEST_CONCURRENCY);
   const failures: TestResult[] = [];
   let passed = 0;

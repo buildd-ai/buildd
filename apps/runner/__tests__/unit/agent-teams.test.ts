@@ -119,6 +119,17 @@ mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: mockSyncSkillToLocal,
 }));
 
+// Without this, WorkerManager's constructor runs scanEnvironment() for real —
+// spawning execSync probes for ~18 tools plus browser detection. That's slow
+// and CI-load-dependent, which is what pushed this suite past its timeout.
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [], mcp: [], mcpServers: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'test' }, scannedAt: new Date(0).toISOString() }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
+  checkBwrapSupport: () => true,
+}));
+
 const { WorkerManager } = await import('../../src/workers');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

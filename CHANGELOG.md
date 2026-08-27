@@ -7,32 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
 
-- Recipe concept from frontend, onboarding checklist, mission config, and integration tests (#804)
+## [0.180.0] - 2026-08-27
 
 ### Changed
 
-- Cross-page visual consistency pass across web app (#1063)
 - Reframe `create_task` pending status as queued with `get_task` hint
-- Bump @anthropic-ai/claude-agent-sdk to ^0.3.179 (#861)
-- Bump @anthropic-ai/claude-agent-sdk to ^0.3.177 (#820)
+
+### Added
+
+- Initiative verdict derivation — motion ladder + confidence for surface IA (#1707)
+- Concurrency cap UX — queue messaging, one-time cap override, raise-limit stepper, MCP exposure (#1675)
+- Execution attempt nesting — CI retries and reviewer runs nest under parent task in Activity and mission progress (#1674)
+- Subagent span persistence at worker completion; expose backgroundAgentMs for mission agent-time (#1656)
+- Serialize concurrent agents to prevent PR collisions in orchestrator
+- Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
+- Connect Claude card with copy-paste connector setup in settings
+- claude.ai connector via workspace-scoped MCP OAuth
+- Make routines discoverable via trigger/worker tokens in MCP
+- `get_skill` action to read full skill body by slug via MCP
+
+### Fixed
+
+- MobilePageHeader right-side cluster overflows at 320pt (#1821)
+- Suppress redundant in-page h1 title on Missions, Activity, Health, and Team (#1820)
+- Budget Forecast honesty — confidence label and learning rows (#1822)
+- TeamGrid header scaling at 320pt viewport (#1819)
+- Initiative thrash count: pass task mode to deriveTaskType correctly (#1709)
+- Spawned builder tasks count as deliverables, not attempts (#1706)
+- Runner writes .credentials.json in the shape Claude Code expects (#1682)
+- Budget reset-time parser honours timezone and stops rollover overshoot (#1681)
+- Task page crash on label-stripped milestones (#1680)
+- Activity feed NULLS-FIRST ordering + archived missions filling limit (re-fix)
+- Auto-link githubRepoId when updating workspace repoUrl via API
+- Scoped claim circuit breaker prevents Pusher-driven burn loop
+- Use task terminology on task creation page
+- Remove task CTA from no-agents state on home page
+- Add New Mission CTA to home page, simplify no-agents text
+- Restore "Create a task" CTA on home page
+- Simplify "no agents running" message on home page
+
+### CI
+
+- Visual QA PR runs label-gated behind 'visual-qa' label
+- Dump runner/server logs on E2E failure for diagnosis
+
+### Docs
+
+- Add Missions section to CLAUDE.md
+## [0.168.0] - 2026-08-16
 
 ### Added
 
 - Activity grouping model — StageChip, GroupSection, DependencyRail, MissionProgressBar components (#1699)
-- Initiative verdict derivation — motion ladder + confidence for surface IA (#1707)
+
+### Changed
+
+- Initiative effort loader consolidated into single shared path (#1701)
+
+### Fixed
+
+- NOT_EVALUATED verdict for description criteria; fix all_prs_merged default (#1705)
+- Reopen completed mission when open work is added (latch fix) (#1704)
+- Connector token aud validated against declared resource identifier (#1703)
+- computeMissionProgress no longer collapses execution-mode tasks (#1702)
+- Attempt tasks excluded from team role stats and health usage counts (#1695)
+
+### Docs
+
+- Surface IA spec — Home, Missions, Initiatives (#1700)
+## [0.167.0] - 2026-08-15
+
+### Added
+
 - Auto-dispatch conflict-resolution task when PR has merge conflicts (#1689)
 - Dark-check detection — alert when required CI check consistently skips and bypasses merge gates (#1688)
 - Near-duplicate open task surface in MCP create_task response (#1692)
-- Concurrency cap UX — queue messaging, one-time cap override, raise-limit stepper, MCP exposure (#1675)
 - Task type badge glyph replacing title-prefix convention (#1684)
 - MCP warning when update_task material edit lands on active worker (#1686)
-- Execution attempt nesting — CI retries and reviewer runs nest under parent task in Activity and mission progress (#1674)
+
+### Changed
+
+- Activity IA controls consolidated — single chip row with initiative scope, Group dropdown removed (#1685)
+
+### Fixed
+
+- MCP validates UUID format on taskId parameters (#1694)
+- Activity Re-runs/Reviews chips match legacy attempt tasks (#1693)
+- Mission card status collapsed to one pill; removed redundant progress% and task count (#1691)
+- Dedupe large-payload alert via reportOps; server-side pagination on GET /api/tasks (#1687)
+- Deferral reasons sticky — stale badge, no re-arm, wrong mission grouping all fixed (#1683)
+- Release activeSessions seat on every terminal worker transition (#1678)
+- Replace 30s countdown with optimistic start handshake on task claim (#1677)
+## [0.166.0] - 2026-08-14
+
+### Added
+
 - Change-intent mechanism — pre-flight lock on shared surfaces (schema, migrations, lockfiles) to prevent concurrent PR collisions (#1671)
 - Read-through PR merge-state reconciliation, no cron needed (#1657, #1659, #1664)
 - Mission skyline chart replacing progress bar on completed mission cards (#1660, #1661)
-- Subagent span persistence at worker completion; expose backgroundAgentMs for mission agent-time (#1656)
 - Initiative triage surface refinements (#1654)
 - Initiative triage surface with effort sparklines: SparklineBar component, /api/initiatives/effort endpoint, InitiativeTriageRow and InitiativeTriage components (#1647, #1648, #1649, #1650)
 - Tier-first ModelPicker replacing hardcoded model selects (#1599)
@@ -44,74 +117,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gate direct credential refresh loops behind BUILDD_ALLOW_CONTROL_PLANE_REFRESH flag (#1621)
 - runner/credential-refresh control-plane endpoint (#1617)
 - merge_pr + get_pr MCP actions with GitHub App merge 403 fix (#1612)
-- GET /api/models route with Anthropic model list (#1598)
-- Recency signals on missions/initiatives landing page (#1593)
-- enforceGreenCI workspace policy + mergeable_state check (#1571)
-- Priority indicator on mission cards, move detail header to inline edit (#1569)
-- Flatten mission Settings IA, fix contrast on mission config panel (#1568)
-- Initiative-mission linkage UI (#1567)
-- Add per-task CBM observability metrics (#1559)
-- Enforce codebase-memory MCP as default across all repo-backed roles (#1555, #1556)
-- Build CBM index during worker bootstrap (#1551)
-- Subject anchors 6/7 — dead-PR shutdown behind autoCloseBuilddSupersededPrs flag (#1507)
-- Subject anchors 5/7 — reconciliation sweep and pre-claim liveness gate (#1506)
-- Surface 403 GitHub App permission gap as connector_permission_insufficient (#1501)
-- Add status badge to Activity feed rows (#1377)
-- Infer pathManifest on friction tasks at creation time (#1380)
-- Mount TaskCard across Home, Activity, and Mission timeline with consistent chain, health, and worker data (#1309)
-- Work-tracker outbound dispatch for GitHub issues via GitHub App — closes linked issues and posts completion comments without a separate connector (#1201)
-- Serialize concurrent agents to prevent PR collisions in orchestrator
-- Missions 'Awaiting review' group + 24h auto-archive for done missions (#1065)
-- Schedules section on Health page with duplicate-cron detection (#1061)
-- Pluggable AgentBackend abstraction with Claude and Codex support (#826)
-- Back api-key auth and account-workspace cache with Redis L2 (#821)
-- Capture agent error traces from tool output (#780)
-- `/respond` landing page + render needs-input banner on failed workers (#763)
-- Agent-facing task observability — `get_task` action + OAuth artifact reads via MCP
-- Connect Claude card with copy-paste connector setup in settings
-- claude.ai connector via workspace-scoped MCP OAuth
-- Make routines discoverable via trigger/worker tokens in MCP
-- `get_skill` action to read full skill body by slug via MCP
-- Emit per-minute liveness heartbeat to runner stdout (#709)
-- Add missionId filter to list_artifacts MCP action (#696)
-- Share a single branch + PR across mission tasks (#698)
-- Per-mission maxConcurrentTasks to cap seat consumption (#695)
-- Surface seat utilization and deferral reasons in missions UI (#694)
-- Seat-aware priority scheduling for cron scheduler (#693)
-- Make active hours opt-in and rename to Quiet Hours (#692)
-- Smart model routing + release-free model upgrades (#684)
-- AI feedback buttons with memory integration (#681)
-- Team badges on mission cards + remember last team (#528)
 
 ### Changed
 
-- Initiative effort loader consolidated into single shared path (#1701)
-- Activity IA controls consolidated — single chip row with initiative scope, Group dropdown removed (#1685)
 - Memory recall unified across memory and task corpus; legacy summary corpus cleaned (#1670)
 - Replace InitiativesStrip double-render with InitiativeTriage surface (#1650)
 - Health page signal-first restructure, remove Watched Projects section (#1578)
 - Remove server-side claim-gate refresh; runner is now sole credential refresh origin (#1622)
-- Bump @anthropic-ai/claude-agent-sdk to ^0.2.119 (#708)
 
 ### Fixed
 
-- Initiative thrash count: pass task mode to deriveTaskType correctly (#1709)
-- Spawned builder tasks count as deliverables, not attempts (#1706)
-- NOT_EVALUATED verdict for description criteria; fix all_prs_merged default (#1705)
-- Reopen completed mission when open work is added (latch fix) (#1704)
-- Connector token aud validated against declared resource identifier (#1703)
-- computeMissionProgress no longer collapses execution-mode tasks (#1702)
-- Attempt tasks excluded from team role stats and health usage counts (#1695)
-- MCP validates UUID format on taskId parameters (#1694)
-- Activity Re-runs/Reviews chips match legacy attempt tasks (#1693)
-- Mission card status collapsed to one pill; removed redundant progress% and task count (#1691)
-- Dedupe large-payload alert via reportOps; server-side pagination on GET /api/tasks (#1687)
-- Deferral reasons sticky — stale badge, no re-arm, wrong mission grouping all fixed (#1683)
-- Runner writes .credentials.json in the shape Claude Code expects (#1682)
-- Budget reset-time parser honours timezone and stops rollover overshoot (#1681)
-- Task page crash on label-stripped milestones (#1680)
-- Release activeSessions seat on every terminal worker transition (#1678)
-- Replace 30s countdown with optimistic start handshake on task claim (#1677)
 - Retry workers resume existing branch instead of cutting a fresh one (#1667)
 - PR live-refresh: stamp prLastCheckedAt, log errors, cap and dedup concurrent refreshes (#1665)
 - Promote task to completed when heartbeat-expired worker has delivered a PR (#1594)
@@ -124,72 +139,259 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Goal criteria rows now show descriptions and are tappable on mobile (#1623)
 - Content-hash dedup for PR corpus to eliminate cross-PR near-duplicates (#1618)
 - Runner CBM memory budget bumped from 512 to 1024 MB (#1613)
+## [0.163.0] - 2026-08-09
+
+### Added
+
+- GET /api/models route with Anthropic model list (#1598)
+- Recency signals on missions/initiatives landing page (#1593)
+
+### Fixed
+
 - Initiative status uses DB lifecycle, not rollup from mission counts (#1596)
+## [0.162.0] - 2026-08-06
+
+### Added
+
+- enforceGreenCI workspace policy + mergeable_state check (#1571)
+- Priority indicator on mission cards, move detail header to inline edit (#1569)
+- Flatten mission Settings IA, fix contrast on mission config panel (#1568)
+- Initiative-mission linkage UI (#1567)
+- Add per-task CBM observability metrics (#1559)
+- Enforce codebase-memory MCP as default across all repo-backed roles (#1555, #1556)
+- Build CBM index during worker bootstrap (#1551)
+
+### Fixed
+
 - Define ack/dismiss actions in activity feed, add swipe affordance, and declutter rows (#1563)
 - Eliminate trailing-action / ⋯ menu overlap in SwipeableRow (#1558)
 - Resolve PR merge "Not Found" via githubRepos path, guard against workspace ambiguity (#1557)
+## [0.157.0] - 2026-07-30
+
+### Added
+
+- Subject anchors 6/7 — dead-PR shutdown behind autoCloseBuilddSupersededPrs flag (#1507)
+- Subject anchors 5/7 — reconciliation sweep and pre-claim liveness gate (#1506)
+
+### Fixed
+
 - Update @openai/codex-sdk to ^0.146.0 (#1505)
+## [0.155.0] - 2026-07-26
+
+### Added
+
+- Surface 403 GitHub App permission gap as connector_permission_insufficient (#1501)
+
+### Fixed
+
 - Terminate agent review leases safely (#1487)
+## [0.149.0] - 2026-07-22
+
+### Added
+
+- Add status badge to Activity feed rows (#1377)
+- Infer pathManifest on friction tasks at creation time (#1380)
+
+### Fixed
+
 - Scope MCP list_tasks and openclaw fetches to active/workspace (#1386)
 - Scope GET /api/tasks by workspace and status (#1386)
 - Closed PRs no longer block dependent tasks or overlap-guard siblings (#1384)
+## [0.140.0] - 2026-07-19
+
+### Added
+
+- Mount TaskCard across Home, Activity, and Mission timeline with consistent chain, health, and worker data (#1309)
+
+### Fixed
+
 - Suppress schedule countdown and ON SCHEDULE badge for manual-mode missions (#1312)
 - Decouple Codex-backend workers from Claude OAuth token to prevent cross-backend auth failures (#1308)
 - Use refresh grant to verify Codex OAuth credentials instead of GET /v1/models (#1305)
 - Runner worktree disambiguation and split claim error messages (#1304)
+
+### CI
+
+- Remove deprecated spec-sync workflow — knowledge-ingest supersedes it (#1311)
+## [0.134.2] - 2026-07-16
+
+### Fixed
+
 - Deduplicate code corpus during knowledge ingest with hash-skip and backfill enqueue guard (#1220)
+## [0.134.0] - 2026-07-13
+
+### Added
+
+- Work-tracker outbound dispatch for GitHub issues via GitHub App — closes linked issues and posts completion comments without a separate connector (#1201)
+## [0.126.2] - 2026-07-09
+
+### Fixed
+
 - Fix all 5 seed bugs at 390px viewport (#1105)
 - Truncate long team names in TeamSwitcher header (#1094)
-- Activity feed NULLS-FIRST ordering + archived missions filling limit (re-fix)
+## [0.124.1] - 2026-07-05
+
+### Fixed
+
 - Migration 0061 made idempotent to unblock prod deploys (#1062)
+## [0.124.0] - 2026-07-05
+
+### Changed
+
+- Cross-page visual consistency pass across web app (#1063)
+
+### Added
+
+- Missions 'Awaiting review' group + 24h auto-archive for done missions (#1065)
+- Schedules section on Health page with duplicate-cron detection (#1061)
+## [0.122.0] - 2026-06-27
+
+### Fixed
+
 - Home screen hides archived missions and caps activity feed at 50; NULLS-FIRST ordering (#1048)
 - Idle missions now visible on home screen; activity feed ordering restored (#1048)
 - Visual QA: Playwright 1.61 compat, workflow_dispatch crash, judge via buildd, prod-clone Neon (#1049)
+
+### CI
+
+- Visual QA ephemeral Neon branch clones sanitized prod data (#1049)
+## [0.119.1] - 2026-06-25
+
+### Fixed
+
 - Skip release when artifact_required is satisfied by artifact alone (#989)
+
+### CI
+
+- Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
+## [0.115.0] - 2026-06-22
+
+### CI
+
+- Pass release App private key to reusable release workflow (#923)
+## [0.108.0] - 2026-06-20
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.179 (#861)
+
+### Fixed
+
 - Fix Codex runner backend (#859)
+## [0.105.0] - 2026-06-15
+
+### Added
+
+- Pluggable AgentBackend abstraction with Claude and Codex support (#826)
+
+### Fixed
+
 - Send heartbeat on task claim to close stale-on-claim worker-kill edge (#830)
 - Full-bleed app icon across all surfaces, removing white side bars (#833)
+## [0.104.0] - 2026-06-14
+
+### Removed
+
+- Recipe concept from frontend, onboarding checklist, mission config, and integration tests (#804)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to ^0.3.177 (#820)
+
+### Added
+
+- Back api-key auth and account-workspace cache with Redis L2 (#821)
+## [0.99.0] - 2026-06-03
+
+### Added
+
+- Capture agent error traces from tool output (#780)
+## [0.98.0] - 2026-05-25
+
+### Fixed
+
 - Prevent multi-workspace OAuth misrouting (#779)
 - Require explicit workspaceId for ambiguous OAuth actions (#778)
 - Stop infinite retry loop on misrouted tasks (#777)
 - Post-store CTA pointing users to /app/health (#775)
 - Collapse Vercel "Add a token" form once a token exists (#774)
+## [0.97.1] - 2026-05-24
+
+### Fixed
+
 - Await waiting_input sync; collapsible task descriptions in runner (#765)
+## [0.97.0] - 2026-05-24
+
+### Added
+
+- `/respond` landing page + render needs-input banner on failed workers (#763)
+## [0.96.0] - 2026-05-24
+
+### Fixed
+
 - Push URL → buildd.dev + restore broken GitHub repo sync (#761)
-- Auto-link githubRepoId when updating workspace repoUrl via API
 - Make connector icons render as a square (#755)
+## [0.95.1] - 2026-05-24
+
+### Fixed
+
 - Advertise canonical buildd.dev as issuer on Vercel prod for OAuth (#753)
+## [0.95.0] - 2026-05-24
+
+### Fixed
+
 - Resolve Claude Code native binary explicitly via SDK package dir (#750)
+## [0.87.0] - 2026-04-25
+
+### Added
+
+- Emit per-minute liveness heartbeat to runner stdout (#709)
+- Add missionId filter to list_artifacts MCP action (#696)
+
+### Changed
+
+- Bump @anthropic-ai/claude-agent-sdk to ^0.2.119 (#708)
+
+### Fixed
+
 - Fix update_schedule 500 caused by raw workspaceId in PATCH body (#700)
 - Ensure bun is on PATH in launcher script for non-interactive shells (#701)
+## [0.86.0] - 2026-04-17
+
+### Added
+
+- Share a single branch + PR across mission tasks (#698)
+- Per-mission maxConcurrentTasks to cap seat consumption (#695)
+- Surface seat utilization and deferral reasons in missions UI (#694)
+- Seat-aware priority scheduling for cron scheduler (#693)
+- Make active hours opt-in and rename to Quiet Hours (#692)
+- Smart model routing + release-free model upgrades (#684)
+- AI feedback buttons with memory integration (#681)
+
+### Fixed
+
 - Dedupe concurrent /missions/:id/run into existing in-flight planner (#687)
 - Per-runner cooldown in claim route prevents burn-loop dispatch (#686)
-- Scoped claim circuit breaker prevents Pusher-driven burn loop
 - Heartbeat missions now complete instead of looping forever (#673)
-- Mark ALL working workers as error on startup, not just zero-activity ones (#623)
-- Scope secrets by workspace team to prevent cross-team leakage (#529)
-- Claim pending tasks on runner startup (#527)
-- Use task terminology on task creation page
-- Remove task CTA from no-agents state on home page
-- Add New Mission CTA to home page, simplify no-agents text
-- Restore "Create a task" CTA on home page
-- Simplify "no agents running" message on home page
 
 ### CI
 
-- Remove deprecated spec-sync workflow — knowledge-ingest supersedes it (#1311)
-- Visual QA PR runs label-gated behind 'visual-qa' label
-- Visual QA ephemeral Neon branch clones sanitized prod data (#1049)
-- Exit gracefully when DATABASE_URL is not set in knowledge ingest (#987)
-- Pass release App private key to reusable release workflow (#923)
 - Distinguish Claude quota exhaustion from real E2E failures (#688)
-- Dump runner/server logs on E2E failure for diagnosis
+## [0.69.1] - 2026-04-08
 
-### Docs
+### Fixed
 
-- Surface IA spec — Home, Missions, Initiatives (#1700)
-- Add Missions section to CLAUDE.md
+- Mark ALL working workers as error on startup, not just zero-activity ones (#623)
+## [0.59.0] - 2026-03-25
 
+### Added
+
+- Team badges on mission cards + remember last team (#528)
+
+### Fixed
+
+- Scope secrets by workspace team to prevent cross-team leakage (#529)
+- Claim pending tasks on runner startup (#527)
 ## [0.36.2] - 2026-03-11
 
 ### Fixed
@@ -822,8 +1024,212 @@ _Release PR._
 - Worker instructions, git stats tracking
 - CI workflows with auto-merge to main
 - E2E dogfood tests for dashboard dispatch, lifecycle, and concurrent limits
+[0.36.2]: https://github.com/buildd-ai/buildd/compare/v0.36.1...v0.36.2[0.36.0]: https://github.com/buildd-ai/buildd/compare/v0.35.0...v0.36.0[0.34.1]: https://github.com/buildd-ai/buildd/compare/v0.34.0...v0.34.1[0.33.0]: https://github.com/buildd-ai/buildd/compare/v0.32.1...v0.33.0[0.32.0]: https://github.com/buildd-ai/buildd/compare/v0.31.0...v0.32.0[0.30.0]: https://github.com/buildd-ai/buildd/compare/v0.29.0...v0.30.0[0.28.0]: https://github.com/buildd-ai/buildd/compare/v0.27.0...v0.28.0[0.26.0]: https://github.com/buildd-ai/buildd/compare/v0.25.0...v0.26.0[0.24.0]: https://github.com/buildd-ai/buildd/compare/v0.23.0...v0.24.0[0.22.1]: https://github.com/buildd-ai/buildd/compare/v0.22.0...v0.22.1[0.21.1]: https://github.com/buildd-ai/buildd/compare/v0.21.0...v0.21.1[0.20.0]: https://github.com/buildd-ai/buildd/compare/v0.19.0...v0.20.0[0.18.2]: https://github.com/buildd-ai/buildd/compare/v0.18.1...v0.18.2[0.18.0]: https://github.com/buildd-ai/buildd/compare/v0.17.0...v0.18.0[0.16.0]: https://github.com/buildd-ai/buildd/compare/v0.15.0...v0.16.0[0.14.0]: https://github.com/buildd-ai/buildd/compare/v0.13.0...v0.14.0[0.12.0]: https://github.com/buildd-ai/buildd/compare/v0.11.0...v0.12.0[0.10.0]: https://github.com/buildd-ai/buildd/compare/v0.9.0...v0.10.0[0.8.0]: https://github.com/buildd-ai/buildd/compare/v0.7.0...v0.8.0[0.6.0]: https://github.com/buildd-ai/buildd/compare/v0.5.0...v0.6.0[0.4.0]: https://github.com/buildd-ai/buildd/compare/v0.3.2...v0.4.0[0.3.1]: https://github.com/buildd-ai/buildd/compare/v0.3.0...v0.3.1[0.2.0]: https://github.com/buildd-ai/buildd/compare/v0.1.1...v0.2.0
 
-[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.36.2...HEAD
+[Unreleased]: https://github.com/buildd-ai/buildd/compare/v0.180.0...HEAD
+[0.180.0]: https://github.com/buildd-ai/buildd/compare/v0.179.0...v0.180.0
+[0.179.0]: https://github.com/buildd-ai/buildd/compare/v0.178.0...v0.179.0
+[0.178.0]: https://github.com/buildd-ai/buildd/compare/v0.177.0...v0.178.0
+[0.177.0]: https://github.com/buildd-ai/buildd/compare/v0.176.0...v0.177.0
+[0.176.0]: https://github.com/buildd-ai/buildd/compare/v0.175.0...v0.176.0
+[0.175.0]: https://github.com/buildd-ai/buildd/compare/v0.174.0...v0.175.0
+[0.174.0]: https://github.com/buildd-ai/buildd/compare/v0.173.0...v0.174.0
+[0.173.0]: https://github.com/buildd-ai/buildd/compare/v0.172.1...v0.173.0
+[0.172.1]: https://github.com/buildd-ai/buildd/compare/v0.172.0...v0.172.1
+[0.172.0]: https://github.com/buildd-ai/buildd/compare/v0.171.0...v0.172.0
+[0.171.0]: https://github.com/buildd-ai/buildd/compare/v0.170.1...v0.171.0
+[0.170.1]: https://github.com/buildd-ai/buildd/compare/v0.170.0...v0.170.1
+[0.170.0]: https://github.com/buildd-ai/buildd/compare/v0.169.0...v0.170.0
+[0.169.0]: https://github.com/buildd-ai/buildd/compare/v0.168.0...v0.169.0
+[0.168.0]: https://github.com/buildd-ai/buildd/compare/v0.167.1...v0.168.0
+[0.167.1]: https://github.com/buildd-ai/buildd/compare/v0.167.0...v0.167.1
+[0.167.0]: https://github.com/buildd-ai/buildd/compare/v0.166.0...v0.167.0
+[0.166.0]: https://github.com/buildd-ai/buildd/compare/v0.165.0...v0.166.0
+[0.165.0]: https://github.com/buildd-ai/buildd/compare/v0.164.0...v0.165.0
+[0.164.0]: https://github.com/buildd-ai/buildd/compare/v0.163.0...v0.164.0
+[0.163.0]: https://github.com/buildd-ai/buildd/compare/v0.162.2...v0.163.0
+[0.162.2]: https://github.com/buildd-ai/buildd/compare/v0.162.1...v0.162.2
+[0.162.1]: https://github.com/buildd-ai/buildd/compare/v0.162.0...v0.162.1
+[0.162.0]: https://github.com/buildd-ai/buildd/compare/v0.161.0...v0.162.0
+[0.161.0]: https://github.com/buildd-ai/buildd/compare/v0.160.0...v0.161.0
+[0.160.0]: https://github.com/buildd-ai/buildd/compare/v0.159.0...v0.160.0
+[0.159.0]: https://github.com/buildd-ai/buildd/compare/v0.158.0...v0.159.0
+[0.158.0]: https://github.com/buildd-ai/buildd/compare/v0.157.0...v0.158.0
+[0.157.0]: https://github.com/buildd-ai/buildd/compare/v0.156.0...v0.157.0
+[0.156.0]: https://github.com/buildd-ai/buildd/compare/v0.155.0...v0.156.0
+[0.155.0]: https://github.com/buildd-ai/buildd/compare/v0.154.0...v0.155.0
+[0.154.0]: https://github.com/buildd-ai/buildd/compare/v0.153.0...v0.154.0
+[0.153.0]: https://github.com/buildd-ai/buildd/compare/v0.152.0...v0.153.0
+[0.152.0]: https://github.com/buildd-ai/buildd/compare/v0.151.2...v0.152.0
+[0.151.2]: https://github.com/buildd-ai/buildd/compare/v0.151.1...v0.151.2
+[0.151.1]: https://github.com/buildd-ai/buildd/compare/v0.151.0...v0.151.1
+[0.151.0]: https://github.com/buildd-ai/buildd/compare/v0.150.0...v0.151.0
+[0.150.0]: https://github.com/buildd-ai/buildd/compare/v0.149.0...v0.150.0
+[0.149.0]: https://github.com/buildd-ai/buildd/compare/v0.148.0...v0.149.0
+[0.148.0]: https://github.com/buildd-ai/buildd/compare/v0.147.0...v0.148.0
+[0.147.0]: https://github.com/buildd-ai/buildd/compare/v0.146.0...v0.147.0
+[0.146.0]: https://github.com/buildd-ai/buildd/compare/v0.145.1...v0.146.0
+[0.145.1]: https://github.com/buildd-ai/buildd/compare/v0.145.0...v0.145.1
+[0.145.0]: https://github.com/buildd-ai/buildd/compare/v0.144.0...v0.145.0
+[0.144.0]: https://github.com/buildd-ai/buildd/compare/v0.143.2...v0.144.0
+[0.143.2]: https://github.com/buildd-ai/buildd/compare/v0.143.1...v0.143.2
+[0.143.1]: https://github.com/buildd-ai/buildd/compare/v0.143.0...v0.143.1
+[0.143.0]: https://github.com/buildd-ai/buildd/compare/v0.142.0...v0.143.0
+[0.142.0]: https://github.com/buildd-ai/buildd/compare/v0.141.1...v0.142.0
+[0.141.1]: https://github.com/buildd-ai/buildd/compare/v0.141.0...v0.141.1
+[0.141.0]: https://github.com/buildd-ai/buildd/compare/v0.140.0...v0.141.0
+[0.140.0]: https://github.com/buildd-ai/buildd/compare/v0.139.0...v0.140.0
+[0.139.0]: https://github.com/buildd-ai/buildd/compare/v0.138.2...v0.139.0
+[0.138.2]: https://github.com/buildd-ai/buildd/compare/v0.138.1...v0.138.2
+[0.138.1]: https://github.com/buildd-ai/buildd/compare/v0.138.0...v0.138.1
+[0.138.0]: https://github.com/buildd-ai/buildd/compare/v0.137.0...v0.138.0
+[0.137.0]: https://github.com/buildd-ai/buildd/compare/v0.136.0...v0.137.0
+[0.136.0]: https://github.com/buildd-ai/buildd/compare/v0.135.0...v0.136.0
+[0.135.0]: https://github.com/buildd-ai/buildd/compare/v0.134.3...v0.135.0
+[0.134.3]: https://github.com/buildd-ai/buildd/compare/v0.134.2...v0.134.3
+[0.134.2]: https://github.com/buildd-ai/buildd/compare/v0.134.1...v0.134.2
+[0.134.1]: https://github.com/buildd-ai/buildd/compare/v0.134.0...v0.134.1
+[0.134.0]: https://github.com/buildd-ai/buildd/compare/v0.133.0...v0.134.0
+[0.133.0]: https://github.com/buildd-ai/buildd/compare/v0.132.0...v0.133.0
+[0.132.0]: https://github.com/buildd-ai/buildd/compare/v0.131.0...v0.132.0
+[0.131.0]: https://github.com/buildd-ai/buildd/compare/v0.130.0...v0.131.0
+[0.130.0]: https://github.com/buildd-ai/buildd/compare/v0.129.1...v0.130.0
+[0.129.1]: https://github.com/buildd-ai/buildd/compare/v0.129.0...v0.129.1
+[0.129.0]: https://github.com/buildd-ai/buildd/compare/v0.128.0...v0.129.0
+[0.128.0]: https://github.com/buildd-ai/buildd/compare/v0.127.0...v0.128.0
+[0.127.0]: https://github.com/buildd-ai/buildd/compare/v0.126.2...v0.127.0
+[0.126.2]: https://github.com/buildd-ai/buildd/compare/v0.126.1...v0.126.2
+[0.126.1]: https://github.com/buildd-ai/buildd/compare/v0.126.0...v0.126.1
+[0.126.0]: https://github.com/buildd-ai/buildd/compare/v0.125.0...v0.126.0
+[0.125.0]: https://github.com/buildd-ai/buildd/compare/v0.124.1...v0.125.0
+[0.124.1]: https://github.com/buildd-ai/buildd/compare/v0.124.0...v0.124.1
+[0.124.0]: https://github.com/buildd-ai/buildd/compare/v0.123.0...v0.124.0
+[0.123.0]: https://github.com/buildd-ai/buildd/compare/v0.122.0...v0.123.0
+[0.122.0]: https://github.com/buildd-ai/buildd/compare/v0.121.0...v0.122.0
+[0.121.0]: https://github.com/buildd-ai/buildd/compare/v0.120.1...v0.121.0
+[0.120.1]: https://github.com/buildd-ai/buildd/compare/v0.120.0...v0.120.1
+[0.120.0]: https://github.com/buildd-ai/buildd/compare/v0.119.2...v0.120.0
+[0.119.2]: https://github.com/buildd-ai/buildd/compare/v0.119.1...v0.119.2
+[0.119.1]: https://github.com/buildd-ai/buildd/compare/v0.119.0...v0.119.1
+[0.119.0]: https://github.com/buildd-ai/buildd/compare/v0.118.0...v0.119.0
+[0.118.0]: https://github.com/buildd-ai/buildd/compare/v0.117.0...v0.118.0
+[0.117.0]: https://github.com/buildd-ai/buildd/compare/v0.116.2...v0.117.0
+[0.116.2]: https://github.com/buildd-ai/buildd/compare/v0.116.1...v0.116.2
+[0.116.1]: https://github.com/buildd-ai/buildd/compare/v0.116.0...v0.116.1
+[0.116.0]: https://github.com/buildd-ai/buildd/compare/v0.115.0...v0.116.0
+[0.115.0]: https://github.com/buildd-ai/buildd/compare/v0.114.0...v0.115.0
+[0.114.0]: https://github.com/buildd-ai/buildd/compare/v0.113.0...v0.114.0
+[0.113.0]: https://github.com/buildd-ai/buildd/compare/v0.112.0...v0.113.0
+[0.112.0]: https://github.com/buildd-ai/buildd/compare/v0.111.0...v0.112.0
+[0.111.0]: https://github.com/buildd-ai/buildd/compare/v0.110.0...v0.111.0
+[0.110.0]: https://github.com/buildd-ai/buildd/compare/v0.109.0...v0.110.0
+[0.109.0]: https://github.com/buildd-ai/buildd/compare/v0.108.0...v0.109.0
+[0.108.0]: https://github.com/buildd-ai/buildd/compare/v0.107.1...v0.108.0
+[0.107.1]: https://github.com/buildd-ai/buildd/compare/v0.107.0...v0.107.1
+[0.107.0]: https://github.com/buildd-ai/buildd/compare/v0.106.0...v0.107.0
+[0.106.0]: https://github.com/buildd-ai/buildd/compare/v0.105.0...v0.106.0
+[0.105.0]: https://github.com/buildd-ai/buildd/compare/v0.104.1...v0.105.0
+[0.104.1]: https://github.com/buildd-ai/buildd/compare/v0.104.0...v0.104.1
+[0.104.0]: https://github.com/buildd-ai/buildd/compare/v0.103.0...v0.104.0
+[0.103.0]: https://github.com/buildd-ai/buildd/compare/v0.102.0...v0.103.0
+[0.102.0]: https://github.com/buildd-ai/buildd/compare/v0.101.1...v0.102.0
+[0.101.1]: https://github.com/buildd-ai/buildd/compare/v0.101.0...v0.101.1
+[0.101.0]: https://github.com/buildd-ai/buildd/compare/v0.100.2...v0.101.0
+[0.100.2]: https://github.com/buildd-ai/buildd/compare/v0.100.1...v0.100.2
+[0.100.1]: https://github.com/buildd-ai/buildd/compare/v0.100.0...v0.100.1
+[0.100.0]: https://github.com/buildd-ai/buildd/compare/v0.99.0...v0.100.0
+[0.99.0]: https://github.com/buildd-ai/buildd/compare/v0.98.0...v0.99.0
+[0.98.0]: https://github.com/buildd-ai/buildd/compare/v0.97.1...v0.98.0
+[0.97.1]: https://github.com/buildd-ai/buildd/compare/v0.97.0...v0.97.1
+[0.97.0]: https://github.com/buildd-ai/buildd/compare/v0.96.0...v0.97.0
+[0.96.0]: https://github.com/buildd-ai/buildd/compare/v0.95.1...v0.96.0
+[0.95.1]: https://github.com/buildd-ai/buildd/compare/v0.95.0...v0.95.1
+[0.95.0]: https://github.com/buildd-ai/buildd/compare/v0.94.0...v0.95.0
+[0.94.0]: https://github.com/buildd-ai/buildd/compare/v0.93.0...v0.94.0
+[0.93.0]: https://github.com/buildd-ai/buildd/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/buildd-ai/buildd/compare/v0.91.0...v0.92.0
+[0.91.0]: https://github.com/buildd-ai/buildd/compare/v0.90.0...v0.91.0
+[0.90.0]: https://github.com/buildd-ai/buildd/compare/v0.89.0...v0.90.0
+[0.89.0]: https://github.com/buildd-ai/buildd/compare/v0.88.0...v0.89.0
+[0.88.0]: https://github.com/buildd-ai/buildd/compare/v0.87.0...v0.88.0
+[0.87.0]: https://github.com/buildd-ai/buildd/compare/v0.86.0...v0.87.0
+[0.86.0]: https://github.com/buildd-ai/buildd/compare/v0.85.0...v0.86.0
+[0.85.0]: https://github.com/buildd-ai/buildd/compare/v0.84.0...v0.85.0
+[0.84.0]: https://github.com/buildd-ai/buildd/compare/v0.83.1...v0.84.0
+[0.83.1]: https://github.com/buildd-ai/buildd/compare/v0.83.0...v0.83.1
+[0.83.0]: https://github.com/buildd-ai/buildd/compare/v0.82.0...v0.83.0
+[0.82.0]: https://github.com/buildd-ai/buildd/compare/v0.81.4...v0.82.0
+[0.81.4]: https://github.com/buildd-ai/buildd/compare/v0.81.3...v0.81.4
+[0.81.3]: https://github.com/buildd-ai/buildd/compare/v0.81.2...v0.81.3
+[0.81.2]: https://github.com/buildd-ai/buildd/compare/v0.81.1...v0.81.2
+[0.81.1]: https://github.com/buildd-ai/buildd/compare/v0.81.0...v0.81.1
+[0.81.0]: https://github.com/buildd-ai/buildd/compare/v0.80.0...v0.81.0
+[0.80.0]: https://github.com/buildd-ai/buildd/compare/v0.79.0...v0.80.0
+[0.79.0]: https://github.com/buildd-ai/buildd/compare/v0.78.0...v0.79.0
+[0.78.0]: https://github.com/buildd-ai/buildd/compare/v0.77.0...v0.78.0
+[0.77.0]: https://github.com/buildd-ai/buildd/compare/v0.76.1...v0.77.0
+[0.76.1]: https://github.com/buildd-ai/buildd/compare/v0.76.0...v0.76.1
+[0.76.0]: https://github.com/buildd-ai/buildd/compare/v0.75.0...v0.76.0
+[0.75.0]: https://github.com/buildd-ai/buildd/compare/v0.74.0...v0.75.0
+[0.74.0]: https://github.com/buildd-ai/buildd/compare/v0.73.3...v0.74.0
+[0.73.3]: https://github.com/buildd-ai/buildd/compare/v0.73.2...v0.73.3
+[0.73.2]: https://github.com/buildd-ai/buildd/compare/v0.73.1...v0.73.2
+[0.73.1]: https://github.com/buildd-ai/buildd/compare/v0.73.0...v0.73.1
+[0.73.0]: https://github.com/buildd-ai/buildd/compare/v0.72.0...v0.73.0
+[0.72.0]: https://github.com/buildd-ai/buildd/compare/v0.71.0...v0.72.0
+[0.71.0]: https://github.com/buildd-ai/buildd/compare/v0.70.2...v0.71.0
+[0.70.2]: https://github.com/buildd-ai/buildd/compare/v0.70.1...v0.70.2
+[0.70.1]: https://github.com/buildd-ai/buildd/compare/v0.70.0...v0.70.1
+[0.70.0]: https://github.com/buildd-ai/buildd/compare/v0.69.2...v0.70.0
+[0.69.2]: https://github.com/buildd-ai/buildd/compare/v0.69.1...v0.69.2
+[0.69.1]: https://github.com/buildd-ai/buildd/compare/v0.69.0...v0.69.1
+[0.69.0]: https://github.com/buildd-ai/buildd/compare/v0.68.0...v0.69.0
+[0.68.0]: https://github.com/buildd-ai/buildd/compare/v0.67.0...v0.68.0
+[0.67.0]: https://github.com/buildd-ai/buildd/compare/v0.66.0...v0.67.0
+[0.66.0]: https://github.com/buildd-ai/buildd/compare/v0.65.3...v0.66.0
+[0.65.3]: https://github.com/buildd-ai/buildd/compare/v0.65.2...v0.65.3
+[0.65.2]: https://github.com/buildd-ai/buildd/compare/v0.65.1...v0.65.2
+[0.65.1]: https://github.com/buildd-ai/buildd/compare/v0.65.0...v0.65.1
+[0.65.0]: https://github.com/buildd-ai/buildd/compare/v0.64.2...v0.65.0
+[0.64.2]: https://github.com/buildd-ai/buildd/compare/v0.64.1...v0.64.2
+[0.64.1]: https://github.com/buildd-ai/buildd/compare/v0.64.0...v0.64.1
+[0.64.0]: https://github.com/buildd-ai/buildd/compare/v0.63.0...v0.64.0
+[0.63.0]: https://github.com/buildd-ai/buildd/compare/v0.62.0...v0.63.0
+[0.62.0]: https://github.com/buildd-ai/buildd/compare/v0.61.1...v0.62.0
+[0.61.1]: https://github.com/buildd-ai/buildd/compare/v0.61.0...v0.61.1
+[0.61.0]: https://github.com/buildd-ai/buildd/compare/v0.60.0...v0.61.0
+[0.60.0]: https://github.com/buildd-ai/buildd/compare/v0.59.1...v0.60.0
+[0.59.1]: https://github.com/buildd-ai/buildd/compare/v0.59.0...v0.59.1
+[0.59.0]: https://github.com/buildd-ai/buildd/compare/v0.58.0...v0.59.0
+[0.58.0]: https://github.com/buildd-ai/buildd/compare/v0.57.0...v0.58.0
+[0.57.0]: https://github.com/buildd-ai/buildd/compare/v0.56.0...v0.57.0
+[0.56.0]: https://github.com/buildd-ai/buildd/compare/v0.55.0...v0.56.0
+[0.55.0]: https://github.com/buildd-ai/buildd/compare/v0.54.0...v0.55.0
+[0.54.0]: https://github.com/buildd-ai/buildd/compare/v0.53.0...v0.54.0
+[0.53.0]: https://github.com/buildd-ai/buildd/compare/v0.52.1...v0.53.0
+[0.52.1]: https://github.com/buildd-ai/buildd/compare/v0.52.0...v0.52.1
+[0.52.0]: https://github.com/buildd-ai/buildd/compare/v0.51.0...v0.52.0
+[0.51.0]: https://github.com/buildd-ai/buildd/compare/v0.50.0...v0.51.0
+[0.50.0]: https://github.com/buildd-ai/buildd/compare/v0.49.0...v0.50.0
+[0.49.0]: https://github.com/buildd-ai/buildd/compare/v0.48.0...v0.49.0
+[0.48.0]: https://github.com/buildd-ai/buildd/compare/v0.47.0...v0.48.0
+[0.47.0]: https://github.com/buildd-ai/buildd/compare/v0.46.0...v0.47.0
+[0.46.0]: https://github.com/buildd-ai/buildd/compare/v0.45.1...v0.46.0
+[0.45.1]: https://github.com/buildd-ai/buildd/compare/v0.45.0...v0.45.1
+[0.45.0]: https://github.com/buildd-ai/buildd/compare/v0.44.2...v0.45.0
+[0.44.2]: https://github.com/buildd-ai/buildd/compare/v0.44.1...v0.44.2
+[0.44.1]: https://github.com/buildd-ai/buildd/compare/v0.44.0...v0.44.1
+[0.44.0]: https://github.com/buildd-ai/buildd/compare/v0.43.0...v0.44.0
+[0.43.0]: https://github.com/buildd-ai/buildd/compare/v0.42.0...v0.43.0
+[0.42.0]: https://github.com/buildd-ai/buildd/compare/v0.41.3...v0.42.0
+[0.41.3]: https://github.com/buildd-ai/buildd/compare/v0.41.2...v0.41.3
+[0.41.2]: https://github.com/buildd-ai/buildd/compare/v0.41.1...v0.41.2
+[0.41.1]: https://github.com/buildd-ai/buildd/compare/v0.41.0...v0.41.1
+[0.41.0]: https://github.com/buildd-ai/buildd/compare/v0.40.0...v0.41.0
+[0.40.0]: https://github.com/buildd-ai/buildd/compare/v0.39.0...v0.40.0
+[0.39.0]: https://github.com/buildd-ai/buildd/compare/v0.38.0...v0.39.0
+[0.38.0]: https://github.com/buildd-ai/buildd/compare/v0.37.0...v0.38.0
+[0.37.0]: https://github.com/buildd-ai/buildd/compare/v0.36.2...v0.37.0
 [0.36.2]: https://github.com/buildd-ai/buildd/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/buildd-ai/buildd/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/buildd-ai/buildd/compare/v0.35.0...v0.36.0
@@ -847,7 +1253,7 @@ _Release PR._
 [0.21.1]: https://github.com/buildd-ai/buildd/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/buildd-ai/buildd/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/buildd-ai/buildd/compare/v0.19.0...v0.20.0
-[0.19.0]: https://github.com/buildd-ai/buildd/compare/v0.18.2...v0.19.0
+[0.19.0]: https://github.com/buildd-ai/buildd/compare/v0.18.1...v0.19.0
 [0.18.2]: https://github.com/buildd-ai/buildd/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/buildd-ai/buildd/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/buildd-ai/buildd/compare/v0.17.0...v0.18.0

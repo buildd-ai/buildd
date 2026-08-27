@@ -50,3 +50,21 @@ jobs:
           fi
 
           gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
+
+      - name: Verify CHANGELOG promotion
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SEMVER="${VERSION#v}"
+
+          # Confirm a versioned section exists for this release
+          if ! grep -q "^## \[${SEMVER}\]" CHANGELOG.md; then
+            echo "::warning::CHANGELOG.md is missing a [${SEMVER}] section. The promotion step did not run or the version mismatch. Run scripts/release.sh locally or re-trigger a release to fix."
+          fi
+
+          # Warn if [Unreleased] still has bullet entries (stuck items)
+          UNRELEASED_ENTRIES=$(awk '/^## \[Unreleased\]/{f=1;next} f && /^## \[/{exit} f && /^- /{print}' CHANGELOG.md | wc -l)
+          if [ "$UNRELEASED_ENTRIES" -gt 0 ]; then
+            echo "::warning::CHANGELOG.md [Unreleased] still has ${UNRELEASED_ENTRIES} entries after releasing ${VERSION}. These were added after the release PR was opened. They will be included in the next release."
+          fi
+
+          echo "CHANGELOG verification complete."

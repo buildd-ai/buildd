@@ -6,7 +6,7 @@
  */
 
 /** Toggleable per-team event types. Mirrors the boolean columns on `notification_preferences`. */
-export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
+export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired' | 'connectorBlocked';
 
 /** Defaults match the previous always-on behaviour, but every event is now muteable. */
 export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
@@ -14,6 +14,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
   taskCompleted: true,
   taskFailed: true,
   credentialExpired: true,
+  connectorBlocked: true,
 };
 
 /**
