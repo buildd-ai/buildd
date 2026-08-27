@@ -95,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MobilePageHeader right-side cluster overflows at 320pt (#1821)
+- Suppress redundant in-page h1 title on Missions, Activity, Health, and Team (#1820)
+- Budget Forecast honesty — confidence label and learning rows (#1822)
+- TeamGrid header scaling at 320pt viewport (#1819)
 - Initiative thrash count: pass task mode to deriveTaskType correctly (#1709)
 - Spawned builder tasks count as deliverables, not attempts (#1706)
 - NOT_EVALUATED verdict for description criteria; fix all_prs_merged default (#1705)
