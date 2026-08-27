@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, like, sql } from 'drizzle-orm';
+import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
+import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -331,6 +332,8 @@ export async function POST(req: NextRequest) {
       dependsOn,
       // Role routing — only runners with this skill can claim the task
       roleSlug,
+      // Connector IDs (subset of role's connectorRefs) this task requires at claim time.
+      requiredConnectors: rawRequiredConnectors,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
       context: incomingContext,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
@@ -720,6 +723,17 @@ export async function POST(req: NextRequest) {
       loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
     }
 
+    // Validate and resolve requiredConnectors (team-scoped role lookup).
+    const requiredConnectorsCheck = await validateRequiredConnectors(rawRequiredConnectors, {
+      roleSlug: typeof roleSlug === 'string' ? roleSlug : null,
+      workspaceId,
+      teamId: targetWorkspace.teamId ?? null,
+    });
+    if (!requiredConnectorsCheck.ok) {
+      return NextResponse.json({ error: requiredConnectorsCheck.error }, { status: 400 });
+    }
+    const resolvedRequiredConnectors = requiredConnectorsCheck.value;
+
     // Fall back to the role's defaultBackend hint, then the workspace default.
     if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
       const role = await db.query.workspaceSkills.findFirst({
@@ -793,6 +807,7 @@ export async function POST(req: NextRequest) {
         ...(missionId ? { missionId } : {}),
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
+        ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? { pathManifest } : {}),
         ...(['premium', 'standard', 'budget'].includes(rawTier) ? { tier: rawTier as 'premium' | 'standard' | 'budget' } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),

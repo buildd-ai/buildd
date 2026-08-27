@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { validateRequiredConnectors } from '@/lib/required-connectors';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -182,7 +183,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, externalIssueId, externalIssueUrl, backend, maxLoops } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -222,6 +223,23 @@ export async function PATCH(
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
+    }
+    if (rawRequiredConnectors !== undefined) {
+      if (rawRequiredConnectors === null) {
+        updateData.requiredConnectors = null;
+      } else {
+        // roleSlug may be changing in this same PATCH; validate against the value
+        // the task will actually have.
+        const check = await validateRequiredConnectors(rawRequiredConnectors, {
+          roleSlug: roleSlug !== undefined ? (roleSlug || null) : task.roleSlug,
+          workspaceId: task.workspaceId,
+          teamId: (task as any).workspace?.teamId ?? null,
+        });
+        if (!check.ok) {
+          return NextResponse.json({ error: check.error }, { status: 400 });
+        }
+        updateData.requiredConnectors = check.value;
+      }
     }
     if (maxLoops !== undefined) {
       if (!task.loopConfig) {

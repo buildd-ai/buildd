@@ -89,9 +89,14 @@ export default function NewTaskPage() {
   const [workflowType, setWorkflowType] = useState<WorkflowType>('single');
 
   // Skills state
-  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number }[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null; recentRuns?: number; isRole?: boolean; connectorRefs?: string[] }[]>([]);
   const [selectedSkillSlugs, setSelectedSkillSlugs] = useState<string[]>([]);
   const [useSkillAgents, setUseSkillAgents] = useState(false);
+
+  // Role selector state (for requiredConnectors)
+  const [selectedRoleSlug, setSelectedRoleSlug] = useState('');
+  const [roleConnectors, setRoleConnectors] = useState<{ id: string; name: string }[]>([]);
+  const [selectedRequiredConnectors, setSelectedRequiredConnectors] = useState<string[]>([]);
 
   // Mode state (planning vs execution)
   const [mode, setMode] = useState<TaskModeValue>('execution');
@@ -229,7 +234,7 @@ export default function NewTaskPage() {
     fetch(`/api/workspaces/${selectedWorkspaceId}/skills?enabled=true`)
       .then(res => res.json())
       .then(data => {
-        const loadedSkills = (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description, recentRuns: s.recentRuns || 0 }));
+        const loadedSkills = (data.skills || []).map((s: any) => ({ id: s.id, slug: s.slug, name: s.name, description: s.description, recentRuns: s.recentRuns || 0, isRole: s.isRole ?? false, connectorRefs: s.connectorRefs ?? [] }));
         setAvailableSkills(loadedSkills);
         const skillSlugParam = searchParams.get('skillSlug');
         if (skillSlugParam && loadedSkills.some((s: { slug: string }) => s.slug === skillSlugParam)) {
@@ -239,6 +244,35 @@ export default function NewTaskPage() {
       .catch(() => setAvailableSkills([]));
     setSelectedSkillSlugs([]);
   }, [selectedWorkspaceId]);
+
+  // Reset role selection when workspace changes
+  useEffect(() => {
+    setSelectedRoleSlug('');
+    setRoleConnectors([]);
+    setSelectedRequiredConnectors([]);
+  }, [selectedWorkspaceId]);
+
+  // Fetch connector details when a role with connectorRefs is selected
+  useEffect(() => {
+    if (!selectedRoleSlug) {
+      setRoleConnectors([]);
+      setSelectedRequiredConnectors([]);
+      return;
+    }
+    const role = availableSkills.find(s => s.slug === selectedRoleSlug && s.isRole);
+    if (!role || !role.connectorRefs?.length) {
+      setRoleConnectors([]);
+      setSelectedRequiredConnectors([]);
+      return;
+    }
+    fetch('/api/connectors')
+      .then(res => res.json())
+      .then(data => {
+        const all: { id: string; name: string }[] = data.connectors ?? [];
+        setRoleConnectors(all.filter(c => role.connectorRefs!.includes(c.id)));
+      })
+      .catch(() => setRoleConnectors([]));
+  }, [selectedRoleSlug, availableSkills]);
 
   // Validate cron expression with live preview
   useEffect(() => {
@@ -377,6 +411,8 @@ export default function NewTaskPage() {
             ...(runnerPreference !== 'any' && { runnerPreference }),
             ...(Object.keys(taskContext).length > 0 && { context: taskContext }),
             ...(selectedDeps.length > 0 && { dependsOn: selectedDeps }),
+            ...(selectedRoleSlug && { roleSlug: selectedRoleSlug }),
+            ...(selectedRequiredConnectors.length > 0 && { requiredConnectors: selectedRequiredConnectors }),
           }),
         });
 
@@ -901,6 +937,61 @@ export default function NewTaskPage() {
                       disabled={loading}
                     />
                   )}
+
+                  {/* Role selector + Required connectors (one-time tasks only) */}
+                  {selectedWorkspaceId && !recurring && (() => {
+                    const roles = availableSkills.filter(s => s.isRole);
+                    if (roles.length === 0) return null;
+                    return (
+                      <div className="space-y-4">
+                        <div>
+                          <label htmlFor="roleSlug" className="block text-sm font-medium mb-2">
+                            Role <span className="text-text-muted font-normal">(optional)</span>
+                          </label>
+                          <Select
+                            id="roleSlug"
+                            value={selectedRoleSlug}
+                            onChange={(v) => {
+                              setSelectedRoleSlug(v);
+                              setSelectedRequiredConnectors([]);
+                            }}
+                            placeholder="Assign to a role..."
+                            options={[
+                              { value: '', label: 'Any role' },
+                              ...roles.map(r => ({ value: r.slug, label: r.name })),
+                            ]}
+                          />
+                        </div>
+                        {roleConnectors.length > 0 && (
+                          <div>
+                            <label className="block text-sm font-medium mb-2">
+                              Required connectors <span className="text-text-muted font-normal">(optional)</span>
+                            </label>
+                            <p className="text-xs text-text-secondary mb-2">
+                              Connectors this task must have available to run. Missing required connectors block claiming.
+                            </p>
+                            <div className="space-y-1.5">
+                              {roleConnectors.map(c => (
+                                <label key={c.id} className="flex items-center gap-2.5 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRequiredConnectors.includes(c.id)}
+                                    onChange={(e) => {
+                                      setSelectedRequiredConnectors(prev =>
+                                        e.target.checked ? [...prev, c.id] : prev.filter(id => id !== c.id)
+                                      );
+                                    }}
+                                    className="w-[15px] h-[15px] accent-primary cursor-pointer"
+                                  />
+                                  <span className="text-sm">{c.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
