@@ -3670,7 +3670,11 @@ export async function handleBuilddAction(
       if (!wsId) throw new Error('workspaceId is required for spec_compare — connect with ?workspace=<id>');
 
       const topK = Math.min((params.topK as number) || 5, 20);
-      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+      // Reranker passed here too: without it this fallback ranked by age decay
+      // while the server-built store ranked by cross-encoder relevance, so the
+      // same query got different semantics depending on which path served it.
+      const ks =
+        ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
       // Step 1: query :spec and direct :code in parallel (prose vocabulary works for spec)
       const [specHits, directCodeHits] = await Promise.all([
@@ -3813,6 +3817,7 @@ export async function handleBuilddAction(
 import { MemoryClient } from './memory-client';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
+import { getVoyageReranker } from './knowledge-store/reranker';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -3973,7 +3978,11 @@ export async function handleRecallAction(
   // exact-match queries (IDs, symbol names, error codes).
   const mode = chooseModeForQuery(query);
 
-  const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+  // Reranker passed here too: without it this fallback ranked by age decay
+  // while the server-built store ranked by cross-encoder relevance, so the
+  // same query got different semantics depending on which path served it.
+  const ks =
+    ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
   const raw = await ks.query(ns, { text: query, mode, topK: limit });
 
   // Exclude superseded entries by default, then apply caller limit.
@@ -4324,7 +4333,11 @@ export async function handleMemoryAction(
           : 'workspaceId required for query_knowledge');
       }
 
-      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null);
+      // Reranker passed here too: without it this fallback ranked by age decay
+      // while the server-built store ranked by cross-encoder relevance, so the
+      // same query got different semantics depending on which path served it.
+      const ks =
+        ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
       const results = await ks.query(ns, {
         text: params.query as string,
         mode,
