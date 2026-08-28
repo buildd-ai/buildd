@@ -199,12 +199,25 @@ export function signature(j: {
       months: s.months,
       wdays: s.wdays,
     },
-    // Presence, not value: the secret itself is deliberately NOT managed by
-    // this script (see buildJob / --rotate-secret). Comparing the value would
-    // make every run with a stale local CRON_SECRET look like drift, and
-    // "fixing" that drift would break auth on a job that was working.
-    hasAuthHeader: Boolean(j.extendedData?.headers?.Authorization),
   });
+}
+
+/**
+ * Does the live job need writing to match the manifest?
+ *
+ * The auth header is deliberately absent from `signature` — including it (even
+ * as a boolean) made drift depend on whether the *caller* happens to hold a
+ * CRON_SECRET, so `cron:check` run locally without one reported drift on every
+ * job. Whether a header is required is a property of the live job alone, so it
+ * is checked here instead: a live job missing its header needs repair
+ * regardless of what the caller holds.
+ */
+export function needsUpdate(
+  live: Parameters<typeof signature>[0] & { extendedData?: { headers?: Record<string, string> } },
+  want: Parameters<typeof signature>[0],
+): boolean {
+  if (signature(live) !== signature(want)) return true;
+  return !live?.extendedData?.headers?.Authorization;
 }
 
 // --- API --------------------------------------------------------------------
@@ -300,12 +313,12 @@ async function main() {
     }
     const [keep, ...dupes] = matches;
     const details = (await api(apiKey, `/jobs/${keep.jobId}`)).jobDetails;
-    if (signature(details) !== signature(want)) {
-      plan.update.push({
-        jobId: keep.jobId,
-        job: want,
-        liveHasAuthHeader: Boolean(details?.extendedData?.headers?.Authorization),
-      });
+    const liveHasAuthHeader = Boolean(details?.extendedData?.headers?.Authorization);
+    if (needsUpdate(details, want)) {
+      if (!liveHasAuthHeader && !cronSecret) {
+        console.warn(`!  ${want.url} is missing its auth header and CRON_SECRET is not set — cannot repair it.`);
+      }
+      plan.update.push({ jobId: keep.jobId, job: want, liveHasAuthHeader });
     }
     for (const d of dupes) plan.delete.push({ jobId: d.jobId, url: d.url, reason: 'duplicate' });
   }
