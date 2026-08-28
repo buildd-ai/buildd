@@ -94,7 +94,7 @@ Initiatives follow the same team-primary pattern as missions and credentials.
 **Why:** The knowledge layer already namespaces initiatives as `{teamId}:initiative`, and the initiative picker on mission detail pages was already querying team-wide. The previous write-path check (`init.teamId !== mission.teamId`) was the odd one out — it was enforcing workspace-level scoping that contradicted both the schema design and retrieval behavior.
 
 **Consequences:**
-- `PATCH /api/missions/[id]` and `POST /api/missions` now validate the initiative against the **caller's team IDs**, not the mission's team ID. A caller with access to both `moa-ops` and `buildd` workspaces can link a `moa-ops` mission to a `buildd`-origin initiative.
+- `PATCH /api/missions/[id]` and `POST /api/missions` now validate the initiative against the **caller's team IDs**, not the mission's team ID. A caller with access to both `sibling-app` and `buildd` workspaces can link a `sibling-app` mission to a `buildd`-origin initiative.
 - When an initiative spans multiple workspaces, `manage_initiatives get` groups child missions by workspace in its brief, with a single overall rollup percentage labeled at the initiative level.
 - No schema change required: `initiatives.teamId NOT NULL` and `initiatives.workspaceId NULLABLE` already encode this correctly.
 

@@ -1,0 +1,85 @@
+name: Cron Sync
+
+# Buildd's /api/cron/* routes are driven by an EXTERNAL scheduler (cron-job.org),
+# not by Vercel crons — vercel.json's `crons` array is a separate, smaller set.
+# cron-manifest.json is the single source of truth; `cron:sync` reconciles the
+# provider to match it (create/update drifted jobs, collapse duplicates).
+#
+# This runs on a SUCCESSFUL Production deployment so that:
+#   - newly-deployed routes are live before the scheduler hits them, and
+#   - it never runs for Preview deploys (which must not touch prod's crons).
+# `cron:sync` is idempotent — a no-op when the provider already matches the
+# manifest — so running it on every prod deploy just self-heals drift.
+#
+# Reconciliation is origin-scoped (only jobs under CRON_TARGET_BASE_URL +
+# /api/cron/), so unrelated projects sharing the scheduler account are never
+# touched. Deletion of jobs absent from the manifest requires an explicit
+# --prune, which this workflow does not pass.
+#
+# NOTE: deployment_status workflows always run from the file on the repository's
+# DEFAULT branch (`dev` here), so edits take effect once merged to dev — even
+# though the deployment being reacted to comes from `main`.
+#
+# Requires repo secrets: CRONJOB_API_KEY, CRON_SECRET (must match Vercel prod).
+# Optional: CRON_TARGET_BASE_URL (defaults to https://buildd.dev).
+
+on:
+  deployment_status: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Only Production, and only on a successful deploy.
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # CRON_SECRET exists in three places: Vercel's env (the validator), this
+      # repo's secrets (what we write into new jobs), and each provider job's
+      # Authorization header (the sender). Comparing the GitHub and Vercel
+      # copies directly is impossible — but we don't need to. Vercel is the
+      # authority, so we ask it: hit a read-only cron route with the secret we
+      # hold and see whether it accepts. 401 means this repo's secret has
+      # drifted from production. Runs BEFORE sync so a bad secret is never
+      # written into a newly-created job.
+      - name: Verify CRON_SECRET matches production
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_TARGET_BASE_URL: ${{ secrets.CRON_TARGET_BASE_URL }}
+        run: |
+          BASE="${CRON_TARGET_BASE_URL:-https://buildd.dev}"
+          PROBE="$BASE/api/cron/routing-calibration"   # GET, read-only, no side effects
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 \
+            -H "Authorization: Bearer $CRON_SECRET" "$PROBE" || echo "000")
+          case "$code" in
+            200)
+              echo "CRON_SECRET matches production (probe returned 200)." ;;
+            401)
+              echo "::error::CRON_SECRET in this repo's secrets does NOT match Vercel production — $PROBE returned 401. Fix the repo secret before syncing, or newly created cron jobs will 401."
+              exit 1 ;;
+            000)
+              echo "::error::Could not reach $PROBE (network/timeout). Not syncing."
+              exit 1 ;;
+            *)
+              echo "::warning::Probe returned HTTP $code — not an auth failure, so the secret is presumed correct, but $PROBE is unhealthy."
+              ;;
+          esac
+
+      - name: Sync external cron scheduler to manifest
+        env:
+          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_TARGET_BASE_URL: ${{ secrets.CRON_TARGET_BASE_URL }}
+        run: |
+          if [ -z "$CRONJOB_API_KEY" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRONJOB_API_KEY / CRON_SECRET not set as repo secrets — cannot sync the external cron scheduler"
+            exit 1
+          fi
+          bun run cron:sync

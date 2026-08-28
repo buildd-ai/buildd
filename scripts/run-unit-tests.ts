@@ -3,6 +3,7 @@ const UNIT_TEST_ROOTS = [
   'apps/runner/__tests__/unit/',
   'packages/core/',
   'scripts/run-unit-tests.test.ts',
+  'scripts/sync-crons.test.ts',
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {

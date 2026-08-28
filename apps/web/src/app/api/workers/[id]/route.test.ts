@@ -2378,7 +2378,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({
         id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
-        workspace: { teamId: 'team-1', name: 'moa-ops' },
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
       });
 
       const res = await PATCH(createMockRequest({
@@ -2412,7 +2412,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({
         id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
-        workspace: { teamId: 'team-1', name: 'moa-ops' },
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
       });
 
       const res = await PATCH(createMockRequest({
@@ -2447,7 +2447,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({
         id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
-        workspace: { teamId: 'team-1', name: 'moa-ops' },
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
       });
 
       const res = await PATCH(createMockRequest({
@@ -2479,7 +2479,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({
         id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'codex',
-        workspace: { teamId: 'team-1', name: 'moa-ops' },
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
       });
 
       // Codex is walled for ~5h; Claude for 30m. The task should not sleep 5h.

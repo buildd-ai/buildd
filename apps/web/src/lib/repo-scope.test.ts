@@ -22,14 +22,14 @@ function normalize(repo: string | null): string {
 
 describe('repo normalization', () => {
   const cases: Array<[string, string]> = [
-    ['maxjacu/moa-ops', 'maxjacu/moa-ops'],
-    ['https://github.com/maxjacu/moa-ops', 'maxjacu/moa-ops'],
-    ['http://github.com/maxjacu/moa-ops', 'maxjacu/moa-ops'],
-    ['https://www.github.com/maxjacu/moa-ops/', 'maxjacu/moa-ops'],
-    ['https://github.com/maxjacu/moa-ops.git', 'maxjacu/moa-ops'],
-    ['git@github.com:maxjacu/moa-ops.git', 'maxjacu/moa-ops'],
-    ['ssh://git@github.com/maxjacu/moa-ops', 'maxjacu/moa-ops'],
-    ['https://github.com/MaxJacu/MOA-Ops', 'maxjacu/moa-ops'],
+    ['maxjacu/sibling-app', 'maxjacu/sibling-app'],
+    ['https://github.com/maxjacu/sibling-app', 'maxjacu/sibling-app'],
+    ['http://github.com/maxjacu/sibling-app', 'maxjacu/sibling-app'],
+    ['https://www.github.com/maxjacu/sibling-app/', 'maxjacu/sibling-app'],
+    ['https://github.com/maxjacu/sibling-app.git', 'maxjacu/sibling-app'],
+    ['git@github.com:maxjacu/sibling-app.git', 'maxjacu/sibling-app'],
+    ['ssh://git@github.com/maxjacu/sibling-app', 'maxjacu/sibling-app'],
+    ['https://github.com/MaxJacu/Sibling-App', 'maxjacu/sibling-app'],
   ];
 
   for (const [input, expected] of cases) {
@@ -40,8 +40,8 @@ describe('repo normalization', () => {
 
   it('does not collapse a same-prefix repo onto its neighbour', () => {
     // Regression: the predicate this replaced was ilike '%owner/name%'.
-    expect(normalize('https://github.com/maxjacu/moa-ops-legacy')).not.toBe('maxjacu/moa-ops');
-    expect(normalize('https://github.com/maxjacu/moa-ops-legacy')).toBe('maxjacu/moa-ops-legacy');
+    expect(normalize('https://github.com/maxjacu/sibling-app-legacy')).not.toBe('maxjacu/sibling-app');
+    expect(normalize('https://github.com/maxjacu/sibling-app-legacy')).toBe('maxjacu/sibling-app-legacy');
   });
 
   it('normalizes null and empty repo to empty, which can never equal a full name', () => {
@@ -50,18 +50,18 @@ describe('repo normalization', () => {
   });
 
   it('leaves a non-github host alone rather than mangling it', () => {
-    expect(normalize('https://gitlab.com/maxjacu/moa-ops')).toBe('https://gitlab.com/maxjacu/moa-ops');
+    expect(normalize('https://gitlab.com/maxjacu/sibling-app')).toBe('https://gitlab.com/maxjacu/sibling-app');
   });
 });
 
 describe('prUrlFor', () => {
   it('builds the canonical prUrl workers store', () => {
-    expect(prUrlFor('maxjacu/moa-ops', 146)).toBe('https://github.com/maxjacu/moa-ops/pull/146');
+    expect(prUrlFor('maxjacu/sibling-app', 146)).toBe('https://github.com/maxjacu/sibling-app/pull/146');
   });
 
   it('distinguishes the same PR number across repos', () => {
-    // This is the whole point: buildd-ai/buildd#146 and maxjacu/moa-ops#146
+    // This is the whole point: buildd-ai/buildd#146 and maxjacu/sibling-app#146
     // both exist, and merging one used to stamp the other's worker.
-    expect(prUrlFor('buildd-ai/buildd', 146)).not.toBe(prUrlFor('maxjacu/moa-ops', 146));
+    expect(prUrlFor('buildd-ai/buildd', 146)).not.toBe(prUrlFor('maxjacu/sibling-app', 146));
   });
 });

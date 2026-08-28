@@ -474,7 +474,7 @@ describe('POST /api/github/webhook', () => {
   // installation was unreachable from the UI. The webhook must back-link.
   it('handles installation created - back-links workspaces for the new installation', async () => {
     mockSyncInstallationReposById.mockReturnValue(
-      Promise.resolve({ synced: 3, linked: 1, linkedWorkspaceIds: ['ws-moa-ops'] })
+      Promise.resolve({ synced: 3, linked: 1, linkedWorkspaceIds: ['ws-sibling-app'] })
     );
     const payload = { action: 'created', installation: makeInstallation() };
     const res = await POST(createWebhookRequest('installation', payload));
@@ -541,7 +541,7 @@ describe('POST /api/github/webhook', () => {
     const payload = {
       action: 'added',
       installation: { id: 5000 },
-      repositories_added: [{ id: 400, full_name: 'maxjacu/moa-ops' }],
+      repositories_added: [{ id: 400, full_name: 'maxjacu/sibling-app' }],
     };
     const res = await POST(createWebhookRequest('installation_repositories', payload));
 
@@ -975,7 +975,7 @@ describe('POST /api/github/webhook', () => {
     }
 
     // Regression: worker lookups used to match on prNumber alone. PR numbers are
-    // unique per repo, not globally — buildd-ai/buildd#146 and maxjacu/moa-ops#146
+    // unique per repo, not globally — buildd-ai/buildd#146 and maxjacu/sibling-app#146
     // both exist, so merging one silently stamped mergedAt onto the other's
     // worker. 25 of 70 colliding worker rows in production were wrong.
     it('scopes the merge-stamp worker lookup to the event repo', async () => {
@@ -985,15 +985,15 @@ describe('POST /api/github/webhook', () => {
         pull_request: {
           number: 146,
           merged: true,
-          html_url: 'https://github.com/maxjacu/moa-ops/pull/146',
+          html_url: 'https://github.com/maxjacu/sibling-app/pull/146',
         },
-        repository: { full_name: 'maxjacu/moa-ops' },
+        repository: { full_name: 'maxjacu/sibling-app' },
       });
 
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/moa-ops', 146);
+      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/sibling-app', 146);
       // Never a bare prNumber lookup — that is the collision.
       expect(mockWorkerOwnsPr.mock.calls.every((c) => typeof c[0] === 'string' && c[0].includes('/'))).toBe(true);
     });
@@ -1002,26 +1002,26 @@ describe('POST /api/github/webhook', () => {
       mockWorkersFindFirst.mockReturnValue({ id: 'w1', taskId: 't1', workspaceId: 'ws1', branch: 'b' });
       const payload = makePullRequestPayload({
         top: { action: 'synchronize' },
-        pull_request: { number: 146, html_url: 'https://github.com/maxjacu/moa-ops/pull/146' },
-        repository: { full_name: 'maxjacu/moa-ops' },
+        pull_request: { number: 146, html_url: 'https://github.com/maxjacu/sibling-app/pull/146' },
+        repository: { full_name: 'maxjacu/sibling-app' },
       });
 
       const res = await POST(createWebhookRequest('pull_request', payload));
 
       expect(res.status).toBe(200);
-      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/moa-ops', 146);
+      expect(mockWorkerOwnsPr).toHaveBeenCalledWith('maxjacu/sibling-app', 146);
     });
 
     // Regression: workspace lookups used `eq(workspaces.repo, full_name)`, which
     // misses every workspace storing a clone URL — 11 of 12 in production.
     it('matches workspaces by normalized repo, not exact string equality', async () => {
       const payload = makePullRequestPayload({
-        repository: { full_name: 'maxjacu/moa-ops' },
+        repository: { full_name: 'maxjacu/sibling-app' },
       });
 
       await POST(createWebhookRequest('pull_request', payload));
 
-      expect(mockWorkspaceRepoMatches).toHaveBeenCalledWith('maxjacu/moa-ops');
+      expect(mockWorkspaceRepoMatches).toHaveBeenCalledWith('maxjacu/sibling-app');
     });
 
     it('auto-merges a newly-opened PR when the repo has no CI', async () => {

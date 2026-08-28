@@ -34,7 +34,7 @@ async function resolveWorkerByPrNumber(
     return { error: 'No workspaces found for account', status: 403 };
   }
 
-  // Resolve workspaceId to a UUID — callers may pass a repo name (e.g. "moa-ops")
+  // Resolve workspaceId to a UUID — callers may pass a repo name (e.g. "sibling-app")
   // rather than a UUID. wsIds only contains UUIDs, so a direct includes() check
   // misses name-based inputs and silently falls back to searching all workspaces.
   let narrowedWsId: string | null = null;

@@ -2374,7 +2374,7 @@ describe('POST /api/workers/claim', () => {
     expect(joined).toMatch(/updated_at/);
   });
 
-  // Regression: on 2026-05-25, a task pinned to project "moa-ops" was created
+  // Regression: on 2026-05-25, a task pinned to project "sibling-app" was created
   // against a workspace whose projects[] only contained "dispatch-family". The
   // task got claimed, the agent flailed on a non-existent path, stuck-detector
   // killed it, cleanup re-queued, and the loop ran 4 times before being killed
@@ -2396,7 +2396,7 @@ describe('POST /api/workers/claim', () => {
       {
         id: 'misrouted-task',
         workspaceId: 'ws-1',
-        project: 'moa-ops',
+        project: 'sibling-app',
         requiredCapabilities: [],
         context: {},
         workspace: {

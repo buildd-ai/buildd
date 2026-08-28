@@ -608,8 +608,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
-      title: 'moa-ops mission',
-      workspaceId: 'ws-moa-ops',
+      title: 'sibling-app mission',
+      workspaceId: 'ws-sibling-app',
       scheduleId: null,
       priority: 0,
     });
