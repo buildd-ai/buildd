@@ -54,7 +54,6 @@ a specific pending task, and it is the only one absent from MCP. That is the gap
 3. `connector_routing_mismatch` — task's role requires connectors that are missing or expired for this workspace
 4. `mission_held` — parent mission is held (startMode=held) and `!forceOverride`
 5. `workspace_cap_reached` — workspace is at `maxConcurrentTasks` (returns `canExempt: true`, not `canForce`)
-6. `capability_mismatch` — backend (e.g. codex) has no server-side credential
 
 **On pass:**
 - Stamps `context.manualStartAt = now.toISOString()` (durable; survives Pusher drops)
@@ -70,14 +69,6 @@ a specific pending task, and it is the only one absent from MCP. That is the gap
   capExempt?: boolean        // bypass workspace cap for this one task
 }
 ```
-
-**Known gap in claim-gates.ts (noted by reviewer of PR #1512, confidence 0.85):**
-`capability_mismatch` was specced but the `checkCapabilityMatch` helper is only called
-when `taskBackend` is set AND `!forceOverride`. The gate is correctly wired but only
-covers the codex backend; non-codex capability mismatches are not surfaced.
-`checkMissionHeld`'s `isBypassed` param is dead code — the caller checks bypass flags
-before calling the helper, so the param is never read. Neither is a blocker for this
-design, but both are noted for the implementer.
 
 ---
 
@@ -122,8 +113,7 @@ start_task({
             | 'unmerged_dep_pr'
             | 'connector_routing_mismatch'
             | 'mission_held'
-            | 'workspace_cap_reached'
-            | 'capability_mismatch',
+            | 'workspace_cap_reached',
   canForce?: boolean,
   canExempt?: boolean,        // only for workspace_cap_reached
   blockingDeps?: { taskId, taskTitle, prUrl, prNumber }[],

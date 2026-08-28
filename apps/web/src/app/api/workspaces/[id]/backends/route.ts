@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkCapabilityMatch } from '@/lib/claim-gates';
+import { hasCodexCredential } from '@/lib/codex-credential';
 
 /**
  * GET /api/workspaces/[id]/backends
@@ -63,22 +63,17 @@ export async function GET(
 
     const teamId = (workspace as any).teamId as string | null;
 
-    const codexMissing = teamId
-      ? await checkCapabilityMatch({
-          backend: 'codex',
-          workspaceId,
-          teamId,
-          accountId,
-        })
-      : 'backend:codex';
+    const codexAvailable = teamId
+      ? await hasCodexCredential({ teamId, workspaceId, accountId: accountId ?? null })
+      : false;
 
     const backends = [
       { id: 'claude', label: 'Claude', available: true },
       {
         id: 'codex',
         label: 'Codex',
-        available: !codexMissing,
-        ...(codexMissing ? { reason: 'No server credentials configured' } : {}),
+        available: codexAvailable,
+        ...(!codexAvailable ? { reason: 'No server credentials configured' } : {}),
       },
     ];
 

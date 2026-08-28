@@ -500,16 +500,13 @@ export async function POST(req: NextRequest) {
     }));
   }
 
-  // Filter by capabilities
+  // Filter by backend: codex tasks require backend:codex capability or local auth.
   const filteredTasks = claimableTasks.filter((task) => {
     if ((task as any).backend === 'codex') {
       if (!runnerHasCodexBackend) return false;
       if (!runnerHasLocalCodexAuth && !serverCredentialTaskIds.has(task.id)) return false;
     }
-    if (capabilities.length === 0) return true;
-    const reqCaps = task.requiredCapabilities || [];
-    if (reqCaps.length === 0) return true;
-    return reqCaps.every((cap) => capabilities.includes(cap));
+    return true;
   });
 
   if (filteredTasks.length === 0) {
