@@ -313,6 +313,14 @@ export default async function TaskDetailPage({
   // Most recent worker that created a PR — surfaced prominently in the header
   const workerWithPr = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
 
+  // Whether the latest worker has an open PR — keeps Pusher subscription alive for
+  // completed tasks until CI resolves (prevents stale badge after task finishes).
+  const workerHasOpenPr = !!(
+    taskWorkers[0]?.prNumber &&
+    !taskWorkers[0]?.mergedAt &&
+    taskWorkers[0]?.prLifecycleStatus !== 'closed'
+  );
+
   // Dependency resolution checks
   // A dep is unresolved if: not completed/cancelled, OR completed but has an open (non-closed) PR
   const unresolvedDeps = depTasks.filter(d => {
@@ -424,6 +432,7 @@ export default async function TaskDetailPage({
           taskMode={task.mode}
           depTaskIds={depTaskIds}
           hasSubTasks={!!(task.subTasks && task.subTasks.length > 0)}
+          workerHasOpenPr={workerHasOpenPr}
         />
 
         {/* Breadcrumbs */}
