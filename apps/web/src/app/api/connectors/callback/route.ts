@@ -161,6 +161,12 @@ export async function GET(req: NextRequest) {
         encryptedValue,
         tokenExpiresAt,
         lastRefreshedAt: new Date(),
+        // A successful re-auth clears the previous failure: without resetting
+        // lastVerificationError, deriveConnectorStatus keeps reporting 'expired'
+        // for any AS that omits expires_in. expiryNotifiedAt reset re-arms the
+        // expiry alert for the new token's lifetime.
+        lastVerificationError: null,
+        expiryNotifiedAt: null,
         updatedAt: new Date(),
       })
       .where(eq(secrets.id, existingSecret.id));

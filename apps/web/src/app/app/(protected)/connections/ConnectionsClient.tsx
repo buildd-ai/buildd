@@ -392,7 +392,10 @@ export default function ConnectionsClient({
         <div className="card divide-y divide-border-default">
           {connectors.map((connector) => (
             <div key={connector.id} className="p-4">
-              <div className="flex items-start gap-4">
+              {/* Stack on mobile: the action cluster's intrinsic width (~300px)
+                  otherwise squeezes the info column to ~40% of a phone viewport,
+                  breaking the URL mid-token and reflowing the reach line. */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="font-medium text-text-primary">{connector.name}</span>
@@ -417,7 +420,7 @@ export default function ConnectionsClient({
                 </div>
                 {/* Grantees only enable per workspace / opt roles in — no config,
                     credential, or sharing controls on a shared-in connector (spec §1b). */}
-                <div className="flex gap-2 flex-shrink-0 flex-wrap justify-end">
+                <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
                   {!connector.shared && connector.authMode === 'oauth' && connector.status === 'expired' && (
                     <button
                       onClick={() => handleConnect(connector)}

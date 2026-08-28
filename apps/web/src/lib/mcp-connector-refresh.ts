@@ -166,6 +166,8 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
       .set({
         encryptedValue: encodeBlob({ access_token: newAccessToken, refresh_token: newRefreshToken }),
         tokenExpiresAt,
+        // New token — clear the expiry alert stamp so a future expiry alerts again.
+        expiryNotifiedAt: null,
         lastVerificationError: null,
         updatedAt: sql`NOW()`,
       })

@@ -32,16 +32,21 @@ export default function MobilePageHeader({
   if (!title) return null;
 
   return (
-    <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2.5 bg-surface-2 border-b border-border-default">
-      <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-text-primary">
-        {title}
+    <div className="md:hidden fixed top-0 left-0 right-0 z-10 flex items-center justify-between gap-2 px-4 py-2.5 bg-surface-2 border-b border-border-default">
+      {/* Breadcrumb cluster: `Page · Team ⌄`, where the team segment is itself the
+          switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
+          right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
+      <div className="flex-1 min-w-0 flex items-center gap-1.5 text-[13px] font-normal">
+        <span className="truncate font-semibold text-text-primary">{title}</span>
         {currentTeam && (
-          <span className="font-normal text-text-secondary"> · {currentTeam.name}</span>
+          <>
+            <span className="text-text-muted shrink-0" aria-hidden="true">·</span>
+            <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />
+          </>
         )}
-      </span>
-      <div className="flex items-center gap-2">
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
         {workspaces.length > 0 && <WorkspaceFilter workspaces={workspaces} />}
-        {teams.length > 0 && <TeamSwitcher teams={teams} currentTeamId={currentTeamId} />}
         <UserAvatarMenu userInitial={userInitial} direction="down" />
       </div>
     </div>
