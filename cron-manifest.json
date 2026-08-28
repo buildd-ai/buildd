@@ -1,9 +1,9 @@
 {
   "$comment": "Single source of truth for every Buildd cron trigger. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. vercel.json declares NO crons: the Vercel-native mechanism does not fire in this project, and routes parked there silently never ran. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. `scripts/cron-coverage.test.ts` enforces that every /api/cron/* route appears here exactly once. See docs/cron-jobs.md and docs/specs/external-cron-triggers.md.",
-  "timezone": "UTC",
+  "timezone": "America/New_York",
   "jobs": [
     {
-      "$comment": "Mission/task schedule tick. Must run every 30 min, all 24 hours: task_schedules rows use */30 cron expressions, and isOverdue() allows only interval*2 before flagging a schedule late. Previously hand-configured in the provider console as `0 7-19 * * *`, which silently starved every schedule for 12 hours a night.",
+      "$comment": "Mission/task schedule tick. Must run every 30 min, all 24 hours: task_schedules rows use */30 cron expressions, and isOverdue() allows only interval*2 before flagging a schedule late. Previously hand-configured in the provider console as `0 7-19 * * *`, which silently starved every schedule for 12 hours a night. Hour field MUST stay `*` even though nightly is otherwise off \u2014 an hour range here is what silently starved every schedule for 12h a night.",
       "title": "Buildd: Schedules Tick",
       "path": "/api/cron/schedules",
       "schedule": "*/30 * * * *"
@@ -39,38 +39,38 @@
       "enabled": false
     },
     {
-      "$comment": "Refreshes expiring Codex/Claude/MCP-connector OAuth credentials and verifies Claude liveness. Moved off Vercel-native cron: it never fired there, so an MCP connector credential holding a valid refresh token stayed dead for 15 days until a manual reconnect. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the credential sweep's lookahead window from this expression, so changing it here changes the window.",
+      "$comment": "Refreshes expiring Codex/Claude/MCP-connector OAuth credentials and verifies Claude liveness. Moved off Vercel-native cron: it never fired there, so an MCP connector credential holding a valid refresh token stayed dead for 15 days until a manual reconnect. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the credential sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover, which is the exact bug this whole change fixed. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
       "title": "Buildd: Credential Refresh",
       "path": "/api/cron/codex-token-refresh",
       "schedule": "0 */4 * * *",
       "method": "GET"
     },
     {
-      "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there.",
+      "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there. Cadence */5 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): nothing here needs to fire while nobody is awake to act on a push. (was 0 * * * *)",
       "title": "Buildd: Connector Block + Expiry Notify",
       "path": "/api/cron/connector-block-notify",
-      "schedule": "*/5 * * * *",
+      "schedule": "0 7-23 * * *",
       "method": "POST"
     },
     {
-      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
+      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
       "title": "Buildd: Lease Expiry Guard",
       "path": "/api/cron/lease-expiry-guard",
-      "schedule": "*/10 * * * *",
+      "schedule": "0 7-23 * * *",
       "method": "GET"
     },
     {
-      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
+      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
       "title": "Buildd: PR Reconcile",
       "path": "/api/cron/pr-reconcile",
-      "schedule": "0 2 * * *",
+      "schedule": "0 9 * * *",
       "method": "GET"
     },
     {
-      "$comment": "Weekly archive of completed tasks. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
+      "$comment": "Weekly archive of completed tasks. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 06:00 into the working day (EST). (was 0 6 * * 1)",
       "title": "Buildd: Task Archive",
       "path": "/api/cron/task-archive",
-      "schedule": "0 6 * * 1",
+      "schedule": "0 10 * * 1",
       "method": "GET"
     }
   ]

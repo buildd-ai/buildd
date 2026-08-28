@@ -17,6 +17,8 @@ import { notifyTeam, type NotifyPayload } from '@/lib/notify';
 const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev';
 const CONNECTOR_SETTINGS_PATH = '/app/settings#connectors';
 
+// Floor, not a promise: the cron that drives the reminder runs hourly (to let
+// Neon's compute autosuspend), so a reminder lands 30–90 min after the block.
 export const CONNECTOR_BLOCK_REMINDER_MS = 30 * 60 * 1000;
 
 export interface ConnectorFailure {

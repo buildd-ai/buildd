@@ -19,7 +19,6 @@
 /** Mirrors cron-manifest.json. Pinned by cron-cadence.test.ts. */
 export const CRON_SCHEDULES = {
   'codex-token-refresh': '0 */4 * * *',
-  'connector-block-notify': '*/5 * * * *',
 } as const;
 
 /** A sweep must cover its own poll interval, plus margin for a late tick. */
@@ -31,10 +30,16 @@ const LOOKAHEAD_ENV = 'MCP_REFRESH_LOOKAHEAD_MINUTES';
 /**
  * Minutes between firings of a 5-field cron expression.
  *
- * Deliberately narrow: it handles the forms the manifest actually uses and
- * throws on anything else. A silently wrong interval mis-sizes every derived
- * window, which is exactly the failure this module exists to prevent — so an
- * unrecognised expression must be loud, not approximated.
+ * Deliberately narrow: it handles even intervals and throws on anything else.
+ * A silently wrong interval mis-sizes every derived window, which is exactly the
+ * failure this module exists to prevent — so an unrecognised expression must be
+ * loud, not approximated.
+ *
+ * Hour-restricted forms (`0 7-23 * * *`) throw ON PURPOSE. Their real worst-case
+ * gap is the overnight one — 8h for a 07:00–23:00 job, not the 1h nominal
+ * interval — so a window sized from the nominal interval would silently fail
+ * every night. Any job whose cadence sizes a window must therefore run on an
+ * even interval, or teach this function about the night gap first.
  */
 export function cronIntervalMinutes(expr: string): number {
   const parts = expr.trim().split(/\s+/);
