@@ -53,28 +53,25 @@
       "method": "POST"
     },
     {
-      "$comment": "Releases expired credential leases and alerts the owning team. Moved off Vercel-native cron (never fired). Staged dark deliberately: it has effectively never run, so its first run will act on a full backlog of stale leases and notify for each. Enable after reviewing that blast radius.",
+      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
       "title": "Buildd: Lease Expiry Guard",
       "path": "/api/cron/lease-expiry-guard",
       "schedule": "*/10 * * * *",
-      "method": "GET",
-      "enabled": false
+      "method": "GET"
     },
     {
-      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off Vercel-native cron (never fired). Staged dark: first run reconciles every stale row at once. Enable after reviewing.",
+      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
       "title": "Buildd: PR Reconcile",
       "path": "/api/cron/pr-reconcile",
       "schedule": "0 2 * * *",
-      "method": "GET",
-      "enabled": false
+      "method": "GET"
     },
     {
-      "$comment": "Weekly archive of completed tasks. Moved off Vercel-native cron (never fired). Staged dark: first run archives the entire accumulated backlog. Enable after reviewing.",
+      "$comment": "Weekly archive of completed tasks. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
       "title": "Buildd: Task Archive",
       "path": "/api/cron/task-archive",
       "schedule": "0 6 * * 1",
-      "method": "GET",
-      "enabled": false
+      "method": "GET"
     }
   ]
 }
