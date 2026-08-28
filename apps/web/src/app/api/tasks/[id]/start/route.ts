@@ -6,7 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting, findAlternativeRole, checkMissionHeld, checkWorkspaceCap, checkCapabilityMatch, type ConnectorFailure } from '@/lib/claim-gates';
+import { checkConnectorRouting, findAlternativeRole, checkMissionHeld, checkWorkspaceCap, type ConnectorFailure } from '@/lib/claim-gates';
 
 /**
  * POST /api/tasks/[id]/start
@@ -211,30 +211,6 @@ export async function POST(
           cap: capResult.cap,
           queuePosition: pendingAhead.length,
           canExempt: true,
-        }, { status: 422 });
-      }
-    }
-
-    // ── Capability / backend gate ───────────────────────────────────────────────
-    // Mirrors the capability filter (filteredTasks) in claim/route.ts.
-    // Codex-backend tasks need server-side credentials OR a local-auth runner.
-    // We can only verify server-side credentials here; a local runner with
-    // OPENAI_API_KEY/CODEX_HOME still bypasses this gate at claim time.
-    const taskBackend = (task as any).backend as string | null;
-    if (taskBackend && teamId && !forceOverride) {
-      const missingCap = await checkCapabilityMatch({
-        backend: taskBackend,
-        workspaceId: task.workspaceId,
-        teamId,
-        accountId: accountId ?? null,
-      });
-      if (missingCap) {
-        return NextResponse.json({
-          error: `Task cannot be started: '${taskBackend}' backend is not available (no server credentials configured)`,
-          gateReason: 'capability_mismatch',
-          blockClass: 'capability',
-          missingCapability: missingCap,
-          availableBackends: ['claude'],
         }, { status: 422 });
       }
     }

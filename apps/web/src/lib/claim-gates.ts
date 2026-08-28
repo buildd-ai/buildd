@@ -1,16 +1,10 @@
 /**
  * Claim-gate predicates for /api/tasks/[id]/start.
  *
- * These mirror the guards enforced by /api/workers/claim/route.ts so that /start
- * can surface a useful 422 before broadcasting TASK_ASSIGNED to workers that
- * will immediately reject the claim. The implementations are intentionally kept
- * in sync by code review rather than shared at runtime — claim/route.ts uses
- * SQL subquery conditions for bulk filtering whereas /start queries a single task
- * in isolation. If you change the claim-route gates, update these helpers too.
- *
- * Drift risk: if claim/route.ts relaxes or tightens a gate, /start may diverge
- * until this file is updated. A future refactor can extract the SQL predicates
- * from claim/route.ts and import them here instead.
+ * These helpers are called by /start to surface typed 422 errors before
+ * broadcasting TASK_ASSIGNED to workers. Each helper mirrors the corresponding
+ * SQL condition in /api/workers/claim/route.ts; /start queries a single task
+ * in isolation rather than doing bulk SQL filtering.
  */
 
 import { db } from '@buildd/core/db';
@@ -24,7 +18,6 @@ import {
   secrets,
 } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, ne } from 'drizzle-orm';
-import { hasCodexCredential } from '@/lib/codex-credential';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
 // ── Typed connector failure taxonomy ─────────────────────────────────────────
@@ -318,32 +311,6 @@ export async function checkMissionHeld(missionId: string): Promise<boolean> {
     columns: { id: true },
   });
   return !!mission;
-}
-
-/**
- * Check whether the task's backend is available server-side.
- * For codex-backend tasks, verifies that at least one Codex credential exists
- * for the team/workspace. Returns the missing capability string or null when OK.
- *
- * Note: runner-side requiredCapabilities cannot be verified here — the server
- * has no registry of active runner capabilities. This gate catches the common
- * server-verifiable case: a codex-backend task with no credentials configured.
- * A local runner with its own OPENAI_API_KEY or CODEX_HOME can still claim the
- * task; if one is running, forceOverride lets the user bypass this gate.
- */
-export async function checkCapabilityMatch(opts: {
-  backend: string;
-  workspaceId: string;
-  teamId: string;
-  accountId?: string | null;
-}): Promise<string | null> {
-  if (opts.backend !== 'codex') return null;
-  const ok = await hasCodexCredential({
-    teamId: opts.teamId,
-    workspaceId: opts.workspaceId,
-    accountId: opts.accountId ?? null,
-  });
-  return ok ? null : 'backend:codex';
 }
 
 /**
