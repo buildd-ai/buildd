@@ -1811,7 +1811,7 @@ describe('GET /api/github/pr', () => {
     }]);
     mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValueOnce({
-      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      number: 149, title: 'fix: sibling-app theme', body: null, state: 'open',
       mergeable: true, mergeable_state: 'clean',
       html_url: 'https://github.com/owner/repo/pull/149',
       head: { sha: 'sha149' }, additions: 50, deletions: 5, changed_files: 3,
@@ -1846,7 +1846,7 @@ describe('GET /api/github/pr', () => {
     }]);
     mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValueOnce({
-      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      number: 149, title: 'fix: sibling-app theme', body: null, state: 'open',
       mergeable: null, mergeable_state: 'unknown',
       html_url: 'https://github.com/owner/repo/pull/149',
       head: { sha: 'sha149' }, additions: 50, deletions: 5, changed_files: 3,
@@ -1865,9 +1865,9 @@ describe('GET /api/github/pr', () => {
   it('resolves by workspace name when workspaceId is a name (not UUID)', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['uuid-ws-1', 'uuid-ws-2']);
-    // Workspace name resolution: "moa-ops" maps to uuid-ws-1
+    // Workspace name resolution: "sibling-app" maps to uuid-ws-1
     mockWorkspacesFindMany.mockResolvedValue([
-      { id: 'uuid-ws-1', name: 'moa-ops', repo: 'acme/moa-ops' },
+      { id: 'uuid-ws-1', name: 'sibling-app', repo: 'acme/sibling-app' },
       { id: 'uuid-ws-2', name: 'other', repo: 'acme/other' },
     ]);
     // With workspaceId narrowed to uuid-ws-1, only return that workspace's worker
@@ -1875,7 +1875,7 @@ describe('GET /api/github/pr', () => {
       id: 'w-moa',
       taskId: 'task-moa',
       workspaceId: 'uuid-ws-1',
-      prUrl: 'https://github.com/acme/moa-ops/pull/149',
+      prUrl: 'https://github.com/acme/sibling-app/pull/149',
       prNumber: 149,
       prLifecycleStatus: null,
       lastCommitSha: null,
@@ -1885,15 +1885,15 @@ describe('GET /api/github/pr', () => {
     }]);
     mockGithubReposFindFirst.mockResolvedValue(REPO);
     mockGithubApi.mockResolvedValueOnce({
-      number: 149, title: 'fix: moa-ops theme', body: null, state: 'open',
+      number: 149, title: 'fix: sibling-app theme', body: null, state: 'open',
       mergeable: true, mergeable_state: 'clean',
-      html_url: 'https://github.com/acme/moa-ops/pull/149',
+      html_url: 'https://github.com/acme/sibling-app/pull/149',
       head: { sha: 'shaMoa' }, additions: 10, deletions: 2, changed_files: 1,
     });
     mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
     mockGithubApi.mockResolvedValueOnce([]);
 
-    const res = await GET(createGetRequest(null, 149, 'moa-ops'));
+    const res = await GET(createGetRequest(null, 149, 'sibling-app'));
 
     expect(res.status).toBe(200);
     const data = await res.json();

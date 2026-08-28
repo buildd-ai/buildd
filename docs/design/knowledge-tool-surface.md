@@ -18,7 +18,7 @@
 
 4. **Admin ops share the builder hot path.** `consolidate_knowledge` carries its own vocabulary (`find_duplicates`, `find_decayed`, `halfLifeMultiple`, archive semantics) and is used by exactly one weekly task. Every builder pays its schema cost on every context load.
 
-Secondary: three MCP servers (Builldd, cue, Moa-Ops) each expose an identical copy of this tool against what is one team memory namespace — triple schema cost for a single logical store.
+Secondary: three MCP servers (Builldd, cue, sibling-app) each expose an identical copy of this tool against what is one team memory namespace — triple schema cost for a single logical store.
 
 ---
 

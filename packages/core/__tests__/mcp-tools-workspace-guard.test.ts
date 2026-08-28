@@ -41,7 +41,7 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     mockApi.mockResolvedValueOnce({
       workspaces: [
         { id: WS_A, name: 'dispatch-family', repo: 'org/dispatch' },
-        { id: WS_B, name: 'moa-ops', repo: 'org/moa-ops' },
+        { id: WS_B, name: 'sibling-app', repo: 'org/sibling-app' },
       ],
     });
 
@@ -56,7 +56,7 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     const text = result.content[0].text;
     expect(text).toMatch(/2 workspaces/);
     expect(text).toMatch(/dispatch-family/);
-    expect(text).toMatch(/moa-ops/);
+    expect(text).toMatch(/sibling-app/);
     // Must NOT have fired the actual claim API
     expect(mockApi).toHaveBeenCalledTimes(1);
     expect(mockApi.mock.calls[0][0]).toBe('/api/workspaces');

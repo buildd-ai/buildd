@@ -4,7 +4,7 @@
 >
 > **Scope:** Full design for buildd-signed assertion auth enabling workers to
 > authenticate against buildd-owned MCP servers (Cue at `cue.buildd.dev`,
-> dispatch, moa-ops) without pre-shared secrets per team. Adds
+> dispatch, sibling-app) without pre-shared secrets per team. Adds
 > `authMode: 'assertion'` to the connector system, defines the JWKS
 > infrastructure, the assertion mint API, and the resource-server contract.
 >
@@ -40,7 +40,7 @@
 ## Background & Motivation
 
 Buildd operates several first-party MCP servers (Cue/dispatch at
-`cue.buildd.dev`, and future `moa-ops`) that workers connect to during task
+`cue.buildd.dev`, and future `sibling-app`) that workers connect to during task
 execution. The current Cue auth path is a static `x-api-key` header carrying a
 composite `DISPATCH_API_KEY#TENANT_ID` credential stored as an `mcp_credential`
 secret. This path has regressed 5+ times (PRs #1206, #1207, #1215, #1223,
@@ -583,7 +583,7 @@ Deploy order (each step must complete before the next):
    `assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token'`. Verify
    via a new task claim that the payload contains `AssertionConnectorEntry`.
 
-### G.2 Phase 2 — dispatch / moa-ops
+### G.2 Phase 2 — dispatch / sibling-app
 
 After Cue is stable (at least one week of clean task runs), apply §D to other
 buildd-owned servers. No buildd-side changes are required — the JWKS

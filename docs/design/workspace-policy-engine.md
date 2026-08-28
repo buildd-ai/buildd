@@ -252,7 +252,7 @@ Human answers note → POST /api/tasks/[id]/notes (type='reply') or UI answer ta
 
 **NO silent promotion.** Repeated 'yes' taps must never become auto-policy without an explicit confirmation step. Even at 100 confirmations and 1.0 confidence, status stays `pending` until a human clicks "Approve policy." Auto-apply is only valid for `reversible` class rules and only after the confirmation step.
 
-The suggestion UI (mirroring moa-ops classification-suggestion pattern):
+The suggestion UI (mirroring the sibling-app classification-suggestion pattern):
 - Shows the question text, the chosen answer, the confidence score, and confirmationCount
 - Two actions: "Approve" (→ `status='active'`) and "Reject" (→ `status='rejected'`)
 - Approved reversible policies take effect immediately on next matching question
@@ -350,7 +350,7 @@ Graduation events are idempotent: if an active policy already covers the conditi
 
 ### Part 6 — Decay + scope hygiene
 
-Harvested rules are workspace-scoped (never global). "Yes, force-push in moa-ops" is not doctrine for buildd.
+Harvested rules are workspace-scoped (never global). "Yes, force-push in sibling-app" is not doctrine for buildd.
 
 **Decay model:**
 

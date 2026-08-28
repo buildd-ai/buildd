@@ -69,7 +69,7 @@ describe('POST /api/missions/[id]/reconcile', () => {
       fixes: [
         {
           workerId: 'w1',
-          prUrl: 'https://github.com/maxjacu/moa-ops/pull/146',
+          prUrl: 'https://github.com/maxjacu/sibling-app/pull/146',
           prNumber: 146,
           before: { mergedAt: null, prLifecycleStatus: null },
           after: { mergedAt: '2026-08-21T18:56:20Z', prLifecycleStatus: 'merged' },
