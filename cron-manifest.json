@@ -3,10 +3,10 @@
   "timezone": "America/New_York",
   "jobs": [
     {
-      "$comment": "Mission/task schedule tick. Must run every 30 min, all 24 hours: task_schedules rows use */30 cron expressions, and isOverdue() allows only interval*2 before flagging a schedule late. Previously hand-configured in the provider console as `0 7-19 * * *`, which silently starved every schedule for 12 hours a night. Hour field MUST stay `*` even though nightly is otherwise off \u2014 an hour range here is what silently starved every schedule for 12h a night.",
+      "$comment": "Mission/task schedule tick. Hourly, on the hour, all 24 hours. Cadence floor is the finest ENABLED task_schedules row: every one is now hourly-or-coarser, so */30 bought nothing and woke Neon 48x/day instead of 24x. Hour field MUST stay `*` even though nightly is otherwise off \u2014 an hour range here is what silently starved every schedule for 12h a night, and an enabled schedule fires at 06:00. Before making this coarser than a row's cadence, check: isOverdue() allows only interval*2 before flagging a schedule late.",
       "title": "Buildd: Schedules Tick",
       "path": "/api/cron/schedules",
-      "schedule": "*/30 * * * *"
+      "schedule": "0 * * * *"
     },
     {
       "$comment": "BT-11/BT-19 stall notification. Route comment recommends every 5 minutes. Staged dark \u2014 no trigger has ever existed for this route.",

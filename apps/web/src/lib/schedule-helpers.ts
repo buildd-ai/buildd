@@ -45,25 +45,6 @@ export function computeNextRuns(expr: string, timezone: string = 'UTC', count: n
   }
 }
 
-/**
- * Compute a deterministic stagger offset (0-299 seconds) for a schedule.
- * Only applies when the cron expression fires at the top of the hour (minute=0).
- * Prevents thundering herd when many schedules fire simultaneously.
- */
-export function computeStaggerOffset(scheduleId: string, cronExpression: string): number {
-  const parts = cronExpression.trim().split(/\s+/);
-  if (parts.length < 5) return 0;
-
-  const minute = parts[0];
-  // Only stagger if minute is exactly '0' (top-of-hour)
-  // Do NOT stagger for specific minutes like '30', intervals like '*/5', or wildcard '*'
-  if (minute !== '0') return 0;
-
-  // Deterministic hash from schedule ID: take last 8 hex chars of UUID
-  const hex = scheduleId.replace(/-/g, '').slice(-8);
-  const num = parseInt(hex, 16);
-  return num % 300; // 0-299 seconds (5 minutes)
-}
 
 /**
  * Human-readable description of a cron expression.

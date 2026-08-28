@@ -100,7 +100,6 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@/lib/schedule-helpers', () => ({
   computeNextRunAt: () => new Date('2026-01-01'),
-  computeStaggerOffset: () => 0,
   classifyScheduleCadence: () => ({ kind: 'standard', complexity: 'medium', classifiedBy: 'default' }),
 }));
 

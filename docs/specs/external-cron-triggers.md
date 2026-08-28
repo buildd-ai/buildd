@@ -37,9 +37,9 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   (`7-23`)**, unless its correctness requires otherwise. Neon autosuspends idle
   compute; a sub-hourly round-the-clock tick keeps it awake and bills idle time.
   Two sanctioned exceptions, both load-bearing:
-  - `/api/cron/schedules` — `*/30`, hour field `*`. `task_schedules` rows use
-    `*/30` and `isOverdue()` allows only `interval*2`. An hour range here is
-    precisely what starved every schedule for 12h a night.
+  - `/api/cron/schedules` — hourly, hour field `*`. `isOverdue()` allows only
+    `interval*2`. An hour range here is precisely what starved every schedule for
+    12h a night, and an enabled schedule fires at 06:00.
   - `/api/cron/codex-token-refresh` — `0 */4 * * *`, unrestricted. Tokens expire
     overnight, and its cadence sizes the credential sweep window (below), which
     must be an **even** interval.
@@ -60,8 +60,14 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - The schedules tick (`/api/cron/schedules`) carries **no hour restriction**:
   its cron hour field is `*`. An hour range there starves every `task_schedules`
   row for the excluded hours, with no error emitted anywhere.
-- The tick interval is at most the shortest cadence any `task_schedules` row
-  uses. Rows use `*/30`, so the tick MUST be `*/30` or finer.
+- The tick interval is at most the shortest cadence any **enabled**
+  `task_schedules` row uses. Every enabled row is hourly-or-coarser, so the tick
+  is `0 * * * *`. Adding an enabled sub-hourly row requires making the tick at
+  least that fine, or it fires late.
+- Schedules fire **exactly on the hour**. No jitter may be added to `nextRunAt`:
+  the tick runs at `:00`, so an offset past that instant does not spread load, it
+  delays the schedule to the next tick a full hour later. (`computeStaggerOffset`
+  added 0–299s to every top-of-hour schedule and was removed for this reason.)
 - Reconciliation is origin-scoped: `sync-crons.ts` only reads, updates, or
   deletes provider jobs whose URL starts with
   `CRON_TARGET_BASE_URL + "/api/cron/"`. Jobs on any other origin MUST be left

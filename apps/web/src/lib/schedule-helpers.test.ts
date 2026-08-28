@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { validateCronExpression, computeNextRunAt, computeNextRuns, describeSchedule, computeStaggerOffset, dateTimeToCron, classifyScheduleCadence } from './schedule-helpers';
+import { validateCronExpression, computeNextRunAt, computeNextRuns, describeSchedule, dateTimeToCron, classifyScheduleCadence } from './schedule-helpers';
 
 describe('schedule-helpers', () => {
   describe('validateCronExpression', () => {
@@ -56,6 +56,28 @@ describe('schedule-helpers', () => {
     });
   });
 
+  describe('fires exactly on the hour', () => {
+    // The tick runs at :00. Any jitter that pushes nextRunAt past the tick
+    // instant does not spread load — it delays the schedule to the NEXT tick, a
+    // full hour later. computeStaggerOffset used to add 0-299s to every
+    // top-of-hour schedule for exactly that reason and was removed.
+    it('puts a top-of-hour schedule on the hour, to the second', () => {
+      for (const expr of ['0 * * * *', '0 9 * * *', '0 6 * * 1,4']) {
+        const next = computeNextRunAt(expr, 'UTC');
+        expect(next).not.toBeNull();
+        expect(next!.getUTCMinutes(), expr).toBe(0);
+        expect(next!.getUTCSeconds(), expr).toBe(0);
+        expect(next!.getUTCMilliseconds(), expr).toBe(0);
+      }
+    });
+
+    it('is stable across calls — no per-schedule jitter', () => {
+      const a = computeNextRunAt('0 * * * *', 'UTC');
+      const b = computeNextRunAt('0 * * * *', 'UTC');
+      expect(a!.getTime()).toBe(b!.getTime());
+    });
+  });
+
   describe('describeSchedule', () => {
     it('describes every minute', () => {
       expect(describeSchedule('* * * * *')).toBe('Every minute');
@@ -91,49 +113,6 @@ describe('schedule-helpers', () => {
     });
   });
 
-  describe('computeStaggerOffset', () => {
-    it('returns 0 for non-top-of-hour cron expressions', () => {
-      // Specific minute (not 0) should not be staggered
-      expect(computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '30 * * * *')).toBe(0);
-      expect(computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '15 9 * * *')).toBe(0);
-      expect(computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '*/5 * * * *')).toBe(0);
-      expect(computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '* * * * *')).toBe(0);
-    });
-
-    it('returns a non-negative offset for top-of-hour cron expressions', () => {
-      const offset = computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '0 * * * *');
-      expect(offset).toBeGreaterThanOrEqual(0);
-      expect(offset).toBeLessThan(300);
-    });
-
-    it('returns stagger for daily at midnight (minute=0)', () => {
-      const offset = computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '0 9 * * *');
-      expect(offset).toBeGreaterThanOrEqual(0);
-      expect(offset).toBeLessThan(300);
-    });
-
-    it('returns deterministic offset for the same schedule ID', () => {
-      const id = '12345678-abcd-1234-abcd-1234567890ab';
-      const offset1 = computeStaggerOffset(id, '0 * * * *');
-      const offset2 = computeStaggerOffset(id, '0 * * * *');
-      expect(offset1).toBe(offset2);
-    });
-
-    it('returns different offsets for different schedule IDs', () => {
-      const offset1 = computeStaggerOffset('11111111-1111-1111-1111-111111111111', '0 * * * *');
-      const offset2 = computeStaggerOffset('22222222-2222-2222-2222-222222222222', '0 * * * *');
-      // Not guaranteed to be different, but for these specific IDs they should be
-      // The main point is they are both valid
-      expect(offset1).toBeGreaterThanOrEqual(0);
-      expect(offset1).toBeLessThan(300);
-      expect(offset2).toBeGreaterThanOrEqual(0);
-      expect(offset2).toBeLessThan(300);
-    });
-
-    it('returns 0 for invalid/short expressions', () => {
-      expect(computeStaggerOffset('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '* *')).toBe(0);
-    });
-  });
 
   describe('dateTimeToCron', () => {
     it('converts a standard date and time to cron', () => {
