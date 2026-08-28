@@ -334,6 +334,174 @@ select {
   }
 }
 
+@layer components {
+  /* ── Buttons ──
+   * One scale, one border language (square, 2px ink) so an action row reads as
+   * a set instead of a pile of one-offs. Sizes: .btn = 32px, .btn-lg = 40px.
+   * Tones: default (neutral ink), -primary (solid accent), -accent, -danger,
+   * -warning, -quiet (borderless text action). */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 2px solid var(--border-strong);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .btn:hover:not(:disabled) { background: var(--surface-3); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-lg { height: 40px; padding: 0 16px; font-size: 13px; }
+  .btn-sm { height: 24px; padding: 0 8px; font-size: 11px; border-width: 1px; }
+
+  .btn-ok { color: var(--status-success); border-color: var(--status-success); }
+  .btn-ok:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--status-success) 12%, transparent);
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+  }
+
+  .btn-accent { color: var(--accent-text); border-color: var(--accent); }
+  .btn-accent:hover:not(:disabled) { background: var(--accent-soft); }
+
+  .btn-danger { color: var(--status-error); border-color: var(--status-error); }
+  .btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  }
+
+  .btn-warning { color: var(--status-warning); border-color: var(--status-warning); }
+  .btn-warning:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--status-warning) 14%, transparent);
+  }
+
+  .btn-quiet {
+    border-color: transparent;
+    color: var(--text-secondary);
+    /* Negative margin cancels the padding so the label still optically aligns
+       with the body text it sits under, while keeping a real hit area. */
+    padding: 0 8px;
+    margin-left: -8px;
+  }
+  .btn-quiet:hover:not(:disabled) { background: transparent; color: var(--text-primary); }
+
+  /* ── Status pills ──
+   * Square, mono, uppercase — same family as .health-pill but tone-based, for
+   * connection/credential state rather than task health. The leading square
+   * dot comes from ::before so callers never hand-roll one. */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .status-pill::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    background: currentColor;
+  }
+  .status-pill-ok      { color: var(--status-success); border-color: var(--status-success); }
+  .status-pill-warn    { color: var(--status-warning); border-color: var(--status-warning); }
+  .status-pill-err     { color: var(--status-error);   border-color: var(--status-error); }
+  .status-pill-idle    { color: var(--text-muted);     border-color: var(--border-strong); }
+  .status-pill-plain::before { display: none; }
+
+  /* ── Inset panel ──
+   * Recessed detail block inside a .card (metadata, toggle rows). Square, and
+   * bordered rather than floating on a translucent fill. */
+  .inset-panel {
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 0;
+    padding: 10px 12px;
+  }
+
+
+  /* ── Segmented control ──
+   * Square, single shared 2px frame with hairline dividers. Used wherever a
+   * small set of mutually exclusive options replaces a select. */
+  .seg {
+    display: inline-flex;
+    border: 2px solid var(--border-strong);
+    border-radius: 0;
+    overflow: hidden;
+  }
+  .seg-item {
+    padding: 0 12px;
+    height: 32px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .seg-item + .seg-item { border-left: 1px solid var(--border); }
+  .seg-item:hover:not(:disabled) { color: var(--text-primary); }
+  .seg-item-active {
+    background: var(--accent);
+    color: #fff;
+  }
+  .seg-item:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Inline notice ──
+   * Square status banner at the top of a section (saved / failed / needs action). */
+  .notice {
+    border: 2px solid var(--border-strong);
+    border-radius: 0;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .notice-ok   { border-color: var(--status-success); color: var(--status-success); }
+  .notice-err  { border-color: var(--status-error);   color: var(--status-error); }
+  .notice-info { border-color: var(--accent);         color: var(--accent-text); }
+
+  /* ── Field label ──
+   * The small caption above an input or select in a settings form. */
+  .field-label {
+    display: block;
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+}
+
 [data-theme="light"] .glow-dot-success { --glow-color: rgba(58, 152, 100, 0.25); }
 [data-theme="light"] .glow-dot-running { --glow-color: rgba(217, 110, 18, 0.3); }
 [data-theme="light"] .glow-dot-warning { --glow-color: rgba(154, 122, 32, 0.25); }

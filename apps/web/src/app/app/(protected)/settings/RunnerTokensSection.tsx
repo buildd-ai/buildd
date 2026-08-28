@@ -7,6 +7,7 @@ import DeleteAccountButton from '../accounts/DeleteAccountButton';
 import CopyBlock from '@/components/CopyBlock';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ApiKeyModal from '@/components/ApiKeyModal';
+import SettingsSection from './SettingsSection';
 
 interface Account {
   id: string;
@@ -66,18 +67,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
   }
 
   return (
-    <section>
-      <div className="flex justify-between items-center mb-2">
-        <h2 className="section-label">Runner Tokens</h2>
-        <Link
-          href="/app/accounts/new"
-          className="text-sm text-text-secondary hover:text-text-primary transition-colors"
-        >
-          + New Token
-        </Link>
-      </div>
-
-      <p className="text-xs text-text-secondary mb-4">
+    <SettingsSection
+      title="Runner tokens"
+      bare
+      action={<Link href="/app/accounts/new" className="btn btn-quiet">+ New token</Link>}
+    >
+      <p className="text-xs text-text-secondary mb-3">
         Runner tokens authenticate your runner to buildd — they don&apos;t contain model credentials.
         Set model credentials in Agent Backends.
       </p>
@@ -85,7 +80,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       {accounts.length === 0 ? (
         <div className="card p-6 text-center">
           <p className="text-text-muted text-sm mb-3">No runner tokens yet</p>
-          <Link href="/app/accounts/new" className="text-sm text-primary hover:underline">
+          <Link href="/app/accounts/new" className="btn btn-primary">
             Create a runner token
           </Link>
         </div>
@@ -100,7 +95,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                 {/* Compact row */}
                 <button
                   onClick={() => setExpandedId(isExpanded ? null : account.id)}
-                  className="w-full flex items-center gap-3 p-3 hover:bg-surface-3/50 transition-colors text-left first:rounded-t-[10px] last:rounded-b-[10px]"
+                  className="w-full flex items-center gap-3 p-3 hover:bg-surface-3 transition-colors text-left"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -109,7 +104,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                         <span className="text-[11px] text-text-muted truncate flex-shrink-0">{account.team.name}</span>
                       )}
                       {hasWarning && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-status-warning flex-shrink-0" title="No workspace linked" />
+                        <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
                       )}
                     </div>
                   </div>
@@ -124,7 +119,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                 {/* Expanded detail */}
                 {isExpanded && (
                   <div className="px-3 pb-3 space-y-3">
-                    <div className="bg-surface-3/50 rounded-lg p-3 space-y-2">
+                    <div className="inset-panel space-y-2">
                       <div className="flex items-center gap-2 text-xs text-text-muted">
                         <span>Auth: {account.authType}</span>
                         <span>·</span>
@@ -146,10 +141,10 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                         <p className="text-xs text-status-warning">No workspace linked — token can&apos;t claim or create tasks.</p>
                       )}
 
-                      <div className="flex items-center gap-3 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
-                          className="text-text-secondary hover:text-text-primary"
+                          className="btn"
                         >
                           Regenerate key
                         </button>
@@ -192,7 +187,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
           onClose={() => setNewKey(null)}
         />
       )}
-    </section>
+    </SettingsSection>
   );
 }
 

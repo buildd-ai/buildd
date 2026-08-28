@@ -117,3 +117,56 @@ export async function notifyConnectorBlockReminder(
   await notifyTeam(ctx.teamId, 'connectorBlocked', payload);
   return true;
 }
+
+// ── Proactive expiry alerts ──────────────────────────────────────────────────
+//
+// The two functions above are reactive: they only fire once a task has already
+// tripped on a required connector. A connector nobody's task happens to require
+// could expire and sit silent indefinitely. The cron scans credentials directly
+// and calls the function below, so the team hears about it before work stalls.
+
+const CONNECTIONS_PATH = '/app/connections';
+
+export interface ConnectorExpiryContext {
+  teamId: string;
+  connectorName: string;
+  /** false → already expired/revoked; true → still valid, inside the warning window. */
+  expiringSoon: boolean;
+  tokenExpiresAt: Date | null;
+}
+
+export function buildConnectorExpiryMessage(ctx: ConnectorExpiryContext, now: Date = new Date()): string {
+  const fixUrl = `${APP_BASE_URL}${CONNECTIONS_PATH}`;
+  if (!ctx.expiringSoon) {
+    return (
+      `Connection "${ctx.connectorName}" has expired — tasks that need it will be blocked. / ` +
+      `Fix: ${fixUrl}`
+    );
+  }
+  const hours = ctx.tokenExpiresAt
+    ? Math.max(1, Math.round((ctx.tokenExpiresAt.getTime() - now.getTime()) / 3_600_000))
+    : null;
+  return (
+    `Connection "${ctx.connectorName}" expires ${hours != null ? `in ~${hours}h` : 'soon'} — ` +
+    `reconnect now to avoid blocked tasks. / Fix: ${fixUrl}`
+  );
+}
+
+/**
+ * Alert a team that a connector credential has expired (or is about to).
+ * Dedup is the caller's job — stamp `secrets.expiryNotifiedAt` when this returns true.
+ */
+export async function notifyConnectorExpiry(ctx: ConnectorExpiryContext): Promise<boolean> {
+  const payload: NotifyPayload = {
+    title: ctx.expiringSoon
+      ? '[buildd] Connection expiring soon'
+      : '[buildd] Connection expired',
+    message: buildConnectorExpiryMessage(ctx),
+    url: `${APP_BASE_URL}${CONNECTIONS_PATH}`,
+    urlTitle: 'Reconnect',
+    priority: ctx.expiringSoon ? -1 : 0,
+  };
+
+  await notifyTeam(ctx.teamId, 'connectorBlocked', payload);
+  return true;
+}

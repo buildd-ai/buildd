@@ -202,6 +202,69 @@ function baseResolved(overrides?: Partial<ResolvedEscalationItem>): ResolvedEsca
   };
 }
 
+describe('buildActionQueue — reconnect items', () => {
+  const reconnect = (over: Partial<WaitingOnYouRawItem> = {}): WaitingOnYouRawItem => ({
+    kind: 'reconnect',
+    connectorId: 'c-1',
+    connectorName: 'Cue',
+    ...over,
+  });
+
+  it('turns an expired connector into a RECONNECT item', () => {
+    const [item] = buildActionQueue([reconnect()], []);
+    expect(item.chip).toBe('RECONNECT');
+    expect(item.connectorId).toBe('c-1');
+    expect(item.connectorName).toBe('Cue');
+    expect(item.subjectKey).toBe('connector:c-1');
+  });
+
+  it('dedupes repeated reports of the same connector', () => {
+    const queue = buildActionQueue([reconnect(), reconnect()], []);
+    expect(queue).toHaveLength(1);
+  });
+
+  it('ranks RECONNECT above REVIEW/QUESTION but below MERGE', () => {
+    const queue = buildActionQueue(
+      [
+        { kind: 'answer', workerId: 'w-1', taskId: 't-1', taskTitle: 'q', question: 'why?' },
+        reconnect(),
+        { kind: 'merge', prUrl: 'https://github.com/x/y/pull/1', prNumber: 1 },
+      ],
+      [],
+    );
+    expect(queue.map(i => i.chip)).toEqual(['MERGE', 'RECONNECT', 'QUESTION']);
+  });
+
+  it('puts already-broken connectors ahead of merely-expiring ones', () => {
+    const queue = buildActionQueue(
+      [
+        reconnect({ connectorId: 'c-soon', connectorName: 'Soon', expiringSoon: true }),
+        reconnect({ connectorId: 'c-dead', connectorName: 'Dead', expiringSoon: false }),
+      ],
+      [],
+    );
+    expect(queue.map(i => i.connectorName)).toEqual(['Dead', 'Soon']);
+  });
+
+  it('does not collide with task- or PR-keyed items', () => {
+    const queue = buildActionQueue([reconnect({ connectorId: 't-1' })], [
+      {
+        workerId: 'w-1',
+        taskId: 't-1',
+        taskTitle: 'Task one',
+        workspaceId: 'ws-1',
+        workspaceName: 'buildd',
+        prNumber: null,
+        prUrl: null,
+        policyTier: 'human-gate',
+        escalationReason: null,
+        waitingMinutes: 5,
+      },
+    ]);
+    expect(queue).toHaveLength(2);
+  });
+});
+
 describe('partitionEscalations', () => {
   it('treats null lifecycle as active (keep fallback)', () => {
     const { active, resolved } = partitionEscalations([

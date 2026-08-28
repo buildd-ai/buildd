@@ -1,18 +1,26 @@
 /**
  * POST /api/cron/connector-block-notify
  *
- * Runs every 5 minutes. For each pending task that was notified about a
- * connector block more than 30 minutes ago and has not yet received a reminder,
- * fires a reminder notification and stamps context.connectorBlockReminderSentAt.
+ * Runs every 5 minutes and does two passes:
+ *
+ * 1. Reminders — for each pending task notified about a connector block more
+ *    than 30 minutes ago with no reminder yet, fires a reminder and stamps
+ *    context.connectorBlockReminderSentAt.
+ * 2. Proactive expiry scan — for each connector credential that has expired or
+ *    is inside the warning window and has not been alerted, fires an alert and
+ *    stamps secrets.expiryNotifiedAt. Pass 1 alone only ever fires *after* a
+ *    task has already tripped over the dead connector, so a connector no
+ *    current task requires would expire in silence.
  *
  * Auth: Bearer CRON_SECRET.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
-import { notifyConnectorBlockReminder } from '../../workers/claim/connector-block-notify';
+import { tasks, secrets, connectors } from '@buildd/core/db/schema';
+import { eq, and, sql, inArray } from 'drizzle-orm';
+import { notifyConnectorBlockReminder, notifyConnectorExpiry } from '../../workers/claim/connector-block-notify';
+import { deriveConnectorStatus, isExpiringSoon } from '@/lib/connector-status';
 
 export const maxDuration = 60;
 
@@ -42,10 +50,6 @@ export async function POST(req: NextRequest) {
     },
     with: { workspace: { columns: { id: true, name: true, teamId: true } } },
   });
-
-  if (blockedTasks.length === 0) {
-    return NextResponse.json({ ok: true, reminded: 0, checked: 0 });
-  }
 
   let reminded = 0;
   const now = new Date();
@@ -92,5 +96,61 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, checked: blockedTasks.length, reminded });
+  // ── Pass 2: proactive connector-credential expiry scan ──────────────────────
+  const credentials = await db.query.secrets.findMany({
+    where: eq(secrets.purpose, 'mcp_connector_credential'),
+    columns: {
+      id: true,
+      teamId: true,
+      label: true,
+      tokenExpiresAt: true,
+      lastVerificationError: true,
+      expiryNotifiedAt: true,
+    },
+  });
+
+  // `label` holds the connector id (see /api/connectors).
+  const due = credentials.filter(
+    c => c.label && !c.expiryNotifiedAt && (
+      deriveConnectorStatus(c, now) === 'expired' || isExpiringSoon(c, now)
+    ),
+  );
+
+  let expiryAlerted = 0;
+  if (due.length > 0) {
+    const connectorRows = await db.query.connectors.findMany({
+      where: inArray(connectors.id, due.map(c => c.label as string)),
+      columns: { id: true, name: true },
+    });
+    const nameById = new Map(connectorRows.map(c => [c.id, c.name]));
+
+    for (const cred of due) {
+      // A credential whose connector was deleted is orphaned — nothing to reconnect.
+      const connectorName = nameById.get(cred.label as string);
+      if (!connectorName) continue;
+
+      const sent = await notifyConnectorExpiry({
+        teamId: cred.teamId,
+        connectorName,
+        expiringSoon: deriveConnectorStatus(cred, now) === 'connected',
+        tokenExpiresAt: cred.tokenExpiresAt,
+      });
+
+      if (sent) {
+        await db
+          .update(secrets)
+          .set({ expiryNotifiedAt: now, updatedAt: now })
+          .where(eq(secrets.id, cred.id));
+        expiryAlerted++;
+      }
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    checked: blockedTasks.length,
+    reminded,
+    credentialsChecked: credentials.length,
+    expiryAlerted,
+  });
 }

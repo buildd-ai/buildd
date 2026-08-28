@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import SettingsSection from './SettingsSection';
 
 interface Installation {
   id: string;
@@ -96,24 +97,14 @@ export default function GitHubSection() {
   }
 
   return (
-    <section>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="section-label">GitHub</h2>
-        <a
-          href="/api/github/install"
-          className="text-sm text-text-secondary hover:text-text-primary transition-colors"
-        >
-          + Connect Org
-        </a>
-      </div>
-
+    <SettingsSection
+      title="GitHub"
+      bare
+      action={<a href="/api/github/install" className="btn btn-quiet">+ Connect org</a>}
+    >
       {message && (
-        <div className={`mb-4 p-3 rounded-lg text-sm ${
-          message.type === 'success'
-            ? 'bg-status-success/10 text-status-success border border-status-success/30'
-            : message.type === 'info'
-            ? 'bg-status-warning/10 text-status-warning border border-status-warning/30'
-            : 'bg-status-error/10 text-status-error border border-status-error/30'
+        <div className={`notice mb-3 ${
+          message.type === 'success' ? 'notice-ok' : message.type === 'info' ? 'notice-info' : 'notice-err'
         }`}>
           {message.text}
         </div>
@@ -126,7 +117,7 @@ export default function GitHubSection() {
           <p className="text-text-muted mb-3 text-sm">No GitHub organizations connected</p>
           <a
             href="/api/github/install"
-            className="text-sm text-primary hover:underline"
+            className="btn btn-primary"
           >
             Connect your first org
           </a>
@@ -134,42 +125,38 @@ export default function GitHubSection() {
       ) : (
         <div className="card divide-y divide-border-default">
           {installations.map((inst) => (
-            <div key={inst.id} className="p-4 first:rounded-t-[10px] last:rounded-b-[10px]">
-              <div className="flex items-center gap-4">
+            <div key={inst.id} className="p-4">
+              <div className="flex flex-wrap items-center gap-3">
                 {inst.accountAvatarUrl && (
                   <img
                     src={inst.accountAvatarUrl}
                     alt={inst.accountLogin}
-                    className="w-10 h-10 rounded-full"
+                    className="w-10 h-10"
                   />
                 )}
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-[8rem]">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{inst.accountLogin}</span>
-                    <span className="text-xs text-text-secondary bg-surface-3 px-2 py-0.5 rounded">
-                      {inst.accountType}
-                    </span>
+                    <span className="status-pill status-pill-plain">{inst.accountType}</span>
                     {inst.suspendedAt && (
-                      <span className="text-xs text-status-error bg-status-error/10 px-2 py-0.5 rounded">
-                        Suspended
-                      </span>
+                      <span className="status-pill status-pill-err">Suspended</span>
                     )}
                   </div>
                   <div className="text-sm text-text-secondary">
                     {inst.repoCount} repos &bull; {inst.repositorySelection === 'all' ? 'All repos' : 'Selected repos'}
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 ml-auto">
                   <button
                     onClick={() => syncRepos(inst.id)}
                     disabled={syncing === inst.id}
-                    className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50"
+                    className="btn"
                   >
                     {syncing === inst.id ? 'Syncing...' : 'Sync'}
                   </button>
                   <button
                     onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                    className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
+                    className="btn btn-danger"
                   >
                     Disconnect
                   </button>
@@ -202,6 +189,6 @@ export default function GitHubSection() {
         onConfirm={handleDisconnect}
         onCancel={() => setDisconnecting(null)}
       />
-    </section>
+    </SettingsSection>
   );
 }

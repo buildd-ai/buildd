@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
+import SettingsSection from './SettingsSection';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -15,13 +16,9 @@ function CredActionRow({ children }: { children: ReactNode }) {
 function CredAction({
   onClick, children, disabled, tone = 'neutral',
 }: { onClick: () => void; children: ReactNode; disabled?: boolean; tone?: 'primary' | 'neutral' | 'danger' }) {
-  const toneCls =
-    tone === 'primary' ? 'border-status-info/40 text-status-info hover:bg-status-info/10'
-    : tone === 'danger' ? 'border-status-error/40 text-status-error hover:bg-status-error/10'
-    : 'border-border-default text-text-secondary hover:bg-surface-3';
+  const toneCls = tone === 'primary' ? 'btn-accent' : tone === 'danger' ? 'btn-danger' : '';
   return (
-    <button onClick={onClick} disabled={disabled}
-      className={`h-8 px-3 rounded-lg border text-xs font-medium transition-colors disabled:opacity-40 ${toneCls}`}>
+    <button onClick={onClick} disabled={disabled} className={`btn ${toneCls}`}>
       {children}
     </button>
   );
@@ -119,12 +116,8 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   if (teamWorkspaces.length === 0) return null;
 
   return (
-    <section>
-      <div className="flex items-end justify-between mb-3 gap-3">
-        <h2 className="section-label">Agent backends</h2>
-      </div>
-
-      <div className="card p-4 space-y-5">
+    <SettingsSection title="Agent backends">
+      <div className="space-y-5">
         <p className="text-sm text-text-secondary">
           Credentials runners use to authenticate an agent backend. The team is the
           auth boundary: set one credential for <strong className="text-text-primary">all workspaces</strong> in
@@ -152,7 +145,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <div>
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
-            className="text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+            className="btn btn-quiet"
           >
             {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude — setup token or API key
           </button>
@@ -165,7 +158,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <div className="border-t border-border-default" />
         <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
       </div>
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -252,18 +245,16 @@ function ProviderRoutingToggle({ teamId }: { teamId: string }) {
       </div>
       <div className="space-y-2">
         {ALL_BACKENDS.map((b) => (
-          <div key={b} className="flex items-center justify-between bg-surface-3/50 rounded-lg px-3 py-2">
-            <span className="inline-flex items-center gap-1.5 text-sm text-text-primary">
-              <span className={`w-1.5 h-1.5 rounded-full ${isOn(b) ? 'bg-status-success' : 'bg-text-muted'}`} />
+          <div key={b} className="flex items-center justify-between inset-panel">
+            <span className="flex flex-wrap items-center gap-2 text-sm text-text-primary">
+              <span className={`w-2 h-2 shrink-0 ${isOn(b) ? 'bg-status-success' : 'bg-text-muted'}`} />
               {backendLabel(b)}
               <span className="text-xs text-text-muted">{isOn(b) ? 'enabled' : 'disabled — jobs reroute'}</span>
             </span>
             <button
               onClick={() => toggle(b)}
               disabled={busy || !loaded}
-              className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
-                isOn(b) ? 'border-status-success/40 text-status-success' : 'border-border-default text-text-secondary'
-              }`}
+              className={`btn ${isOn(b) ? '' : 'btn-accent'}`}
             >
               {isOn(b) ? 'Disable' : 'Enable'}
             </button>
@@ -432,16 +423,16 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
 
   const inputForm = (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      <div className="seg">
         <button
           onClick={() => setPurpose('oauth_token')}
-          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'oauth_token' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+          className={`seg-item ${purpose === 'oauth_token' ? 'seg-item-active' : ''}`}
         >
           Setup token
         </button>
         <button
           onClick={() => setPurpose('anthropic_api_key')}
-          className={`px-2.5 h-8 rounded-lg text-xs font-medium border transition-colors ${purpose === 'anthropic_api_key' ? 'border-status-info text-status-info' : 'border-border-default text-text-secondary'}`}
+          className={`seg-item ${purpose === 'anthropic_api_key' ? 'seg-item-active' : ''}`}
         >
           API key
         </button>
@@ -451,18 +442,18 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
-        className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+        className="w-full h-10 px-3 bg-surface font-mono text-xs"
       />
       <div className="flex items-center gap-3">
         <button
           onClick={save}
           disabled={busy || !value.trim()}
-          className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+          className="btn btn-primary"
         >
           {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : 'Save credential'}
         </button>
         {replaceOpen && (
-          <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="text-xs text-text-tertiary">Cancel</button>
+          <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="btn btn-quiet">Cancel</button>
         )}
       </div>
     </div>
@@ -484,22 +475,16 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {matching[0].healthStatus === 'revoked' ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-error/10 text-status-error border border-status-error/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-error" /> Revoked — re-auth required
-              </span>
+              <span className="status-pill status-pill-err">Revoked — re-auth required</span>
             ) : matching[0].healthStatus === 'degraded' ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Degraded — auth failures detected
-              </span>
+              <span className="status-pill status-pill-warn">Degraded — auth failures detected</span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-              </span>
+              <span className="status-pill status-pill-ok">Connected</span>
             )}
             <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
           </div>
 
-          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+          <div className="inset-panel space-y-1 text-xs text-text-secondary">
             {matching.map((s) => (
               <div key={s.id}>{s.purpose === 'oauth_token' ? 'OAuth setup token' : 'Anthropic API key'}</div>
             ))}
@@ -543,9 +528,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
           {allTeams ? (
             <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
-              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
-            </span>
+            <span className="status-pill status-pill-idle">Not connected</span>
           )}
           {inputForm}
         </div>
@@ -762,23 +745,17 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             {status.expired ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs reconnection
-              </span>
+              <span className="status-pill status-pill-warn">Expired — needs reconnection</span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-              </span>
+              <span className="status-pill status-pill-ok">Connected</span>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
             {status.expired && status.healthStatus === 'revoked' && fallbackConnected && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Workers using setup token as fallback
-              </span>
+              <span className="status-pill status-pill-ok">Workers using setup token as fallback</span>
             )}
           </div>
 
-          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+          <div className="inset-panel space-y-1 text-xs text-text-secondary">
             {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
             {status.lastVerifiedAt && (
               <div>
@@ -815,30 +792,32 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
           {allTeams ? (
             <span className="text-xs text-text-muted">Approve once — applies the same Claude login to all {teamTargets.length} teams you manage.</span>
           ) : fallbackConnected ? (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected via setup token / API key
-            </span>
+            <span className="status-pill status-pill-ok">Connected via setup token / API key</span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
-              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
-            </span>
+            <span className="status-pill status-pill-idle">Not connected</span>
           )}
           {/* OAuth connect (short code) is the clean primary path — incl. all-teams fan-out. */}
           {oauth ? (
             <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
               onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
           ) : (
-            <div className="flex items-center gap-3">
-              <button onClick={startOAuth} disabled={busy} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
-                {fallbackConnected ? 'Upgrade to one-tap connect' : 'Connect with Claude'}
+            <div className="space-y-1.5">
+              <button onClick={startOAuth} disabled={busy} className="btn btn-primary">
+                Connect with Claude
               </button>
-              <span className="text-xs text-text-muted">
-                {allTeams ? `Approve once → applied to all ${teamTargets.length} teams` : 'Approve in the browser, paste a short code — no file'}
-              </span>
+              {/* Explanation sits under the button, not beside it: the label stays one
+                  line at any width instead of wrapping inside the button box. */}
+              <p className="text-xs text-text-muted">
+                {allTeams
+                  ? `Approve once → applied to all ${teamTargets.length} teams`
+                  : fallbackConnected
+                    ? 'Upgrades the setup token to a one-tap login — approve in the browser, paste a short code.'
+                    : 'Approve in the browser, paste a short code — no file.'}
+              </p>
             </div>
           )}
           {!pasteOpen ? (
-            <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="text-xs font-medium text-text-secondary hover:text-text-primary transition-colors">
+            <button onClick={() => { setPasteOpen(true); setPasteValue(''); setPasteError(null); }} className="btn btn-quiet">
               Paste .credentials.json instead
             </button>
           ) : (
@@ -862,17 +841,17 @@ function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, o
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium">Paste .credentials.json</div>
-        {onCancel && <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>}
+        {onCancel && <button onClick={onCancel} className="btn btn-quiet">Cancel</button>}
       </div>
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={'{\n  "access_token": "...",\n  "refresh_token": "...",\n  "expires_at": 1700000000\n}'}
         rows={6}
-        className="w-full px-3 py-2 rounded-lg border bg-surface font-mono text-xs resize-y"
+        className="w-full px-3 py-2 bg-surface font-mono text-xs resize-y"
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
-      <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+      <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
         {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
       </button>
     </div>
@@ -884,13 +863,13 @@ function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCanc
   authorizeUrl: string; code: string; onChange: (v: string) => void; busy: boolean; onSubmit: () => void; onCancel: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-status-info/30 bg-status-info/5 p-3 space-y-2">
+    <div className="border-2 border-accent p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish connecting Claude</div>
-        <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>
+        <button onClick={onCancel} className="btn btn-quiet">Cancel</button>
       </div>
       <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
-        <li>Approve in the Claude tab we opened (<a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="text-status-info underline">reopen</a>).</li>
+        <li>Approve in the Claude tab we opened (<a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text underline">reopen</a>).</li>
         <li>Copy the code shown after approving and paste it here:</li>
       </ol>
       <input
@@ -898,10 +877,10 @@ function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCanc
         value={code}
         onChange={(e) => onChange(e.target.value)}
         placeholder="paste the code (looks like abc…#def…)"
-        className="w-full px-3 py-2 rounded-lg border bg-surface font-mono text-xs"
+        className="w-full px-3 py-2 bg-surface font-mono text-xs"
         onKeyDown={(e) => { if (e.key === 'Enter' && code.trim() && !busy) onSubmit(); }}
       />
-      <button onClick={onSubmit} disabled={busy || !code.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+      <button onClick={onSubmit} disabled={busy || !code.trim()} className="btn btn-primary">
         {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
@@ -1141,18 +1120,14 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {status.expired ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-status-warning border border-status-warning/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-warning" /> Expired — needs refresh
-              </span>
+              <span className="status-pill status-pill-warn">Expired — needs refresh</span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-status-success/10 text-status-success border border-status-success/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Connected
-              </span>
+              <span className="status-pill status-pill-ok">Connected</span>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
           </div>
 
-          <div className="bg-surface-3/50 rounded-lg p-3 space-y-1 text-xs text-text-secondary">
+          <div className="inset-panel space-y-1 text-xs text-text-secondary">
             {status.accountId && <div>Account: <span className="font-mono text-text-primary">{status.accountId}</span></div>}
             {status.lastRefreshedAt && <div>Last refreshed: {new Date(status.lastRefreshedAt).toLocaleString()}</div>}
             {status.lastVerifiedAt && (
@@ -1192,9 +1167,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
           {allTeams ? (
             <span className="text-xs text-text-muted">Paste once — applies the same Codex login to all {teamTargets.length} teams you manage.</span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-surface-3 text-text-muted border border-border-default">
-              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" /> Not connected
-            </span>
+            <span className="status-pill status-pill-idle">Not connected</span>
           )}
           {/* Device login mints a buildd-owned session — no pasted file to go stale. Not for all-teams fan-out. */}
           {!allTeams && (device ? (
@@ -1203,7 +1176,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
           ) : (
             <div className="flex items-center gap-3">
               <button onClick={startDeviceLogin} disabled={busy}
-                className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+                className="btn btn-primary">
                 Sign in with device code
               </button>
               <span className="text-xs text-text-muted">Recommended — buildd owns the session, no stale paste</span>
@@ -1227,17 +1200,17 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium">Paste auth.json</div>
-        {onCancel && <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>}
+        {onCancel && <button onClick={onCancel} className="btn btn-quiet">Cancel</button>}
       </div>
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={'{\n  "access_token": "...",\n  "refresh_token": "...",\n  "account_id": "..."\n}'}
         rows={6}
-        className="w-full px-3 py-2 rounded-lg border bg-surface font-mono text-xs resize-y"
+        className="w-full px-3 py-2 bg-surface font-mono text-xs resize-y"
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
-      <button onClick={onConnect} disabled={busy || !value.trim()} className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50">
+      <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
         {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
       </button>
     </div>
@@ -1247,22 +1220,22 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
 /** Shown while a Codex device-code login is in progress (buildd polls in the background). */
 function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: string; verificationUri: string; onCancel: () => void }) {
   return (
-    <div className="rounded-lg border border-status-info/30 bg-status-info/5 p-3 space-y-2">
+    <div className="border-2 border-accent p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish sign-in</div>
-        <button onClick={onCancel} className="text-xs text-text-tertiary">Cancel</button>
+        <button onClick={onCancel} className="btn btn-quiet">Cancel</button>
       </div>
       <ol className="text-xs text-text-secondary space-y-1 list-decimal list-inside">
         <li>
-          Open <a href={verificationUri} target="_blank" rel="noopener noreferrer" className="text-status-info underline">{verificationUri}</a>
+          Open <a href={verificationUri} target="_blank" rel="noopener noreferrer" className="text-accent-text underline">{verificationUri}</a>
         </li>
         <li>Enter this code:</li>
       </ol>
-      <div className="font-mono text-lg tracking-[0.3em] text-text-primary bg-surface-3 rounded-md px-3 py-2 text-center select-all">
+      <div className="font-mono text-lg tracking-[0.3em] text-text-primary inset-panel text-center select-all">
         {userCode}
       </div>
       <div className="flex items-center gap-2 text-xs text-text-muted">
-        <span className="w-1.5 h-1.5 rounded-full bg-status-info animate-pulse" />
+        <span className="w-2 h-2 bg-accent animate-pulse" />
         Waiting for approval… buildd will connect automatically.
       </div>
       <p className="text-[11px] text-text-muted">
