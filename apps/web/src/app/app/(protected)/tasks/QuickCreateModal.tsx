@@ -50,6 +50,7 @@ export default function QuickCreateModal({
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [showDeps, setShowDeps] = useState(false);
   const [backend, setBackend] = useState<'claude' | 'codex' | null>(null);
+  const [backendAvailability, setBackendAvailability] = useState<Record<string, { available: boolean; reason?: string }>>({});
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<{ id: string; slug: string; name: string; description?: string | null }[]>([]);
@@ -81,6 +82,21 @@ export default function QuickCreateModal({
         );
       })
       .catch(() => setAvailableSkills([]));
+  }, [workspaceId]);
+
+  // Fetch live backend availability
+  useEffect(() => {
+    fetch(`/api/workspaces/${workspaceId}/backends`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data?.backends) return;
+        const map: Record<string, { available: boolean; reason?: string }> = {};
+        for (const b of data.backends) {
+          map[b.id] = { available: b.available, reason: b.reason };
+        }
+        setBackendAvailability(map);
+      })
+      .catch(() => {});
   }, [workspaceId]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -526,17 +542,22 @@ export default function QuickCreateModal({
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-secondary">Backend</span>
                 <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg">
-                  {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => (
-                    <button
-                      key={o.l}
-                      type="button"
-                      onClick={() => setBackend(o.v)}
-                      disabled={loading}
-                      className={`px-2.5 py-0.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
-                    >
-                      {o.l}
-                    </button>
-                  ))}
+                  {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => {
+                    const avail = o.v ? backendAvailability[o.v] : null;
+                    const unavailable = avail && !avail.available;
+                    return (
+                      <button
+                        key={o.l}
+                        type="button"
+                        onClick={() => !unavailable && setBackend(o.v)}
+                        disabled={loading || !!unavailable}
+                        title={unavailable ? avail?.reason : undefined}
+                        className={`px-2.5 py-0.5 text-xs font-medium rounded-md transition-colors ${unavailable ? 'opacity-40 cursor-not-allowed' : 'disabled:opacity-50'} ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
+                      >
+                        {o.l}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

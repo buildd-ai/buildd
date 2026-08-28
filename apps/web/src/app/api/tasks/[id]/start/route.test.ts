@@ -950,8 +950,10 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.gateReason).toBe('capability_mismatch');
+    expect(data.blockClass).toBe('capability');
     expect(data.missingCapability).toBe('backend:codex');
-    expect(data.canForce).toBe(true);
+    expect(data.canForce).toBeUndefined();
+    expect(data.availableBackends).toEqual(['claude']);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 

@@ -88,6 +88,7 @@ export async function POST(
       return NextResponse.json({
         error: `Task is deferred until ${task.startAt.toISOString()}`,
         gateReason: 'deferred_start',
+        blockClass: 'policy',
         startAt: task.startAt.toISOString(),
         canForce: true,
       }, { status: 422 });
@@ -118,6 +119,7 @@ export async function POST(
         return NextResponse.json({
           error: 'Task is blocked: dependency PR(s) not yet merged',
           gateReason: 'unmerged_dep_pr',
+          blockClass: 'policy',
           blockingDeps: gated.map(w => ({
             taskId: w.taskId,
             taskTitle: w.task?.title || null,
@@ -145,6 +147,7 @@ export async function POST(
         return NextResponse.json({
           error: `Task cannot be started: role '${roleSlug}' has connector issues: ${detail}`,
           gateReason: 'connector_routing_mismatch',
+          blockClass: 'capability',
           connectorFailures: connectorFailures.map((f: ConnectorFailure) => ({
             connectorId: f.connectorId,
             connectorName: f.connectorName,
@@ -168,6 +171,7 @@ export async function POST(
         return NextResponse.json({
           error: 'Task is blocked: parent mission is held. Arm the mission or use forceOverride to bypass.',
           gateReason: 'mission_held',
+          blockClass: 'policy',
           missionId,
           canForce: true,
         }, { status: 422 });
@@ -202,6 +206,7 @@ export async function POST(
         return NextResponse.json({
           error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
           gateReason: 'workspace_cap_reached',
+          blockClass: 'policy',
           active: capResult.active,
           cap: capResult.cap,
           queuePosition: pendingAhead.length,
@@ -227,8 +232,9 @@ export async function POST(
         return NextResponse.json({
           error: `Task cannot be started: '${taskBackend}' backend is not available (no server credentials configured)`,
           gateReason: 'capability_mismatch',
+          blockClass: 'capability',
           missingCapability: missingCap,
-          canForce: true,
+          availableBackends: ['claude'],
         }, { status: 422 });
       }
     }
