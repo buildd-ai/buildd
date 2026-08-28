@@ -429,7 +429,7 @@ Archive action: `consolidate_knowledge(op=archive, corpus=task, sourceIds=[...])
 
 ## 8. Open Questions
 
-1. **GitHub App coverage for non-buildd workspaces.** The merge webhook requires a GitHub App installation on the repo. For workspaces whose repos are personal forks (e.g. `maxjacu/moa-ops`, `maxjacu/mercury-ekp`), the GitHub App may not be installed. Confirm installation status before relying on the diff ingest trigger; use the admin bootstrap endpoint as fallback.
+1. **GitHub App coverage for non-buildd workspaces.** The merge webhook requires a GitHub App installation on the repo. For workspaces whose repos are personal forks (e.g. `<org>/sibling-app`, `maxjacu/mercury-ekp`), the GitHub App may not be installed. Confirm installation status before relying on the diff ingest trigger; use the admin bootstrap endpoint as fallback.
 
 2. **Runner coverage.** The runner full-ingest path (§1.3) requires a runner with repo access. Non-buildd workspaces have no dedicated runner. The parameterized CI workflow (§7.2 Phase 2) covers backfill; future steady-state needs either a shared runner pool or continued use of the CI workflow for full jobs.
 

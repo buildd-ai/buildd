@@ -3,7 +3,7 @@
  * into existing roles, and create the Chief of Staff role.
  *
  * Usage:
- *   cd /Users/max/buildd/packages/core && bun scripts/seed-role-mcps.ts
+ *   cd packages/core && SIBLING_MCP_ORIGIN=https://<host> bun scripts/seed-role-mcps.ts
  *
  * Safe to run multiple times — uses upsert on (workspaceId, slug).
  */
@@ -17,6 +17,19 @@ import { createHash } from 'crypto';
 
 const client = neon(config.databaseUrl);
 const db = drizzle(client);
+
+// Origin for the private sibling app's MCP endpoints. Deliberately NOT
+// hardcoded: this repo is public and the host is resolvable. The role slugs and
+// ${MOA_OPS_API_KEY} env contract below are unchanged, because the MCPS keys
+// become MCP server names in the DB and feed the `mcp__moa-ops__*` tool-name
+// regex in packages/core/mcp-tools.ts — renaming them would break notification
+// hint detection and require a re-seed.
+const SIBLING_MCP_ORIGIN = process.env.SIBLING_MCP_ORIGIN;
+if (!SIBLING_MCP_ORIGIN) {
+  console.error('SIBLING_MCP_ORIGIN is not set — required for the sibling-app MCP entries.');
+  console.error('Example: SIBLING_MCP_ORIGIN=https://<host> bun scripts/seed-role-mcps.ts');
+  process.exit(1);
+}
 
 // ── MCP Server Templates (using ${VAR} interpolation for secrets) ──
 
@@ -33,12 +46,12 @@ const MCPS = {
   },
   'moa-ops': {
     type: 'http',
-    url: 'https://moa-ops.vercel.app/api/mcp',
+    url: `${SIBLING_MCP_ORIGIN}/api/mcp`,
     headers: { Authorization: 'Bearer ${MOA_OPS_API_KEY}' },
   },
   'moa-ops-finance': {
     type: 'http',
-    url: 'https://moa-ops.vercel.app/api/mcp/finance',
+    url: `${SIBLING_MCP_ORIGIN}/api/mcp/finance`,
     headers: { Authorization: 'Bearer ${MOA_OPS_API_KEY}' },
   },
 };

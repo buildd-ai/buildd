@@ -60,7 +60,7 @@ Two distinct Vercel token env vars exist: `VERCEL_TOKEN` (release-executor) and 
 - GitHub `/merges` API → "Head does not exist" (404) when branch was already deleted. PR #982 made this a no-op success, but the root cause is buildd doing Git operations on behalf of repos it shouldn't own.
 - Webhook Path B hardcodes `release.yml` — breaks for repos with differently-named release workflows.
 - No run-ID readback in Path B — no way to track whether the dispatched workflow succeeded.
-- `VERCEL_TOKEN` is global: cannot serve `buildd-ai/buildd` and `moa-ops` (different Vercel teams) without credential cross-contamination.
+- `VERCEL_TOKEN` is global: cannot serve `buildd-ai/buildd` and `sibling-app` (different Vercel teams) without credential cross-contamination.
 
 ---
 
@@ -74,7 +74,7 @@ All repos call a single `workflow_call` workflow containing all release logic. I
 
 ```yaml
 # Proposed home: buildd-ai/.github/.github/workflows/release-handoff.yml
-# (or a public repo for cross-org callers like moa-ops)
+# (or a public repo for cross-org callers like sibling-app)
 on:
   workflow_call:
     inputs:
@@ -140,7 +140,7 @@ jobs:
       SMOKE_URL:    ${{ secrets.SMOKE_CHECK_URL }}
 ```
 
-**Cross-org note:** GitHub `workflow_call` does not work across organizations. For `moa-ops` (different org), publish the reusable workflow in a public repo (e.g. `buildd-ai/release-workflows`) and reference it as `buildd-ai/release-workflows/.github/workflows/release-handoff.yml@main`. Alternatively, copy the file into each org's `.github` repo — acceptable for ≤2 orgs given the file's size.
+**Cross-org note:** GitHub `workflow_call` does not work across organizations. For `sibling-app` (different org), publish the reusable workflow in a public repo (e.g. `buildd-ai/release-workflows`) and reference it as `buildd-ai/release-workflows/.github/workflows/release-handoff.yml@main`. Alternatively, copy the file into each org's `.github` repo — acceptable for ≤2 orgs given the file's size.
 
 **DRY invariant:** the reusable workflow is the single source of truth for release logic. Per-repo files contain only inputs and `uses:`. No merge or deploy logic is copy-pasted.
 
@@ -205,7 +205,7 @@ No DB migration is required — `releaseConfig` is JSONB; fields are added/remov
 
 - `WorkspaceReleaseConfig.deployTarget` is deprecated for `workflow_dispatch` workspaces. Platform creds are passed as `secrets.DEPLOY_TOKEN` from the calling repo's GitHub Actions secrets.
 - `VERCEL_API_TOKEN` (health-watcher prod checks) is separate from release creds. It remains in the health-watcher path, resolved via `watchedProjects.vercelTokenSecretId` first, then falling back to the global env. Each watched project for a different Vercel team must set its own `vercelTokenSecretId`.
-- `moa-ops` sets its own Vercel token as a GitHub Actions secret in the `moa-ops` repo and as `vercelTokenSecretId` on its `watchedProject` row. buildd's env never holds a `moa-ops`-scoped token.
+- `sibling-app` sets its own Vercel token as a GitHub Actions secret in the `sibling-app` repo and as `vercelTokenSecretId` on its `watchedProject` row. buildd's env never holds a `sibling-app`-scoped token.
 - After migration: remove `VERCEL_TOKEN` from buildd's Vercel environment. `VERCEL_API_TOKEN` may remain for the health-watcher global fallback, but new watched projects should always set `vercelTokenSecretId`.
 
 #### Implementation steps (non-breaking)
@@ -342,18 +342,18 @@ Migration steps:
 
 ---
 
-#### `moa-ops`
+#### `sibling-app`
 
-`moa-ops` is a different GitHub organization and Vercel team — it cannot share buildd's global `VERCEL_TOKEN`.
+`sibling-app` is a different GitHub organization and Vercel team — it cannot share buildd's global `VERCEL_TOKEN`.
 
 Migration steps:
-1. Audit `moa-ops` workspace: `manage_workspaces action=list`.
-2. Audit its watched project: `manage_watched_projects action=list workspaceId=moa-ops`.
-3. Obtain the `moa-ops` Vercel API token (scoped to the moa-ops Vercel team).
-4. Add it as a GitHub Actions secret on the `moa-ops` repo (`VERCEL_TOKEN`).
+1. Audit `sibling-app` workspace: `manage_workspaces action=list`.
+2. Audit its watched project: `manage_watched_projects action=list workspaceId=sibling-app`.
+3. Obtain the `sibling-app` Vercel API token (scoped to the sibling-app Vercel team).
+4. Add it as a GitHub Actions secret on the `sibling-app` repo (`VERCEL_TOKEN`).
 5. Create an encrypted secret in buildd via `manage_secrets action=set` for the health-watcher use case, then update the `watchedProject` row: `manage_watched_projects action=update projectId=<id> vercelTokenSecretId=<new-secret-id>`.
-6. Update `moa-ops` workspace `releaseConfig` to `strategy: 'workflow_dispatch'`.
-7. Test: trigger a release on `moa-ops`, confirm workflow runs under the correct Vercel team.
+6. Update `sibling-app` workspace `releaseConfig` to `strategy: 'workflow_dispatch'`.
+7. Test: trigger a release on `sibling-app`, confirm workflow runs under the correct Vercel team.
 
 **Rollback:** revert `releaseConfig.strategy` to `'branch_merge'`.
 

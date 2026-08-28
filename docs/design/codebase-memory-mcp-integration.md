@@ -248,7 +248,7 @@ Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache 
 |-----------|-------------|-----------|---------|-------------|-------------|
 | dispatch | 351 | **0.69s** | **101 MB** | 2,368 | 4,254 |
 | dispatch-family | 738 | **1.76s** | **197 MB** | 9,310 | 14,540 |
-| moa-ops | 3,642 | **5.19s** | **498 MB** | 18,937 | 38,381 |
+| sibling-app | 3,642 | **5.19s** | **498 MB** | 18,937 | 38,381 |
 | buildd (repo root) | 6,158 | **6.9s** (avg 2 runs) | **650 MB** (avg) | 44,297 | 66,618 |
 | buildd (git worktree) | 1,042 src + bun node_modules | **9.35s** | **800 MB** | 58,078 | 84,106 |
 
@@ -266,7 +266,7 @@ Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache 
 |---------------|---------------|--------------------------------|
 | Small (dispatch, ≤500 src files) | < 200 MB observed | 256 MB |
 | Medium (dispatch-family, ≤1K src files) | < 250 MB observed | 512 MB |
-| Large (moa-ops, ≤4K src files) | ~500 MB observed | 640 MB |
+| Large (sibling-app, ≤4K src files) | ~500 MB observed | 640 MB |
 | XLarge (buildd, ≤7K src files + worktree) | ~800 MB observed | 1024 MB |
 
 For the initial buildd pilot (§7), **set `CBM_MEM_BUDGET_MB=1024`** in the role's MCP env config. The per-repo budget table above should be revisited if repos grow beyond current scale.

@@ -8,10 +8,10 @@ describe('error-trace-scanner', () => {
   });
 
   it('detects the 2026-05-25 incident pattern (cd: No such file or directory)', () => {
-    const out = scanToolResult('w1', 'cd: /home/coder/project/moa-ops: No such file or directory', 'bash');
+    const out = scanToolResult('w1', 'cd: /home/coder/project/sibling-app: No such file or directory', 'bash');
     expect(out).toHaveLength(1);
     expect(out[0].pattern).toBe('cd_no_such_file');
-    expect(out[0].excerpt).toContain('moa-ops');
+    expect(out[0].excerpt).toContain('sibling-app');
     expect(out[0].source).toBe('bash');
   });
 

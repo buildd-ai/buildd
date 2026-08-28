@@ -43,7 +43,7 @@ describe('groupOauthAccountsBySeatId', () => {
   it('mixes null and shared seatId correctly', () => {
     const accounts = [
       makeAccount('acc1', 'seat-A', 'coder-workspace'),
-      makeAccount('acc2', 'seat-A', 'moa-ops'),
+      makeAccount('acc2', 'seat-A', 'sibling-app'),
       makeAccount('acc3', null, 'standalone'),
     ];
     const groups = groupOauthAccountsBySeatId(accounts);

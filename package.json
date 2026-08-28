@@ -36,6 +36,9 @@
     "screenshot:app": "bash scripts/qa/shoot.sh",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
+    "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
+    "cron:sync": "bun run scripts/sync-crons.ts",
+    "cron:check": "bun run scripts/sync-crons.ts --check",
     "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
     "prepare": "git config core.hooksPath .githooks || true"

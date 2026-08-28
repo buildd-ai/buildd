@@ -13,7 +13,7 @@
 #         DEPLOY_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 #         SMOKE_URL: ${{ secrets.SMOKE_CHECK_URL }}
 #
-# For cross-org callers (e.g. moa-ops): reference the public repo path above,
+# For cross-org callers (e.g. a private sibling app): reference the public repo path above,
 # or copy this file into each org's .github repo.
 #
 # Deploy verification only runs when DEPLOY_TOKEN is provided (Vercel token,

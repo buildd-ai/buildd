@@ -1,0 +1,42 @@
+{
+  "$comment": "Single source of truth for Buildd's externally-triggered cron jobs. These are NOT Vercel crons — vercel.json's `crons` array covers a different, smaller set, and the two lists must not overlap. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. See docs/cron-jobs.md.",
+  "timezone": "UTC",
+  "jobs": [
+    {
+      "$comment": "Mission/task schedule tick. Must run every 30 min, all 24 hours: task_schedules rows use */30 cron expressions, and isOverdue() allows only interval*2 before flagging a schedule late. Previously hand-configured in the provider console as `0 7-19 * * *`, which silently starved every schedule for 12 hours a night.",
+      "title": "Buildd: Schedules Tick",
+      "path": "/api/cron/schedules",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "$comment": "BT-11/BT-19 stall notification. Route comment recommends every 5 minutes. Staged dark — no trigger has ever existed for this route.",
+      "title": "Buildd: Stall Notify",
+      "path": "/api/cron/stall-notify",
+      "schedule": "*/5 * * * *",
+      "method": "POST",
+      "enabled": false
+    },
+    {
+      "$comment": "Distills feedback down-votes/dismissals into memories. Route comment recommends every 1-4 hours. Staged dark — no trigger has ever existed for this route.",
+      "title": "Buildd: Feedback Digest",
+      "path": "/api/cron/feedback-digest",
+      "schedule": "0 */4 * * *",
+      "method": "POST",
+      "enabled": false
+    },
+    {
+      "$comment": "Weekly signing-key rotation (cross-app-assertion-grant spec B.3). Rotates when the Active key is older than 30d, so a weekly tick is sufficient. Staged dark — no trigger has ever existed, meaning signing keys have never rotated.",
+      "title": "Buildd: JWKS Rotation",
+      "path": "/api/cron/jwks-rotation",
+      "schedule": "0 4 * * 0",
+      "enabled": false
+    },
+    {
+      "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark — no trigger has ever existed for this route.",
+      "title": "Buildd: Routing Calibration",
+      "path": "/api/cron/routing-calibration",
+      "schedule": "0 5 * * 1",
+      "enabled": false
+    }
+  ]
+}

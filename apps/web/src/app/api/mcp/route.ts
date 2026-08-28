@@ -21,6 +21,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { resolveWorkspace } from "@/lib/workspace-resolver";
 import { db } from "@buildd/core/db";
 import { workspaces, teams, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets } from "@buildd/core/db/schema";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -558,10 +559,14 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         // list_connectors: read-only connector health — handled directly to avoid
         // adding an admin-gated REST route. Uses DB to stay at worker token level.
         if (action === 'list_connectors') {
-          const wsId = workspaceId || await ctx.getWorkspaceId();
+          let wsId = workspaceId || await ctx.getWorkspaceId();
+          if (!wsId && typeof params.workspaceId === 'string' && params.workspaceId) {
+            const resolved = await resolveWorkspace(params.workspaceId);
+            wsId = resolved?.id ?? null;
+          }
           if (!wsId) {
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_required', message: 'Cannot resolve workspace. Pass ?workspace=<id> in the MCP URL or use a workspace-pinned endpoint.' }) }],
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_required', message: 'Cannot resolve workspace. Pass ?workspace=<id> in the MCP URL, use a workspace-pinned endpoint, or include workspaceId in params.' }) }],
               isError: true,
             };
           }

@@ -18,7 +18,7 @@ describe('Runner env allowlist — runner secrets excluded from agent cleanEnv',
     'BUILDD_API_KEY',           // runner coordination key — agent uses MCP header auth
     'DISPATCH_API_KEY',         // MCP credential secret
     'TENANT_MASTER_KEY',        // tenant encryption master key
-    'MOA_OPS_API_KEY',          // another MCP credential
+    'SIBLING_APP_API_KEY',          // another MCP credential
   ];
 
   // These variables ARE allowed in the agent env (operator-configured LLM creds).

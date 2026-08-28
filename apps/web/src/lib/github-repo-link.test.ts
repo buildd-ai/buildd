@@ -71,12 +71,12 @@ const repoNormalizer = source.slice(
 function makeGhRepo(overrides: Record<string, unknown> = {}) {
   return {
     id: 1146343038,
-    full_name: 'maxjacu/moa-ops',
-    name: 'moa-ops',
+    full_name: 'maxjacu/sibling-app',
+    name: 'sibling-app',
     owner: { login: 'maxjacu' },
     private: true,
     default_branch: 'dev',
-    html_url: 'https://github.com/maxjacu/moa-ops',
+    html_url: 'https://github.com/maxjacu/sibling-app',
     description: 'ops monorepo',
     ...overrides,
   };
@@ -95,7 +95,7 @@ beforeEach(() => {
 describe('syncInstallationRepos', () => {
   it('upserts every repo on the installation and returns back-linked workspace ids', async () => {
     ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/wix-moa-market', name: 'wix-moa-market' })];
-    executeRows = [{ id: 'ws-moa-ops' }];
+    executeRows = [{ id: 'ws-sibling-app' }];
 
     const result = await syncInstallationRepos({ id: 'inst-row-1', installationId: 155534927 });
 
@@ -104,7 +104,7 @@ describe('syncInstallationRepos', () => {
     expect(insertedRows![0]).toMatchObject({
       installationId: 'inst-row-1',
       repoId: 1146343038,
-      fullName: 'maxjacu/moa-ops',
+      fullName: 'maxjacu/sibling-app',
       owner: 'maxjacu',
       defaultBranch: 'dev',
     });
@@ -112,7 +112,7 @@ describe('syncInstallationRepos', () => {
     expect(Object.keys(conflictSet!)).toEqual(
       expect.arrayContaining(['installationId', 'fullName', 'defaultBranch', 'updatedAt'])
     );
-    expect(result).toEqual({ synced: 2, linked: 1, linkedWorkspaceIds: ['ws-moa-ops'] });
+    expect(result).toEqual({ synced: 2, linked: 1, linkedWorkspaceIds: ['ws-sibling-app'] });
   });
 
   it('issues exactly one back-link statement per sync', async () => {
@@ -191,12 +191,12 @@ describe('syncInstallationReposById', () => {
   it('resolves the installation row from the numeric id webhooks carry', async () => {
     installationRow = { id: 'inst-row-1', installationId: 155534927 };
     ghRepos = [makeGhRepo()];
-    executeRows = [{ id: 'ws-moa-ops' }];
+    executeRows = [{ id: 'ws-sibling-app' }];
 
     const result = await syncInstallationReposById(155534927);
 
     expect(listedFor).toEqual([155534927]);
-    expect(result.linkedWorkspaceIds).toEqual(['ws-moa-ops']);
+    expect(result.linkedWorkspaceIds).toEqual(['ws-sibling-app']);
   });
 
   it('no-ops when the installation row does not exist yet', async () => {

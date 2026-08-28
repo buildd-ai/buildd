@@ -425,7 +425,7 @@ any check's count exceeds the threshold (default: 5 consecutive PRs), emit a
 workspace health event and a Pushover notification:
 
 > **Dark check detected**: `build` has been Skipped on the last 5 agent PRs
-> in workspace `moa-ops`. If this is a required check, your CI is not
+> in workspace `sibling-app`. If this is a required check, your CI is not
 > running. Check the workflow trigger conditions.
 
 **Threshold.** 5 consecutive PRs before alerting. Configurable per workspace

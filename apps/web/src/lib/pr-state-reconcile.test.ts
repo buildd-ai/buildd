@@ -34,7 +34,7 @@ const { reconcileWorkerPrState, parsePrUrl } = await import('./pr-state-reconcil
 function worker(over: Record<string, unknown> = {}) {
   return {
     id: 'w1',
-    prUrl: 'https://github.com/maxjacu/moa-ops/pull/146',
+    prUrl: 'https://github.com/maxjacu/sibling-app/pull/146',
     prNumber: 146,
     mergedAt: null,
     prLifecycleStatus: null,
@@ -60,20 +60,20 @@ beforeEach(() => {
 
 describe('parsePrUrl', () => {
   it('extracts repo and number', () => {
-    expect(parsePrUrl('https://github.com/maxjacu/moa-ops/pull/146')).toEqual({
-      repo: 'maxjacu/moa-ops',
+    expect(parsePrUrl('https://github.com/maxjacu/sibling-app/pull/146')).toEqual({
+      repo: 'maxjacu/sibling-app',
       number: 146,
     });
   });
 
   it('rejects anything that is not a github PR url', () => {
-    expect(parsePrUrl('https://github.com/maxjacu/moa-ops')).toBeNull();
+    expect(parsePrUrl('https://github.com/maxjacu/sibling-app')).toBeNull();
     expect(parsePrUrl('https://gitlab.com/a/b/pull/1')).toBeNull();
   });
 });
 
 describe('reconcileWorkerPrState', () => {
-  // The exact production bug: moa-ops#146 merged on GitHub, buildd had null.
+  // The exact production bug: sibling-app#146 merged on GitHub, buildd had null.
   it('stamps mergedAt when GitHub says merged and buildd does not know', async () => {
     const res = await reconcileWorkerPrState([worker()], {
       githubApi: githubApi({ merged_at: '2026-08-21T18:56:20Z', state: 'closed' }),
@@ -145,7 +145,7 @@ describe('reconcileWorkerPrState', () => {
 
     expect(res.fixes).toHaveLength(0);
     expect(res.unverified).toEqual([
-      { prUrl: 'https://github.com/maxjacu/moa-ops/pull/146', reason: 'GitHub API error: 404' },
+      { prUrl: 'https://github.com/maxjacu/sibling-app/pull/146', reason: 'GitHub API error: 404' },
     ]);
   });
 
