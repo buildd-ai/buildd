@@ -31,8 +31,14 @@ const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTeamsFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 
+const mockResolveWorkspace = mock(() => Promise.resolve(null as any));
+
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/workspace-resolver', () => ({
+  resolveWorkspace: mockResolveWorkspace,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -114,8 +120,35 @@ function makeListConnectorsRequest(workspaceParam = WORKSPACE_ID) {
   });
 }
 
+function makeListConnectorsRequestWithParamWorkspaceId(workspaceId: string) {
+  return new Request('http://localhost/api/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: 'Bearer bld_test',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'buildd',
+        arguments: { action: 'list_connectors', params: { workspaceId } },
+      },
+    }),
+  });
+}
+
 async function callListConnectors(workspaceParam = WORKSPACE_ID): Promise<any> {
   const res = await POST(makeListConnectorsRequest(workspaceParam));
+  const body = await res.json();
+  const text = body?.result?.content?.[0]?.text;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+async function callListConnectorsViaParam(workspaceId: string): Promise<any> {
+  const res = await POST(makeListConnectorsRequestWithParamWorkspaceId(workspaceId));
   const body = await res.json();
   const text = body?.result?.content?.[0]?.text;
   try { return JSON.parse(text); } catch { return text; }
@@ -145,6 +178,7 @@ describe('list_connectors MCP action', () => {
     mockSecretsFindMany.mockReset();
     mockTeamsFindFirst.mockReset();
     mockWorkersFindFirst.mockReset();
+    mockResolveWorkspace.mockReset();
 
     // Default happy path: worker token, workspace resolves
     mockAuthenticateApiKey.mockResolvedValue({
@@ -277,6 +311,26 @@ describe('list_connectors MCP action', () => {
   it('returns empty array when no connectors are mounted', async () => {
     const data = await callListConnectors();
     expect(data.connectors).toHaveLength(0);
+  });
+
+  // ── params.workspaceId resolution ────────────────────────────────────────────
+
+  it('resolves workspace from params.workspaceId when no URL workspace is given', async () => {
+    mockResolveWorkspace.mockResolvedValue({ id: WORKSPACE_ID, teamId: TEAM_ID, name: 'buildd' });
+    mockConnectorsFindMany.mockResolvedValue([makeConnector(CONNECTOR_OK)]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([makeCwRow(CONNECTOR_OK, true)]);
+    mockSecretsFindMany.mockResolvedValue([makeSecret(CONNECTOR_OK, { healthStatus: 'healthy' })]);
+
+    const data = await callListConnectorsViaParam('buildd');
+    expect(data.connectors).toHaveLength(1);
+    expect(data.connectors[0]).toMatchObject({ id: CONNECTOR_OK, status: 'ok' });
+  });
+
+  it('returns workspace_required when params.workspaceId cannot be resolved', async () => {
+    mockResolveWorkspace.mockResolvedValue(null);
+    const data = await callListConnectorsViaParam('nonexistent-workspace');
+    expect(data.error).toBe('workspace_required');
   });
 
   // ── error: no workspace ───────────────────────────────────────────────────────
