@@ -5,6 +5,7 @@ import {
   methodToCode,
   buildJob,
   signature,
+  needsUpdate,
   updateBody,
   loadManifest,
 } from './sync-crons';
@@ -163,8 +164,30 @@ describe('secret handling — the hazard that made a local run risky', () => {
     expect(signature(mk('local-stale'))).toBe(signature(mk('prod-real')));
   });
 
-  test('but a job with no auth header at all IS drift against one that has it', () => {
-    expect(signature(mk(undefined))).not.toBe(signature(mk('prod-real')));
+  test('signature ignores the auth header entirely', () => {
+    // Header state is a property of the LIVE job, checked by needsUpdate —
+    // not something the caller's env should be able to influence.
+    expect(signature(mk(undefined))).toBe(signature(mk('prod-real')));
+  });
+
+  test('needsUpdate: matching job with a live header needs no write', () => {
+    // The regression: previously this returned true whenever the caller had no
+    // CRON_SECRET, so `cron:check` failed against a perfectly in-sync provider.
+    const live = mk('prod-real');
+    const want = mk(undefined); // caller holds no secret
+    expect(needsUpdate(live, want)).toBe(false);
+  });
+
+  test('needsUpdate: a live job missing its auth header needs repair', () => {
+    const live = mk(undefined); // provider job has no Authorization header
+    const want = mk('prod-real');
+    expect(needsUpdate(live, want)).toBe(true);
+  });
+
+  test('needsUpdate: a schedule difference is still drift', () => {
+    const live = buildJob({ title: 't', path: '/api/cron/schedules', schedule: '0 7-19 * * *' }, 'UTC', 'https://buildd.dev', 'prod-real');
+    const want = buildJob({ title: 't', path: '/api/cron/schedules', schedule: '*/30 * * * *' }, 'UTC', 'https://buildd.dev', undefined);
+    expect(needsUpdate(live, want)).toBe(true);
   });
 
   test('update omits extendedData by default, preserving the live header', () => {
