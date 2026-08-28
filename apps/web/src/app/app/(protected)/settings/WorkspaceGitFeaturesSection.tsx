@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import SettingsSection from './SettingsSection';
 
 interface Workspace {
   id: string;
@@ -73,21 +74,18 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
   const loading = state.enforceGreenCI === null;
 
   return (
-    <section>
-      <h2 className="section-label mb-4">Workspace CI policy</h2>
-
-      <div className="card p-4 space-y-4">
+    <SettingsSection title="Workspace CI policy">
         <p className="text-sm text-text-secondary">
           Per-workspace settings that govern how tasks interact with CI.
         </p>
 
         {workspaces.length > 1 && (
           <div>
-            <label className="block text-xs text-text-muted mb-1">Workspace</label>
+            <label className="field-label">Workspace</label>
             <select
               value={selectedId}
               onChange={(e) => setSelectedId(e.target.value)}
-              className="h-9 px-3 rounded-lg border border-border-default bg-surface text-sm text-text-primary"
+              className="h-9 px-3 bg-surface text-sm text-text-primary"
             >
               {workspaces.map((ws) => (
                 <option key={ws.id} value={ws.id}>{ws.name}</option>
@@ -96,7 +94,7 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
           </div>
         )}
 
-        <div className="flex items-start justify-between gap-4 bg-surface-3/50 rounded-lg px-3 py-3">
+        <div className="flex items-start justify-between gap-4 inset-panel">
           <div className="space-y-0.5">
             <div className="text-sm font-medium text-text-primary">Require green CI before task completion</div>
             <div className="text-xs text-text-secondary">
@@ -107,15 +105,15 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
           <button
             onClick={() => !loading && toggle(!state.enforceGreenCI)}
             disabled={loading || saving}
-            className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${
-              state.enforceGreenCI ? 'bg-status-success' : 'bg-surface-3 border border-border-default'
+            className={`shrink-0 relative inline-flex h-6 w-11 items-center border-2 transition-colors focus:outline-none disabled:opacity-50 ${
+              state.enforceGreenCI ? 'bg-accent border-accent' : 'bg-surface-3 border-border-default'
             }`}
             role="switch"
             aria-checked={state.enforceGreenCI ?? false}
           >
             <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
-                state.enforceGreenCI ? 'translate-x-6' : 'translate-x-1'
+              className={`inline-block h-3.5 w-3.5 transform transition-transform ${
+                state.enforceGreenCI ? 'translate-x-5 bg-white' : 'translate-x-1 bg-text-muted'
               }`}
             />
           </button>
@@ -126,7 +124,6 @@ export default function WorkspaceGitFeaturesSection({ workspaces }: Props) {
             {msg.text}
           </div>
         )}
-      </div>
-    </section>
+    </SettingsSection>
   );
 }
