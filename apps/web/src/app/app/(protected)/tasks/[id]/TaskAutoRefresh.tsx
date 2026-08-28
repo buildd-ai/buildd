@@ -4,6 +4,18 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
+export function computeIsTerminalLeaf(
+  taskStatus: string,
+  taskMode: string,
+  hasSubTasks: boolean,
+  workerHasOpenPr: boolean,
+): boolean {
+  return (
+    taskStatus === 'failed' ||
+    (taskStatus === 'completed' && taskMode !== 'planning' && !hasSubTasks && !workerHasOpenPr)
+  );
+}
+
 /**
  * Invisible component that subscribes to workspace Pusher events
  * and triggers a server-side page refresh when the task gets claimed,
@@ -16,6 +28,7 @@ export default function TaskAutoRefresh({
   taskMode,
   depTaskIds,
   hasSubTasks,
+  workerHasOpenPr,
 }: {
   taskId: string;
   workspaceId: string;
@@ -23,6 +36,7 @@ export default function TaskAutoRefresh({
   taskMode: string;
   depTaskIds: string[];
   hasSubTasks: boolean;
+  workerHasOpenPr: boolean;
 }) {
   const router = useRouter();
   const refreshedRef = useRef(false);
@@ -34,10 +48,9 @@ export default function TaskAutoRefresh({
   useEffect(() => {
     // Skip subscriptions for truly terminal tasks:
     // - failed tasks never need updates
-    // - completed non-planning tasks with no subtasks are terminal leaf tasks
-    const isTerminalLeaf =
-      taskStatus === 'failed' ||
-      (taskStatus === 'completed' && taskMode !== 'planning' && !hasSubTasks);
+    // - completed non-planning tasks with no subtasks and no open PR are terminal leaf tasks
+    // - completed tasks with an open PR stay subscribed until the PR merges/closes
+    const isTerminalLeaf = computeIsTerminalLeaf(taskStatus, taskMode, hasSubTasks, workerHasOpenPr);
 
     if (isTerminalLeaf) return;
 
@@ -119,7 +132,7 @@ export default function TaskAutoRefresh({
       channel.unbind('task:failed', handleTaskFailed);
       unsubscribeFromChannel(channelName);
     };
-  }, [taskId, workspaceId, taskStatus, taskMode, stableDepIds, hasSubTasks, router]);
+  }, [taskId, workspaceId, taskStatus, taskMode, stableDepIds, hasSubTasks, workerHasOpenPr, router]);
 
   return null;
 }
