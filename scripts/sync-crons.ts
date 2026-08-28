@@ -2,8 +2,8 @@
 /**
  * sync-crons.ts — reconcile the external cron trigger against cron-manifest.json.
  *
- * Buildd's `/api/cron/*` routes are NOT Vercel-native crons (vercel.json's
- * `crons` array covers a different, smaller set). They are driven by an
+ * Buildd's `/api/cron/*` routes are NOT Vercel-native crons — that mechanism
+ * does not fire in this project, so vercel.json declares none. They are driven by an
  * external scheduler (cron-job.org). Historically that schedule lived only in
  * the provider's web console, which meant:
  *   - the cadence was invisible to code review, and

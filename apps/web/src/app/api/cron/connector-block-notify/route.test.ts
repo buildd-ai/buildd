@@ -71,7 +71,7 @@ function credential(over: Record<string, unknown> = {}) {
     id: 'secret-1',
     teamId: TEAM_ID,
     label: 'connector-1',
-    tokenExpiresAt: hoursFromNow(-1),
+    tokenExpiresAt: hoursFromNow(-24),
     lastVerificationError: null,
     expiryNotifiedAt: null,
     ...over,
@@ -97,7 +97,7 @@ describe('connector-block-notify cron — expiry scan', () => {
     expect(res.status).toBe(401);
   });
 
-  it('alerts on an expired connector credential and stamps the dedup column', async () => {
+  it('alerts on a credential expired beyond the sweep cycle, and stamps dedup', async () => {
     mockSecretFindMany.mockReturnValue([credential()]);
 
     const res = await POST(makeRequest());
@@ -108,7 +108,6 @@ describe('connector-block-notify cron — expiry scan', () => {
     expect(mockNotifyExpiry.mock.calls[0][0]).toMatchObject({
       teamId: TEAM_ID,
       connectorName: 'Cue',
-      expiringSoon: false,
     });
     expect(secretUpdates).toHaveLength(1);
     expect(secretUpdates[0].expiryNotifiedAt).toBeInstanceOf(Date);
@@ -125,12 +124,23 @@ describe('connector-block-notify cron — expiry scan', () => {
     expect(body.expiryAlerted).toBe(1);
   });
 
-  it('warns ahead of expiry for a credential inside the window', async () => {
+  it('stays quiet for a credential merely approaching expiry', async () => {
+    // The refresh sweep renews these. Cue's tokens live 24h, so alerting here
+    // meant a daily false alarm and a permanently-amber Home card.
     mockSecretFindMany.mockReturnValue([credential({ tokenExpiresAt: hoursFromNow(4) })]);
 
-    await POST(makeRequest());
+    const body = await (await POST(makeRequest())).json();
 
-    expect(mockNotifyExpiry.mock.calls[0][0]).toMatchObject({ expiringSoon: true });
+    expect(body.expiryAlerted).toBe(0);
+    expect(mockNotifyExpiry).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet just after expiry — the sweep gets its cycle first', async () => {
+    mockSecretFindMany.mockReturnValue([credential({ tokenExpiresAt: hoursFromNow(-1) })]);
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.expiryAlerted).toBe(0);
   });
 
   it('stays quiet for a healthy credential', async () => {
@@ -159,7 +169,7 @@ describe('connector-block-notify cron — expiry scan', () => {
     const body = await (await POST(makeRequest())).json();
 
     expect(body.expiryAlerted).toBe(1);
-    expect(mockNotifyExpiry.mock.calls[0][0]).toMatchObject({ expiringSoon: false });
+    expect(mockNotifyExpiry.mock.calls[0][0]).toMatchObject({ refreshError: 'invalid_grant' });
   });
 
   it('skips an orphaned credential whose connector was deleted', async () => {

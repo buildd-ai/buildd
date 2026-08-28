@@ -4,6 +4,7 @@ const UNIT_TEST_ROOTS = [
   'packages/core/',
   'scripts/run-unit-tests.test.ts',
   'scripts/sync-crons.test.ts',
+  'scripts/cron-coverage.test.ts',
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {

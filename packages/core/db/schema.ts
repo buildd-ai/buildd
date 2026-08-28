@@ -1469,6 +1469,11 @@ export const secrets = pgTable('secrets', {
   // expired (or is about to), cleared by the reconnect/refresh success paths so a
   // later expiry is a new episode. Read by /api/cron/connector-block-notify.
   expiryNotifiedAt: timestamp('expiry_notified_at', { withTimezone: true }),
+  // Last time a refresh actually SUCCEEDED. Distinct from lastRefreshedAt, which
+  // the optimistic lock stamps on every *attempt* before the token endpoint is
+  // called — so lastRefreshedAt alone cannot tell "refresh is working" from
+  // "refresh is being attempted and failing every cycle".
+  lastRefreshSucceededAt: timestamp('last_refresh_succeeded_at', { withTimezone: true }),
   // Credential health — set by spawn-time auth failures and active verification.
   // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;
   // revoked: explicit revocation or ≥3 consecutive auth failures; unknown: never tested.
