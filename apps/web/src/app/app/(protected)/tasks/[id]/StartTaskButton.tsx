@@ -31,6 +31,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
   const [gateData, setGateData] = useState<{
     gateReason: string;
+    /** 'policy' = human override makes sense; 'capability' = system cannot run as configured */
+    blockClass?: 'policy' | 'capability';
     error?: string;
     canForce?: boolean;
     canExempt?: boolean;
@@ -40,7 +42,9 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     active?: number;
     cap?: number;
     queuePosition?: number;
+    availableBackends?: string[];
   } | null>(null);
+  const [switchingBackend, setSwitchingBackend] = useState<string | null>(null);
   const [raisingCap, setRaisingCap] = useState(false);
   const [capRaiseTarget, setCapRaiseTarget] = useState<number | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -231,6 +235,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setRaisingCap(false);
     setCapRaiseTarget(null);
     setRunnerFleet(null);
+    setSwitchingBackend(null);
   };
 
   const handleViewInDashboard = () => {
@@ -246,6 +251,27 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setGateData(null);
     setRaisingCap(false);
     setCapRaiseTarget(null);
+    setSwitchingBackend(null);
+  };
+
+  const handleSwitchBackendAndStart = async (backend: string) => {
+    setSwitchingBackend(backend);
+    try {
+      const patchRes = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend: backend === 'claude' ? null : backend }),
+      });
+      if (!patchRes.ok) throw new Error('Failed to switch backend');
+      setGateData(null);
+      setStatus('idle');
+      await handleStart(false, false);
+    } catch (err: any) {
+      setError(err.message);
+      setStatus('failed');
+    } finally {
+      setSwitchingBackend(null);
+    }
   };
 
   const handleRaiseCapAndStart = async (newCap: number) => {
@@ -398,6 +424,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
                       : gateData?.gateReason === 'connector_routing_mismatch'
                       ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
+                      : gateData?.gateReason === 'capability_mismatch'
+                      ? `The configured backend has no server credentials and cannot run this task. Switch to an available backend to start it.`
                       : gateData?.gateReason === 'workspace_cap_reached'
                       ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
                       : gateData?.error || 'This task cannot be started right now.'}
@@ -457,6 +485,22 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                   )}
                 </div>
                 <div className="flex flex-col gap-2 mt-3">
+                  {gateData?.gateReason === 'capability_mismatch' && gateData.availableBackends && gateData.availableBackends.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      {gateData.availableBackends.map(backend => (
+                        <button
+                          key={backend}
+                          onClick={() => handleSwitchBackendAndStart(backend)}
+                          disabled={loading || switchingBackend !== null}
+                          className="px-4 py-2 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50 font-medium"
+                        >
+                          {switchingBackend === backend
+                            ? 'Switching…'
+                            : `Switch to ${backend === 'claude' ? 'Claude (default)' : backend} and start`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {gateData?.gateReason === 'workspace_cap_reached' && gateData.canExempt && (
                     <button
                       onClick={() => handleStart(false, true)}
@@ -466,7 +510,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       Start anyway (this once)
                     </button>
                   )}
-                  {gateData?.canForce && gateData?.gateReason !== 'workspace_cap_reached' && (
+                  {gateData?.canForce && gateData?.blockClass !== 'capability' && gateData?.gateReason !== 'workspace_cap_reached' && (
                     <button
                       onClick={() => handleStart(true)}
                       disabled={loading}
@@ -479,7 +523,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                     onClick={handleClose}
                     className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
                   >
-                    {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce ? 'Cancel' : 'Close'}
+                    {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce && gateData?.blockClass !== 'capability' ? 'Cancel' : 'Close'}
                   </button>
                 </div>
               </div>

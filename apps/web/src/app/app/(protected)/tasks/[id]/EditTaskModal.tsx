@@ -31,12 +31,28 @@ export default function EditTaskModal({ task, onClose }: Props) {
   const [selectedDeps, setSelectedDeps] = useState<string[]>(task.dependsOn || []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [backendAvailability, setBackendAvailability] = useState<Record<string, { available: boolean; reason?: string }>>({});
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
   }, []);
+
+  useEffect(() => {
+    if (!task.workspaceId) return;
+    fetch(`/api/workspaces/${task.workspaceId}/backends`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data?.backends) return;
+        const map: Record<string, { available: boolean; reason?: string }> = {};
+        for (const b of data.backends) {
+          map[b.id] = { available: b.available, reason: b.reason };
+        }
+        setBackendAvailability(map);
+      })
+      .catch(() => {});
+  }, [task.workspaceId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,17 +171,22 @@ export default function EditTaskModal({ task, onClose }: Props) {
             <div>
               <label className="block text-sm font-medium mb-1">Backend</label>
               <div className="flex items-center gap-1 p-1 bg-surface-3 rounded-lg w-fit">
-                {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => (
-                  <button
-                    key={o.l}
-                    type="button"
-                    onClick={() => setBackend(o.v)}
-                    disabled={loading}
-                    className={`px-3 py-1 text-sm font-medium rounded-md transition-colors disabled:opacity-50 ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
-                  >
-                    {o.l}
-                  </button>
-                ))}
+                {([{ v: null, l: 'Auto' }, { v: 'claude' as const, l: 'Claude' }, { v: 'codex' as const, l: 'Codex' }]).map((o) => {
+                  const avail = o.v ? backendAvailability[o.v] : null;
+                  const unavailable = avail && !avail.available;
+                  return (
+                    <button
+                      key={o.l}
+                      type="button"
+                      onClick={() => !unavailable && setBackend(o.v)}
+                      disabled={loading || !!unavailable}
+                      title={unavailable ? avail?.reason : undefined}
+                      className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${unavailable ? 'opacity-40 cursor-not-allowed' : 'disabled:opacity-50'} ${backend === o.v ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-muted hover:text-text-secondary'}`}
+                    >
+                      {o.l}
+                    </button>
+                  );
+                })}
               </div>
               <p className="text-xs text-text-muted mt-1">Auto uses the mission/role/workspace default.</p>
             </div>
