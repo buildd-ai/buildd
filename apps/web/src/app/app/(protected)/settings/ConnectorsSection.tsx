@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import SettingsSection from './SettingsSection';
 
 interface Workspace {
   id: string;
@@ -139,37 +140,29 @@ export default function ConnectorsSection({
   }
 
   return (
-    <section>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="section-label">Connectors</h2>
-        <div className="flex items-center gap-3">
+    <SettingsSection
+      title="Connectors"
+      bare
+      action={
+        <div className="flex items-center gap-2">
           {teams.length > 1 && (
             <select
               value={selectedTeamId}
               onChange={(e) => setSelectedTeamId(e.target.value)}
               aria-label="Team"
-              className="h-8 px-2 text-xs rounded-md border border-border-default bg-surface text-text-secondary"
+              className="h-8 px-2 text-xs bg-surface text-text-secondary"
             >
               {teams.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
           )}
-          <Link
-            href="/app/connections"
-            className="text-sm text-text-secondary hover:text-text-primary transition-colors"
-          >
-            Manage
-          </Link>
+          <Link href="/app/connections" className="btn btn-quiet">Manage</Link>
         </div>
-      </div>
-
+      }
+    >
       {message && (
-        <div className={`mb-4 p-3 rounded-lg text-sm ${
-          message.type === 'success'
-            ? 'bg-status-success/10 text-status-success border border-status-success/30'
-            : 'bg-status-error/10 text-status-error border border-status-error/30'
-        }`}>
+        <div className={`notice mb-3 ${message.type === 'success' ? 'notice-ok' : 'notice-err'}`}>
           {message.text}
         </div>
       )}
@@ -179,7 +172,7 @@ export default function ConnectorsSection({
       ) : connectors.length === 0 ? (
         <div className="card p-6 text-center">
           <p className="text-text-muted mb-3 text-sm">No connectors yet</p>
-          <Link href="/app/connections" className="text-sm text-primary hover:underline">
+          <Link href="/app/connections" className="btn btn-primary">
             Add a connection
           </Link>
         </div>
@@ -193,7 +186,7 @@ export default function ConnectorsSection({
                     <span className="text-sm font-medium text-text-primary">{connector.name}</span>
                     <span className="text-xs text-text-muted font-mono">{connector.authMode}</span>
                     {connector.shared && (
-                      <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
+                      <span className="status-pill status-pill-plain text-accent-text border-accent">
                         Shared by {connector.ownerTeamName || 'another team'}
                       </span>
                     )}
@@ -209,7 +202,7 @@ export default function ConnectorsSection({
                     <button
                       onClick={() => handleReconnect(connector.id)}
                       disabled={reconnecting === connector.id}
-                      className="px-3 py-1.5 text-xs rounded-md border border-status-warning/30 text-status-warning bg-status-warning/10 hover:bg-status-warning/20 disabled:opacity-50 transition-colors"
+                      className="btn btn-warning"
                     >
                       {reconnecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
@@ -222,11 +215,7 @@ export default function ConnectorsSection({
                         !connector.enabledWorkspaceIds.has(workspaces[0].id),
                       )}
                       disabled={toggling === `${connector.id}:${workspaces[0].id}`}
-                      className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-50 ${
-                        connector.enabledWorkspaceIds.has(workspaces[0].id)
-                          ? 'border-status-success/40 text-status-success bg-status-success/10'
-                          : 'border-border-default text-text-secondary'
-                      }`}
+                      className={`btn ${connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'btn-ok' : ''}`}
                     >
                       {connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'Enabled' : 'Disabled'}
                     </button>
@@ -244,11 +233,7 @@ export default function ConnectorsSection({
                         key={ws.id}
                         onClick={() => toggleWorkspace(connector.id, ws.id, !enabled)}
                         disabled={toggling === key}
-                        className={`px-2.5 py-1 text-xs rounded-md border transition-colors disabled:opacity-50 ${
-                          enabled
-                            ? 'border-status-success/40 text-status-success bg-status-success/10'
-                            : 'border-border-default text-text-muted'
-                        }`}
+                        className={`btn btn-sm ${enabled ? 'btn-ok' : ''}`}
                       >
                         {enabled ? '✓ ' : ''}{ws.name}
                       </button>
@@ -260,6 +245,6 @@ export default function ConnectorsSection({
           ))}
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

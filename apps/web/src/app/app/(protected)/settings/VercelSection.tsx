@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import SettingsSection from './SettingsSection';
 
 interface Team {
   id: string;
@@ -106,11 +107,7 @@ export default function VercelSection({ teams }: Props) {
   if (teams.length === 0) return null;
 
   return (
-    <section>
-      <div className="flex justify-between items-center mb-3">
-        <h2 className="section-label">Vercel</h2>
-      </div>
-      <div className="card p-4 space-y-4">
+    <SettingsSection title="Vercel">
         <p className="text-sm text-text-secondary">
           Watcher uses these tokens to read your Vercel deployment status and alert when prod is unhealthy. Generate one at{' '}
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
@@ -120,7 +117,7 @@ export default function VercelSection({ teams }: Props) {
         </p>
 
         {justAdded && (
-          <div className="rounded-lg border border-status-success/30 bg-status-success/10 p-3 space-y-2">
+          <div className="notice notice-ok space-y-2">
             <div className="font-medium text-status-success">Token ready</div>
             <p className="text-sm text-text-secondary">
               Attach it to a watched project to start receiving prod-deploy alerts. Open the project at <strong>/app/health</strong>, set its Vercel project ID, and pick this token from the dropdown.
@@ -128,11 +125,11 @@ export default function VercelSection({ teams }: Props) {
             <div className="flex items-center gap-3">
               <Link
                 href="/app/health"
-                className="inline-flex items-center h-10 px-4 rounded-lg bg-status-info text-white text-sm font-medium"
+                className="btn btn-primary"
               >
                 Go to Health →
               </Link>
-              <button onClick={() => setJustAdded(false)} className="text-sm text-text-tertiary">
+              <button onClick={() => setJustAdded(false)} className="btn btn-quiet">
                 Dismiss
               </button>
             </div>
@@ -141,11 +138,11 @@ export default function VercelSection({ teams }: Props) {
 
         {teams.length > 1 && (
           <label className="block">
-            <span className="block text-xs font-medium text-text-secondary mb-1">Team</span>
+            <span className="field-label">Team</span>
             <select
               value={selectedTeamId}
               onChange={(e) => setSelectedTeamId(e.target.value)}
-              className="w-full h-11 px-3 rounded-lg border bg-surface"
+              className="w-full h-10 px-3 bg-surface text-sm"
             >
               {teams.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
@@ -161,7 +158,7 @@ export default function VercelSection({ teams }: Props) {
         ) : (
           <ul className="space-y-2">
             {tokens.map((t) => (
-              <li key={t.id} className="flex items-center justify-between gap-3 border rounded-lg p-3">
+              <li key={t.id} className="flex items-center justify-between gap-3 inset-panel">
                 <div className="min-w-0">
                   <div className="font-medium truncate">{t.label || 'Vercel API token'}</div>
                   <div className="text-xs text-text-tertiary">Added {new Date(t.createdAt).toLocaleDateString()}</div>
@@ -169,7 +166,7 @@ export default function VercelSection({ teams }: Props) {
                 <button
                   onClick={() => deleteToken(t.id)}
                   disabled={busy}
-                  className="text-sm text-status-error font-medium"
+                  className="btn btn-danger"
                 >
                   Delete
                 </button>
@@ -181,16 +178,16 @@ export default function VercelSection({ teams }: Props) {
         {tokens.length > 0 && !addOpen ? (
           <button
             onClick={() => setAddOpen(true)}
-            className="text-sm font-medium text-status-info"
+            className="btn btn-quiet"
           >
             + Add another token
           </button>
         ) : (
-          <div className="space-y-2 border-t pt-4">
+          <div className="space-y-2 border-t border-border-default pt-4">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">Add a token</div>
+              <div className="text-sm font-medium text-text-primary">Add a token</div>
               {tokens.length > 0 && (
-                <button onClick={() => { setAddOpen(false); setLabel(''); setValue(''); }} className="text-xs text-text-tertiary">
+                <button onClick={() => { setAddOpen(false); setLabel(''); setValue(''); }} className="btn btn-quiet">
                   Cancel
                 </button>
               )}
@@ -199,19 +196,19 @@ export default function VercelSection({ teams }: Props) {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="Label (e.g. 'Personal — read deployments')"
-              className="w-full h-11 px-3 rounded-lg border bg-surface"
+              className="w-full h-10 px-3 bg-surface text-sm"
             />
             <input
               value={value}
               onChange={(e) => setValue(e.target.value)}
               type="password"
               placeholder="Paste token (sk_…)"
-              className="w-full h-11 px-3 rounded-lg border bg-surface"
+              className="w-full h-10 px-3 bg-surface text-sm"
             />
             <button
               onClick={addToken}
               disabled={busy || !value.trim()}
-              className="h-11 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+              className="btn btn-primary"
             >
               Store token
             </button>
@@ -223,7 +220,6 @@ export default function VercelSection({ teams }: Props) {
             {message.text}
           </div>
         )}
-      </div>
-    </section>
+    </SettingsSection>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import SettingsSection from './SettingsSection';
 
 interface Workspace {
   id: string;
@@ -131,12 +132,8 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
   const hasWebhook = state?.channels.webhook ?? false;
 
   return (
-    <section>
-      <div className="flex items-end justify-between mb-3 gap-3">
-        <h2 className="section-label">Notifications</h2>
-      </div>
-
-      <div className="card p-4 space-y-5">
+    <SettingsSection title="Notifications">
+      <div className="space-y-5">
         <p className="text-sm text-text-secondary">
           Route alerts to <strong className="text-text-primary">this team&apos;s</strong> own channel. Set a Pushover
           user/group key and/or a webhook URL, then choose which events fire. Teams with no channel configured receive nothing.
@@ -152,13 +149,11 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-text-secondary">Pushover (your own app)</span>
+                  <span className="field-label !mb-0">Pushover (your own app)</span>
                   {hasPushover && (
                     <span className="inline-flex items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-xs">
-                        <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Configured
-                      </span>
-                      <button onClick={() => clearChannel('pushover')} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
+                      <span className="status-pill status-pill-ok">Configured</span>
+                      <button onClick={() => clearChannel('pushover')} disabled={busy} className="btn btn-danger">
                         Remove
                       </button>
                     </span>
@@ -169,14 +164,14 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                   value={pushoverAppToken}
                   onChange={(e) => setPushoverAppToken(e.target.value)}
                   placeholder={hasPushover ? 'Replace app token…' : 'App token (your Pushover application)'}
-                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
                 />
                 <input
                   type="password"
                   value={pushoverKey}
                   onChange={(e) => setPushoverKey(e.target.value)}
                   placeholder={hasPushover ? 'Replace user/group key…' : 'u… (user or group key)'}
-                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
                 />
                 <p className="text-xs text-text-muted">
                   Both come from your own Pushover account — create an application to get the app token, and use your user
@@ -185,15 +180,13 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-text-secondary">Webhook URL</label>
+                <label className="field-label">Webhook URL</label>
                 <div className="flex items-center gap-2">
                   {hasWebhook && (
-                    <span className="inline-flex items-center gap-1.5 text-xs">
-                      <span className="w-1.5 h-1.5 rounded-full bg-status-success" /> Configured
-                    </span>
+                    <span className="status-pill status-pill-ok">Configured</span>
                   )}
                   {hasWebhook && (
-                    <button onClick={() => clearChannel('webhook')} disabled={busy} className="text-xs text-status-error font-medium disabled:opacity-50">
+                    <button onClick={() => clearChannel('webhook')} disabled={busy} className="btn btn-danger">
                       Remove
                     </button>
                   )}
@@ -203,14 +196,14 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                   value={webhookUrl}
                   onChange={(e) => setWebhookUrl(e.target.value)}
                   placeholder={hasWebhook ? 'Replace URL…' : 'https://example.com/buildd-alerts'}
-                  className="w-full h-11 px-3 rounded-lg border bg-surface font-mono text-xs"
+                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
                 />
               </div>
 
               <button
                 onClick={saveChannels}
                 disabled={busy || (!pushoverAppToken.trim() && !pushoverKey.trim() && !webhookUrl.trim())}
-                className="h-9 px-4 rounded-lg bg-status-info text-white text-sm font-medium disabled:opacity-50"
+                className="btn btn-primary"
               >
                 {busy ? 'Saving…' : 'Save channel'}
               </button>
@@ -223,7 +216,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
               <h3 className="text-sm font-medium text-text-primary">Events</h3>
               <div className="space-y-2">
                 {EVENT_LABELS.map(({ key, label, hint }) => (
-                  <label key={key} className="flex items-start justify-between gap-3 bg-surface-3/50 rounded-lg px-3 py-2 cursor-pointer">
+                  <label key={key} className="flex items-start justify-between gap-3 inset-panel cursor-pointer">
                     <div className="min-w-0">
                       <div className="text-sm text-text-primary">{label}</div>
                       <div className="text-xs text-text-muted">{hint}</div>
@@ -246,6 +239,6 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
           <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
         )}
       </div>
-    </section>
+    </SettingsSection>
   );
 }

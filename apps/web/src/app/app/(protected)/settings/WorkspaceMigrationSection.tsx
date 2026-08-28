@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import WorkspaceMigrationModal from '@/components/WorkspaceMigrationModal';
+import SettingsSection from './SettingsSection';
 
 interface Workspace {
   id: string;
@@ -26,12 +27,9 @@ export default function WorkspaceMigrationSection({
   const canMigrate = teams.length >= 2;
 
   return (
-    <section>
-      <h2 className="section-label text-status-error mb-4">Danger Zone</h2>
-
-      <div className="card border-status-error/40 p-4">
-        <div className="mb-4">
-          <div className="text-sm font-medium text-text-primary mb-1">Migrate Workspace</div>
+    <SettingsSection title="Danger zone" tone="danger">
+        <div>
+          <div className="text-sm font-medium text-text-primary mb-1">Migrate workspace</div>
           <p className="text-xs text-text-secondary">
             Move a workspace to another team. Tasks, workers, artifacts and schedules move with it.
             Workspace-scoped secrets are deleted and connectors must be re-authorized in the
@@ -52,7 +50,7 @@ export default function WorkspaceMigrationSection({
                 <span className="text-sm text-text-primary truncate">{ws.name}</span>
                 <button
                   onClick={() => setMigrating(ws)}
-                  className="px-3 py-1.5 text-xs border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 transition-colors"
+                  className="btn btn-danger"
                 >
                   Migrate…
                 </button>
@@ -60,7 +58,6 @@ export default function WorkspaceMigrationSection({
             ))}
           </div>
         )}
-      </div>
 
       {migrating && (
         <WorkspaceMigrationModal
@@ -69,6 +66,6 @@ export default function WorkspaceMigrationSection({
           onClose={() => setMigrating(null)}
         />
       )}
-    </section>
+    </SettingsSection>
   );
 }
