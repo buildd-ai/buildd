@@ -118,6 +118,20 @@ export interface QueryParams {
    * pass false for eval/assessment runs so they don't pollute hit stats.
    */
   trackHits?: boolean;
+  /**
+   * Apply the built-in corpus-authority x recency decay. Default true.
+   *
+   * The decay is inert whenever a reranker is configured, because `_finalize`
+   * calls `applyRerank`, which overwrites `score`. So the same code ranks by
+   * age without a reranker and ignores age with one — and this package is
+   * constructed both ways in the same deployment (`buildd-mcp-server.ts`
+   * passes `getVoyageReranker()`, the `mcp-tools.ts` fallbacks do not), which
+   * means a query's ranking semantics depend on which path served it.
+   *
+   * Pass false to get retrieval relevance only, so the caller can apply one
+   * age policy that behaves identically either way.
+   */
+  recencyAuthority?: boolean;
 }
 
 // ── KnowledgeStore interface ──────────────────────────────────────────────────
