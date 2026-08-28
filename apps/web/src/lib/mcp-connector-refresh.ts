@@ -47,6 +47,9 @@ function encodeBlob(blob: McpTokenBlob): string {
 export async function refreshMcpConnectorCredential(secretId: string): Promise<McpRefreshResult> {
   // Atomically claim the refresh lock by bumping lastRefreshedAt.
   // Callers who lose the race (lastRefreshedAt already recent) get no rows back.
+  // NOTE: this stamps an ATTEMPT, not a success — including for credentials that
+  // turn out to be non-OAuth or to have no refresh token. `lastRefreshSucceededAt`
+  // is the field that means "refresh is working".
   const [claimed] = await db
     .update(secrets)
     .set({ lastRefreshedAt: sql`NOW()`, updatedAt: sql`NOW()` })
@@ -168,6 +171,9 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
         tokenExpiresAt,
         // New token — clear the expiry alert stamp so a future expiry alerts again.
         expiryNotifiedAt: null,
+        // lastRefreshedAt above is stamped by the lock claim on every *attempt*;
+        // this records that the attempt actually worked.
+        lastRefreshSucceededAt: sql`NOW()`,
         lastVerificationError: null,
         updatedAt: sql`NOW()`,
       })

@@ -360,11 +360,10 @@ callback, and refresh are defined in `docs/design/generic-mcp-connectors.md`
 
 ## 6b. Credential health surfacing
 
-A connector credential can go stale (`oauth` token expired, or refresh failed
-and the refresher nulled `tokenExpiresAt` while recording
-`lastVerificationError`). §3 AC-3 keeps the claim working by silently omitting
-the connector — which is correct for the claim and wrong for the human: the
-connector stays broken until somebody happens to open the Connections page.
+A connector credential can go stale (`oauth` token expired, or refresh failed and
+the refresher nulled `tokenExpiresAt` while recording `lastVerificationError`).
+§3 AC-3 keeps the claim working by silently omitting the connector — correct for
+the claim, wrong for the human.
 
 **Status derivation** is single-source in `apps/web/src/lib/connector-status.ts`:
 
@@ -375,47 +374,74 @@ connector stays broken until somebody happens to open the Connections page.
 | `tokenExpiresAt IS NULL` and `lastVerificationError IS NOT NULL` | `expired` |
 | otherwise | `connected` |
 
-`connected` credentials within `CONNECTOR_EXPIRY_WARNING_MS` (24h) of
-`tokenExpiresAt` are additionally *expiring soon*.
+**Alerting is NOT keyed on status.** A token approaching (or just past) expiry is
+not a human problem — the refresh sweep renews it. `needsReconnect()` is true only
+when the credential can no longer heal itself:
 
-**Surfaces** (all three read the derivation above — no second copy of the rule):
+1. `lastVerificationError IS NOT NULL` — refresh definitively failed, or
+2. the token has been expired for a full sweep cycle and still is — nothing is
+   renewing it.
 
-1. Connections page — `Connected` / `Expired` badge + `Reconnect` (existing).
-2. Home action queue — a `RECONNECT` chip per stale connector, ranked above
-   `REVIEW`, linking to `/app/connections`. Already-expired sorts ahead of
-   expiring-soon.
-3. Proactive alert — the `connector-block-notify` cron (every 5 min) scans
-   `mcp_connector_credential` secrets and fires `notifyTeam(…, 'connectorBlocked')`
-   once per expiry episode, deduped by `secrets.expiryNotifiedAt`. The reconnect
-   and refresh-success paths clear that column, so a later expiry alerts again.
+The first cut of this warned on "expires within 24h", which was permanently true
+for a 24h-lifetime token: a never-clearing Home card plus an alert after every
+reconnect. Approaching expiry is deliberately silent.
+
+**Refresh sweep** (`/api/cron/codex-token-refresh`):
+
+- The lookahead is **derived from the cron's own cadence**
+  (`lib/cron-cadence.ts`, `MCP_REFRESH_LOOKAHEAD_MINUTES` overrides), never
+  hand-typed. It was 10 minutes on a 4-hourly cron, so a credential expiring in
+  (10min, 4h] was only picked up after it had already died.
+- `tokenExpiresAt IS NULL` rows are **included**. That is where the refresher
+  parks a credential it marked dead, and where an AS omitting `expires_in` leaves
+  one; excluding them meant neither was ever retried.
+- `lastRefreshedAt` is stamped by the lock on every **attempt**;
+  `lastRefreshSucceededAt` records success. Only the latter answers "is refresh
+  working".
+
+**Surfaces** (all read the same derivation — no second copy of the rule):
+
+1. Connections page — `Connected` / `Expired` badge + `Reconnect`.
+2. Home action queue — a `RECONNECT` chip per connector where
+   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/connections`.
+3. Push — `/api/cron/connector-block-notify` fires
+   `notifyTeam(…, 'connectorBlocked')` once per broken episode, deduped by
+   `secrets.expiryNotifiedAt`, cleared by the reconnect and refresh-success paths.
 
 **Invariants**:
 - The expiry alert is independent of task flow: it fires whether or not any task
-  requires the connector (the pre-existing block alert only fires at claim time,
-  after work has already stalled).
-- A successful re-auth MUST clear `lastVerificationError` as well as
-  `expiryNotifiedAt`; otherwise a provider that omits `expires_in` leaves the
-  connector reading `expired` forever.
+  requires the connector.
+- A successful re-auth MUST clear `lastVerificationError` and `expiryNotifiedAt`;
+  otherwise an AS that omits `expires_in` leaves the connector reading `expired`
+  forever.
 - A credential whose connector row was deleted is orphaned and never alerts.
+- Both cron routes above are externally triggered — see
+  `docs/specs/external-cron-triggers.md`. Neither may be moved to `vercel.json`,
+  where it would not fire.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a credential with `tokenExpiresAt` in the past and
-  `expiryNotifiedAt IS NULL` WHEN the cron runs THEN one alert is sent and
+- AC-1: GIVEN a credential with `lastVerificationError` set and
+  `expiryNotifiedAt IS NULL` WHEN the notify cron runs THEN one alert is sent and
   `expiryNotifiedAt` is stamped.
-- AC-2: GIVEN the same credential on the next cron run THEN no alert is sent.
-- AC-3: GIVEN a credential expiring in 4h THEN the alert is sent with
-  expiring-soon copy and Pushover priority `-1`.
-- AC-4: GIVEN no task is blocked THEN the expiry scan still runs.
-- AC-5: GIVEN a stale credential WHEN Home renders THEN the action queue contains
-  a `RECONNECT` item naming the connector.
+- AC-2: GIVEN the same credential on the next run THEN no alert is sent.
+- AC-3: GIVEN a credential expiring in 4h THEN no alert is sent.
+- AC-4: GIVEN a credential expired 1h ago (inside the sweep cycle) THEN no alert
+  is sent; GIVEN one expired beyond a full cycle THEN an alert is sent.
+- AC-5: GIVEN no task is blocked THEN the expiry scan still runs.
+- AC-6: GIVEN the sweep cron's schedule changes THEN the lookahead re-derives and
+  `cron-cadence.test.ts` fails until the mirrored constant matches the manifest.
 
 **Code surface**:
 - Derivation: `apps/web/src/lib/connector-status.ts`
+- Cadence: `apps/web/src/lib/cron-cadence.ts`, `cron-manifest.json`
 - Queue: `apps/web/src/lib/action-queue.ts` (`reconnect` kind → `RECONNECT` chip)
 - Home: `apps/web/src/app/app/(protected)/home/page.tsx`
-- Cron: `apps/web/src/app/api/cron/connector-block-notify/route.ts`
+- Sweep: `apps/web/src/app/api/cron/codex-token-refresh/route.ts`
+- Notify: `apps/web/src/app/api/cron/connector-block-notify/route.ts`
 - Alert copy: `apps/web/src/app/api/workers/claim/connector-block-notify.ts`
-- Schema: `packages/core/db/schema.ts` (`secrets.expiryNotifiedAt`)
+- Refresh: `apps/web/src/lib/mcp-connector-refresh.ts`
+- Schema: `packages/core/db/schema.ts` (`secrets.expiryNotifiedAt`,
+  `secrets.lastRefreshSucceededAt`)
 
 ---
 

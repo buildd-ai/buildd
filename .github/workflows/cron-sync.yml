@@ -1,9 +1,10 @@
 name: Cron Sync
 
-# Buildd's /api/cron/* routes are driven by an EXTERNAL scheduler (cron-job.org),
-# not by Vercel crons — vercel.json's `crons` array is a separate, smaller set.
-# cron-manifest.json is the single source of truth; `cron:sync` reconciles the
-# provider to match it (create/update drifted jobs, collapse duplicates).
+# Buildd's /api/cron/* routes are driven by an EXTERNAL scheduler (cron-job.org).
+# Vercel-native crons do not fire in this project, so vercel.json declares none
+# and every route lives here. cron-manifest.json is the single source of truth;
+# `cron:sync` reconciles the provider to match it (create/update drifted jobs,
+# collapse duplicates). scripts/cron-coverage.test.ts gates the invariant.
 #
 # This runs on a SUCCESSFUL Production deployment so that:
 #   - newly-deployed routes are live before the scheduler hits them, and

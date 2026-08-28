@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for Buildd's externally-triggered cron jobs. These are NOT Vercel crons — vercel.json's `crons` array covers a different, smaller set, and the two lists must not overlap. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. See docs/cron-jobs.md.",
+  "$comment": "Single source of truth for every Buildd cron trigger. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. vercel.json declares NO crons: the Vercel-native mechanism does not fire in this project, and routes parked there silently never ran. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. `scripts/cron-coverage.test.ts` enforces that every /api/cron/* route appears here exactly once. See docs/cron-jobs.md and docs/specs/external-cron-triggers.md.",
   "timezone": "UTC",
   "jobs": [
     {
@@ -9,7 +9,7 @@
       "schedule": "*/30 * * * *"
     },
     {
-      "$comment": "BT-11/BT-19 stall notification. Route comment recommends every 5 minutes. Staged dark — no trigger has ever existed for this route.",
+      "$comment": "BT-11/BT-19 stall notification. Route comment recommends every 5 minutes. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Stall Notify",
       "path": "/api/cron/stall-notify",
       "schedule": "*/5 * * * *",
@@ -17,7 +17,7 @@
       "enabled": false
     },
     {
-      "$comment": "Distills feedback down-votes/dismissals into memories. Route comment recommends every 1-4 hours. Staged dark — no trigger has ever existed for this route.",
+      "$comment": "Distills feedback down-votes/dismissals into memories. Route comment recommends every 1-4 hours. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Feedback Digest",
       "path": "/api/cron/feedback-digest",
       "schedule": "0 */4 * * *",
@@ -25,17 +25,55 @@
       "enabled": false
     },
     {
-      "$comment": "Weekly signing-key rotation (cross-app-assertion-grant spec B.3). Rotates when the Active key is older than 30d, so a weekly tick is sufficient. Staged dark — no trigger has ever existed, meaning signing keys have never rotated.",
+      "$comment": "Weekly signing-key rotation (cross-app-assertion-grant spec B.3). Rotates when the Active key is older than 30d, so a weekly tick is sufficient. Staged dark \u2014 no trigger has ever existed, meaning signing keys have never rotated.",
       "title": "Buildd: JWKS Rotation",
       "path": "/api/cron/jwks-rotation",
       "schedule": "0 4 * * 0",
       "enabled": false
     },
     {
-      "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark — no trigger has ever existed for this route.",
+      "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Routing Calibration",
       "path": "/api/cron/routing-calibration",
       "schedule": "0 5 * * 1",
+      "enabled": false
+    },
+    {
+      "$comment": "Refreshes expiring Codex/Claude/MCP-connector OAuth credentials and verifies Claude liveness. Moved off Vercel-native cron: it never fired there, so an MCP connector credential holding a valid refresh token stayed dead for 15 days until a manual reconnect. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the credential sweep's lookahead window from this expression, so changing it here changes the window.",
+      "title": "Buildd: Credential Refresh",
+      "path": "/api/cron/codex-token-refresh",
+      "schedule": "0 */4 * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there.",
+      "title": "Buildd: Connector Block + Expiry Notify",
+      "path": "/api/cron/connector-block-notify",
+      "schedule": "*/5 * * * *",
+      "method": "POST"
+    },
+    {
+      "$comment": "Releases expired credential leases and alerts the owning team. Moved off Vercel-native cron (never fired). Staged dark deliberately: it has effectively never run, so its first run will act on a full backlog of stale leases and notify for each. Enable after reviewing that blast radius.",
+      "title": "Buildd: Lease Expiry Guard",
+      "path": "/api/cron/lease-expiry-guard",
+      "schedule": "*/10 * * * *",
+      "method": "GET",
+      "enabled": false
+    },
+    {
+      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off Vercel-native cron (never fired). Staged dark: first run reconciles every stale row at once. Enable after reviewing.",
+      "title": "Buildd: PR Reconcile",
+      "path": "/api/cron/pr-reconcile",
+      "schedule": "0 2 * * *",
+      "method": "GET",
+      "enabled": false
+    },
+    {
+      "$comment": "Weekly archive of completed tasks. Moved off Vercel-native cron (never fired). Staged dark: first run archives the entire accumulated backlog. Enable after reviewing.",
+      "title": "Buildd: Task Archive",
+      "path": "/api/cron/task-archive",
+      "schedule": "0 6 * * 1",
+      "method": "GET",
       "enabled": false
     }
   ]

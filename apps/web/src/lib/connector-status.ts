@@ -7,6 +7,8 @@
  * it lives here.
  */
 
+import { sweepLookaheadMinutes } from './cron-cadence';
+
 export type ConnectorStatus = 'connected' | 'expired' | 'not_connected';
 
 export interface ConnectorCredentialSnapshot {
@@ -15,9 +17,6 @@ export interface ConnectorCredentialSnapshot {
   /** When the team was last alerted about this credential's expiry (dedup). */
   expiryNotifiedAt?: Date | null;
 }
-
-/** How far ahead of expiry we warn, so a reconnect can happen before work stalls. */
-export const CONNECTOR_EXPIRY_WARNING_MS = 24 * 60 * 60 * 1000;
 
 export function deriveConnectorStatus(
   secret: ConnectorCredentialSnapshot | undefined | null,
@@ -33,33 +32,46 @@ export function deriveConnectorStatus(
 }
 
 /**
- * Still usable, but expiry is close enough that the team should reconnect now.
- * A credential with no expiry at all (non-expiring header keys) never qualifies.
+ * A credential is only a *human* problem once it can no longer heal itself.
+ *
+ * The first cut of this warned whenever a token was within 24h of expiry, which
+ * turned out to be permanently true: Cue issues 24h access tokens, so the card
+ * never cleared and the alert fired after every reconnect. Approaching expiry is
+ * not a signal — the refresh sweep handles it. Two conditions are:
+ *
+ *   1. refresh has definitively failed (`lastVerificationError` set — the sweep's
+ *      failure path records this and nulls the expiry), or
+ *   2. the token has been expired for a full sweep cycle and still is, meaning
+ *      nothing is renewing it. That is the failure that actually bit: the sweep
+ *      sat on a Vercel cron that never fired, so a credential holding a valid
+ *      refresh token stayed dead until someone reconnected by hand.
  */
-export function isExpiringSoon(
+export function reconnectGraceMs(): number {
+  return sweepLookaheadMinutes() * 60_000;
+}
+
+export function needsReconnect(
   secret: ConnectorCredentialSnapshot | undefined | null,
   now: Date = new Date(),
-  withinMs: number = CONNECTOR_EXPIRY_WARNING_MS,
+  graceMs: number = reconnectGraceMs(),
 ): boolean {
-  if (!secret?.tokenExpiresAt) return false;
-  if (deriveConnectorStatus(secret, now) !== 'connected') return false;
-  return secret.tokenExpiresAt.getTime() - now.getTime() <= withinMs;
+  if (!secret) return false; // never connected — nothing to reconnect
+  if (secret.lastVerificationError != null) return true;
+  if (!secret.tokenExpiresAt) return false;
+  return secret.tokenExpiresAt.getTime() < now.getTime() - graceMs;
 }
 
 /**
- * Whether the proactive cron should alert about this credential right now.
+ * Whether to send a push about this credential right now.
  *
- * Dedup is by `expiryNotifiedAt`, which the reconnect/refresh success paths clear
- * — so one alert per expiry episode, and a fresh episode after a re-auth.
- * `not_connected` is deliberately silent: nobody ever connected it, so there is
- * nothing to have broken.
+ * Dedup is by `expiryNotifiedAt`, which the reconnect and refresh-success paths
+ * clear — so one alert per broken episode, and a fresh episode after a re-auth.
  */
 export function shouldNotifyExpiry(
   secret: ConnectorCredentialSnapshot | undefined | null,
   now: Date = new Date(),
-  withinMs: number = CONNECTOR_EXPIRY_WARNING_MS,
+  graceMs: number = reconnectGraceMs(),
 ): boolean {
-  if (!secret) return false;
-  if (secret.expiryNotifiedAt) return false;
-  return deriveConnectorStatus(secret, now) === 'expired' || isExpiringSoon(secret, now, withinMs);
+  if (secret?.expiryNotifiedAt) return false;
+  return needsReconnect(secret, now, graceMs);
 }
