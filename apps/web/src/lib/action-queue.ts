@@ -1,4 +1,4 @@
-export type ActionChip = 'MERGE' | 'BLOCKED' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'RESOLVING';
+export type ActionChip = 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'RESOLVING';
 
 export interface ResolvedEscalationItem {
   workerId: string;
@@ -34,7 +34,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
@@ -47,6 +47,11 @@ export interface WaitingOnYouRawItem {
   question?: string;
   missionId?: string | null;
   missionTitle?: string | null;
+  /** kind === 'reconnect' — the connector whose credential expired. */
+  connectorId?: string;
+  connectorName?: string;
+  /** True while the token is still valid but inside the warning window. */
+  expiringSoon?: boolean;
 }
 
 export interface EscalationRawItem {
@@ -98,12 +103,18 @@ export interface ActionQueueItem {
   deadZoneExhausted?: boolean;
   /** Link target for the BLOCKED card's primary CTA. */
   deadZoneLastRetryTaskId?: string | null;
+  /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
+  connectorId?: string;
+  connectorName?: string;
+  expiringSoon?: boolean;
 }
 
 // Chip display order: lower index = shown first.
 // BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
-const CHIP_ORDER: ActionChip[] = ['MERGE', 'BLOCKED', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
+// RECONNECT sits high: an expired connector silently starves every task that
+// needs it, and the fix is a single tap.
+const CHIP_ORDER: ActionChip[] = ['MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
 
 /**
  * Merges waitingOnYou items and escalationInbox items into a single
@@ -190,6 +201,17 @@ export function buildActionQueue(
         missionId: item.missionId,
         missionTitle: item.missionTitle,
       });
+    } else if (item.kind === 'reconnect') {
+      const key = `connector:${item.connectorId}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'RECONNECT',
+          connectorId: item.connectorId,
+          connectorName: item.connectorName,
+          expiringSoon: item.expiringSoon,
+        });
+      }
     } else if (item.kind === 'approve') {
       const key = `task:${item.taskId}`;
       if (!map.has(key)) {
@@ -210,6 +232,8 @@ export function buildActionQueue(
     if (chipDiff !== 0) return chipDiff;
     // Within MERGE: most impactful (unblocks more tasks) first
     if (a.chip === 'MERGE') return (b.unblockCount ?? 0) - (a.unblockCount ?? 0);
+    // Within RECONNECT: already-broken before merely-expiring.
+    if (a.chip === 'RECONNECT') return Number(a.expiringSoon ?? false) - Number(b.expiringSoon ?? false);
     return 0;
   });
 }

@@ -8,6 +8,7 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
+import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -44,18 +45,6 @@ async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
     columns: { role: true },
   });
   return membership?.role !== 'member';
-}
-
-function deriveStatus(
-  secret: { tokenExpiresAt: Date | null; lastVerificationError?: string | null } | undefined,
-): 'connected' | 'expired' | 'not_connected' {
-  if (!secret) return 'not_connected';
-  // Expired if the token has a past expiry, OR the refresher marked the credential
-  // dead by nulling tokenExpiresAt and recording a verification error (spec §1b /
-  // Ground truth #4). Without the latter, a dead credential renders green.
-  if (secret.tokenExpiresAt && secret.tokenExpiresAt < new Date()) return 'expired';
-  if (secret.tokenExpiresAt == null && secret.lastVerificationError != null) return 'expired';
-  return 'connected';
 }
 
 export async function GET(req: NextRequest) {

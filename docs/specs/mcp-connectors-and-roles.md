@@ -358,6 +358,67 @@ callback, and refresh are defined in `docs/design/generic-mcp-connectors.md`
 
 ---
 
+## 6b. Credential health surfacing
+
+A connector credential can go stale (`oauth` token expired, or refresh failed
+and the refresher nulled `tokenExpiresAt` while recording
+`lastVerificationError`). §3 AC-3 keeps the claim working by silently omitting
+the connector — which is correct for the claim and wrong for the human: the
+connector stays broken until somebody happens to open the Connections page.
+
+**Status derivation** is single-source in `apps/web/src/lib/connector-status.ts`:
+
+| Credential state | Status |
+|---|---|
+| no secret row | `not_connected` |
+| `tokenExpiresAt <= now` | `expired` |
+| `tokenExpiresAt IS NULL` and `lastVerificationError IS NOT NULL` | `expired` |
+| otherwise | `connected` |
+
+`connected` credentials within `CONNECTOR_EXPIRY_WARNING_MS` (24h) of
+`tokenExpiresAt` are additionally *expiring soon*.
+
+**Surfaces** (all three read the derivation above — no second copy of the rule):
+
+1. Connections page — `Connected` / `Expired` badge + `Reconnect` (existing).
+2. Home action queue — a `RECONNECT` chip per stale connector, ranked above
+   `REVIEW`, linking to `/app/connections`. Already-expired sorts ahead of
+   expiring-soon.
+3. Proactive alert — the `connector-block-notify` cron (every 5 min) scans
+   `mcp_connector_credential` secrets and fires `notifyTeam(…, 'connectorBlocked')`
+   once per expiry episode, deduped by `secrets.expiryNotifiedAt`. The reconnect
+   and refresh-success paths clear that column, so a later expiry alerts again.
+
+**Invariants**:
+- The expiry alert is independent of task flow: it fires whether or not any task
+  requires the connector (the pre-existing block alert only fires at claim time,
+  after work has already stalled).
+- A successful re-auth MUST clear `lastVerificationError` as well as
+  `expiryNotifiedAt`; otherwise a provider that omits `expires_in` leaves the
+  connector reading `expired` forever.
+- A credential whose connector row was deleted is orphaned and never alerts.
+
+**Acceptance criteria**:
+- AC-1: GIVEN a credential with `tokenExpiresAt` in the past and
+  `expiryNotifiedAt IS NULL` WHEN the cron runs THEN one alert is sent and
+  `expiryNotifiedAt` is stamped.
+- AC-2: GIVEN the same credential on the next cron run THEN no alert is sent.
+- AC-3: GIVEN a credential expiring in 4h THEN the alert is sent with
+  expiring-soon copy and Pushover priority `-1`.
+- AC-4: GIVEN no task is blocked THEN the expiry scan still runs.
+- AC-5: GIVEN a stale credential WHEN Home renders THEN the action queue contains
+  a `RECONNECT` item naming the connector.
+
+**Code surface**:
+- Derivation: `apps/web/src/lib/connector-status.ts`
+- Queue: `apps/web/src/lib/action-queue.ts` (`reconnect` kind → `RECONNECT` chip)
+- Home: `apps/web/src/app/app/(protected)/home/page.tsx`
+- Cron: `apps/web/src/app/api/cron/connector-block-notify/route.ts`
+- Alert copy: `apps/web/src/app/api/workers/claim/connector-block-notify.ts`
+- Schema: `packages/core/db/schema.ts` (`secrets.expiryNotifiedAt`)
+
+---
+
 ## 7. Out of scope (whole doc)
 
 - Linear/work-tracker layer (`docs/design/generic-mcp-connectors.md` §I) — deferred.

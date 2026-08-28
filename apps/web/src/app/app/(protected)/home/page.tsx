@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -12,7 +12,8 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
-import type { ResolvedEscalationItem } from '@/lib/action-queue';
+import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
+import { deriveConnectorStatus, isExpiringSoon } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
@@ -177,21 +178,7 @@ export default async function HomePage({
   // Arc headline: an initiative that crossed a milestone since this user's last visit.
   let arcHeadline: string | null = null;
 
-  let waitingOnYou: Array<{
-    kind: 'merge' | 'approve' | 'answer';
-    prUrl?: string;
-    prNumber?: number;
-    prLifecycleStatus?: 'open' | 'merged' | 'closed' | null;
-    upstreamTaskId?: string;
-    upstreamTaskTitle?: string;
-    unblockCount?: number;
-    taskId?: string;
-    taskTitle?: string;
-    workerId?: string;
-    question?: string;
-    missionId?: string | null;
-    missionTitle?: string | null;
-  }> = [];
+  const waitingOnYou: WaitingOnYouRawItem[] = [];
 
   let escalationInbox: {
     workerId: string;
@@ -1155,6 +1142,42 @@ export default async function HomePage({
           }
         }
 
+        // 4. Connector credentials that expired (or are about to). Scoped to the
+        // active team rather than to wsIds, since connectors are a team resource.
+        // An expired connector silently starves every task that needs it, and the
+        // only prior signal was the badge on the Connections page — you had to
+        // already suspect something to go look.
+        if (initiativeTeamIds.length > 0) {
+          const credentialRows = await db.query.secrets.findMany({
+            where: and(
+              inArray(secrets.teamId, initiativeTeamIds),
+              eq(secrets.purpose, 'mcp_connector_credential'),
+            ),
+            columns: { label: true, tokenExpiresAt: true, lastVerificationError: true },
+          });
+          const stale = credentialRows.filter(
+            c => c.label && (deriveConnectorStatus(c) === 'expired' || isExpiringSoon(c)),
+          );
+          if (stale.length > 0) {
+            // `label` holds the connector id (see /api/connectors).
+            const connectorRows = await db.query.connectors.findMany({
+              where: inArray(connectors.id, stale.map(c => c.label as string)),
+              columns: { id: true, name: true },
+            });
+            const nameById = new Map(connectorRows.map(c => [c.id, c.name]));
+            for (const cred of stale) {
+              const connectorName = nameById.get(cred.label as string);
+              if (!connectorName) continue; // orphaned credential — connector deleted
+              waitingOnYou.push({
+                kind: 'reconnect',
+                connectorId: cred.label as string,
+                connectorName,
+                expiringSoon: deriveConnectorStatus(cred) === 'connected',
+              });
+            }
+          }
+        }
+
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
 
@@ -1333,6 +1356,34 @@ export default async function HomePage({
                             {item.taskTitle}
                           </div>
                           <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
+                        </Link>
+                      );
+                    }
+                    if (item.chip === 'RECONNECT') {
+                      return (
+                        <Link
+                          key={item.subjectKey}
+                          href="/app/connections"
+                          className={`block border-l-2 rounded-r-[10px] px-4 py-3 transition-colors ${
+                            item.expiringSoon
+                              ? 'border-status-warning bg-status-warning/5 hover:bg-status-warning/10'
+                              : 'border-status-error bg-status-error/5 hover:bg-status-error/10'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className={`text-[10px] font-mono font-medium tracking-wide uppercase ${
+                              item.expiringSoon ? 'text-status-warning' : 'text-status-error'
+                            }`}>
+                              Reconnect
+                            </span>
+                            <span className="text-[11px] text-text-muted">Connection</span>
+                          </div>
+                          <div className="text-[13px] font-medium text-text-primary truncate">
+                            {item.connectorName}
+                            <span className="font-normal text-text-secondary">
+                              {item.expiringSoon ? ' expires soon' : ' has expired'}
+                            </span>
+                          </div>
                         </Link>
                       );
                     }

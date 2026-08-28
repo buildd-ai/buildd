@@ -1465,6 +1465,10 @@ export const secrets = pgTable('secrets', {
   // smoke-tested against the real provider API, and the error string if it failed.
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
   lastVerificationError: text('last_verification_error'),
+  // Expiry-alert dedup: set when the team is notified that this credential has
+  // expired (or is about to), cleared by the reconnect/refresh success paths so a
+  // later expiry is a new episode. Read by /api/cron/connector-block-notify.
+  expiryNotifiedAt: timestamp('expiry_notified_at', { withTimezone: true }),
   // Credential health — set by spawn-time auth failures and active verification.
   // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;
   // revoked: explicit revocation or ≥3 consecutive auth failures; unknown: never tested.
