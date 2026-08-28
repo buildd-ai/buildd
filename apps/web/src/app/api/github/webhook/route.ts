@@ -885,6 +885,22 @@ async function handleCheckSuiteFailure(
       }
       const task = worker.task;
 
+      // Completed tasks must not spawn retry children — the PR is orphaned from
+      // the agent's perspective. Surface CI failures to the mission feed instead.
+      if (task.status === 'completed') {
+        if (task.missionId) {
+          await notifyMissionPrReady(task.missionId, {
+            title: 'CI failing on completed task PR',
+            prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
+            prNumber: pr.number,
+            headSha: checkSuite.head_sha,
+            reason: 'ci_failed',
+            message: `${task.title} — CI failed on the completed task's PR. Needs a human.`,
+          });
+        }
+        continue;
+      }
+
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, task.workspaceId),
       });
