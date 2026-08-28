@@ -46,17 +46,17 @@
       "method": "GET"
     },
     {
-      "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there.",
+      "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there. Cadence */5 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day.",
       "title": "Buildd: Connector Block + Expiry Notify",
       "path": "/api/cron/connector-block-notify",
-      "schedule": "*/5 * * * *",
+      "schedule": "0 * * * *",
       "method": "POST"
     },
     {
-      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once.",
+      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day.",
       "title": "Buildd: Lease Expiry Guard",
       "path": "/api/cron/lease-expiry-guard",
-      "schedule": "*/10 * * * *",
+      "schedule": "0 * * * *",
       "method": "GET"
     },
     {

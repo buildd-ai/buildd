@@ -19,7 +19,7 @@
 /** Mirrors cron-manifest.json. Pinned by cron-cadence.test.ts. */
 export const CRON_SCHEDULES = {
   'codex-token-refresh': '0 */4 * * *',
-  'connector-block-notify': '*/5 * * * *',
+  'connector-block-notify': '0 * * * *',
 } as const;
 
 /** A sweep must cover its own poll interval, plus margin for a late tick. */

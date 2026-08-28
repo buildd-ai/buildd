@@ -31,6 +31,11 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   `scripts/cron-coverage.test.ts` — the capability statement above was previously
   unchecked, which is exactly how five routes sat on a dead mechanism.
 - `vercel.json` declares **no** crons. Adding one there is a silent no-op.
+- A job that touches the database runs **at most hourly** unless its correctness
+  requires finer. Neon autosuspends idle compute; a sub-hourly tick keeps it
+  awake around the clock and bills idle time. `/api/cron/schedules` is the one
+  sanctioned exception — `task_schedules` rows use `*/30`, so the tick cannot be
+  coarser than that without starving them.
 - Every externally-triggered route MUST authenticate via `Authorization: Bearer
   $CRON_SECRET`; the scheduler cannot send `x-vercel-cron`. Enforced by the same test.
 - A job whose cadence another module reasons about (currently
