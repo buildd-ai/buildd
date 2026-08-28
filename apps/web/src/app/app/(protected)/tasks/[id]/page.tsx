@@ -118,7 +118,7 @@ export default async function TaskDetailPage({
   const depTasks = depTaskIds.length > 0
     ? await db.query.tasks.findMany({
         where: inArray(tasks.id, depTaskIds),
-        columns: { id: true, title: true, status: true },
+        columns: { id: true, title: true, status: true, result: true },
         with: {
           workers: {
             columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
@@ -657,43 +657,6 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Degraded Connectors Banner — persists even after worker completes for audit trail */}
-        {(() => {
-          const latestWorker = taskWorkers[0];
-          const degraded = latestWorker?.degradedConnectors as Array<{ id: string; name: string; failureMode: string }> | null | undefined;
-          if (!degraded || degraded.length === 0) return null;
-          const FAILURE_LABELS: Record<string, string> = {
-            never_mounted: 'not configured',
-            expired_or_revoked: 'auth expired',
-            transient: 'unreachable',
-          };
-          return (
-            <div className="bg-status-warning/10 border border-status-warning/20 rounded-[10px] p-4 mb-6">
-              <div className="flex items-center gap-2 text-status-warning font-medium text-sm mb-2">
-                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-2.99l-6.93-12a2 2 0 00-3.48 0l-6.93 12A2 2 0 005.07 19z" />
-                </svg>
-                Ran with {degraded.length} degraded connector{degraded.length !== 1 ? 's' : ''}
-              </div>
-              <div className="ml-6 space-y-1">
-                {degraded.map((c) => (
-                  <div key={c.id} className="flex items-center gap-2">
-                    <Link
-                      href="/app/connections"
-                      className="text-[13px] font-medium text-status-warning hover:underline"
-                    >
-                      {c.name}
-                    </Link>
-                    <span className="text-[11px] font-mono text-text-muted">
-                      {FAILURE_LABELS[c.failureMode] ?? c.failureMode}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
-
         {/* Loop history */}
         {task.loopConfig && (
           <LoopHistory
@@ -812,19 +775,26 @@ export default async function TaskDetailPage({
                 Dependencies
               </div>
               <div className="card p-4 space-y-2">
-                {depTasks.map((dep) => (
-                  <div key={dep.id} className="flex items-center gap-2">
-                    <Link
-                      href={`/app/tasks/${dep.id}`}
-                      className="text-sm text-primary-400 hover:underline"
-                    >
-                      {dep.title}
-                    </Link>
-                    <span className={`px-2 py-0.5 text-xs rounded-full ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                      {dep.status}
-                    </span>
-                  </div>
-                ))}
+                {depTasks.map((dep) => {
+                  const depResult = dep.result as Record<string, unknown> | null;
+                  const displayStatus = dep.status === 'failed' && depResult?.errorType === 'infra_stalled'
+                    ? 'infra_stalled'
+                    : dep.status;
+                  return (
+                    <div key={dep.id} className="flex items-center gap-2 flex-wrap">
+                      <Link
+                        href={`/app/tasks/${dep.id}`}
+                        className="text-sm text-primary-400 hover:underline"
+                      >
+                        {dep.title}
+                      </Link>
+                      <StatusBadge status={displayStatus} />
+                      {displayStatus === 'infra_stalled' && (
+                        <span className="text-xs text-[#D97706]">Blocked by infra error — needs manual retry</span>
+                      )}
+                    </div>
+                  );
+                })}
                 {allResolved && (
                   <div className="flex items-center gap-1.5 mt-2 text-xs text-status-success">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

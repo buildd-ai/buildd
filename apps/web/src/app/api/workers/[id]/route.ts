@@ -1149,6 +1149,10 @@ export async function PATCH(
       // ────────────────────────────────────────────────────────────────────────
 
       // Auto-retry: mission tasks get 1 automatic retry before permanently failing
+      let infraStalledFail = false;
+      let infraRetryStartAt: Date | null = null;
+      const MAX_INFRA_RETRIES_PATCH = 3;
+      const INFRA_BACKOFF_MINUTES_PATCH = [5, 15, 30] as const;
       if (status === 'failed') {
         const taskForRetry = await db.query.tasks.findFirst({
           where: eq(tasks.id, worker.taskId),
@@ -1188,6 +1192,23 @@ export async function PATCH(
           }
         }
 
+        // Infra failure override (steeringDelivery = true):
+        // CLI startup errors (session collision, env collision) are infra — not code bugs.
+        // Use a separate infraRetryCount so infra burns don't consume code-failure retry
+        // slots. Apply exponential backoff and cap at MAX_INFRA_RETRIES_PATCH attempts.
+        if (isSteeringDelivery && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+          const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
+          if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
+            shouldAutoRetry = true;
+            const backoffMins = INFRA_BACKOFF_MINUTES_PATCH[infraRetryCount] ?? 30;
+            infraRetryStartAt = new Date(Date.now() + backoffMins * 60_000);
+            taskCtxForRetry = { ...taskCtxForRetry, infraRetryCount: infraRetryCount + 1 };
+          } else {
+            shouldAutoRetry = false;
+            infraStalledFail = true;
+          }
+        }
+
         // Capture branch coordinates from the failing worker for retry continuity.
         // Written for both auto-retry and permanent-failure paths so that CI retry
         // and reviewer-loop retry can read resumeBranch from the task record.
@@ -1216,9 +1237,17 @@ export async function PATCH(
           claimedAt: null,
           expiresAt: null,
           context: taskCtxForRetry,
+          ...(infraRetryStartAt ? { startAt: infraRetryStartAt } : {}),
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
           context: taskCtxForRetry,
+          ...(infraStalledFail ? {
+            result: {
+              error: `Task stalled: infra errors prevented startup on ${MAX_INFRA_RETRIES_PATCH} consecutive attempts`,
+              errorType: 'infra_stalled',
+              infraRetryCount: MAX_INFRA_RETRIES_PATCH,
+            },
+          } : {}),
         } : {}),
       };
 
