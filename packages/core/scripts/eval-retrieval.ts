@@ -33,6 +33,8 @@ import path from 'path';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const SPEC_SYNC_NS_DEFAULT = '471effe1-4668-4cc9-9fa3-e20a56769deb';
+import { ndcg, reciprocalRank, recallAtK, mean } from './eval-metrics';
+
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const DEFAULT_OUTPUT = path.join(SCRIPT_DIR, 'eval', 'baseline-results.json');
 // Committed regression baseline (metrics + query ids only) — see eval/regression.ts.
@@ -52,66 +54,6 @@ function queryFromChunk(text: string): string {
     .map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
     .filter(Boolean);
   return (lines[0] || text).slice(0, 200);
-}
-
-/**
- * Discounted Cumulative Gain at k with binary relevance.
- * relevantSet: set of relevant result IDs (or source paths).
- * results: ordered list of {id, sourcePath} from the retriever.
- */
-function dcg(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  let gain = 0;
-  const capped = results.slice(0, k);
-  for (let i = 0; i < capped.length; i++) {
-    const r = capped[i];
-    const relevant = relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath));
-    if (relevant) {
-      gain += 1 / Math.log2(i + 2); // log2(rank+1), rank is 1-based → i+2
-    }
-  }
-  return gain;
-}
-
-/** Ideal DCG: all relevant items at the top. */
-function idcg(numRelevant: number, k: number): number {
-  const n = Math.min(numRelevant, k);
-  let gain = 0;
-  for (let i = 0; i < n; i++) {
-    gain += 1 / Math.log2(i + 2);
-  }
-  return gain;
-}
-
-function ndcg(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  const ideal = idcg(relevantSet.size, k);
-  if (ideal === 0) return 0;
-  return dcg(results, relevantSet, k) / ideal;
-}
-
-/**
- * Reciprocal rank: 1/rank of first relevant result (0 if none in top-k).
- */
-function reciprocalRank(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  for (let i = 0; i < Math.min(results.length, k); i++) {
-    const r = results[i];
-    if (relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath))) {
-      return 1 / (i + 1);
-    }
-  }
-  return 0;
-}
-
-/** recall@k: fraction of relevant items found in top-k (capped at 1.0 for multi-relevant). */
-function recallAtK(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  if (relevantSet.size === 0) return 0;
-  const topK = results.slice(0, k);
-  const found = topK.filter(r => relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath))).length;
-  return found / relevantSet.size;
-}
-
-function mean(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
 // In --json mode, progress/summary logging goes to stderr so stdout carries
