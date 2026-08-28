@@ -31,6 +31,22 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   `scripts/cron-coverage.test.ts` — the capability statement above was previously
   unchecked, which is exactly how five routes sat on a dead mechanism.
 - `vercel.json` declares **no** crons. Adding one there is a silent no-op.
+- Manifest default timezone is **America/New_York**: schedules are read in the
+  hours the product is actually used.
+- A job that touches the database runs **at most hourly**, and **daytime only
+  (`7-23`)**, unless its correctness requires otherwise. Neon autosuspends idle
+  compute; a sub-hourly round-the-clock tick keeps it awake and bills idle time.
+  Two sanctioned exceptions, both load-bearing:
+  - `/api/cron/schedules` — `*/30`, hour field `*`. `task_schedules` rows use
+    `*/30` and `isOverdue()` allows only `interval*2`. An hour range here is
+    precisely what starved every schedule for 12h a night.
+  - `/api/cron/codex-token-refresh` — `0 */4 * * *`, unrestricted. Tokens expire
+    overnight, and its cadence sizes the credential sweep window (below), which
+    must be an **even** interval.
+- A job whose cadence sizes a derived window MUST run on an even interval. An
+  hour-restricted schedule's true worst case is the overnight gap (8h for
+  `7-23`), not the nominal interval, so `cronIntervalMinutes` throws on those
+  forms rather than returning a number that would under-size the window.
 - Every externally-triggered route MUST authenticate via `Authorization: Bearer
   $CRON_SECRET`; the scheduler cannot send `x-vercel-cron`. Enforced by the same test.
 - A job whose cadence another module reasons about (currently
