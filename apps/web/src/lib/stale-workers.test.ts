@@ -1029,6 +1029,158 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('failed');
   });
+
+  it('resets to pending with backoff on first infra failure (infraRetryCount=0)', async () => {
+    // No chargeable failures — all infra. infraRetryCount not set yet (first infra failure).
+    const before = Date.now();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.claimedBy).toBeNull();
+    expect(taskUpdateSet.claimedAt).toBeNull();
+    // startAt should be ~5 minutes from now (first backoff slot)
+    expect(taskUpdateSet.startAt).toBeInstanceOf(Date);
+    const startAtMs = taskUpdateSet.startAt.getTime();
+    expect(startAtMs).toBeGreaterThanOrEqual(before + 4 * 60_000);
+    expect(startAtMs).toBeLessThanOrEqual(Date.now() + 6 * 60_000);
+    // infraRetryCount incremented to 1
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
+  });
+
+  it('uses 15-minute backoff on second infra failure (infraRetryCount=1)', async () => {
+    const before = Date.now();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: { infraRetryCount: 1 }, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('pending');
+    // startAt should be ~15 minutes from now (second backoff slot)
+    expect(taskUpdateSet.startAt).toBeInstanceOf(Date);
+    const startAtMs = taskUpdateSet.startAt.getTime();
+    expect(startAtMs).toBeGreaterThanOrEqual(before + 14 * 60_000);
+    expect(startAtMs).toBeLessThanOrEqual(Date.now() + 16 * 60_000);
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(2);
+  });
+
+  it('marks task as infra_stalled after exceeding MAX_INFRA_RETRIES', async () => {
+    // infraRetryCount=3 (MAX_INFRA_RETRIES) → stall cap reached → failed + errorType infra_stalled
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: { infraRetryCount: 3 }, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result?.errorType).toBe('infra_stalled');
+    expect(taskUpdateSet.result?.infraRetryCount).toBe(3);
+    expect(taskUpdateSet.result?.error).toContain('infra errors prevented startup');
+    // startAt must NOT be set — this is terminal
+    expect(taskUpdateSet.startAt).toBeUndefined();
+  });
+
+  it('infra_failure workers do not count toward code-failure retry cap', async () => {
+    // 3 infra_failure workers → 0 chargeable → code cap NOT reached; infra path used instead
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' },
+        { id: 'f2', exitCause: 'infra_failure' },
+        { id: 'f3', exitCause: 'infra_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // infraRetryCount=0 → still within infra retry window → reset to pending, not failed
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // 3 infra_failure workers → 0 chargeable → code cap not hit → infra retry path
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
+  });
 });
 
 describe('cleanupStaleWorkers — activeSessions seat release', () => {
