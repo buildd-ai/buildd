@@ -13,7 +13,7 @@ import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
 import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
-import { deriveConnectorStatus, isExpiringSoon } from '@/lib/connector-status';
+import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
@@ -1142,22 +1142,25 @@ export default async function HomePage({
           }
         }
 
-        // 4. Connector credentials that expired (or are about to). Scoped to the
-        // active team rather than to wsIds, since connectors are a team resource.
-        // An expired connector silently starves every task that needs it, and the
-        // only prior signal was the badge on the Connections page — you had to
-        // already suspect something to go look.
+        // 4. Connector credentials that can no longer re-authorise themselves.
+        // Scoped to the active team rather than to wsIds, since connectors are a
+        // team resource. Such a connector silently starves every task that needs
+        // it, and the only prior signal was the badge on the Connections page —
+        // you had to already suspect something to go look. Deliberately NOT
+        // "expiring soon": the refresh sweep renews those (connector-status.ts).
         if (initiativeTeamIds.length > 0) {
           const credentialRows = await db.query.secrets.findMany({
             where: and(
               inArray(secrets.teamId, initiativeTeamIds),
               eq(secrets.purpose, 'mcp_connector_credential'),
             ),
-            columns: { label: true, tokenExpiresAt: true, lastVerificationError: true },
+            columns: {
+              label: true,
+              tokenExpiresAt: true,
+              lastVerificationError: true,
+            },
           });
-          const stale = credentialRows.filter(
-            c => c.label && (deriveConnectorStatus(c) === 'expired' || isExpiringSoon(c)),
-          );
+          const stale = credentialRows.filter(c => c.label && needsReconnect(c));
           if (stale.length > 0) {
             // `label` holds the connector id (see /api/connectors).
             const connectorRows = await db.query.connectors.findMany({
@@ -1172,7 +1175,6 @@ export default async function HomePage({
                 kind: 'reconnect',
                 connectorId: cred.label as string,
                 connectorName,
-                expiringSoon: deriveConnectorStatus(cred) === 'connected',
               });
             }
           }
@@ -1364,25 +1366,17 @@ export default async function HomePage({
                         <Link
                           key={item.subjectKey}
                           href="/app/connections"
-                          className={`block border-l-2 rounded-r-[10px] px-4 py-3 transition-colors ${
-                            item.expiringSoon
-                              ? 'border-status-warning bg-status-warning/5 hover:bg-status-warning/10'
-                              : 'border-status-error bg-status-error/5 hover:bg-status-error/10'
-                          }`}
+                          className="block border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3 hover:bg-status-error/10 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-0.5">
-                            <span className={`text-[10px] font-mono font-medium tracking-wide uppercase ${
-                              item.expiringSoon ? 'text-status-warning' : 'text-status-error'
-                            }`}>
+                            <span className="text-[10px] font-mono font-medium tracking-wide uppercase text-status-error">
                               Reconnect
                             </span>
                             <span className="text-[11px] text-text-muted">Connection</span>
                           </div>
                           <div className="text-[13px] font-medium text-text-primary truncate">
                             {item.connectorName}
-                            <span className="font-normal text-text-secondary">
-                              {item.expiringSoon ? ' expires soon' : ' has expired'}
-                            </span>
+                            <span className="font-normal text-text-secondary"> needs re-authorising</span>
                           </div>
                         </Link>
                       );

@@ -122,49 +122,45 @@ export async function notifyConnectorBlockReminder(
 //
 // The two functions above are reactive: they only fire once a task has already
 // tripped on a required connector. A connector nobody's task happens to require
-// could expire and sit silent indefinitely. The cron scans credentials directly
-// and calls the function below, so the team hears about it before work stalls.
+// could break and sit silent indefinitely. The cron scans credentials directly
+// and calls the function below.
+//
+// This alerts only when a credential can no longer heal itself — see
+// needsReconnect() in lib/connector-status.ts. Warning on merely-approaching
+// expiry was pure noise: the refresh sweep renews those, and Cue's 24h token
+// lifetime meant "expiring within 24h" was true essentially always.
 
 const CONNECTIONS_PATH = '/app/connections';
 
 export interface ConnectorExpiryContext {
   teamId: string;
   connectorName: string;
-  /** false → already expired/revoked; true → still valid, inside the warning window. */
-  expiringSoon: boolean;
+  /** Present when the token has a known expiry that has passed. */
   tokenExpiresAt: Date | null;
+  /** The refresher's recorded failure, when refresh itself is what broke. */
+  refreshError?: string | null;
 }
 
 export function buildConnectorExpiryMessage(ctx: ConnectorExpiryContext, now: Date = new Date()): string {
   const fixUrl = `${APP_BASE_URL}${CONNECTIONS_PATH}`;
-  if (!ctx.expiringSoon) {
-    return (
-      `Connection "${ctx.connectorName}" has expired — tasks that need it will be blocked. / ` +
-      `Fix: ${fixUrl}`
-    );
-  }
-  const hours = ctx.tokenExpiresAt
-    ? Math.max(1, Math.round((ctx.tokenExpiresAt.getTime() - now.getTime()) / 3_600_000))
-    : null;
+  const cause = ctx.refreshError
+    ? `token refresh failed (${ctx.refreshError})`
+    : ctx.tokenExpiresAt
+      ? `expired ${Math.max(1, Math.round((now.getTime() - ctx.tokenExpiresAt.getTime()) / 3_600_000))}h ago and has not renewed`
+      : 'is no longer usable';
   return (
-    `Connection "${ctx.connectorName}" expires ${hours != null ? `in ~${hours}h` : 'soon'} — ` +
-    `reconnect now to avoid blocked tasks. / Fix: ${fixUrl}`
+    `Connection "${ctx.connectorName}" needs re-authorising — ${cause}. ` +
+    `Tasks that need it are blocked. / Fix: ${fixUrl}`
   );
 }
 
-/**
- * Alert a team that a connector credential has expired (or is about to).
- * Dedup is the caller's job — stamp `secrets.expiryNotifiedAt` when this returns true.
- */
 export async function notifyConnectorExpiry(ctx: ConnectorExpiryContext): Promise<boolean> {
   const payload: NotifyPayload = {
-    title: ctx.expiringSoon
-      ? '[buildd] Connection expiring soon'
-      : '[buildd] Connection expired',
+    title: '[buildd] Connection needs reconnecting',
     message: buildConnectorExpiryMessage(ctx),
     url: `${APP_BASE_URL}${CONNECTIONS_PATH}`,
     urlTitle: 'Reconnect',
-    priority: ctx.expiringSoon ? -1 : 0,
+    priority: 0,
   };
 
   await notifyTeam(ctx.teamId, 'connectorBlocked', payload);

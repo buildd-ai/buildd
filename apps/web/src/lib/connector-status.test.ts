@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import {
   deriveConnectorStatus,
-  isExpiringSoon,
+  needsReconnect,
   shouldNotifyExpiry,
-  CONNECTOR_EXPIRY_WARNING_MS,
+  reconnectGraceMs,
 } from './connector-status';
 
 const NOW = new Date('2026-08-27T12:00:00Z');
@@ -38,59 +38,78 @@ describe('deriveConnectorStatus', () => {
   });
 });
 
-describe('isExpiringSoon', () => {
-  it('flags a token inside the warning window', () => {
-    expect(isExpiringSoon({ tokenExpiresAt: hours(3) }, NOW)).toBe(true);
+describe('reconnectGraceMs', () => {
+  it('is one full refresh-sweep cycle', () => {
+    // Anything shorter would alert about a credential the sweep has not yet had
+    // a chance to renew — the false-alarm case.
+    expect(reconnectGraceMs()).toBe(300 * 60_000);
+  });
+});
+
+describe('needsReconnect', () => {
+  const GRACE = reconnectGraceMs();
+
+  it('is false for a connector nobody ever connected', () => {
+    expect(needsReconnect(undefined, NOW)).toBe(false);
   });
 
-  it('ignores a token beyond the warning window', () => {
-    expect(isExpiringSoon({ tokenExpiresAt: hours(48) }, NOW)).toBe(false);
+  it('is false for a healthy credential', () => {
+    expect(needsReconnect({ tokenExpiresAt: hours(72) }, NOW)).toBe(false);
   });
 
-  it('ignores already-expired tokens (that is a different state)', () => {
-    expect(isExpiringSoon({ tokenExpiresAt: hours(-1) }, NOW)).toBe(false);
+  it('is false for a credential merely approaching expiry', () => {
+    // The whole point of the retune: an access token nearing expiry with a live
+    // refresh token is not a human problem. Cue's tokens live 24h, so warning on
+    // "expires within 24h" meant a permanent amber card and a daily false alarm.
+    expect(needsReconnect({ tokenExpiresAt: hours(1) }, NOW)).toBe(false);
+    expect(needsReconnect({ tokenExpiresAt: hours(23) }, NOW)).toBe(false);
   });
 
-  it('ignores credentials with no expiry at all', () => {
-    expect(isExpiringSoon({ tokenExpiresAt: null }, NOW)).toBe(false);
+  it('is false immediately after expiry — the sweep gets its cycle first', () => {
+    expect(needsReconnect({ tokenExpiresAt: hours(-1) }, NOW)).toBe(false);
   });
 
-  it('honours a custom window', () => {
-    expect(isExpiringSoon({ tokenExpiresAt: hours(3) }, NOW, 60 * 60 * 1000)).toBe(false);
+  it('is true when refresh has definitively failed', () => {
+    expect(
+      needsReconnect({ tokenExpiresAt: null, lastVerificationError: 'invalid_grant' }, NOW),
+    ).toBe(true);
   });
 
-  it('uses a 24h default window', () => {
-    expect(CONNECTOR_EXPIRY_WARNING_MS).toBe(24 * 60 * 60 * 1000);
+  it('is true when a full sweep cycle passed and the token is still expired', () => {
+    // Catches the failure that actually happened: the sweep never ran at all, so
+    // nothing renewed a credential that was perfectly renewable.
+    const past = new Date(NOW.getTime() - GRACE - 60_000);
+    expect(needsReconnect({ tokenExpiresAt: past }, NOW)).toBe(true);
+  });
+
+  it('honours a custom grace window', () => {
+    expect(needsReconnect({ tokenExpiresAt: hours(-2) }, NOW, 60 * 60_000)).toBe(true);
+    expect(needsReconnect({ tokenExpiresAt: hours(-2) }, NOW, 10 * 60 * 60_000)).toBe(false);
   });
 });
 
 describe('shouldNotifyExpiry', () => {
-  it('alerts on a freshly expired credential', () => {
-    expect(shouldNotifyExpiry({ tokenExpiresAt: hours(-1) }, NOW)).toBe(true);
-  });
-
-  it('alerts ahead of expiry, inside the warning window', () => {
-    expect(shouldNotifyExpiry({ tokenExpiresAt: hours(6) }, NOW)).toBe(true);
+  it('alerts when a reconnect is genuinely needed', () => {
+    expect(shouldNotifyExpiry({ tokenExpiresAt: null, lastVerificationError: 'bad' }, NOW)).toBe(true);
   });
 
   it('stays quiet once the team has already been told', () => {
     expect(
-      shouldNotifyExpiry({ tokenExpiresAt: hours(-1), expiryNotifiedAt: hours(-0.5) }, NOW),
+      shouldNotifyExpiry(
+        { tokenExpiresAt: null, lastVerificationError: 'bad', expiryNotifiedAt: hours(-0.5) },
+        NOW,
+      ),
     ).toBe(false);
   });
 
-  it('stays quiet for a healthy credential', () => {
-    expect(shouldNotifyExpiry({ tokenExpiresAt: hours(72) }, NOW)).toBe(false);
-  });
-
-  it('stays quiet for a connector nobody ever connected', () => {
-    expect(shouldNotifyExpiry(undefined, NOW)).toBe(false);
-  });
-
   it('alerts again after a re-auth clears the dedup stamp', () => {
-    // The reconnect path clears expiryNotifiedAt, so a later expiry is a new episode.
     expect(
-      shouldNotifyExpiry({ tokenExpiresAt: hours(-1), expiryNotifiedAt: null }, NOW),
+      shouldNotifyExpiry({ tokenExpiresAt: null, lastVerificationError: 'bad', expiryNotifiedAt: null }, NOW),
     ).toBe(true);
+  });
+
+  it('never alerts on a credential that does not need a reconnect', () => {
+    expect(shouldNotifyExpiry({ tokenExpiresAt: hours(3) }, NOW)).toBe(false);
+    expect(shouldNotifyExpiry(undefined, NOW)).toBe(false);
   });
 });

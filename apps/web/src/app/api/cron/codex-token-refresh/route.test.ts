@@ -285,6 +285,32 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(body.mcp).toBeDefined();
   });
 
+  it('sweeps a window that covers its own cron cadence, not 10 minutes', async () => {
+    // Regression: a 10-minute lookahead on a 4-hourly cron meant a credential
+    // expiring in (10min, 4h] was only ever seen after it had already died.
+    mockSecretsFindMany.mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    const sweep = wheres.find(w => w.includes("1 minute"));
+    expect(sweep, 'no query derives its window from the cron cadence').toBeDefined();
+    expect(sweep).toContain('300');
+  });
+
+  it('includes null-expiry credentials in the sweep instead of stranding them', async () => {
+    // A NULL tokenExpiresAt is where the refresher parks a credential it marked
+    // dead, and where an AS that omits expires_in leaves one. isNotNull() meant
+    // neither was ever retried — a manual reconnect was the only way out.
+    mockSecretsFindMany.mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    const sweep = wheres.find(w => w.includes("1 minute"));
+    expect(sweep).toContain('isNull');
+  });
+
   it('always runs zombie detection regardless of mode', async () => {
     const res = await GET(authedRequest());
     const body = await res.json();

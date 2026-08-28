@@ -2,7 +2,7 @@
 title: External Cron Triggers
 status: active
 owner: max
-last_verified: 2026-08-27
+last_verified: 2026-08-28
 supersedes: []
 ---
 # External Cron Triggers
@@ -11,18 +11,34 @@ supersedes: []
 trigger whose cadence is declared in version control, so that a route silently
 never firing is a reviewable diff rather than an invisible production gap.
 
-Buildd has two trigger mechanisms and they MUST NOT overlap:
+Buildd has two trigger mechanisms and they MUST NOT overlap. **Only the
+external scheduler is in use**: Vercel-native crons do not fire in this project,
+and the five routes parked there (`codex-token-refresh`, `connector-block-notify`,
+`lease-expiry-guard`, `pr-reconcile`, `task-archive`) silently never ran — which
+is how an MCP connector credential holding a valid refresh token stayed dead for
+15 days. `vercel.json` now declares no `crons`.
 
-| Mechanism | Declared in | Auth accepted |
-|---|---|---|
-| Vercel-native cron | `vercel.json` → `crons[]` | `Authorization: Bearer $CRON_SECRET`, or `x-vercel-cron: 1` where the route accepts it |
-| External scheduler (cron-job.org) | `cron-manifest.json` | `Authorization: Bearer $CRON_SECRET` |
+| Mechanism | Declared in | Auth accepted | Status |
+|---|---|---|---|
+| External scheduler (cron-job.org) | `cron-manifest.json` | `Authorization: Bearer $CRON_SECRET` | **in use** |
+| Vercel-native cron | `vercel.json` → `crons[]` | `Authorization: Bearer $CRON_SECRET`, or `x-vercel-cron: 1` where the route accepts it | not used — does not fire here |
 
 ## Invariants
 
 - Every route under `apps/web/src/app/api/cron/` appears in **exactly one** of
   `vercel.json`'s `crons[]` or `cron-manifest.json`'s `jobs[]`. A route in
-  neither has no trigger; a route in both fires twice.
+  neither has no trigger; a route in both fires twice. Enforced by
+  `scripts/cron-coverage.test.ts` — the capability statement above was previously
+  unchecked, which is exactly how five routes sat on a dead mechanism.
+- `vercel.json` declares **no** crons. Adding one there is a silent no-op.
+- Every externally-triggered route MUST authenticate via `Authorization: Bearer
+  $CRON_SECRET`; the scheduler cannot send `x-vercel-cron`. Enforced by the same test.
+- A job whose cadence another module reasons about (currently
+  `codex-token-refresh`, whose cadence sizes the credential sweep window) is
+  mirrored in `apps/web/src/lib/cron-cadence.ts` and pinned by
+  `cron-cadence.test.ts`, so a schedule change cannot silently mis-size a window.
+- A route that has effectively never run is staged `enabled: false` when moved,
+  so its first run against a full backlog is a deliberate decision.
 - Every `cron-manifest.json` job's `schedule` is a valid 5-field cron
   expression, evaluated in that job's `timezone` (manifest default: `UTC`).
 - The schedules tick (`/api/cron/schedules`) carries **no hour restriction**:

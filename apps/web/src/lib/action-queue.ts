@@ -47,11 +47,9 @@ export interface WaitingOnYouRawItem {
   question?: string;
   missionId?: string | null;
   missionTitle?: string | null;
-  /** kind === 'reconnect' — the connector whose credential expired. */
+  /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
-  /** True while the token is still valid but inside the warning window. */
-  expiringSoon?: boolean;
 }
 
 export interface EscalationRawItem {
@@ -106,14 +104,13 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
-  expiringSoon?: boolean;
 }
 
 // Chip display order: lower index = shown first.
 // BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
-// RECONNECT sits high: an expired connector silently starves every task that
-// needs it, and the fix is a single tap.
+// RECONNECT sits high: a connector that can no longer re-authorise itself
+// silently starves every task that needs it, and the fix is a single tap.
 const CHIP_ORDER: ActionChip[] = ['MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE', 'RESOLVING'];
 
 /**
@@ -209,7 +206,6 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
-          expiringSoon: item.expiringSoon,
         });
       }
     } else if (item.kind === 'approve') {
@@ -232,8 +228,6 @@ export function buildActionQueue(
     if (chipDiff !== 0) return chipDiff;
     // Within MERGE: most impactful (unblocks more tasks) first
     if (a.chip === 'MERGE') return (b.unblockCount ?? 0) - (a.unblockCount ?? 0);
-    // Within RECONNECT: already-broken before merely-expiring.
-    if (a.chip === 'RECONNECT') return Number(a.expiringSoon ?? false) - Number(b.expiringSoon ?? false);
     return 0;
   });
 }

@@ -23,6 +23,7 @@ import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-cr
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { recordCredentialAuthSuccess } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
+import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
 
 export const maxDuration = 60;
 
@@ -244,14 +245,27 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ── MCP connector credentials expiring within 10 minutes ───────────────────
-  // Only query rows that have a tokenExpiresAt — header-auth secrets never set it.
+  // ── MCP connector credentials due for refresh ──────────────────────────────
+  // The window is derived from this cron's own cadence (cron-cadence.ts), not
+  // hand-typed: it used to look 10 minutes ahead while the cron ran every 4
+  // hours, so anything expiring in (10min, 4h] was only seen *after* it died.
+  //
+  // A NULL tokenExpiresAt is included, not excluded. It is not a healthy state
+  // for an OAuth credential — it is either an AS that omitted `expires_in`, or a
+  // credential this sweep previously marked dead (the failure path nulls it).
+  // Excluding it meant such a row was never retried again, so a manual reconnect
+  // was the only way out. Non-OAuth secrets also match, and short-circuit to
+  // 'skipped' after one cheap connector lookup.
+  //
   // Not moved to runner-side: MCP servers are often remote, not colocated with the runner.
+  const mcpLookaheadMinutes = sweepLookaheadMinutes();
   const expiringMcp = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'mcp_connector_credential'),
-      isNotNull(secrets.tokenExpiresAt),
-      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '10 minutes'`),
+      or(
+        isNull(secrets.tokenExpiresAt),
+        lt(secrets.tokenExpiresAt, sql`NOW() + (${mcpLookaheadMinutes} * INTERVAL '1 minute')`),
+      ),
     ),
     columns: { id: true },
   });
@@ -274,7 +288,7 @@ export async function GET(req: NextRequest) {
   }
 
   console.log(
-    `[Cron] MCP connector refresh: checked=${expiringMcp.length} refreshed=${mcpRefreshed} locked=${mcpLocked} errors=${mcpErrors} expired=${mcpExpired} skipped=${mcpSkipped}`,
+    `[Cron] MCP connector refresh: lookahead=${mcpLookaheadMinutes}m checked=${expiringMcp.length} refreshed=${mcpRefreshed} locked=${mcpLocked} errors=${mcpErrors} expired=${mcpExpired} skipped=${mcpSkipped}`,
   );
 
   // ── Claude credential verification (active liveness ping) ──────────────────

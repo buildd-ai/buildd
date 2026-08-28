@@ -1,0 +1,1 @@
+ALTER TABLE "secrets" ADD COLUMN "last_refresh_succeeded_at" timestamp with time zone;

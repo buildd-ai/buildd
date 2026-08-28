@@ -235,15 +235,15 @@ describe('buildActionQueue — reconnect items', () => {
     expect(queue.map(i => i.chip)).toEqual(['MERGE', 'RECONNECT', 'QUESTION']);
   });
 
-  it('puts already-broken connectors ahead of merely-expiring ones', () => {
+  it('keeps one item per connector', () => {
     const queue = buildActionQueue(
       [
-        reconnect({ connectorId: 'c-soon', connectorName: 'Soon', expiringSoon: true }),
-        reconnect({ connectorId: 'c-dead', connectorName: 'Dead', expiringSoon: false }),
+        reconnect({ connectorId: 'c-a', connectorName: 'Alpha' }),
+        reconnect({ connectorId: 'c-b', connectorName: 'Beta' }),
       ],
       [],
     );
-    expect(queue.map(i => i.connectorName)).toEqual(['Dead', 'Soon']);
+    expect(queue.map(i => i.connectorName)).toEqual(['Alpha', 'Beta']);
   });
 
   it('does not collide with task- or PR-keyed items', () => {
