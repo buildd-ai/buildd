@@ -6,7 +6,7 @@ import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { describeError } from '@buildd/core/describe-error';
 import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
-import { computeNextRunAt, computeStaggerOffset, classifyScheduleCadence } from '@/lib/schedule-helpers';
+import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
@@ -246,8 +246,7 @@ export async function GET(req: NextRequest) {
           if (!result || !result.changed) {
             // No change or fetch failed — advance nextRunAt but don't create task
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-            triggerUpdate.nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            triggerUpdate.nextRunAt = rawNext;
             await db.update(taskSchedules).set(triggerUpdate).where(eq(taskSchedules.id, schedule.id));
             skipped++;
             continue;
@@ -273,8 +272,7 @@ export async function GET(req: NextRequest) {
 
           if ((activeCount?.count ?? 0) >= schedule.maxConcurrentFromSchedule) {
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-            const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            const nextRunAt = rawNext;
             await db
               .update(taskSchedules)
               .set({ nextRunAt, lastDeferralReason: 'concurrent_cap', lastDeferredAt: now, updatedAt: now })
@@ -298,10 +296,7 @@ export async function GET(req: NextRequest) {
 
               if (currentActive >= seatLimit) {
                 const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-                const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-                const deferredNext = rawNext && staggerSec > 0
-                  ? new Date(rawNext.getTime() + staggerSec * 1000)
-                  : rawNext;
+                const deferredNext = rawNext;
                 await db
                   .update(taskSchedules)
                   .set({ nextRunAt: deferredNext, updatedAt: now })
@@ -330,8 +325,7 @@ export async function GET(req: NextRequest) {
         let nextRunAt: Date | null = null;
         if (!isOneShot) {
           const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-          const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-          nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+          nextRunAt = rawNext;
         }
         const [claimed] = await db
           .update(taskSchedules)
@@ -447,8 +441,7 @@ export async function GET(req: NextRequest) {
 
           if ((missionActiveCount?.count ?? 0) >= linkedMission.maxConcurrentTasks) {
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-            const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            const nextRunAt = rawNext;
             await db
               .update(taskSchedules)
               .set({ nextRunAt, updatedAt: now })
@@ -471,8 +464,7 @@ export async function GET(req: NextRequest) {
         // Skip if linked mission is in manual orchestration mode — schedule is dormant until armed
         if (linkedMission && linkedMission.orchestrationMode === 'manual') {
           const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-          const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-          const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+          const nextRunAt = rawNext;
           await db
             .update(taskSchedules)
             .set({ nextRunAt, lastDeferralReason: 'orchestration_manual', lastDeferredAt: now, updatedAt: now })
@@ -484,8 +476,7 @@ export async function GET(req: NextRequest) {
         // Skip if linked mission has exhausted its cost budget — defer until budget is raised
         if (linkedMission && linkedMission.status === 'budget_exhausted') {
           const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-          const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-          const nextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+          const nextRunAt = rawNext;
           await db
             .update(taskSchedules)
             .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
@@ -538,8 +529,7 @@ export async function GET(req: NextRequest) {
 
           if (!isWithinActiveHours(currentHour, activeHoursStart, activeHoursEnd)) {
             const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-            const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-            const advancedNextRunAt = rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+            const advancedNextRunAt = rawNext;
             await db
               .update(taskSchedules)
               .set({ nextRunAt: advancedNextRunAt, lastDeferralReason: 'active_hours', lastDeferredAt: now, updatedAt: now })
@@ -725,8 +715,7 @@ export async function GET(req: NextRequest) {
             // Still advance nextRunAt so we don't retry immediately
             nextRunAt: (() => {
               const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-              const staggerSec = computeStaggerOffset(schedule.id, schedule.cronExpression);
-              return rawNext && staggerSec > 0 ? new Date(rawNext.getTime() + staggerSec * 1000) : rawNext;
+              return rawNext;
             })(),
             updatedAt: now,
           })
