@@ -375,7 +375,9 @@ Today · Yesterday · {Weekday} · {Month D} · {Month D, Year}
 
 When two consecutive bands have the same label (e.g., both "Yesterday" — possible when tasks complete over two calendar days within the same 4 h window), append an ordinal suffix: `Yesterday (1)`, `Yesterday (2)`.
 
-**Derivation location:** `deriveBandKey(tasks: CondensedTimelineTask[], now: Date): BandedGroup[]` lives in `apps/web/src/lib/condensed-timeline.ts` — the same module that owns `groupTimelineTasks`. It is consumed by both `CondensedTimeline.tsx` (done-group banding) and `TaskGrid.tsx` (replacing its current ad-hoc `deriveTimeBandLabel` inline logic). One helper, two consumers.
+**Derivation location:** `deriveBandKey(tasks: CondensedTimelineTask[], now: Date): BandedGroup[]` lives in `apps/web/src/lib/condensed-timeline.ts` — the same module that owns `groupTimelineTasks`.
+
+**Wave banding is timeline-only.** `CondensedTimeline.tsx` (done-group banding) is the sole `deriveBandKey` consumer. The Activity list (`TaskGrid.tsx`, groupBy=time) uses `deriveDayBands` from the same module — one section per calendar day, no ordinals. Gap-clustering there produced two same-day sections ("Today" above "Today (2)"), which reads as a duplicated header, not as two waves: Activity is a chronological index, so the day is the band.
 
 **Band render** (replaces the current single collapsed done disclosure row):
 

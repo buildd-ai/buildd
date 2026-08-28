@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel } from './condensed-timeline';
+import { groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel, deriveDayBands } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -476,6 +476,55 @@ describe('deriveBandKey', () => {
     const labels = bands.map(b => b.label);
     expect(labels).toContain('Yesterday');
     expect(labels).toContain('Yesterday (2)');
+  });
+});
+
+// ─── deriveDayBands — Activity groups by day, not by wave ────────────────────
+
+describe('deriveDayBands', () => {
+  const now = new Date('2026-08-18T14:00:00Z');
+  const mk = (id: string, iso: string) => ({ id, completionTs: new Date(iso).getTime() });
+
+  it('returns empty array for empty input', () => {
+    expect(deriveDayBands([], now)).toHaveLength(0);
+  });
+
+  it('keeps same-day items in one band even when > 4h apart (regression: duplicate "Today" header)', () => {
+    const bands = deriveDayBands([
+      mk('t1', '2026-08-18T08:00:00Z'),
+      mk('t2', '2026-08-18T14:00:00Z'),
+    ], now);
+    expect(bands).toHaveLength(1);
+    expect(bands[0].label).toBe('Today');
+    expect(bands[0].items).toHaveLength(2);
+  });
+
+  it('never emits an ordinal-suffixed label', () => {
+    const bands = deriveDayBands([
+      mk('t1', '2026-08-17T08:00:00Z'),
+      mk('t2', '2026-08-17T11:00:00Z'),
+      mk('t3', '2026-08-17T14:00:00Z'),
+    ], now);
+    expect(bands).toHaveLength(1);
+    expect(bands[0].label).toBe('Yesterday');
+  });
+
+  it('splits distinct calendar days into separate bands, newest day first', () => {
+    const bands = deriveDayBands([
+      mk('old', '2026-08-16T12:00:00Z'),
+      mk('mid', '2026-08-17T12:00:00Z'),
+      mk('new', '2026-08-18T12:00:00Z'),
+    ], now);
+    expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sunday']);
+  });
+
+  it('orders items newest-first within a band', () => {
+    const bands = deriveDayBands([
+      mk('t1', '2026-08-18T08:00:00Z'),
+      mk('t2', '2026-08-18T14:00:00Z'),
+      mk('t3', '2026-08-18T11:00:00Z'),
+    ], now);
+    expect(bands[0].items.map(i => i.id)).toEqual(['t2', 't3', 't1']);
   });
 });
 
