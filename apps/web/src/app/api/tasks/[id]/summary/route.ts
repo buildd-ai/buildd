@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
@@ -33,6 +33,7 @@ export async function GET(
         result: true,
         backend: true,
         context: true,
+        dependsOn: true,
       },
     });
 
@@ -97,6 +98,29 @@ export async function GET(
     });
     const trace = latestTraces[0] || null;
 
+    // Count unresolved dependencies — mirrors the gate used on the task detail page.
+    // Only checked for pending tasks; non-pending tasks are already past the gate.
+    const depTaskIds = (task.dependsOn as string[] | undefined) || [];
+    let blockedByCount = 0;
+    if (task.status === 'pending' && depTaskIds.length > 0) {
+      const depTasks = await db.query.tasks.findMany({
+        where: inArray(tasks.id, depTaskIds),
+        columns: { id: true, status: true },
+        with: {
+          workers: {
+            columns: { prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            orderBy: desc(workers.createdAt),
+            limit: 1,
+          },
+        },
+      });
+      blockedByCount = depTasks.filter(d => {
+        if (d.status !== 'completed') return true;
+        const latestWorker = d.workers?.[0];
+        return latestWorker?.prNumber && !latestWorker.mergedAt && latestWorker.prLifecycleStatus !== 'closed';
+      }).length;
+    }
+
     return NextResponse.json({
       id: task.id,
       title: task.title,
@@ -141,6 +165,7 @@ export async function GET(
             nextSuggestion: result.nextSuggestion || null,
           }
         : null,
+      blockedByCount,
     });
   } catch (error) {
     console.error('Task summary error:', error);

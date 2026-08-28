@@ -47,6 +47,7 @@ interface TaskPanelData {
     nextSuggestion: string | null;
   } | null;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
+  blockedByCount: number;
 }
 
 function timeAgo(date: string): string {
@@ -126,6 +127,7 @@ export default function TaskPanel({
   }, [fetchTask]);
 
   const w = data?.worker;
+  const isBlocked = data ? data.status === 'pending' && data.blockedByCount > 0 : false;
   // Canonical phase — shared with the task detail page (deriveTaskPhase), so the
   // drawer and the full page agree on what state a task is in.
   const phase = data
@@ -134,6 +136,7 @@ export default function TaskPanel({
         taskMode: data.mode,
         workerStatus: w?.status,
         workerWaitingFor: w?.waitingFor,
+        isBlocked,
       })
     : 'pending';
   const displayStatus = data ? deriveDisplayStatus(data.status, w?.status) : 'pending';
@@ -274,8 +277,20 @@ export default function TaskPanel({
               </div>
             )}
 
+            {/* Blocked — dep gate not satisfied */}
+            {isBlocked && (
+              <div className="rounded-lg border border-status-warning/30 bg-status-warning/5 p-4">
+                <p className="text-[12px] text-status-warning font-medium">
+                  Blocked — waiting on {data!.blockedByCount} {data!.blockedByCount === 1 ? 'dependency' : 'dependencies'}
+                </p>
+                <p className="text-[11px] text-text-muted mt-1">
+                  This task will start automatically once its dependencies complete.
+                </p>
+              </div>
+            )}
+
             {/* Queued / pending → run now */}
-            {isQueued && !isWaiting && (
+            {isQueued && !isWaiting && !isBlocked && (
               <div className="rounded-lg border border-border-default p-4 flex items-center justify-between gap-3">
                 <span className="text-[12px] text-text-secondary">Waiting to be picked up by a runner.</span>
                 <button
