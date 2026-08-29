@@ -1331,12 +1331,20 @@ export class WorkerManager {
     // Subscribe to Pusher for commands
     this.pusherManager.subscribeToWorker(worker.id);
 
-    // Register localUiUrl with server
+    // Register localUiUrl with server. AWAITED on purpose: this is the PATCH
+    // that moves the row idle -> running. Firing it non-awaited let it overlap
+    // the other startup PATCHes below (resume branch, error traces), whose own
+    // writes then raced this one on the server's worker-row compare-and-swap.
+    // Settling it first keeps the startup writes serialized.
     if (this.config.localUiUrl) {
-      this.buildd.updateWorker(worker.id, {
-        localUiUrl: this.config.localUiUrl,
-        status: 'running',
-      }).catch(err => console.error('Failed to register localUiUrl:', err));
+      try {
+        await this.buildd.updateWorker(worker.id, {
+          localUiUrl: this.config.localUiUrl,
+          status: 'running',
+        });
+      } catch (err) {
+        console.error('Failed to register localUiUrl:', err);
+      }
     }
 
     // Set up git worktree for isolation (if branching strategy is not 'none')
