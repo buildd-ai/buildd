@@ -8,6 +8,8 @@ export type ReleaseReadinessItem = {
   queueDepth: number;
   oldestMergedAt: string | null;
   ciState: CiState;
+  /** ID of the most recent releases row, or null if no releases exist yet. */
+  latestReleaseId: string | null;
 };
 
 export type ReleaseWidgetDecision = 'show' | 'ci_blocking' | 'hide';

@@ -17,9 +17,6 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
     <div className="mb-8">
       <div className="flex items-center justify-between mb-4">
         <div className="section-label">Release Queue</div>
-        <Link href="/app/missions" className="text-xs text-text-muted hover:text-text-secondary">
-          View missions →
-        </Link>
       </div>
       <div className="space-y-2">
         {visible.map((item) => {
@@ -27,6 +24,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
           const ageText = item.oldestMergedAt
             ? ` · oldest ${daysAgo(item.oldestMergedAt)}d ago`
             : '';
+          const releaseHref = item.latestReleaseId ? `/app/releases/${item.latestReleaseId}` : null;
 
           if (decision === 'ci_blocking') {
             return (
@@ -69,12 +67,14 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     {item.queueDepth} unshipped{ageText}
                   </span>
                 </div>
-                <Link
-                  href="/app/missions"
-                  className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
-                >
-                  Release →
-                </Link>
+                {releaseHref && (
+                  <Link
+                    href={releaseHref}
+                    className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
+                  >
+                    Release →
+                  </Link>
+                )}
               </div>
             </div>
           );
