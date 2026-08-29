@@ -141,7 +141,7 @@ export async function detectCbmEnforcedUnused(
 
     await reportOps({
       source: 'cbm-health',
-      severity: 'warn',
+      severity: 'warning',
       message: `CBM mounted but never queried on last ${CBM_UNUSED_THRESHOLD} workers`,
       detail: `workspace=${workspaceId} — codebase-memory is enforced and pre-indexed, but no agent called an mcp__codebase-memory__* tool across ${CBM_UNUSED_THRESHOLD} consecutive tasks. The graph is being built and paid for and not used; prompt steering is likely ineffective.`,
       dedupeKey: `cbm-enforced-unused:${workspaceId}`,
