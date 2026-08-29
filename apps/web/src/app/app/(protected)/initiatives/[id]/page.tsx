@@ -10,7 +10,7 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { SegmentStrip } from '@/components/SegmentStrip';
-import { deriveHealth, formatNextRun } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
 import InitiativeKPIPanel from './InitiativeKPIPanel';
@@ -73,7 +73,7 @@ export default async function InitiativeDetailPage({
   const children: ChildMissionProgress[] = [];
   const missionRows = (initiative.missions || []).map((m: any) => {
     const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(m.tasks || []);
-    const health = deriveHealth(
+    const health = deriveTaskHealthSignal(
       { dependsOnMissionId: m.dependsOnMissionId, dependencyMetAt: m.dependencyMetAt },
       m.tasks || [],
     );
