@@ -114,7 +114,7 @@ const RE_UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 const RE_URL = /\b[a-z][a-z0-9+.-]*:\/\/\S+/gi;
 const RE_ISO_TS = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
 const RE_DATE = /\b\d{4}-\d{2}-\d{2}\b/g;
-const RE_CLOCK = /\b\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?/gi;
+const RE_CLOCK = /\b\d{1,2}:\d{2}(?::\d{2})?\s?(?:[ap]m)?|\b\d{1,2}\s?[ap]m\b/gi;
 const RE_PATH = /(?:\/[\w.@+-]+){2,}\/?/g;
 const RE_HEX = /\b[0-9a-f]{7,}\b/gi;
 const RE_NUMBER = /\d+(?:\.\d+)?/g;
@@ -132,6 +132,12 @@ const RE_NUMBER = /\d+(?:\.\d+)?/g;
  *
  * Replacement order matters: URLs before paths (URLs contain slashes), and
  * timestamps/clock times before the generic number pass.
+ *
+ * The clock rule matches BOTH `1:20pm` and a bare-hour `3pm` / `3 PM`. Requiring
+ * `H:MM` once split one real failure mode ("resets <time>") into three rows,
+ * because whole-hour resets fell through to the numeric rule as `<n>pm`. The
+ * bare-hour branch requires a meridiem, so a plain count ("3 attempts") stays
+ * `<n>` and does not over-collapse into `<time>`.
  */
 export function normalizeErrorSignature(error: string | null | undefined): string {
   if (!error) return EMPTY_SIGNATURE;

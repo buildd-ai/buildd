@@ -75,6 +75,47 @@ describe('normalizeErrorSignature', () => {
       .toBe(normalizeErrorSignature(SESSION_LIMIT));
   });
 
+  it('collapses whole-hour resets into the same signature as H:MM resets', () => {
+    // Regression: a bare-hour reset ("resets 3pm") has no minutes, so it missed the
+    // H:MM clock rule and fell through to the numeric rule → "<n>pm". Against real
+    // prod data that split ONE failure mode across THREE signature rows (35/15/2).
+    const prefix = "Claude Code returned an error result: You've hit your session limit · resets ";
+    const raws = [`${prefix}1:20pm (UTC)`, `${prefix}3pm (UTC)`, `${prefix}11am (UTC)`];
+    const sigs = new Set(raws.map(normalizeErrorSignature));
+    expect(sigs.size).toBe(1);
+    expect([...sigs][0]).toBe(
+      "Claude Code returned an error result: You've hit your session limit · resets <time> (UTC)",
+    );
+  });
+
+  it('collapses uppercase and space-separated meridiems too', () => {
+    const sigs = new Set(
+      ['resets 3 PM (UTC)', 'resets 3pm (UTC)', 'resets 11 am (UTC)'].map(normalizeErrorSignature),
+    );
+    expect(sigs.size).toBe(1);
+    expect([...sigs][0]).toBe('resets <time> (UTC)');
+  });
+
+  it('does NOT treat a bare number without a meridiem as a clock time', () => {
+    // Guards the opposite direction: over-collapsing counts into <time> would
+    // merge unrelated failures.
+    expect(normalizeErrorSignature('retrying in 3 seconds')).toBe('retrying in <n> seconds');
+    expect(normalizeErrorSignature('exited with code 137')).toBe('exited with code <n>');
+    expect(normalizeErrorSignature('3 attempts remaining')).toBe('<n> attempts remaining');
+  });
+
+  it('keeps credential failures as their own distinct signatures', () => {
+    // The auth strings must never fold into the session-limit / reset buckets.
+    const sigs = [
+      "You've hit your session limit · resets 3pm (UTC)",
+      'OAuth access token is invalid',
+      'Not logged in · Please run /login',
+    ].map(normalizeErrorSignature);
+    expect(new Set(sigs).size).toBe(3);
+    expect(sigs[1]).toBe('OAuth access token is invalid');
+    expect(sigs[2]).toBe('Not logged in · Please run /login');
+  });
+
   it('collapses ISO timestamps', () => {
     const a = 'Worker heartbeat lost at 2026-08-27T04:11:09.221Z';
     const b = 'Worker heartbeat lost at 2026-01-02T23:59:00.000Z';
