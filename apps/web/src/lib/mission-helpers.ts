@@ -85,12 +85,14 @@ function isCountableHealthTask(t: { status: string; kind?: string | null; title?
 }
 
 /**
- * Derives the health signal for a mission from its task outcomes.
+ * Derives the task-aggregate problem signal for a mission.
+ * Orthogonal to `deriveMissionHealth` — this asks "are tasks failing or stuck?"
+ * not "where is the mission in its lifecycle?"
  * Priority: BLOCKED > FAILING > STALLED > NOMINAL.
  * STALLED fires when deliverable non-cancelled tasks are pending/active but no
  * worker is currently live on them.
  */
-export function deriveHealth(
+export function deriveTaskHealthSignal(
   mission: {
     dependsOnMissionId?: string | null;
     dependencyMetAt?: Date | string | null;
@@ -230,8 +232,11 @@ export function formatNextRun(
 }
 
 /**
- * Derive health status for a mission based on its current state.
- * Replaces the old BUILD/WATCH/BRIEF type classification.
+ * Derives the mission's operating lifecycle state.
+ * Orthogonal to `deriveTaskHealthSignal` — this asks "where is the mission in
+ * its lifecycle?" (active/idle/shipped/stalled/etc.), not "are tasks failing?"
+ * Looks at scheduling rhythm, active agent count, and mission status — not
+ * individual task outcomes.
  */
 export function deriveMissionHealth(opts: {
   status: string;

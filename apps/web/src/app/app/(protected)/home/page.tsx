@@ -39,7 +39,7 @@ import { sortInitiatives } from '@/lib/initiative-presentation';
 export const dynamic = 'force-dynamic';
 import {
   deriveMissionHealth,
-  deriveHealth,
+  deriveTaskHealthSignal,
   healthToGroup,
   formatNextRun,
   SECTION_DISPLAY,
@@ -48,8 +48,9 @@ import {
   type MissionHealth,
   type MissionGroup,
 } from '@/lib/mission-helpers';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import { StageChip, deriveStage } from '@/components/StageChip';
 
 // --- Helpers ---
 
@@ -117,11 +118,17 @@ export default async function HomePage({
   let recentActivity: {
     id: string;
     taskId: string | null;
+    taskStatus: string;
+    workerStatus: string;
     type: 'completed' | 'started' | 'failed';
     title: string;
     workerName: string;
     timestamp: Date;
     missionTitle: string | null;
+    prUrl: string | null;
+    prLifecycleStatus: string | null;
+    mergedAt: Date | string | null;
+    prNumber: number | null;
   }[] = [];
 
   let missions: {
@@ -441,6 +448,12 @@ export default async function HomePage({
           };
         });
 
+        // Read-through PR state refresh: catch missed merge webhooks before
+        // querying both recentWorkers (Activity feed) and openPrWorkers (Waiting on You).
+        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
+          console.error('[home] pr-state-refresh failed (non-fatal):', err),
+        );
+
         // Recent completed/failed/error workers for activity feed.
         // Order by COALESCE(completedAt, updatedAt) so error workers (null
         // completedAt) sort by their updatedAt rather than floating to the top
@@ -458,7 +471,7 @@ export default async function HomePage({
           limit: 12,
           with: {
             task: {
-              columns: { id: true, title: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true, taskClass: true },
+              columns: { id: true, title: true, status: true, missionId: true, roleSlug: true, parentTaskId: true, mode: true, taskClass: true },
               with: {
                 mission: {
                   columns: { title: true },
@@ -485,6 +498,8 @@ export default async function HomePage({
           .map((w: any) => ({
             id: w.id,
             taskId: w.task?.id || null,
+            taskStatus: w.task?.status ?? w.status,
+            workerStatus: w.status,
             type: w.status === 'completed' ? 'completed' as const : 'failed' as const,
             title: w.task?.title || w.name,
             // "via <workspace> · <role>" beats the runner's machine name —
@@ -492,6 +507,10 @@ export default async function HomePage({
             workerName: [w.workspace?.name, w.task?.roleSlug].filter(Boolean).join(' · ') || w.name,
             timestamp: w.completedAt || w.updatedAt,
             missionTitle: (w.task as any)?.mission?.title || null,
+            prUrl: w.prUrl ?? null,
+            prLifecycleStatus: w.prLifecycleStatus ?? null,
+            mergedAt: w.mergedAt ?? null,
+            prNumber: w.prNumber ?? null,
           }));
 
         // Missions with task progress + health
@@ -653,7 +672,7 @@ export default async function HomePage({
               orchestrationMode,
               status: mission.status,
               segments,
-              healthState: deriveHealth(mission, mission.tasks),
+              healthState: deriveTaskHealthSignal(mission, mission.tasks),
               inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
               lastDeferralReason,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
@@ -760,13 +779,6 @@ export default async function HomePage({
             );
           }
         }
-
-        // Read-through PR state refresh: catch missed merge webhooks before
-        // querying openPrWorkers so externally-merged PRs are excluded from the
-        // Waiting on You queue on this render rather than the next.
-        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
-          console.error('[home] pr-state-refresh failed (non-fatal):', err),
-        );
 
         // Escalation inbox (BT-15) + agent-review lease detection
         {
@@ -1955,7 +1967,13 @@ export default async function HomePage({
             ) : (
               <div className="card">
                 {recentActivity.map((event, i) => {
-                  const statusKey = event.type === 'completed' ? 'completed' : 'failed';
+                  const stage = deriveStage({
+                    taskStatus: event.taskStatus,
+                    workerStatus: event.workerStatus,
+                    prUrl: event.prUrl,
+                    prLifecycleStatus: event.prLifecycleStatus,
+                    mergedAt: event.mergedAt ? String(event.mergedAt) : null,
+                  });
 
                   const row = (
                     <>
@@ -1971,7 +1989,7 @@ export default async function HomePage({
                         </div>
                       </div>
                       <div className="flex-shrink-0">
-                        <StatusBadge status={statusKey} />
+                        <StageChip stage={stage} prNumber={event.prNumber} />
                       </div>
                     </>
                   );

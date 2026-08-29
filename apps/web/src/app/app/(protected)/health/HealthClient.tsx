@@ -933,7 +933,12 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm text-text-primary">{s.accountName || 'Claude session'}</span>
               <div className="flex items-center gap-2 text-xs text-text-secondary">
-                <span className="tabular-nums font-medium text-text-primary">{s.pressurePct}% used</span>
+                <span
+                  className="tabular-nums font-medium text-text-primary"
+                  title="Usage vs. conservative floor (p25 of exhaustion history). Real remaining capacity is typically higher."
+                >
+                  {s.pressurePct}% of floor
+                </span>
                 <span className="text-text-muted">·</span>
                 <span>{formatReset(s.windowEndsAt)}</span>
                 {s.confidence && s.confidence !== 'low' && (
@@ -941,9 +946,13 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                     <span className="text-text-muted">·</span>
                     <span
                       className={confidenceClass(s.confidence)}
-                      title={s.confidence === 'high' ? 'p25 conservative floor — routinely fires while real headroom remains; not a certainty signal' : undefined}
+                      title={
+                        s.confidence === 'high'
+                          ? `Conservative floor estimate from ${s.episodes} exhaustion episode${s.episodes !== 1 ? 's' : ''}${s.limiter === 'tokens' ? ' — token data is often underreported on OAuth' : ''}`
+                          : undefined
+                      }
                     >
-                      {s.confidence === 'high' ? 'calibrated' : `confidence: ${s.confidence}`}
+                      {s.confidence === 'high' ? 'floor est.' : `confidence: ${s.confidence}`}
                     </span>
                   </>
                 )}
@@ -965,8 +974,8 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
         {/* Collapsed learning sessions — one summary line instead of per-row cards */}
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
-            <span className="text-xs text-text-muted" title="No exhaustion events recorded yet — this row will calibrate automatically on first session limit hit">
-              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no data yet, will calibrate on first session hit
+            <span className="text-xs text-text-muted" title="No exhaustion events recorded — sessions only learn on hitting the session wall">
+              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no exhaustion data
             </span>
           </div>
         )}
@@ -998,9 +1007,9 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                     <span className="text-text-muted">·</span>
                     <span
                       className={confidenceClass(forecast.monthly.confidence)}
-                      title={forecast.monthly.confidence === 'high' ? 'p25 conservative floor — routinely fires while real headroom remains; not a certainty signal' : undefined}
+                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence = stable reading, not a certainty signal.' : undefined}
                     >
-                      {forecast.monthly.confidence === 'high' ? 'calibrated' : `confidence: ${forecast.monthly.confidence}`}
+                      {forecast.monthly.confidence === 'high' ? 'burn rate est.' : `confidence: ${forecast.monthly.confidence}`}
                     </span>
                   </>
                 )}

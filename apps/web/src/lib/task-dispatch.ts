@@ -165,15 +165,17 @@ export async function dispatchUnblockedTask(
   }
 }
 
-/** Build minimal task payload for Pusher events (10KB limit) */
+/** Build minimal task payload for Pusher events (10KB limit).
+ * Never includes description — it can be multi-KB for heartbeat tasks and
+ * neither dashboard consumers (they call router.refresh()) nor runners (they
+ * fetch the full task from the claim API) need it in the Pusher event. */
 export function buildTaskPayload(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
   workspace: { name?: string; repo?: string | null },
 ) {
   return {
     id: task.id,
     title: task.title,
-    description: task.description,
     workspaceId: task.workspaceId,
     mode: task.mode,
     priority: task.priority,

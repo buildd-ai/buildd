@@ -57,10 +57,20 @@ export interface CbmBootstrapOptions {
 }
 
 /**
- * Run `codebase-memory-mcp cli index_repository <worktreePath>` with a
- * 30-second hard timeout. Returns success with wall-clock duration or failure
+ * Run `codebase-memory-mcp cli index_repository --repo-path <worktreePath>` with
+ * a 30-second hard timeout. Returns success with wall-clock duration or failure
  * with a reason string. On failure the caller must proceed with CBM mounted
  * but without a warm cache.
+ *
+ * `--repo-path` is required. A bare trailing positional is parsed as raw JSON
+ * args by CBM 0.9.0, so it never populates repo_path: the index worker exits 1
+ * with `repo_path is required` in its own log, while the server reports the
+ * misleading `"Indexing worker crashed on a file"`. That mismatch made this look
+ * like a bad source file rather than an argv bug.
+ *
+ * No `--mode` is passed, so CBM's default applies. Measured on the buildd repo
+ * (63,861 nodes / 77,831 edges) inside the Coder workspace: default 10s,
+ * moderate 7s, fast 6s — all well inside CBM_INDEX_TIMEOUT_MS.
  */
 export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBootstrapResult> {
   const {
@@ -80,7 +90,7 @@ export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBoo
 
     const child = spawnProcess(
       serverConfig.command,
-      ['cli', 'index_repository', worktreePath],
+      ['cli', 'index_repository', '--repo-path', worktreePath],
       {
         env: { ...process.env, ...resolvedEnv },
         stdio: ['ignore', 'pipe', 'pipe'],

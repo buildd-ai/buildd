@@ -30,7 +30,7 @@ function criterionText(criterion: GoalCriterion): string {
   return criterion.label ?? criterion.type;
 }
 
-function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
+export function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
   if (criteria.length === 0) return 'pass';
   if (criteria.some(r => r.verdict === 'fail')) return 'fail';
   // NOT_EVALUATED means "we could not check this" — that is not a pass

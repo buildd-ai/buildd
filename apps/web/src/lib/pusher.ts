@@ -32,16 +32,18 @@ function getPusher(): Pusher | null {
   return pusher;
 }
 
-// Pusher enforces a 10 KB per-event payload limit. Warn at 8 KB to give 2 KB
-// headroom for Pusher's own envelope overhead. Callers should send thin events
-// (IDs + timestamps only) so the limit is never approached.
+// Pusher enforces a 10 KB per-event payload limit.
+// Warn at 8 KB (2 KB headroom for envelope overhead).
+// Hard-cap at 10240 bytes — skip the trigger entirely to avoid a silent 413.
 const PUSHER_PAYLOAD_WARN_BYTES = 8192;
+const PUSHER_PAYLOAD_HARD_CAP_BYTES = 10240;
 
 /**
  * Trigger a Pusher event (no-op if Pusher not configured).
- * Logs a warning if the serialized payload exceeds 8 KB — the likely cause of
- * Pusher 413 errors seen in production. Callers must use thin event payloads
- * (workerId / taskId / updatedAt) and let clients refetch large row data.
+ * Enforces a hard 10 KB size cap — payloads over the cap are dropped with a
+ * loud error log rather than sent (which would return a silent 413). Callers
+ * must use thin event payloads (IDs + timestamps only) and let clients refetch
+ * large row data over HTTP.
  */
 export async function triggerEvent(
   channel: string,
@@ -52,6 +54,16 @@ export async function triggerEvent(
   if (!client) return; // Silent no-op
 
   const serialized = JSON.stringify(data);
+
+  if (serialized.length > PUSHER_PAYLOAD_HARD_CAP_BYTES) {
+    console.error(
+      `[Pusher] payload for event "${event}" on channel "${channel}" exceeds hard cap ` +
+      `(${serialized.length} bytes > ${PUSHER_PAYLOAD_HARD_CAP_BYTES} byte limit) — ` +
+      `event dropped. Slim the payload to IDs and timestamps only.`
+    );
+    return;
+  }
+
   if (serialized.length > PUSHER_PAYLOAD_WARN_BYTES) {
     console.warn(
       `[Pusher] oversized payload for event "${event}" on channel "${channel}": ` +
