@@ -3,7 +3,7 @@
 **Status:** Proposed  
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — the existing /start implementation
-- `apps/web/src/lib/claim-gates.ts` — gate predicates reused by /start
+- `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
 - `apps/web/src/app/api/workers/claim/route.ts` — the authoritative claim gate
 - `packages/core/mcp-tools.ts` — MCP action registry
 - `apps/web/src/lib/task-dependencies.ts` — `dispatchUnblockedTask` (dep-resolution broadcast)
@@ -34,7 +34,7 @@ the evidence base for deciding what to expose.
 | # | Entry point | File | Trigger | MCP-exposed today? | Notes |
 |---|---|---|---|---|---|
 | 1 | `POST /api/workers/claim` | `apps/web/src/app/api/workers/claim/route.ts` | Runner polls on its own cadence | No | Single authoritative gate; enforces all SQL-level filters. Workers call this; it is never user-initiated. |
-| 2 | `POST /api/tasks/[id]/start` | `apps/web/src/app/api/tasks/[id]/start/route.ts` | UI button or raw API key call | **No** — the gap | Runs pre-flight gate checks (dep-PR, deferred-start, connector routing, mission-held, workspace cap, capability match). On pass: stamps `context.manualStartAt`, boosts `priority+1`, broadcasts `TASK_ASSIGNED` via Pusher. Idempotent: a second call re-broadcasts but does not compound the priority boost. |
+| 2 | `POST /api/tasks/[id]/start` | `apps/web/src/app/api/tasks/[id]/start/route.ts` | UI button or raw API key call | **No** — the gap | Runs pre-flight gate checks (dep-PR, deferred-start, connector routing, mission-held, workspace cap). On pass: stamps `context.manualStartAt`, boosts `priority+1`, broadcasts `TASK_ASSIGNED` via Pusher. Idempotent: a second call re-broadcasts but does not compound the priority boost. |
 | 3 | `GET /api/cron/schedules` | `apps/web/src/app/api/cron/schedules/route.ts` | External scheduler (cron-job.org) hourly (`0 * * * *`) | No | **Creates** tasks from `taskSchedules` rows (not claims). After INSERT, calls `dispatchNewTask()` which fires `TASK_CREATED` + `TASK_ASSIGNED`. Tasks then sit in the claim queue for runner #1 to pick up. |
 | 4 | `dispatchUnblockedTask()` | `apps/web/src/lib/task-dependencies.ts:496` | Called from completion route when a dependency resolves | No | Re-broadcasts `TASK_ASSIGNED` for tasks whose deps just cleared. Not user-triggered. |
 | 5 | `POST /api/missions/[id]/run` | `apps/web/src/app/api/missions/[id]/run/route.ts` | Manual one-shot trigger, admin API key | Indirectly via `manage_missions` action on the MCP `buildd` tool | Creates + dispatches a planning task for a mission. Does not target an existing pending task. |
@@ -234,7 +234,7 @@ uncertainty; the durable priority boost already mitigates it.
 The claim route (`POST /api/workers/claim`) remains the **single authority for task
 claiming**. This design adds no new claiming logic and no new concurrency primitive.
 `start_task` does two things the claim route already trusts:
-1. Pre-flight gate checks (same predicates already in `claim-gates.ts`)
+1. Pre-flight gate checks (same predicates as the canonical gate modules in `apps/web/src/app/api/workers/claim/`)
 2. Priority boost + Pusher broadcast (already done by the dashboard's Start button)
 
 The runner still calls `POST /api/workers/claim`; the only change is that an MCP
