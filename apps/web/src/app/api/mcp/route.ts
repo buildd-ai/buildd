@@ -23,8 +23,8 @@ import {
 import { authenticateApiKey } from "@/lib/api-auth";
 import { resolveWorkspace } from "@/lib/workspace-resolver";
 import { db } from "@buildd/core/db";
-import { workspaces, teams, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets } from "@buildd/core/db/schema";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { workspaces, teams, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets, releases, releaseTasks } from "@buildd/core/db/schema";
+import { and, eq, inArray, isNotNull, sql, desc } from "drizzle-orm";
 import {
   checkPathClaimConflict,
   insertClaims,
@@ -668,6 +668,129 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             .filter(Boolean);
 
           return { content: [{ type: "text" as const, text: JSON.stringify({ connectors: result }) }] };
+        }
+
+        // list_releases: read-only release history — handled directly for workspace-scoped DB access.
+        if (action === 'list_releases') {
+          let wsId = workspaceId || await ctx.getWorkspaceId();
+          if (!wsId && typeof params.workspaceId === 'string' && params.workspaceId) {
+            const resolved = await resolveWorkspace(params.workspaceId);
+            wsId = resolved?.id ?? null;
+          }
+          if (!wsId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_required', message: 'Cannot resolve workspace. Pass ?workspace=<id> in the MCP URL or include workspaceId in params.' }) }],
+              isError: true,
+            };
+          }
+
+          const ws = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, wsId),
+            columns: { teamId: true },
+          });
+          if (!ws) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_not_found' }) }],
+              isError: true,
+            };
+          }
+          if (accountTeamId && ws.teamId !== accountTeamId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'forbidden' }) }],
+              isError: true,
+            };
+          }
+
+          const stateFilter = typeof params.state === 'string' ? params.state : undefined;
+          const limitParam = typeof params.limit === 'number' ? Math.min(Math.max(1, Math.floor(params.limit)), 50) : 10;
+          const missionIdFilter = typeof params.missionId === 'string' ? params.missionId : undefined;
+
+          const conditions: Parameters<typeof and>[0][] = [eq(releases.workspaceId, wsId)];
+          if (stateFilter) conditions.push(eq(releases.state, stateFilter as 'dispatched' | 'deploying' | 'healthy' | 'failed' | 'degraded' | 'pending_external'));
+
+          if (missionIdFilter) {
+            const taskRows = await db
+              .select({ id: tasks.id })
+              .from(tasks)
+              .where(eq(tasks.missionId, missionIdFilter));
+            const taskIds = taskRows.map(t => t.id);
+            if (taskIds.length === 0) {
+              return { content: [{ type: "text" as const, text: JSON.stringify({ releases: [] }) }] };
+            }
+            const edgeRows = await db
+              .select({ releaseId: releaseTasks.releaseId })
+              .from(releaseTasks)
+              .where(inArray(releaseTasks.taskId, taskIds));
+            const releaseIds = [...new Set(edgeRows.map(r => r.releaseId))];
+            if (releaseIds.length === 0) {
+              return { content: [{ type: "text" as const, text: JSON.stringify({ releases: [] }) }] };
+            }
+            conditions.push(inArray(releases.id, releaseIds));
+          }
+
+          const releaseRows = await db
+            .select()
+            .from(releases)
+            .where(and(...conditions))
+            .orderBy(desc(releases.createdAt))
+            .limit(limitParam);
+
+          return { content: [{ type: "text" as const, text: JSON.stringify({ releases: releaseRows }) }] };
+        }
+
+        // get_release: fetch a single release with its task edges.
+        if (action === 'get_release') {
+          const releaseId = typeof params.releaseId === 'string' ? params.releaseId : null;
+          if (!releaseId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'releaseId_required', message: 'releaseId is required.' }) }],
+              isError: true,
+            };
+          }
+
+          const release = await db.query.releases.findFirst({
+            where: eq(releases.id, releaseId),
+          });
+          if (!release) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'not_found' }) }],
+              isError: true,
+            };
+          }
+
+          const ws = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, release.workspaceId),
+            columns: { teamId: true },
+          });
+          if (!ws) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'workspace_not_found' }) }],
+              isError: true,
+            };
+          }
+          if (accountTeamId && ws.teamId !== accountTeamId) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: 'forbidden' }) }],
+              isError: true,
+            };
+          }
+
+          const edges = await db
+            .select({
+              taskId: releaseTasks.taskId,
+              prNumber: releaseTasks.prNumber,
+              commitSha: releaseTasks.commitSha,
+              taskTitle: tasks.title,
+              taskStatus: tasks.status,
+              missionId: tasks.missionId,
+            })
+            .from(releaseTasks)
+            .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
+            .where(eq(releaseTasks.releaseId, releaseId));
+
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ...release, tasks: edges }) }],
+          };
         }
 
         return await handleBuilddAction(api, action, params, ctx);
