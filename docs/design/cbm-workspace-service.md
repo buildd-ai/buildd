@@ -1,309 +1,160 @@
-# CBM as a Workspace Service — grounding KnowledgeStore in the code graph
+# Grounding `spec_compare` in the code graph — and why the pipeline is already built
 
-**Status:** proposed
-**Date:** 2026-08-29
-**Follows:** [codebase-memory-mcp-integration.md](./codebase-memory-mcp-integration.md) §6 (symbol-graph grounding), #1743, #1889
+**Status:** proposed (substantially revised 2026-08-29 after review)
+**Follows:** [codebase-memory-mcp-integration.md](./codebase-memory-mcp-integration.md) §6, #1743, #1889
 
-## 1. What this is for
+## 0. Revision note — read this first
 
-`spec_compare` and the `{workspaceId}:code` corpus answer structural questions with
-embeddings and regex. That is documented as insufficient in the parent spec §6.1:
-prose spec queries ("auto-merge approval gate") produce near-zero code evidence
-against identifier-heavy embeddings, and the two-hop regex anchor fix "degrades
-when specs use only prose and the symbol names have changed."
+The first draft of this document proposed building a runner-side job to index the
+mainline checkout with CBM and push canonical symbol records into
+`{workspaceId}:code`. **That pipeline already exists and runs in production**, built
+on SCIP + ast-grep rather than CBM. The original draft did not cite it, and its
+central recommendation was therefore largely redundant.
 
-CBM answers exactly those questions precisely — canonical AST symbol names,
-callers, dependents, call chains. The parent spec §6.2 already prescribes using it
-to ground spec_compare's anchor extraction. §6.3 defers it behind three
-prerequisites. This document addresses prerequisite 2, which is the only
-architectural one:
+What survives review is a much smaller and different finding: **buildd has two code
+graphs and consumes neither.** The rest of this document is rewritten around that.
 
-> 2. The graph must be available at spec_compare call time (requires CBM to be
->    running as a server, not just as an offline index)
+## 1. What already exists (verified on `origin/dev`)
 
-## 2. Why it is not currently possible
+**A runner-side ingest poller.** `apps/runner/src/knowledge-ingest.ts`, wired into
+the runner at `apps/runner/src/workers.ts:412` / `:527`, polled every heartbeat tick
+at `:560` — the same `setInterval(...).catch(() => {})` idiom as the other runner
+pollers. It claims queued ingest jobs, reads the tree via `git ls-tree`/`git show`
+(no working-tree mutation), and chunks with ast-grep symbol-boundary alignment.
+This replaced an older CI-cron ingest (`.github/workflows/knowledge-ingest.yml`,
+deleted in v0.175.0).
 
-`spec_compare` is implemented in `packages/core/mcp-tools.ts` and served from
-`apps/web` — a Next.js app on Vercel. That execution environment has:
+**A precise graph, enabled in this deployment.** With `KNOWLEDGE_SCIP=1` the poller
+additionally runs `scip-typescript` and pushes call/import edges through
+`POST /api/knowledge/ingest-jobs/[id]/graph`, which is authenticated
+(`authenticateApiKey`), workspace-scoped, and idempotent by construction
+("re-running a job re-converges the graph"). It writes real
+`knowledge_entities` / `knowledge_edges` / `knowledge_aliases` tables.
 
-- **no CBM binary**, and
-- **no repo checkout.** This is the blocking one. CBM requires
-  `--repo-path <dir>` pointing at a real filesystem tree. There is nothing on a
-  Vercel function for it to index.
+`KNOWLEDGE_SCIP=1` is set for this workspace in the infrastructure repo at
+`templates/claude-code/main.tf:254`, and `@sourcegraph/scip-typescript` is baked
+into the workspace image at `build/Dockerfile:63`. **This is live right now.**
 
-Meanwhile the Coder workspace container has both: the binary at
-`/opt/buildd/bin/codebase-memory-mcp` (0.9.0, live since 2026-08-29) and the
-mainline checkouts under `/home/coder/project/<repo>`.
+**Identity is already file-anchored.** `packages/core/knowledge-store/scip-parser.ts:341`:
 
-So the question is how to connect the environment that has the question to the
-environment that has the code.
-
-## 3. Measured constraints
-
-All measured in the running Coder workspace on 2026-08-29, not estimated.
-
-**CBM has no HTTP query API.** `--help` on 0.9.0 gives exactly three transports:
-
-```
-codebase-memory-mcp                    Run MCP server on stdio
-codebase-memory-mcp cli <tool> [json]  Run a single tool
---ui=true --port=N                     HTTP graph visualization (default 9749)
+```ts
+return { file, key: `${file}#${qualifiedName}`, qualifiedName, terminalName };
 ```
 
-`--ui` is a graph *visualization* surface, not a documented JSON query contract.
-**There is no "just run it as a service" option — a shim is required either way.**
-This is the single most important finding here; any plan that assumes a native
-endpoint is wrong.
+That is the `(file_path, name)` scheme the previous draft called a "required
+mitigation" for CBM's path-derived names. SCIP never had that problem, so the
+mitigation is moot for the existing pipeline.
 
-**Indexing is cheap.** buildd repo, 63,861 nodes / 77,831 edges, at
-`CBM_MEM_BUDGET_MB=512`:
+**Freshness scaffolding already exists.** `knowledge_ingest_jobs`
+(`packages/core/db/schema.ts:1646-1667`) carries `sha` and `finishedAt`, with a
+unique index on `(workspaceId, sha, scope)`. Per-workspace last-successful-SHA and
+completion time are already recorded. The previous draft specced this as new work.
 
-| mode | wall |
-|---|---|
-| default | 10s |
-| moderate | 7s |
-| fast | 6s |
+## 2. The actual gap
 
-**There is no inbound network path to the workspace today.** Coder's port 3000 is
-closed to the public (ACCESS_SETUP.md), and Tailscale on the host is logged out
-(`tailscale status` → `NeedsLogin`). Vercel functions are not on the tailnet and
-could not use it even if it were up.
+`spec_compare` (`packages/core/mcp-tools.ts:3732-3796`) does exactly two things:
+a hybrid `ks.query` against the `spec` and `code` **chunk** namespaces, then
+`extractImplementationAnchors(specHits)` — pure regex over chunk text
+(`mcp-tools.ts:3960-3985`): file-path patterns, `/api/...` routes, camelCase ≥6
+chars, PascalCase ≥6 chars, capped at 20.
 
-**Baseline to beat**, from `/api/cbm/metrics` for the 7 days before the fix:
-60 workers, `fallbackRate: 1.0` against a `0.05` target, avg 1,804,394 input
-tokens and 4.85 file-access calls per worker.
+**It never reads `knowledge_entities` or `knowledge_edges`.** The precise graph is
+being populated and nothing consumes it for anchor resolution.
 
-## 4. Two shapes, and they are not equivalent
+Meanwhile the *other* graph — per-worker CBM, fixed and enforcing as of #1889 — is
+also unconsumed: `/api/cbm/metrics` reports `cbmActive.count: 5` with
+`avgToolCalls: {}`, meaning the graph was mounted, indexed in ~12s, injected into
+`mcpServers`, and **never queried** by any agent.
 
-### Option A — inbound HTTP service (what was literally asked for)
+So the shape of the problem is not missing graph infrastructure. It is:
 
-A small HTTP shim inside the workspace container, owning a warm index of the
-mainline checkouts, exposing authenticated JSON over an endpoint Vercel can call.
+| graph | populated? | consumed? |
+|---|---|---|
+| SCIP entities/edges (`{workspaceId}:code`) | yes, live | **no** — `spec_compare` uses regex |
+| Per-worker CBM (ephemeral worktree index) | yes, since #1889 | **no** — zero tool calls observed |
 
-- Started by the Coder template's `startup_script`, alongside the existing buildd
-  runner screen session, with the same `while true` supervision.
-- Warm index of `/home/coder/project/<repo>`, refreshed via `detect_changes` on a
-  timer rather than reindexing blindly.
-- `POST /graph/:tool`, bearer token, explicit read-only tool allowlist. The
-  parent spec's `CBM_BLOCKED_TOOLS` (`delete_project`, `manage_adr`,
-  `ingest_traces`) must be unreachable, and `codebase-memory-mcp install` must
-  never be invoked — it writes MCP config into 43 agent surfaces (parent spec §3).
-- **Requires solving inbound networking.** The only realistic option today is an
-  outbound-initiated tunnel (Cloudflare Tunnel or equivalent) that yields a public
-  hostname. Tailscale does not help here.
+Two working producers, zero consumers. That is the same failure pattern as the
+four-week `binary_absent` outage (#1743): built, wired, unobserved, unused.
 
-Costs: a new public attack surface in front of a process that can read every
-repo; a live availability coupling where a stopped or restarting workspace
-degrades a web-app code path; and a tunnel plus token to operate.
+## 3. Revised recommendation
 
-### Option B — invert the direction (recommended)
+**Do not build a second ingest pipeline.** Do these instead, smallest first:
 
-Do not let Vercel call in. **The runner is already inside the workspace**, already
-has CBM, and already makes authenticated outbound calls to buildd.dev. Use it.
+1. **Make graph consumption observable** (prerequisite for judging anything else).
+   `/api/cbm/metrics` has zero consumers, and its `avgToolCalls` is the one field
+   that answers "do agents use the graph." Surface it. If it stays empty across a
+   meaningful number of structural tasks, prompt-steering (#1889) did not work and
+   needs a different intervention.
+   Also stop reporting cohort difference as efficacy: `specTargets` currently
+   compares post-fix `cbmActive` workers against pre-fix `cbmDisabled` workers and
+   produced an `inputTokenDeltaPct` of −0.808 that has **no mechanism behind it**,
+   because tool calls were zero. Same-window comparison at minimum.
 
-- A runner-side job indexes the mainline checkout on a schedule (or on push) and
-  extracts canonical records: symbols, defining files, call and dependency edges.
-- It **pushes** those into the `{workspaceId}:code` corpus through an existing
-  authenticated API.
-- `spec_compare` keeps its current two-hop shape, but the anchor step resolves
-  against pre-populated canonical symbols instead of regex guesses — fixing
-  renames and ambiguous abbreviations (`PgStore` → `PgVectorStore` vs
-  `PgStoreLegacy`), which is precisely the §6.2 failure mode.
+2. **Wire `spec_compare` to the graph that already exists.** Replace or augment
+   `extractImplementationAnchors` with a lookup against `knowledge_entities` /
+   `knowledge_aliases`, keyed on the existing `file#qualifiedName` / `canonicalName`.
+   Estimated ~50-150 LOC in `mcp-tools.ts`. This is the whole original point of
+   parent-spec §6.2 and needs no new extractor.
 
-Why this is better for this use case:
+3. **Return tri-state instead of a boolean.** `resolved+drift`, `resolved+clean`,
+   `unresolved-anchor`. In a spec-driven repo, specs routinely describe symbols that
+   do not exist yet — there is nothing to resolve against, and `unresolved-anchor` is
+   a signal rather than an error. Keep regex as the fallback for that case.
 
-- **No inbound networking, no tunnel, no new public surface.**
-- **Availability coupling is substituted, not removed.** If the workspace is
-  down, KS serves stale anchors instead of failing. That is preferable ONLY with
-  the freshness contract in §4a — without it, this is a silent-staleness
-  generator, which for a drift detector is worse than an outage.
-- **It is already the prescribed pipe.** Parent spec line 364 says the offline
-  structural graph should populate "the KnowledgeStore with stable structural
-  edges that survive across sessions, visible in `spec_compare`, and queryable via
-  `query_knowledge`." That was written for SCIP. CBM can fill the same pipe in 10s
-  with a binary that is already deployed.
-- Latency is not on the request path, so prerequisite 3 ("spec_compare must
-  absorb 2–3 additional graph round-trips") disappears rather than being met.
+4. **Surface freshness from data already stored.** Read `knowledge_ingest_jobs.sha`
+   / `finishedAt`, report the lag in `spec_compare` output, and degrade to a warning
+   past a threshold rather than answering blind against a stale graph. ~30-50 LOC.
+   A silently stale drift detector is worse than an unavailable one.
 
-**Recommendation: Option B.** Keep Option A on the shelf for a future need that
-Option B genuinely cannot serve — an interactive graph view in the web UI, or
-per-worktree WIP queries from outside the workspace.
+## 4. The open decision this document cannot make
 
-### What neither option changes
+**Does CBM add anything over SCIP for this use case?** SCIP already provides
+call/import edges with better identity. CBM's claimed marginal value (per the parent
+spec's table) is pre-computed blast-radius and hub-detection style queries that a raw
+edge table does not answer directly. That may be real, but:
 
-The per-worker ephemeral CBM shipped in #1889 stays exactly as it is. It indexes
-each worker's own worktree, so it sees **uncommitted work** — its whole advantage.
-A shared service indexes the mainline checkout and cannot replace it. These are
-two different consumers with different freshness requirements, and conflating
-them is the main design risk here.
+- Nobody has compared the two on an actual `spec_compare` failure case.
+- No CBM bulk-symbol-dump path exists — `cbm-bootstrap.ts` only invokes
+  `index_repository`, and CBM's CLI exposes per-query tools, not a full dump. An
+  extractor would have to page 63k nodes through repeated stdio invocations. That is
+  genuinely new code with an unknown API surface.
+- Adding CBM as a second producer requires the existing `scip:*` / `astgrep:*` edge
+  `rule`-tagging discipline (`edge-builder.ts:156,179`) so the graphs layer
+  additively instead of clobbering each other.
 
-## 4a. The failure mode Option B substitutes rather than removes
+**Recommendation: leave CBM as the per-worker interactive tool it now is, and do not
+make it a second ingest producer until step 1 shows agents actually use a graph and
+step 2 shows SCIP's edges are insufficient.**
 
-An earlier draft of §4 claimed Option B "removes the availability coupling." That
-was too generous, and the distinction matters more than the original framing did.
+## 5. Option A (inbound CBM service) — still rejected, unchanged
 
-- **Option A fails loud and closed.** Workspace stopped → the request errors. Bad,
-  but you know the answer is unavailable.
-- **Option B fails quiet and open.** Workspace stopped, or the indexer simply
-  hasn't run since the last mainline merge → `spec_compare` still returns an
-  answer, resolved against a stale symbol snapshot. Confident, wrong drift
-  verdicts: missed drift, or phantom drift against symbols that have since moved.
+Retained from the original draft because the reasoning stands independently:
 
-For a drift detector specifically, silent staleness is arguably worse than an
-outage: the tool's only value is being trustworthy about whether code matches
-spec. Trading a loud failure for a quiet one is the same bug class that let CBM sit
-`binary_absent` for four weeks (#1743) — a subsystem degrading where nobody can
-see it.
+- CBM 0.9.0 has no HTTP query API. Its transports are stdio MCP, one-shot
+  `cli <tool>`, and `--ui=true --port=N`, which is a graph visualization bound to
+  localhost, not a JSON query contract. A service means a shim you write and operate.
+- There is no inbound path to the workspace: Coder's default port share level is
+  `owner`, and host Tailscale is logged out. Vercel functions could not use the
+  tailnet regardless without Enterprise private networking.
+- `spec_compare` runs on Vercel, which has no repo checkout for `--repo-path`.
 
-Option B is still the right default. It is only *safe* with the following, which
-are therefore requirements and not enhancements.
+None of this changes. It is simply no longer the interesting question, because the
+push side is already solved by a pipeline that exists.
 
-### Freshness contract (required)
+## 6. Secondary: moving worker DB operations into the workspace
 
-1. Every pushed record carries the **mainline commit SHA** it was indexed from and
-   an **indexed-at timestamp**.
-2. `spec_compare` compares that SHA against mainline HEAD and **surfaces the lag**
-   in its output ("index is N commits / T minutes behind").
-3. Past a threshold, it **degrades to a warning and refuses a confident verdict**
-   rather than answering blind. N and T must be chosen before implementation, not
-   discovered in production.
+Unchanged from the original draft and still the firm boundary:
 
-This is what production code-intel does. Sourcegraph links every precise index to
-a specific commit and keeps an explicit stale flag on the commit graph, so a
-completed upload is not used to resolve queries at commits it cannot serve. The
-same discipline applies here in miniature.
+**Claim and gating stay server-side.** They are correct only while one authority
+serializes them; a workspace recreated on every start must not hold that authority.
+Fencing tokens are the standard guard even with a single authority.
 
-## 4b. Symbol identity is path-derived — measured, and it constrains the design
+**Append-only telemetry is the only legitimate candidate** — progress ticks,
+milestones, the CBM counters. Requirements: crash-tolerant across the runner's
+`while true` restart loop, never authoritative, and buffered inside `/home/coder`
+(the only path that survives container recreation). Use idempotent dedupe keys so
+at-least-once delivery is safe.
 
-Verified against the deployed 0.9.0 binary:
-
-```json
-{"name":"buildCbmActivation",
- "qualified_name":"home-coder-project-buildd.apps.runner.src.cbm-enforcement.buildCbmActivation",
- "file_path":"apps/runner/src/cbm-enforcement.ts"}
-```
-
-Two consequences:
-
-**Moves break anchors exactly like renames.** The qualified name embeds
-`apps.runner.src.cbm-enforcement`. Relocate the file and the identity changes even
-though the symbol is semantically identical. So "the graph fixes renames" is true
-but narrower than it sounds — it fixes *identifier* renames, not relocation,
-split, or merge.
-
-**The project prefix is derived from the checkout path.** `home-coder-project-buildd`
-comes from `/home/coder/project/buildd`. The same symbol indexed from the mainline
-checkout and from a worker's worktree under
-`/home/coder/.buildd/roles/.../buildd_<hash>-...` therefore gets **different
-qualified names**. Pushed canonical records keyed on `qualified_name` would not
-match anything a per-worker CBM produces, and would silently churn if the checkout
-path ever changed.
-
-Required mitigations:
-
-- Pin the project name explicitly via `index_repository --name <repo>` ("Override
-  the derived project name") so the prefix is stable and path-independent.
-- Use **`(file_path, name)`** as the stored identity — both are returned as
-  separate fields — rather than the composite `qualified_name`.
-- Store the commit SHA alongside, so a move is representable as a change between
-  two known commits instead of an unexplained anchor miss.
-
-### Anchor resolution must be confidence-tiered, not a replacement
-
-Symbol resolution cannot cover every case, and one gap matters specifically for a
-spec-driven repo: **specs routinely describe symbols that do not exist in code
-yet.** There is nothing to resolve against, so resolution alone cannot detect
-"spec says X, code has not built X" — which is a case this project cares about.
-
-`spec_compare` should therefore return distinct states rather than a boolean:
-
-| state | meaning |
-|---|---|
-| `resolved + drift` | anchor found, code disagrees with spec |
-| `resolved + clean` | anchor found, code matches |
-| `unresolved-anchor` | no such symbol — in a spec-first flow this is a **signal**, not an error |
-
-Regex anchoring stays as the fallback for `unresolved-anchor`. Also known-uncovered
-and worth documenting rather than discovering: re-exports through barrel files can
-resolve to the re-export site, and type-only renames have weaker identity than
-call-graph edges.
-
-## 5. Secondary: moving worker DB operations into the workspace
-
-Raised as secondary; treating it as such, with one firm boundary.
-
-**Claim and gating must stay server-side. Not negotiable.** Claim routing,
-dedupe, subject gates, dependency gates and concurrency caps are the correctness
-core; they are correct *because* a single authority serializes them. Moving them
-into a workspace that is recreated on every start reintroduces races and destroys
-the single source of truth.
-
-**Legitimate candidates** are high-volume append-only telemetry where loss is
-tolerable: progress ticks, milestones, `cbmToolCounts` / `cbmFileAccessCounts`,
-tool-result metadata. These could buffer locally and batch-flush asynchronously.
-
-**Constraints any such move must respect:**
-
-- The workspace container is recreated from its image on every start; only
-  `/home/coder` survives (it is a mounted volume). Anything buffered elsewhere is
-  lost on restart.
-- The workspace can be auto-stopped. Local state must be crash-tolerant and
-  never authoritative.
-- The runner already restarts itself via `screen` + `while true`, so a flush
-  buffer must survive process restart, not just crash.
-
-**Do not start here.** Measure the actual write volume and latency per worker
-first. Right now this is a solution without a demonstrated cost.
-
-## 6. Sequencing — deliberately gated
-
-Prerequisite 1 of parent spec §6.3 is "CBM must be integrated and stable." As of
-2026-08-29 it is *integrated*: the binary is live, enforcement fires, and #1889
-fixed the pre-index and told agents the graph exists. It is **not yet shown to be
-stable or effective** — the 7-day metrics window still reads `fallbackRate: 1.0`
-because everything before today was `binary_absent`.
-
-**Do not build this until the baseline moves.** The whole value of Option B is
-better anchors for spec_compare; if CBM turns out not to change `fallbackRate` or
-input tokens, the grounding bridge is optimizing an unproven foundation. Wait for
-a clean 7-day window showing `cbmActive.count > 0` and a real
-`inputTokenDeltaPct` / `fileAccessDeltaPct`.
-
-That gate also depends on someone actually reading `/api/cbm/metrics`, which
-still has zero consumers in the codebase.
-
-## 7. Task breakdown (not filed)
-
-1. **Surface the CBM metrics.** Give `/api/cbm/metrics` a consumer so §6's gate is
-   observable. Prerequisite for everything below.
-2. **Confirm the effect.** One clean 7-day window with CBM active. Record
-   `fallbackRate`, `inputTokenDeltaPct`, `fileAccessDeltaPct`. Decision point: if
-   the deltas are flat, stop and reconsider rather than building the bridge.
-3. **Extractor.** Runner-side job: index mainline checkout, emit canonical
-   symbol/file/edge records. Reuse the `runCbmBootstrap` invocation shape from
-   `cbm-bootstrap.ts` — note `--repo-path` is required (#1889).
-4. **Ingest path.** Upsert those records into `{workspaceId}:code` (the existing
-   corpus convention — `{workspaceId}` is repo-scoped in buildd, 1:1 with a
-   repoUrl, so no re-keying is needed), versioned by commit sha so stale edges are
-   replaceable rather than duplicated. Identity is `(file_path, name)` + sha, NOT
-   `qualified_name` (§4b). Pin the project name with `--name`.
-4b. **Freshness signal.** Store and expose indexed-sha + indexed-at; implement the
-   staleness threshold and the degrade-to-warning path from §4a. This is not
-   optional — it is what makes Option B safe rather than merely cheap.
-5. **Anchor grounding.** Replace regex anchor extraction in `spec_compare`'s
-   second hop with canonical-symbol lookup, keeping regex as fallback.
-6. **Measure again.** spec_compare code-evidence hit rate before/after, against
-   the §6.1 vocabulary-gap cases (task `a61de0b5`, PR #1429).
-
-## 8. Open questions
-
-- Does the `{workspaceId}:code` corpus schema accommodate typed edges (calls,
-  imports, dependents), or does grounding only need symbol→file anchors? The
-  latter is much cheaper and may be sufficient for §6.2.
-- Which repos get indexed? The workspace holds ten-plus checkouts under
-  `/home/coder/project/`. Indexing all of them on a timer is a different cost
-  profile than indexing buildd alone.
-- Refresh trigger: timer, push webhook, or `detect_changes` polling. A 10s index
-  is cheap enough that this is a scheduling question, not a performance one.
-- Does anything else want an inbound workspace endpoint? If two or three
-  consumers appear, Option A's tunnel cost amortizes and the calculus changes.
+**Commit to a numeric threshold before measuring** — writes/sec, bytes/sec, p95
+request-path contribution, storage growth — or the measurement will not produce a
+decision. Do not start here; there is no demonstrated cost yet.
