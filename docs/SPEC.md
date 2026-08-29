@@ -102,7 +102,7 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
 - **`mode`**: `execution | planning` (planning tasks produce a plan, not code).
 - **`outputRequirement`**: `pr_required | artifact_required | none | auto` — enforced
   on completion. `outputSchema` drives SDK structured output.
-- **`runnerPreference`** (`any | user | service | action`) + `requiredCapabilities` +
+- **`runnerPreference`** (`any | user | service | action`) +
   **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
   set, only runners that advertise this skill in `availableSkills` can claim the
   task; when null, any runner with workspace access can claim it. **Null is the
@@ -113,6 +113,9 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
   which skill prompt to load but does NOT restrict which runner can claim the
   task. `roleSlug`-based routing is primarily used by MCP `create_task` with
   an explicit `roleSlug`, the organizer agent, and schedules.
+  — `requiredCapabilities` (`string[]`) still exists as a schema column
+  (`packages/core/db/schema.ts`) but is **no longer enforced at claim time** (removed
+  in PR #1864). It is a candidate for schema removal — see "Removed concepts" below.
 - **`backend`** (`claude | codex`, enum, default `claude`) — which agent runs it.
 - **`dependsOn`** (task IDs) — workflow DAG; task isn't claimable until deps complete.
 - **`missionId`**, `parentTaskId`, `category`, `project`, `priority`.
@@ -298,6 +301,19 @@ brutalist UI.
   infra liveness, not a user feature.
 - **`observations` table** — memory moved to the knowledge store / external service.
 - **`codex_credentials` table** — dropped (migration 0047); use `secrets`.
+- **`capability_mismatch` gate reason / `checkCapabilityMatch` / `requiredCapabilities`
+  matching** — removed from the claim route and `/start` in PR #1864; `claim-gates.ts`
+  (the hand-mirrored gate module) deleted in PR #1868. The capability abstraction was
+  a single check (does Codex have credentials) with a general-sounding name; it has
+  been replaced by the onboarding/workspace-configuration approach. See
+  `docs/design/mcp-start-task.md` for the credential-surfacing open thread.
+  — **Schema cleanup pending:** `tasks.requiredCapabilities` (`jsonb`) still exists in
+  `packages/core/db/schema.ts` and `packages/shared/src/types.ts`. It is unenforced
+  and safe to remove in a follow-on migration. Do not re-populate it.
+- **`apps/web/src/lib/claim-gates.ts`** — deleted (PR #1868). `/start` now imports
+  directly from the canonical gate modules in `apps/web/src/app/api/workers/claim/`
+  (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`).
+  There is no longer a hand-mirrored copy of the gate predicates.
 
 **Planned, not in this repo:** iOS app (`buildd-ios`, separate repo;
 `buildd-mobile.pen` design + `docs/plans/ios-app-mvp.md`).

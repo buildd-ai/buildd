@@ -1,6 +1,6 @@
 # MCP `start_task` action: expose the existing /start route over MCP
 
-**Status:** Proposed  
+**Status:** Proposed — prerequisites merged (capability gate removed in PRs #1864, #1868; claim-gates.ts deleted; /start now imports from canonical gate modules)  
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — the existing /start implementation
 - `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
@@ -48,12 +48,12 @@ a specific pending task, and it is the only one absent from MCP. That is the gap
 
 `POST /api/tasks/[id]/start` (PR #1241, #1512, #1677):
 
-**Gate checks (in order):** returns `422 { gateReason, canForce }` for each:
-1. `deferred_start` — task has a future `startAt` and `!forceOverride`
-2. `unmerged_dep_pr` — dependency is completed but has an unmerged PR
-3. `connector_routing_mismatch` — task's role requires connectors that are missing or expired for this workspace
-4. `mission_held` — parent mission is held (startMode=held) and `!forceOverride`
-5. `workspace_cap_reached` — workspace is at `maxConcurrentTasks` (returns `canExempt: true`, not `canForce`)
+**Gate checks (in order):** each returns `422 { gateReason, blockClass, ... }` with gate-specific extra fields:
+1. `deferred_start` — task has a future `startAt` and `!forceOverride` · `blockClass: 'policy'` · `canForce: true`
+2. `unmerged_dep_pr` — dependency is completed but has an unmerged PR · `blockClass: 'policy'` · `canForce: true` · `blockingDeps[]`
+3. `connector_routing_mismatch` — task's role requires connectors missing or expired · `blockClass: 'capability'` · **no `canForce`** · `connectorFailures[]` · optional `alternativeRole`
+4. `mission_held` — parent mission is held (startMode=held) and `!forceOverride` · `blockClass: 'policy'` · `canForce: true`
+5. `workspace_cap_reached` — workspace is at `maxConcurrentTasks` · `blockClass: 'policy'` · `canExempt: true` (not `canForce`) · `active`, `cap`, `queuePosition`
 
 **On pass:**
 - Stamps `context.manualStartAt = now.toISOString()` (durable; survives Pusher drops)
@@ -114,8 +114,9 @@ start_task({
             | 'connector_routing_mismatch'
             | 'mission_held'
             | 'workspace_cap_reached',
-  canForce?: boolean,
-  canExempt?: boolean,        // only for workspace_cap_reached
+  blockClass: 'policy' | 'capability',
+  canForce?: boolean,         // policy gates only; absent for connector_routing_mismatch
+  canExempt?: boolean,        // workspace_cap_reached only
   blockingDeps?: { taskId, taskTitle, prUrl, prNumber }[],
   connectorFailures?: { connectorId, connectorName, mode }[],
   alternativeRole?: string,
@@ -205,7 +206,37 @@ enforce. If the need arises, it belongs in a separate design.
 
 ---
 
+## Open thread: backend credential surfacing after capability gate removal
+
+**Status: OPEN — not addressed by the claim-gate consolidation mission.**
+
+The `capability_mismatch` gate that previously blocked Codex tasks when credentials
+were absent has been removed from both the claim route and `/start` (PRs #1864,
+#1868). This was deliberate: backend credential presence is a workspace-configuration
+and onboarding problem, not a per-task claim gate.
+
+The consequence: a Codex task can now be claimed and dispatched to a runner, which
+then fails at execution time if the runner cannot resolve valid credentials. This
+failure surfaces in worker telemetry but is not proactively shown to the task creator.
+
+**Where it should surface instead:**
+- Workspace settings / onboarding flow — detect missing backend credentials and prompt
+  the user before they create or start Codex tasks.
+- `GET /api/workspaces/[id]/backends` (PR #1858) already returns
+  `{ id, label, available, reason }` using the same logic the old gate used.
+  The task-creation UI (`EditTaskModal`, `QuickCreateModal`) fetches this on mount and
+  disables unavailable backends with a tooltip. The gap is at the _workspace level_:
+  a new workspace with no Codex credential should surface that during setup, not
+  only when a task fails.
+
+**Explicitly NOT a claim gate.** Per the mission design: do not build a generalized
+backend-credential gate in the claim path. Implement in onboarding/settings UI.
+
+---
+
 ## Open thread: Pusher socket lifecycle may explain why /start times out
+
+**Status: OPEN — not delivered in PR #1677 and not addressed since. Unrelated to gate consolidation.**
 
 PR #1677 (task `8fe56c91`) had three acceptance items:
 1. ✅ Durable priority boost via `context.manualStartAt` + `priority+1`
