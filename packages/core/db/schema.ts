@@ -2371,4 +2371,57 @@ export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) =
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
 export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
 
+// Releases — one row per deployment/release event for a workspace.
+export const releases = pgTable('releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  archetype: text('archetype').notNull().$type<'gated' | 'continuous' | 'store' | 'package' | 'none'>(),
+  unit: text('unit'),
+  strategy: text('strategy').$type<'workflow_dispatch' | 'branch_merge' | 'script'>(),
+  sourceRef: text('source_ref'),
+  targetRef: text('target_ref'),
+  headSha: text('head_sha'),
+  previousSha: text('previous_sha'),
+  version: text('version'),
+  state: text('state').notNull().default('deploying').$type<'dispatched' | 'deploying' | 'healthy' | 'failed' | 'degraded' | 'pending_external'>(),
+  verificationStrategy: text('verification_strategy').notNull().default('none').$type<'http' | 'registry' | 'external' | 'none'>(),
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  deployedAt: timestamp('deployed_at', { withTimezone: true }),
+  healthyAt: timestamp('healthy_at', { withTimezone: true }),
+  runUrl: text('run_url'),
+  deployUrl: text('deploy_url'),
+  triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto'>(),
+  failureReason: text('failure_reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('releases_workspace_idx').on(t.workspaceId),
+  stateIdx: index('releases_state_idx').on(t.state),
+}));
+
+export const releasesRelations = relations(releases, ({ one, many }) => ({
+  workspace: one(workspaces, { fields: [releases.workspaceId], references: [workspaces.id] }),
+  releaseTasks: many(releaseTasks),
+}));
+
+export type Release = typeof releases.$inferSelect;
+export type NewRelease = typeof releases.$inferInsert;
+
+// Edge table — tasks shipped in a release (many-to-many).
+export const releaseTasks = pgTable('release_tasks', {
+  releaseId: uuid('release_id').references(() => releases.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  prNumber: integer('pr_number'),
+  commitSha: text('commit_sha'),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.releaseId, t.taskId] }),
+}));
+
+export const releaseTasksRelations = relations(releaseTasks, ({ one }) => ({
+  release: one(releases, { fields: [releaseTasks.releaseId], references: [releases.id] }),
+  task: one(tasks, { fields: [releaseTasks.taskId], references: [tasks.id] }),
+}));
+
+export type ReleaseTask = typeof releaseTasks.$inferSelect;
+export type NewReleaseTask = typeof releaseTasks.$inferInsert;
+
 // smoke-test-3-ci-retry-1 20260725

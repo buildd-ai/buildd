@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Related:**
 - `apps/web/src/app/api/workers/claim/route.ts` — connector pre-filter (lines 480–636) and injection block (lines 1791–2029)
-- `apps/web/src/lib/claim-gates.ts` — `checkConnectorRouting`
+- `apps/web/src/app/api/workers/claim/connector-gate.ts` — `checkConnectorRouting`
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — `/start` connector gate (lines 132–147)
 - `packages/core/db/schema.ts` — `connectors`, `connectorWorkspaces`, `connectorShares`, `workspaceSkills.connectorRefs`
 - `docs/specs/mcp-connectors-and-roles.md` — active unified model spec
@@ -70,8 +70,7 @@ gate.
 
 ### `checkConnectorRouting`
 
-`apps/web/src/lib/claim-gates.ts` lines 33–104. Returns `string[] | null` — the names of missing
-connectors, or `null` if all are available. Performs the same three checks as the pre-filter. Does not
+`apps/web/src/app/api/workers/claim/connector-gate.ts`. Returns `ConnectorFailure[] | null` — typed failure details per connector, or `null` if all are available. Performs the same three checks as the pre-filter. Does not
 distinguish between the three failure modes.
 
 ### Connector data model

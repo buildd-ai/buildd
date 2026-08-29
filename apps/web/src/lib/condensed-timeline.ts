@@ -394,3 +394,34 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
   // Return newest band first
   return labeled.reverse();
 }
+
+/**
+ * Group items into one band per calendar day, newest day first.
+ *
+ * The Activity list groups by day, not by burst: gap-clustering a single day
+ * into multiple waves renders as "Today" followed by "Today (2)", which reads
+ * as a duplicated header rather than two waves. Wave banding (deriveBandKey)
+ * stays on the mission timeline, where the burst is the point.
+ */
+export function deriveDayBands<T extends { id: string; completionTs: number }>(
+  items: T[],
+  now: Date,
+): BandedGroup<T>[] {
+  if (items.length === 0) return [];
+
+  const byDay = new Map<string, T[]>();
+  for (const item of items) {
+    const d = new Date(item.completionTs);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const bucket = byDay.get(key);
+    if (bucket) bucket.push(item);
+    else byDay.set(key, [item]);
+  }
+
+  return [...byDay.values()]
+    .map(bucket => {
+      const sorted = [...bucket].sort((a, b) => b.completionTs - a.completionTs);
+      return { label: deriveBandLabel(sorted[0].completionTs, now), items: sorted };
+    })
+    .sort((a, b) => b.items[0].completionTs - a.items[0].completionTs);
+}

@@ -11,6 +11,12 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
 
+/** Maximum number of infra-class failures before a task is marked stalled (not eligible for more retries) */
+export const MAX_INFRA_RETRIES = 3;
+
+/** Backoff delay in minutes between infra retries — exponential-ish (5m, 15m, 30m) */
+export const INFRA_BACKOFF_MINUTES: readonly number[] = [5, 15, 30];
+
 /** 150 minutes — 2.5× the 60-min poll cycle so one dropped beat doesn't kill in-flight workers */
 export const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
 
@@ -177,7 +183,7 @@ async function resolveStaleTask(
     const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
 
     if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
-      // Retry cap reached — permanently fail the task
+      // Code retry cap reached — permanently fail the task
       await db
         .update(tasks)
         .set({
@@ -187,22 +193,49 @@ async function resolveStaleTask(
         })
         .where(eq(tasks.id, taskId));
     } else {
-      // Retries remaining — reset to pending, preserving branch context for continuity
+      // Infra failure path (stale reaper always means the runner went offline).
+      // Track attempts separately so infra burns don't consume code-failure retry slots.
+      // Apply exponential backoff and a hard cap to prevent infinite infra loops.
       const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          claimedBy: null,
-          claimedAt: null,
-          context: {
-            ...existingCtx,
-            ...(staleWorker?.branch ? { baseBranch: staleWorker.branch } : {}),
-            failureContext: staleWorker?.error || 'Previous worker expired',
-          },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, taskId));
+      const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
+
+      if (infraRetryCount >= MAX_INFRA_RETRIES) {
+        // Infra retry cap reached — mark as stalled so mission health surfaces the issue
+        // and operators know it needs attention (not just queued like a fresh task).
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            result: {
+              error: `Task stalled: infra errors prevented startup on ${infraRetryCount} consecutive attempts`,
+              errorType: 'infra_stalled',
+              infraRetryCount,
+            } as any,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, taskId));
+      } else {
+        // Infra retries remaining — reset to pending with backoff so the next runner
+        // attempt doesn't race immediately (helps when the infra issue needs settling time).
+        const backoffMins = INFRA_BACKOFF_MINUTES[infraRetryCount] ?? 30;
+        const startAt = new Date(Date.now() + backoffMins * 60_000);
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            claimedBy: null,
+            claimedAt: null,
+            startAt,
+            context: {
+              ...existingCtx,
+              ...(staleWorker?.branch ? { baseBranch: staleWorker.branch } : {}),
+              failureContext: staleWorker?.error || 'Previous worker expired (infra failure)',
+              infraRetryCount: infraRetryCount + 1,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, taskId));
+      }
     }
   }
 

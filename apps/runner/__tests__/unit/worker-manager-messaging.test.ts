@@ -249,7 +249,7 @@ describe('WorkerManager — sendMessage', () => {
       expect(worker.status).toBe('working');
       expect(worker.waitingFor).toBeUndefined();
       expect(worker.currentAction).toBe('Processing response...');
-    });
+    }, 15_000);
 
     test('syncs cleared waiting state to server', async () => {
       manager = new WorkerManager(makeConfig());

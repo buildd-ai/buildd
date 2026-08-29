@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.182.4",
+  "version": "0.183.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -54,7 +54,8 @@
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",
-    "./prose-gate": "./prose-gate.ts"
+    "./prose-gate": "./prose-gate.ts",
+    "./release-archetype": "./release-archetype.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.231",

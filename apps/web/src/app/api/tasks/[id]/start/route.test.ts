@@ -15,8 +15,6 @@ const mockTasksUpdate = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
-
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -33,11 +31,6 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
-}));
-
-// Mock codex-credential
-mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mockHasCodexCredential,
 }));
 
 // Mock pusher
@@ -145,7 +138,6 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTriggerEvent.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
-    mockHasCodexCredential.mockReset();
     mockDbUpdate.set.mockClear();
 
     // Default: grant access, no blocking dep workers, no connectors, no held mission, no active workers
@@ -158,8 +150,6 @@ describe('POST /api/tasks/[id]/start', () => {
     mockConnectorsFindMany.mockResolvedValue([]);
     mockConnectorSharesFindMany.mockResolvedValue([]);
     mockConnectorWorkspacesFindMany.mockResolvedValue([]);
-    // Default: Codex credentials available (so claude-backend tasks and credentialed codex tasks pass)
-    mockHasCodexCredential.mockResolvedValue(true);
   });
 
   it('returns 401 when no session auth (API key not supported)', async () => {
@@ -925,91 +915,6 @@ describe('POST /api/tasks/[id]/start', () => {
     const response = await callHandler(createMockRequest(), 'task-123');
     expect(response.status).toBe(200);
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns 422 capability_mismatch when task needs codex backend but no server credentials are configured', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Codex Task',
-      status: 'pending',
-      workspaceId: 'ws-1',
-      backend: 'codex',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    // No server Codex credentials
-    mockHasCodexCredential.mockResolvedValue(false);
-
-    const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(422);
-    const data = await response.json();
-    expect(data.gateReason).toBe('capability_mismatch');
-    expect(data.missingCapability).toBe('backend:codex');
-    expect(data.canForce).toBe(true);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
-  });
-
-  it('passes capability gate when codex credentials are configured', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Codex Task',
-      description: null,
-      status: 'pending',
-      workspaceId: 'ws-1',
-      backend: 'codex',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: null,
-      mode: null,
-      priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    // Server has Codex credentials
-    mockHasCodexCredential.mockResolvedValue(true);
-
-    const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
-  });
-
-  it('bypasses capability gate with forceOverride=true (local runner may have its own credentials)', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Codex Task',
-      description: null,
-      status: 'pending',
-      workspaceId: 'ws-1',
-      backend: 'codex',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: {},
-      mode: null,
-      priority: null,
-      startAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    // No server creds, but user forces start (local runner may have OPENAI_API_KEY)
-    mockHasCodexCredential.mockResolvedValue(false);
-
-    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
-    expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
-    // hasCodexCredential should NOT have been called (gate skipped by forceOverride)
-    expect(mockHasCodexCredential).not.toHaveBeenCalled();
   });
 
   // ── Durable start: manualStartAt + priority boost ─────────────────────────

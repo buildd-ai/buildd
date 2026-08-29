@@ -4,7 +4,7 @@ import { workspaceSkills, connectors } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting } from '@/lib/claim-gates';
+import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
 
 export type ConnectorHealthStatus = 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured';
 

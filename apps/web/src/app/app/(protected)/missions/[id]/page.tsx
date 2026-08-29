@@ -8,7 +8,7 @@ import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
-import { deriveChainPosition, type ChainPositionResult } from '@/lib/task-presentation';
+import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -455,14 +455,22 @@ export default async function MissionDetailPage({
     const deps = depIds.map(depId => {
       const dep = taskMap.get(depId);
       if (!dep) return null;
-      const depW = (dep.workers as Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: Date | string | null }> | null)?.[0];
+      // Map every loaded worker, not just the latest: the gate asks whether ANY
+      // worker holds an open PR. prLifecycleStatus='closed' releases the guard.
+      const depWorkers = (dep.workers as Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: Date | string | null; prLifecycleStatus?: string | null }> | null) ?? [];
       return {
         id: dep.id,
         title: dep.title,
         status: dep.status,
-        workers: depW ? [{ prUrl: depW.prUrl ?? null, prNumber: depW.prNumber ?? null, mergedAt: depW.mergedAt ? String(depW.mergedAt) : null }] : [],
+        dependsOn: (dep.dependsOn as string[] | null) ?? [],
+        workers: depWorkers.map(w => ({
+          prUrl: w.prUrl ?? null,
+          prNumber: w.prNumber ?? null,
+          mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+          prLifecycleStatus: w.prLifecycleStatus ?? null,
+        })),
       };
-    }).filter(Boolean) as Array<{ id: string; title: string; status: string; workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }> }>;
+    }).filter(Boolean) as ChainPositionDep[];
     const dependents = allTasks.filter(t => ((t.dependsOn as string[] | null) ?? []).includes(task.id)).length;
     chainByTaskId.set(task.id, deriveChainPosition({ task: { id: task.id, status: task.status }, deps, dependents }));
   }

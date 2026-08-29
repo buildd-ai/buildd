@@ -21,7 +21,7 @@ import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
 import StatusBadge from '@/components/StatusBadge';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
-import type { ChainPositionResult } from '@/lib/task-presentation';
+import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import { computeMissionProgress, crossedMilestone } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
@@ -356,30 +356,32 @@ export default async function HomePage({
         const allDepIds = [...new Set(
           activeWorkers.flatMap((w: any) => (w.task?.dependsOn as string[] | null) ?? [])
         )];
-        const depTaskInfoMap = new Map<string, {
-          id: string; status: string;
-          workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
-        }>();
+        const depTaskInfoMap = new Map<string, ChainPositionDep>();
         if (allDepIds.length > 0) {
           const depTasks = await db.query.tasks.findMany({
             where: inArray(tasks.id, allDepIds),
-            columns: { id: true, status: true },
+            // title → readable rail chips; dependsOn → transitive reduction.
+            columns: { id: true, title: true, status: true, dependsOn: true },
             with: {
               workers: {
-                columns: { prUrl: true, prNumber: true, mergedAt: true },
+                // No limit: the gate asks "does ANY worker hold an open PR?".
+                // prLifecycleStatus: a closed/abandoned PR unblocks dependents.
+                columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
                 orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
-                limit: 1,
               },
             },
           });
           for (const dt of depTasks) {
             depTaskInfoMap.set(dt.id, {
               id: dt.id,
+              title: dt.title,
               status: dt.status,
+              dependsOn: (dt.dependsOn as string[] | null) ?? [],
               workers: dt.workers.map((w: any) => ({
                 prUrl: w.prUrl ?? null,
                 prNumber: w.prNumber ?? null,
                 mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+                prLifecycleStatus: w.prLifecycleStatus ?? null,
               })),
             });
           }
@@ -398,14 +400,9 @@ export default async function HomePage({
           const task = w.task;
           const ctx = (task?.context || {}) as Record<string, unknown>;
           const depIds = (task?.dependsOn as string[] | null) ?? [];
-          const deps = depIds.map((id: string) => depTaskInfoMap.get(id)).filter(Boolean) as Array<{
-            id: string; title: string; status: string;
-            workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
-          }>;
-          const resolvedDeps = depIds.map((id: string) => {
-            const dt = depTaskInfoMap.get(id);
-            return dt ? { ...dt, title: id } : null;
-          }).filter(Boolean) as Array<{ id: string; title: string; status: string; workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }> }>;
+          const resolvedDeps = depIds
+            .map((id: string) => depTaskInfoMap.get(id))
+            .filter(Boolean) as ChainPositionDep[];
           const dependents = dependentCountMap.get(task?.id) ?? 0;
           const chain = (resolvedDeps.length > 0 || dependents > 0)
             ? deriveChainPosition({ task: { id: task?.id ?? '', status: task?.status ?? 'pending' }, deps: resolvedDeps, dependents })

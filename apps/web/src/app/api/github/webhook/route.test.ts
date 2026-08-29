@@ -733,13 +733,14 @@ describe('POST /api/github/webhook', () => {
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
     // Helpers for the CI-failure → retry-task path.
-    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null } = {}) {
+    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string } = {}) {
       mockWorkersFindFirst.mockReturnValue({
         id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
         task: {
           id: 't1', title: 'Fix the thing', description: 'orig desc',
-          workspaceId: 'ws1', missionId: opts.missionId ?? 'm1',
+          workspaceId: 'ws1', missionId: opts.missionId !== undefined ? opts.missionId : 'm1',
           context: opts.taskCtx ?? {},
+          status: opts.status ?? 'in_progress',
         },
       });
       mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: opts.gitConfig ?? {} });
@@ -855,6 +856,31 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
+    });
+
+    it('skips retry and notifies mission when task is already completed (missionId set)', async () => {
+      withFailedWorkerPr({ status: 'completed', missionId: 'mission-99' });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+      const [calledMissionId, opts] = mockNotifyMissionPrReady.mock.calls[0];
+      expect(calledMissionId).toBe('mission-99');
+      expect(opts.reason).toBe('ci_failed');
+    });
+
+    it('skips retry silently when task is completed with no missionId', async () => {
+      withFailedWorkerPr({ status: 'completed', missionId: null });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
   });
 

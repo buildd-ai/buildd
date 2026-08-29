@@ -9,6 +9,7 @@ import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import { initiativeStatusChip } from '@/lib/initiative-presentation';
+import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import {
   type MissionHealth,
   type MissionGroup,
@@ -110,6 +111,7 @@ export interface MissionItem {
   goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | null;
   skyline: MissionSkylineData | null;
   normalizationSlots: number;
+  releaseFooter: ReleaseFooterData;
 }
 
 interface WorkspaceBucket {
@@ -787,6 +789,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           )}
         </div>
       )}
+      <MissionReleaseFooter data={mission.releaseFooter} />
     </div>
   );
 }
@@ -902,6 +905,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           )}
         </div>
       )}
+      <MissionReleaseFooter data={mission.releaseFooter} />
     </div>
   );
 }

@@ -8,7 +8,7 @@ import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, type SwipeCardType } from '@/components/SwipeableRow';
-import { deriveBandKey } from '@/lib/condensed-timeline';
+import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
@@ -374,7 +374,8 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return maxCount / nonWaitingTasks.length > 0.75 ? 'none' : groupBy;
   }, [groupBy, nonWaitingTasks]);
 
-  // ─── Time-band groups — §3.8: shared deriveBandKey (gap-clustered bands) ────
+  // ─── Time-band groups — one band per calendar day (wave banding stays on
+  // the mission timeline; here it split a single day into "Today" + "Today (2)") ──
 
   const timeBandGroups = useMemo(() => {
     if (effectiveGroupBy !== 'time') return [];
@@ -382,7 +383,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
       ...t,
       completionTs: new Date(t.updatedAt).getTime(),
     }));
-    return deriveBandKey(withTs, new Date());
+    return deriveDayBands(withTs, new Date());
   }, [nonWaitingTasks, effectiveGroupBy]);
 
   // Mobile recent strip: top 5 non-completed root tasks by recency, always visible regardless of filter
@@ -783,7 +784,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             </div>
           )}
 
-          {/* Grouped by Time (default) — §3.8: gap-clustered via deriveBandKey */}
+          {/* Grouped by Time (default) — one section per calendar day */}
           {effectiveGroupBy === 'time' && timeBandGroups.map((band) => (
             <div key={band.label}>
               <GroupSection

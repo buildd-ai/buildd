@@ -261,13 +261,35 @@ export async function maybeRetriggerMission(
   //    where tasks finish without an explicit completion signal.
   const allMissionTasksForDormancy = await db.query.tasks.findMany({
     where: eq(tasks.missionId, missionId),
-    columns: { status: true, title: true, mode: true },
+    columns: { status: true, title: true, mode: true, result: true },
   });
 
   const deliverableTasks = allMissionTasksForDormancy.filter(isDeliverableTask);
   const allDeliverablesDone = deliverableTasks.length > 0 && deliverableTasks.every(
     t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
   );
+
+  // Block auto-completion when any deliverable task is infra-stalled: the task is
+  // technically 'failed' but the failure is infrastructure, not the task itself.
+  // Completing the mission would hide the stall from operators.
+  if (allDeliverablesDone) {
+    const stalledTasks = deliverableTasks.filter(
+      t => t.status === 'failed' && (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled'
+    );
+    if (stalledTasks.length > 0) {
+      const stalledTitles = stalledTasks.map(t => `"${t.title}"`).join(', ');
+      console.log(`[mission-loop] Mission ${missionId} dormancy blocked: ${stalledTasks.length} infra-stalled task(s)`);
+      await db.insert(missionNotes).values({
+        missionId,
+        authorType: 'system',
+        type: 'update',
+        title: 'Mission completion blocked: infra-stalled tasks',
+        body: `Mission auto-completion is blocked because ${stalledTasks.length} deliverable task(s) failed due to infrastructure errors after exhausting retries: ${stalledTitles}.\n\nThese tasks need manual intervention to unblock the mission.`,
+        status: 'open',
+      });
+      return { action: 'stalled' };
+    }
+  }
 
   if (allDeliverablesDone) {
     const canComplete = await checkGoalCriteriaGuard(missionId, mission.goalCriteria, mission.goalCriteriaState);

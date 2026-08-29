@@ -11,6 +11,7 @@ import {
   deriveTaskPhase,
   isStaleWorker,
 } from './task-presentation';
+import { DEP_SATISFYING_STATUSES } from './dep-gate-contract';
 
 // ─── LIVE_WORKER_STATUSES ────────────────────────────────────────────────────
 
@@ -23,15 +24,30 @@ describe('LIVE_WORKER_STATUSES', () => {
 });
 
 // ─── isGateSatisfied ─────────────────────────────────────────────────────────
-// These cases mirror the SQL gate in the claim route.
-// Rule: status='completed' AND no worker has prUrl IS NOT NULL AND mergedAt IS NULL.
+// These cases mirror the SQL gate in the claim route (deps-gate.ts).
+// Rule: status ∈ DEP_SATISFYING_STATUSES, AND — for 'completed' only — no worker
+// has an open PR (prUrl IS NOT NULL, mergedAt IS NULL, lifecycle != 'closed').
 
 describe('isGateSatisfied', () => {
-  it('returns false when dep is not completed', () => {
+  it('returns false for statuses outside DEP_SATISFYING_STATUSES', () => {
     expect(isGateSatisfied({ status: 'pending' }, [])).toBe(false);
     expect(isGateSatisfied({ status: 'assigned' }, [])).toBe(false);
     expect(isGateSatisfied({ status: 'in_progress' }, [])).toBe(false);
     expect(isGateSatisfied({ status: 'failed' }, [])).toBe(false);
+  });
+
+  // Regression: the display gate required status='completed', so a cancelled dep
+  // stayed BLOCKED in the UI forever while the claim route treated it as satisfied.
+  it('returns true when dep is cancelled — matches DEP_SATISFYING_STATUSES', () => {
+    expect(isGateSatisfied({ status: 'cancelled' }, [])).toBe(true);
+  });
+
+  it('returns true when dep is cancelled even with an open PR — no PR guard on cancelled', () => {
+    expect(
+      isGateSatisfied({ status: 'cancelled' }, [
+        { prUrl: 'https://github.com/org/repo/pull/9', mergedAt: null },
+      ]),
+    ).toBe(true);
   });
 
   it('returns true when completed with no workers', () => {
@@ -70,6 +86,30 @@ describe('isGateSatisfied', () => {
         { prUrl: 'https://github.com/org/repo/pull/4', mergedAt: '2025-01-02T00:00:00Z' },
       ]),
     ).toBe(false);
+  });
+
+  // Regression: the SQL gate exempts closed PRs (COALESCE(pr_lifecycle_status,'') != 'closed');
+  // the display gate did not, so an abandoned PR blocked dependents in the UI forever.
+  it('returns true when completed and the unmerged PR was closed/abandoned', () => {
+    expect(
+      isGateSatisfied({ status: 'completed' }, [
+        { prUrl: 'https://github.com/org/repo/pull/5', mergedAt: null, prLifecycleStatus: 'closed' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns false when completed and the unmerged PR is still open (lifecycle not closed)', () => {
+    expect(
+      isGateSatisfied({ status: 'completed' }, [
+        { prUrl: 'https://github.com/org/repo/pull/6', mergedAt: null, prLifecycleStatus: 'ci_running' },
+      ]),
+    ).toBe(false);
+  });
+
+  it('agrees with the claim route on every status in DEP_SATISFYING_STATUSES', () => {
+    for (const status of DEP_SATISFYING_STATUSES) {
+      expect(isGateSatisfied({ status }, [])).toBe(true);
+    }
   });
 });
 
@@ -170,6 +210,118 @@ describe('deriveChainPosition', () => {
     expect(segments[3].state).toBe('empty');   // pending
 
     expect(blockedBy.map(b => b.id).sort()).toEqual(['open-pr', 'pending'].sort());
+  });
+
+  it('marks a cancelled dep as skipped, not empty, and does not block on it', () => {
+    const deps = [{ id: 'd1', title: 'D1', status: 'cancelled', workers: [] }];
+    const { segments, blockedBy, blockedByFrontier } = deriveChainPosition({
+      task, deps, dependents: 0,
+    });
+    expect(segments[0].state).toBe('skipped');
+    expect(blockedBy).toHaveLength(0);
+    expect(blockedByFrontier).toHaveLength(0);
+  });
+});
+
+// ─── blockedByFrontier (transitive reduction) ────────────────────────────────
+// The auto-dependsOn pass in api/tasks/route.ts adds an edge to every in-flight
+// task with an overlapping pathManifest. Mission tasks default to ['**'], which
+// overlaps everything, so a task routinely carries 5–8 edges of which one or two
+// are the real frontier. blockedBy stays truthful; blockedByFrontier is what the
+// UI renders.
+
+describe('deriveChainPosition — blockedByFrontier', () => {
+  const task = { id: 'subject', status: 'pending' };
+
+  it('equals blockedBy when no dep depends on another dep', () => {
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'b', title: 'B', status: 'pending', workers: [], dependsOn: [] },
+    ];
+    const { blockedBy, blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedBy).toHaveLength(2);
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['a', 'b']);
+  });
+
+  it('drops a blocker that another blocker already depends on directly', () => {
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'b', title: 'B', status: 'pending', workers: [], dependsOn: ['a'] },
+    ];
+    const { blockedBy, blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedBy).toHaveLength(2);
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['b']);
+  });
+
+  it('drops a blocker reachable transitively through several hops', () => {
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'b', title: 'B', status: 'pending', workers: [], dependsOn: ['a'] },
+      { id: 'c', title: 'C', status: 'pending', workers: [], dependsOn: ['b'] },
+    ];
+    const { blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['c']);
+  });
+
+  it('reduces through a satisfied intermediate node', () => {
+    // subject → {a, s, c}; c → s → a. s is completed+merged so it is not a
+    // blocker, but it still proves c is downstream of a.
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: [] },
+      { id: 's', title: 'S', status: 'completed', workers: [], dependsOn: ['a'] },
+      { id: 'c', title: 'C', status: 'pending', workers: [], dependsOn: ['s'] },
+    ];
+    const { blockedBy, blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedBy.map(b => b.id).sort()).toEqual(['a', 'c']);
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['c']);
+  });
+
+  it('keeps both blockers when neither reaches the other', () => {
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: ['x'] },
+      { id: 'b', title: 'B', status: 'pending', workers: [], dependsOn: ['y'] },
+    ];
+    const { blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['a', 'b']);
+  });
+
+  it('never empties the frontier when blockers exist, even in a dependency cycle', () => {
+    // A malformed graph (a ↔ b) would reduce both away under naive reduction,
+    // leaving a BLOCKED task with no visible reason.
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [], dependsOn: ['b'] },
+      { id: 'b', title: 'B', status: 'pending', workers: [], dependsOn: ['a'] },
+    ];
+    const { blockedBy, blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedBy).toHaveLength(2);
+    expect(blockedByFrontier.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to the full list when deps carry no dependsOn data', () => {
+    const deps = [
+      { id: 'a', title: 'A', status: 'pending', workers: [] },
+      { id: 'b', title: 'B', status: 'pending', workers: [] },
+    ];
+    const { blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['a', 'b']);
+  });
+
+  it('reproduces the prod shape: 8 edges reduce to 1 frontier blocker', () => {
+    // Task 233df6 "Sync gate specs to shipped code" in prod.
+    // afa5b0 + 9a1e54 are cancelled (satisfied); e4443f covers the other five.
+    const deps = [
+      { id: 'afa5b0', title: 'Single source of truth for claim gates', status: 'cancelled', workers: [], dependsOn: [] },
+      { id: '9a1e54', title: 'Remove the capability gate', status: 'cancelled', workers: [], dependsOn: [] },
+      { id: '875ff4', title: 'Budget Forecast UI', status: 'pending', workers: [], dependsOn: [] },
+      { id: '8891ac', title: 'Fix planning-contract violation', status: 'pending', workers: [], dependsOn: [] },
+      { id: '46bfab', title: 'Fix Pusher 413', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'aeb80f', title: 'SPEC: deliverable uniqueness', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'e4443f', title: 'DESIGN: context inheritance', status: 'pending', workers: [], dependsOn: ['875ff4', '8891ac', '46bfab', 'aeb80f', '0ced84'] },
+      { id: '0ced84', title: 'AUDIT: stale CI badge', status: 'pending', workers: [], dependsOn: ['875ff4', '8891ac', '46bfab', 'aeb80f'] },
+    ];
+    const { blockedBy, blockedByFrontier } = deriveChainPosition({ task, deps, dependents: 0 });
+    expect(blockedBy).toHaveLength(6);
+    expect(blockedByFrontier.map(b => b.id)).toEqual(['e4443f']);
   });
 });
 

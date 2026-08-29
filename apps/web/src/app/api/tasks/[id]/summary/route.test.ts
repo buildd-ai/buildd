@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
+const mockDepTasksFindMany = mock(() => Promise.resolve([] as any[]));
 const mockErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
@@ -18,7 +19,7 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockDepTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
       workerErrorTraces: { findMany: mockErrorTracesFindMany },
     },
@@ -28,6 +29,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -53,6 +55,8 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockGetCurrentUser.mockReset();
     mockTasksFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
+    mockDepTasksFindMany.mockReset();
+    mockDepTasksFindMany.mockResolvedValue([]);
     mockErrorTracesFindMany.mockReset();
     mockErrorTracesFindMany.mockResolvedValue([]);
     mockVerifyWorkspaceAccess.mockReset();
@@ -372,6 +376,191 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.status).toBe('failed');
     expect(data.lastError?.excerpt).toContain('401 OAuth access token is invalid');
     expect(data.lastError?.pattern).toBe('auth_error');
+  });
+
+  // ── Dependency-gate (blocked state) ────────────────────────────────────────
+
+  it('returns blockedByCount=0 for a pending task with no dependsOn', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-pending',
+      title: 'Pending task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: [],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('task-pending');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(0);
+    // depTasks query must NOT be called when dependsOn is empty
+    expect(mockDepTasksFindMany).not.toHaveBeenCalled();
+  });
+
+  it('returns blockedByCount=0 when all dependencies are completed with merged PRs', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-unblocked',
+      title: 'Unblocked task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-1'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // dep task: completed, PR merged
+    mockDepTasksFindMany.mockResolvedValue([{
+      id: 'dep-1',
+      status: 'completed',
+      workers: [{ prNumber: 10, mergedAt: new Date().toISOString(), prLifecycleStatus: 'merged' }],
+    }]);
+
+    const res = await callGET('task-unblocked');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(0);
+  });
+
+  it('returns blockedByCount=1 when a dep is still pending (not completed)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-blocked',
+      title: 'Blocked task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-1'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // dep task: still pending (not completed yet)
+    mockDepTasksFindMany.mockResolvedValue([{
+      id: 'dep-1',
+      status: 'pending',
+      workers: [],
+    }]);
+
+    const res = await callGET('task-blocked');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(1);
+  });
+
+  it('returns blockedByCount=1 when a dep is completed but its PR is open and unmerged', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-pr-blocked',
+      title: 'PR-blocked task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-pr'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // dep task: completed, but PR open and not merged
+    mockDepTasksFindMany.mockResolvedValue([{
+      id: 'dep-pr',
+      status: 'completed',
+      workers: [{ prNumber: 99, mergedAt: null, prLifecycleStatus: 'open' }],
+    }]);
+
+    const res = await callGET('task-pr-blocked');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(1);
+  });
+
+  it('does not count closed PRs as unresolved blockers', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-closed-pr',
+      title: 'Closed PR dep task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-closed'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // dep task: completed, PR closed (not merged) — closed PRs are NOT blockers
+    mockDepTasksFindMany.mockResolvedValue([{
+      id: 'dep-closed',
+      status: 'completed',
+      workers: [{ prNumber: 55, mergedAt: null, prLifecycleStatus: 'closed' }],
+    }]);
+
+    const res = await callGET('task-closed-pr');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(0);
+  });
+
+  it('does not query dep tasks for non-pending tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-running',
+      title: 'Running task',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-1'],
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w1', status: 'running', currentAction: null, turns: 1,
+      prUrl: null, prNumber: null, prLifecycleStatus: null, mergedAt: null,
+      commitCount: 0, filesChanged: 0, linesAdded: 0, linesRemoved: 0,
+      costUsd: null, startedAt: new Date().toISOString(), completedAt: null,
+      waitingFor: null, branch: null, milestones: [],
+    }]);
+
+    const res = await callGET('task-running');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(0);
+    expect(mockDepTasksFindMany).not.toHaveBeenCalled();
   });
 
   it('returns null lastError when the task has no error traces', async () => {
