@@ -181,7 +181,8 @@ describe('WorkerManager — state transitions', () => {
   beforeEach(() => {
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockGetWorkspaceConfig.mockClear();
     mockGetCompactObservations.mockClear();
     mockSearchObservations.mockClear();

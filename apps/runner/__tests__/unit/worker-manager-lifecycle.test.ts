@@ -183,7 +183,8 @@ describe('WorkerManager — lifecycle', () => {
     queryCallCount = 0;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
   });
 
