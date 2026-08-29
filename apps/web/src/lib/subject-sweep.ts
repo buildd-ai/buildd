@@ -21,12 +21,19 @@ const DEAD_LIFECYCLE_STATUSES = new Set(['closed', 'merged']);
 const CLAIMABLE_STATUSES = new Set(['pending', 'assigned']);
 
 /**
- * Sweep all tasks anchored to the given PR, marking them as `subjectResolution
- * = 'reconciled'` when no live worker PR remains in the retry chain.
+ * Sweep all tasks anchored to the given PR. When no live worker PR remains in
+ * the retry chain, pending/assigned tasks are CANCELLED (not just marked
+ * reconciled) so they fall out of the claim queue and mission-completion counts.
  *
- * Safe to call multiple times (idempotent): tasks already marked reconciled or
- * not in a claimable status are skipped. Never touches completed/failed/
- * cancelled tasks.
+ * The claim route's SQL pre-filter (subjectLivenessCondition) already excludes
+ * tasks with subjectResolution='reconciled', so a task that is only marked
+ * reconciled but stays 'pending' becomes permanently invisible to the claim loop
+ * while still blocking countPendingTasksForMission — the "stranded pending" bug.
+ * Cancellation is the correct terminal state: there is nothing left to fix on a
+ * dead PR.
+ *
+ * Safe to call multiple times (idempotent): tasks already cancelled/completed/
+ * failed or already marked reconciled are not touched.
  */
 export async function sweepSubjectAnchoredTasks(
   workspaceId: string,
@@ -96,11 +103,28 @@ export async function sweepSubjectAnchoredTasks(
     return { anchored: taskIds.size, reconciled: 0 };
   }
 
-  // Step 5: mark them reconciled (idempotent via the filter above)
+  // Step 5: cancel tasks whose subject PR is dead.
+  //
+  // We cancel (not just mark reconciled) because the claim route's SQL
+  // pre-filter (subjectLivenessCondition) excludes tasks where
+  // subjectResolution='reconciled'. A task that is only marked reconciled but
+  // stays 'pending' becomes permanently invisible to the claim loop while still
+  // counting against queue depth and mission-completion gates
+  // (countPendingTasksForMission counts by status, not subjectResolution).
+  //
+  // This was the root cause of session-limit-deferred CI-retry tasks stranding
+  // for weeks: the task's budget-reset startAt passed, but the task was never
+  // re-claimed because the SQL filter hid it from the claim route entirely.
   await db.update(tasks).set({
     subjectResolution: 'reconciled',
+    status: 'cancelled',
     updatedAt: new Date(),
   }).where(inArray(tasks.id, toReconcile.map(t => t.id)));
+
+  console.log(
+    `[subject-sweep] PR #${prNumber} (workspace ${workspaceId}): cancelled ${toReconcile.length} pending task(s) whose subject PR has no live successor.`,
+    toReconcile.map(t => t.id),
+  );
 
   return { anchored: taskIds.size, reconciled: toReconcile.length };
 }

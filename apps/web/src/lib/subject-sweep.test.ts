@@ -97,8 +97,9 @@ describe('sweepSubjectAnchoredTasks', () => {
     expect(mockWorkersFindMany).not.toHaveBeenCalled();
   });
 
-  it('marks pending tasks reconciled when PR has no live worker PRs', async () => {
-    // Anchored task is pending with no open PR
+  it('cancels pending tasks when PR has no live worker PRs', async () => {
+    // Anchored task is pending with no open PR — must be CANCELLED so it falls
+    // out of the claim queue and mission-completion count (not just reconciled).
     mockTasksFindMany.mockResolvedValueOnce([makeTask({ id: 'task-1', status: 'pending' })]);
     // Workers check returns no workers (no live successor)
     mockWorkersFindMany.mockResolvedValue([]);
@@ -111,11 +112,33 @@ describe('sweepSubjectAnchoredTasks', () => {
     expect(result.anchored).toBeGreaterThan(0);
     expect(result.reconciled).toBe(1);
     expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ subjectResolution: 'reconciled' }),
+      expect.objectContaining({ subjectResolution: 'reconciled', status: 'cancelled' }),
     );
   });
 
-  it('marks assigned tasks reconciled when PR is dead', async () => {
+  it('cancels a budget-deferred pending task when its PR dies', async () => {
+    // The "stranded nine" scenario: CI-retry task was deferred (pending with
+    // a future startAt) after hitting session limit. Its PR was later merged.
+    // The sweep must cancel it — leaving it pending makes it permanently
+    // invisible to the claim route (SQL pre-filter) while blocking queue counts.
+    const deferredTask = makeTask({ id: 'deferred-1', status: 'pending', subjectResolution: null });
+    mockTasksFindMany.mockResolvedValueOnce([deferredTask]);
+    mockWorkersFindMany.mockResolvedValue([
+      makeWorker({ taskId: 'deferred-1', prLifecycleStatus: 'merged' }),
+    ]);
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockTasksUpdate.mockReturnValue({ set: setMock });
+
+    const result = await sweepSubjectAnchoredTasks('ws-1', 42);
+
+    expect(result.reconciled).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ subjectResolution: 'reconciled', status: 'cancelled' }),
+    );
+  });
+
+  it('cancels assigned tasks when PR is dead', async () => {
     mockTasksFindMany.mockResolvedValueOnce([makeTask({ id: 'task-2', status: 'assigned' })]);
     mockWorkersFindMany.mockResolvedValue([]);
 
@@ -126,7 +149,7 @@ describe('sweepSubjectAnchoredTasks', () => {
 
     expect(result.reconciled).toBe(1);
     expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ subjectResolution: 'reconciled' }),
+      expect.objectContaining({ subjectResolution: 'reconciled', status: 'cancelled' }),
     );
   });
 
@@ -155,7 +178,7 @@ describe('sweepSubjectAnchoredTasks', () => {
     expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
 
-  it('reconciles when only closed/merged workers exist in the chain', async () => {
+  it('cancels when only closed/merged workers exist in the chain', async () => {
     mockTasksFindMany.mockResolvedValueOnce([makeTask({ id: 'task-1', status: 'pending' })]);
     mockWorkersFindMany.mockResolvedValue([
       makeWorker({ taskId: 'task-1', prLifecycleStatus: 'closed' }),
@@ -167,9 +190,12 @@ describe('sweepSubjectAnchoredTasks', () => {
     const result = await sweepSubjectAnchoredTasks('ws-1', 42);
 
     expect(result.reconciled).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'cancelled' }),
+    );
   });
 
-  it('reconciles when worker PR is merged', async () => {
+  it('cancels when worker PR is merged', async () => {
     mockTasksFindMany.mockResolvedValueOnce([makeTask({ id: 'task-1', status: 'pending' })]);
     mockWorkersFindMany.mockResolvedValue([
       makeWorker({ taskId: 'task-1', prLifecycleStatus: 'merged' }),
@@ -181,6 +207,9 @@ describe('sweepSubjectAnchoredTasks', () => {
     const result = await sweepSubjectAnchoredTasks('ws-1', 42);
 
     expect(result.reconciled).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'cancelled' }),
+    );
   });
 
   it('does NOT update completed tasks', async () => {

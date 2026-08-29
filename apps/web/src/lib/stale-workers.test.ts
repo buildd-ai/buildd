@@ -1146,6 +1146,43 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet.startAt).toBeUndefined();
   });
 
+  it('budget_limited workers do not count toward code-failure retry cap', async () => {
+    // Session-limit (budget_limited) errors must not consume retry attempts —
+    // the task failed due to a platform capacity condition, not a code defect.
+    // 3 budget_limited workers → 0 chargeable → cap NOT reached → task re-queued.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'budget_limited' },
+        { id: 'f2', exitCause: 'budget_limited' },
+        { id: 'f3', exitCause: 'budget_limited' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // budget_limited workers never consume a retry slot — task must be re-queued
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
   it('infra_failure workers do not count toward code-failure retry cap', async () => {
     // 3 infra_failure workers → 0 chargeable → code cap NOT reached; infra path used instead
     mockWorkersFindMany
