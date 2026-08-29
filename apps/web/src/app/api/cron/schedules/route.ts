@@ -669,11 +669,21 @@ export async function GET(req: NextRequest) {
           await dispatchNewTask(task, workspace);
         }
 
-        // Fire schedule triggered event
+        // Fire schedule triggered event — thin payload only (Pusher 10KB cap).
+        // Heartbeat task descriptions are multi-KB; clients refetch over HTTP.
         await triggerEvent(
           channels.workspace(taskWorkspaceId),
           events.SCHEDULE_TRIGGERED,
-          { schedule: { id: schedule.id, name: schedule.name }, task }
+          {
+            schedule: { id: schedule.id, name: schedule.name },
+            task: {
+              id: task.id,
+              title: task.title,
+              status: task.status,
+              workspaceId: task.workspaceId,
+              ...(task.missionId ? { missionId: task.missionId } : {}),
+            },
+          }
         );
 
         created++;

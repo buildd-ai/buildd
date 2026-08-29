@@ -58,36 +58,16 @@ describe('triggerEvent — payload size guard', () => {
     warnSpy.mockRestore();
   });
 
-  it('logs a warn when serialized payload exceeds 8 KB', async () => {
+  it('logs a warn when serialized payload is between 8 KB and 10 KB', async () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
-    // Simulate the old full-worker-row payload that caused 413s in production:
-    // instructionHistory with large agent responses, mcpCalls array, error text
-    const largePayload = {
-      worker: {
-        id: 'w1',
-        taskId: 't1',
-        status: 'running',
-        instructionHistory: Array.from({ length: 30 }, (_, i) => ({
-          type: i % 2 === 0 ? 'instruction' : 'response',
-          message: 'x'.repeat(300),
-          timestamp: Date.now(),
-        })),
-        mcpCalls: Array.from({ length: 80 }, () => ({
-          server: 'buildd',
-          tool: 'some_long_tool_name',
-          ts: Date.now(),
-          ok: true,
-          durationMs: 123,
-        })),
-        error: 'y'.repeat(500),
-      },
-    };
-
-    const serialized = JSON.stringify(largePayload);
+    // 9 KB payload — above the warn threshold (8192), below the hard cap (10240)
+    const mediumPayload = { data: 'x'.repeat(9000) };
+    const serialized = JSON.stringify(mediumPayload);
     expect(serialized.length).toBeGreaterThan(8192);
+    expect(serialized.length).toBeLessThan(10240);
 
-    await triggerEvent('worker-w1', 'worker:progress', largePayload);
+    await triggerEvent('worker-w1', 'worker:progress', mediumPayload);
 
     expect(mockTrigger).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -96,6 +76,32 @@ describe('triggerEvent — payload size guard', () => {
     expect(warnMsg).toContain('oversized');
     expect(warnMsg).toContain('worker:progress');
     warnSpy.mockRestore();
+  });
+
+  it('drops payloads exceeding the 10 KB Pusher hard cap and logs an error', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    // Construct a payload that is definitively over 10240 bytes
+    const oversizePayload = {
+      task: {
+        id: 't1',
+        title: 'Heartbeat task',
+        description: 'x'.repeat(11000),
+      },
+    };
+    const serialized = JSON.stringify(oversizePayload);
+    expect(serialized.length).toBeGreaterThan(10240);
+
+    await triggerEvent('workspace-ws1', 'schedule:triggered', oversizePayload);
+
+    // Must NOT attempt the trigger — that would return 413
+    expect(mockTrigger).not.toHaveBeenCalled();
+    // Must log an actionable error (not just a silent swallow)
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [errMsg] = errorSpy.mock.calls[0] as [string];
+    expect(errMsg).toContain('[Pusher]');
+    expect(errMsg).toContain('hard cap');
+    errorSpy.mockRestore();
   });
 
   it('thin event payload stays well below 8 KB even with large worker state in DB', async () => {
