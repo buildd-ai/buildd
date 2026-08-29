@@ -10,6 +10,12 @@ import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { parseMergePolicy } from '@buildd/shared';
+import type {
+  FailureAnalytics,
+  FailureSignatureLookup,
+  FailureSignatureRow,
+  FailureWindow,
+} from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -145,6 +151,9 @@ export const workerActions = [
   'get_task', 'get_task_messages',
   'get_budget_forecast',
   'list_connectors',
+  // Read-only and team-scoped. Worker level, not trigger: the caller who needs
+  // to know "is my failure already known?" is the one that just failed.
+  'get_failure_analytics',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -227,6 +236,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
@@ -279,6 +289,105 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+// ── Failure analytics formatting ─────────────────────────────────────────────
+
+/**
+ * `satisfies Record<FailureWindow, 1>` makes this exhaustive at compile time —
+ * adding a window to the shared union without adding it here fails tsc.
+ */
+const FAILURE_WINDOW_VALUES = Object.keys(
+  { '24h': 1, '7d': 1, '30d': 1 } satisfies Record<FailureWindow, 1>,
+) as FailureWindow[];
+
+// Agent context is finite. A small default, a hard ceiling, short lines.
+const FAILURE_SIGNATURES_DEFAULT = 5;
+const FAILURE_SIGNATURES_MAX = 15;
+const FAILURE_SIGNATURE_LINE_MAX = 120;
+/** Only the first line of an error is ever normalized, so this is generous. */
+const FAILURE_LOOKUP_INPUT_MAX = 1000;
+
+function truncateTo(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * "Is this error known?" in six lines or fewer.
+ *
+ * The frictionSignature is the payload that matters: handing it back turns a
+ * duplicate friction task into an append onto the existing report.
+ */
+function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWindow, failedInWindow: number): string {
+  const lines: string[] = [];
+  const nextCall = `context: { frictionSignature: "${lookup.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
+
+  if (lookup.known) {
+    lines.push(`Known failure pattern — ${lookup.count} occurrence(s) in the last ${window}.`);
+    lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+    const detail = [
+      `first seen ${lookup.firstSeen}`,
+      `last seen ${lookup.lastSeen}`,
+      `died early ${lookup.diedEarlyCount}/${lookup.count}`,
+    ];
+    if (lookup.exitCauses.length > 0) detail.push(`exit causes: ${lookup.exitCauses.join(', ')}`);
+    lines.push(detail.join(' · '));
+    if (lookup.exampleTaskId) lines.push(`example task: ${lookup.exampleTaskId}`);
+    lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
+    return lines.join('\n');
+  }
+
+  const caveat = lookup.exhaustive
+    ? ''
+    : ' The signature ranking was capped for this window, so a rare match may have been missed.';
+  lines.push(`New failure — no match for this signature in the last ${window} (${failedInWindow} failure(s) in the window).${caveat}`);
+  lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+  lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+  return lines.join('\n');
+}
+
+/**
+ * Overview: totals, exit causes, and the top-N signature ranking.
+ *
+ * Deliberately omits byRole / byWorkspace / repeatFailureTasks / example worker
+ * IDs — the dashboard renders those, an agent triaging one failure does not
+ * need them, and every omitted table is context an agent gets to keep.
+ */
+function formatFailureOverview(analytics: FailureAnalytics, limit: number): string {
+  const { totals, signatures, window } = analytics;
+
+  if (totals.failed === 0) {
+    return `No worker failures in the last ${window} (${totals.started} worker(s) started).`;
+  }
+
+  const lines: string[] = [
+    `Worker failures — last ${window} (since ${analytics.windowStart})`,
+    `${totals.failed} of ${totals.started} workers failed (${totals.failureRatePct}%) · died early: ${totals.diedEarly} (${totals.diedEarlySharePct}% of failures)`,
+  ];
+
+  if (analytics.byExitCause.length > 0) {
+    const causes = analytics.byExitCause
+      .slice(0, 4)
+      .map(c => `${c.exitCause} ${c.count} (${c.sharePct}%)`)
+      .join(', ');
+    lines.push(`Exit causes: ${causes}`);
+  }
+
+  const shown = signatures.slice(0, limit);
+  if (shown.length > 0) {
+    lines.push(`Top ${shown.length} of ${signatures.length} signatures:`);
+    shown.forEach((s: FailureSignatureRow, i: number) => {
+      const tail = [`last seen ${s.lastSeen}`, `died early ${s.diedEarlyCount}`];
+      if (s.exitCauses.length > 0) tail.push(s.exitCauses.join('/'));
+      lines.push(`  ${i + 1}. ${s.count}× ${truncateTo(s.signature, FAILURE_SIGNATURE_LINE_MAX)} — ${tail.join(' · ')}`);
+    });
+    const omitted = signatures.length - shown.length;
+    if (omitted > 0) {
+      lines.push(`  … ${omitted} more (raise limit, max ${FAILURE_SIGNATURES_MAX}, or pass error=<text> to look one up)`);
+    }
+  }
+
+  return lines.join('\n');
+}
 
 /**
  * Heuristic hint for what a scheduled task actually *does* (where its output lands).
@@ -2679,6 +2788,49 @@ export async function handleBuilddAction(
 
       if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
       return text(lines.join('\n'));
+    }
+
+    case 'get_failure_analytics': {
+      // Read-only. Scoping is not re-implemented here: GET /api/health/failures
+      // derives the team from the caller's bearer token and 404s a workspaceId
+      // outside it, so this handler cannot widen its own visibility.
+      const rawWindow = params.window === undefined || params.window === null ? '7d' : String(params.window);
+      if (!FAILURE_WINDOW_VALUES.includes(rawWindow as FailureWindow)) {
+        return errorResult(`Invalid window "${rawWindow}". Expected one of ${FAILURE_WINDOW_VALUES.join(', ')}.`);
+      }
+      const window = rawWindow as FailureWindow;
+
+      const limit = typeof params.limit === 'number'
+        ? Math.min(Math.max(Math.round(params.limit), 1), FAILURE_SIGNATURES_MAX)
+        : FAILURE_SIGNATURES_DEFAULT;
+
+      const rawWsId = typeof params.workspaceId === 'string' && params.workspaceId.trim()
+        ? params.workspaceId.trim()
+        : null;
+      let wsId: string | null = null;
+      if (rawWsId) {
+        wsId = await resolveWorkspaceId(api, rawWsId, ctx);
+        if (!wsId) {
+          return errorResult(`Could not resolve workspace "${rawWsId}". Pass a workspace UUID, or omit workspaceId for a team-wide report.`);
+        }
+      }
+
+      // The route only ever normalizes the first line, so a long trace adds URL
+      // length and nothing else.
+      const rawError = typeof params.error === 'string' && params.error.trim() ? params.error : null;
+
+      const qs = [`window=${window}`];
+      if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
+      if (rawError) qs.push(`error=${encodeURIComponent(rawError.slice(0, FAILURE_LOOKUP_INPUT_MAX))}`);
+
+      const data = await api(`/api/health/failures?${qs.join('&')}`);
+      const analytics = data?.analytics as FailureAnalytics | undefined;
+      if (!analytics) return text('No failure analytics available.');
+
+      const lookup = data?.lookup as FailureSignatureLookup | undefined;
+      if (lookup) return text(formatFailureLookup(lookup, window, analytics.totals.failed));
+
+      return text(formatFailureOverview(analytics, limit));
     }
 
     case 'suggest_schedule_update': {

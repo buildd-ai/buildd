@@ -1475,3 +1475,47 @@ export interface FailureAnalytics {
   byWorkspace: FailureWorkspaceRow[];
   repeatFailureTasks: FailureRepeatTaskRow[];
 }
+
+/**
+ * Answer to "is this error already a known failure pattern?" for one error
+ * string, resolved against the signature clusters in the requested window.
+ *
+ * Decision-shaped on purpose: an agent about to file a friction report needs
+ * known/unknown, how often, and a dedupe key — not the whole dashboard payload.
+ */
+export interface FailureSignatureLookup {
+  /** The caller's error text, truncated for echo-back. */
+  query: string;
+  /** The caller's text run through the same normalizer the clusters use. */
+  signature: string;
+  /**
+   * `namespace:slug` key safe to pass as `create_task` context.frictionSignature,
+   * so a report about this failure appends to any existing friction task
+   * instead of filing a duplicate.
+   */
+  frictionSignature: string;
+  /** True when this signature already appears in the window. */
+  known: boolean;
+  /** Occurrences in the window. 0 when `known` is false. */
+  count: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  /** How many occurrences never did any billable work (turns <= 2 at $0). */
+  diedEarlyCount: number;
+  exitCauses: FailureExitCauseBucket[];
+  /** A task ID from the cluster, for drill-down. Null when unknown. */
+  exampleTaskId: string | null;
+  /**
+   * True when the signature ranking covered every failure in the window, so a
+   * `known: false` answer is definitive. False when the ranking was capped,
+   * in which case a rare match may have been missed.
+   */
+  exhaustive: boolean;
+}
+
+/** Response body of GET /api/health/failures. */
+export interface FailureAnalyticsResponse {
+  analytics: FailureAnalytics;
+  /** Present only when the request carried an `error` param. */
+  lookup?: FailureSignatureLookup;
+}

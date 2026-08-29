@@ -48,6 +48,7 @@
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
     "./friction-manifest": "./friction-manifest.ts",
+    "./failure-friction-signature": "./failure-friction-signature.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
