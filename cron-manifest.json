@@ -67,7 +67,14 @@
       "method": "GET"
     },
     {
-      "$comment": "Reconciles worker PR lifecycle state against GitHub. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
+      "$comment": "Heals workers whose PR merged on GitHub but whose row still says otherwise \u2014 a missed pull_request webhook delivery starves every dependent task until this corrects it, so the cadence has to be within the working hour, not the working day. Merge-state only: the dead-zone sweep (which spawns conflict-resolution tasks) stays on the daily job below. The sweep is capped and rate-limited per run, so a backlog drains across runs. Offset off :00 to stay clear of the schedules tick.",
+      "title": "Buildd: PR Merge-State Sweep",
+      "path": "/api/cron/pr-reconcile?scope=merge-state",
+      "schedule": "20 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Full PR reconcile: merge-state plus the dead-zone sweep, which CREATES conflict-resolution tasks and therefore stays daily. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
       "title": "Buildd: PR Reconcile",
       "path": "/api/cron/pr-reconcile",
       "schedule": "0 9 * * *",
