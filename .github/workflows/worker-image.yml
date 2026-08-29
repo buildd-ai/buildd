@@ -1,0 +1,57 @@
+name: Worker Image Build Check
+
+# Validates that docker/worker/Dockerfile builds successfully whenever it changes.
+# This is a build-only check — it does NOT push the image to a registry.
+#
+# WHY THIS EXISTS: PR #1545 added the codebase-memory-mcp binary fetch to the
+# Dockerfile, but there was no CI step to verify the build, and no pipeline to
+# push the resulting image. The binary was therefore never installed on the Coder
+# worker image. This workflow catches Dockerfile regressions going forward.
+#
+# TO ACTUALLY DEPLOY: After merging changes to docker/worker/Dockerfile, rebuild
+# the Coder workspace template image manually:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f docker/worker/Dockerfile \
+#     -t <registry>/buildd-worker:<tag> \
+#     --push .
+# Then update the Coder template to use the new image tag.
+#
+# Until a push pipeline is wired: re-run `install.sh` on each Coder workspace to
+# ensure the CBM binary (and any other image-layer tooling) is present.
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'docker/worker/Dockerfile'
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'docker/worker/Dockerfile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build worker image (linux/amd64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build worker image (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/worker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            TARGETARCH=amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

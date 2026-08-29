@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.185.0",
+  "version": "0.185.1",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -27,6 +27,7 @@
     "./report-ops": "./report-ops.ts",
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
+    "./cbm-health": "./cbm-health.ts",
     "./secrets": "./secrets/index.ts",
     "./file-reservations": "./file-reservations.ts",
     "./memory-client": "./memory-client.ts",

@@ -299,7 +299,8 @@ If a task's connector check fails and a sibling role in the same workspace with 
 {
   "error": "...",
   "gateReason": "connector_routing_mismatch",
-  "missingConnectors": [...],
+  "blockClass": "capability",
+  "connectorFailures": [{ "connectorId": "...", "connectorName": "...", "mode": "never_mounted|expired_or_revoked|transient" }],
   "alternativeRole": "builder"
 }
 ```
