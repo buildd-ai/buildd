@@ -1,6 +1,9 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
+import { detectArchetype } from '@buildd/core/release-archetype';
+import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
+import { ReleaseWidget } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -214,6 +217,8 @@ export default async function HomePage({
   }[] = [];
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
+
+  let releaseReadinessItems: ReleaseReadinessItem[] = [];
 
   // Build a roles map for display
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -686,6 +691,75 @@ export default async function HomePage({
               suggestedByTaskId: ps.suggestedByTaskId,
             };
           });
+
+        // Release queue readiness — gated workspaces only (spec §8 exception rule).
+        // Uses DB-only sources for speed: queue depth from workers, CI state from
+        // the most recent releases row. No GitHub API calls at home-page load.
+        {
+          const wsRows = await db
+            .select({
+              id: workspacesTable.id,
+              name: workspacesTable.name,
+              releaseConfig: workspacesTable.releaseConfig,
+              gitConfig: workspacesTable.gitConfig,
+            })
+            .from(workspacesTable)
+            .where(inArray(workspacesTable.id, wsIds));
+
+          const gatedWsIds = wsRows
+            .filter(
+              (ws) =>
+                detectArchetype({
+                  name: ws.name,
+                  releaseConfig: ws.releaseConfig as any,
+                  gitConfig: ws.gitConfig as any,
+                }) === 'gated',
+            )
+            .map((ws) => ws.id);
+
+          if (gatedWsIds.length > 0) {
+            releaseReadinessItems = await Promise.all(
+              gatedWsIds.map(async (wsId) => {
+                const ws = wsRows.find((w) => w.id === wsId)!;
+
+                const [queueRow] = await db
+                  .select({
+                    queueDepth: sql<number>`count(*)::int`,
+                    oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
+                  })
+                  .from(workers)
+                  .innerJoin(tasks, eq(tasks.id, workers.taskId))
+                  .where(
+                    and(
+                      eq(tasks.workspaceId, wsId),
+                      isNotNull(workers.mergedAt),
+                      sql`${workers.mergedAt} > COALESCE(
+                        (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy'),
+                        '1970-01-01'::timestamptz
+                      )`,
+                    ),
+                  );
+
+                const [latestRelease] = await db
+                  .select({ ciStateAtDispatch: releases.ciStateAtDispatch })
+                  .from(releases)
+                  .where(eq(releases.workspaceId, wsId))
+                  .orderBy(desc(releases.createdAt))
+                  .limit(1);
+
+                const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
+
+                return {
+                  workspaceId: wsId,
+                  workspaceName: ws.name,
+                  queueDepth: queueRow?.queueDepth ?? 0,
+                  oldestMergedAt: queueRow?.oldestMergedAt ?? null,
+                  ciState,
+                };
+              }),
+            );
+          }
+        }
 
         // Read-through PR state refresh: catch missed merge webhooks before
         // querying openPrWorkers so externally-merged PRs are excluded from the
@@ -1834,6 +1908,9 @@ export default async function HomePage({
                 </div>
               );
             })()}
+
+            {/* Release Queue — gated workspaces with unshipped commits and CI green (spec §8) */}
+            <ReleaseWidget items={releaseReadinessItems} />
 
           </div>
 
