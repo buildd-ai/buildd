@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 // ── DB mocks ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,25 @@ const mockNotesInsert = mock(() => ({
     return Promise.resolve();
   }),
 }));
+
+// ── Model tier registry mock ──────────────────────────────────────────────────
+
+const mockResolveTierEntry = mock((): any => Promise.resolve({
+  provider: 'anthropic',
+  model: 'claude-haiku-4-5-20251001',
+  source: 'default',
+}));
+
+mock.module('@buildd/core/model-tier-registry', () => ({
+  resolveTierEntry: mockResolveTierEntry,
+}));
+
+// ── Fetch mock (replaces globalThis.fetch for provider dispatch tests) ─────────
+
+const mockFetch = mock(async (_url: string, _opts: any): Promise<any> => {
+  throw new Error('fetch called but not configured in this test');
+});
+globalThis.fetch = mockFetch as any;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -79,8 +98,16 @@ describe('autoEvaluateMissionOnCompletion', () => {
     mockMissionsUpdate.mockReset();
     mockNotesInsert.mockReset();
     mockEvaluateGoalCriteria.mockReset();
+    mockResolveTierEntry.mockReset();
+    mockFetch.mockReset();
     updatedMissionData = null;
     insertedNoteValues = null;
+
+    mockResolveTierEntry.mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
+      source: 'default',
+    });
 
     mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
     mockTaskFindMany.mockResolvedValue([]);
@@ -343,5 +370,210 @@ describe('autoEvaluateMissionOnCompletion', () => {
     expect(updatedMissionData).not.toBeNull();
     expect(updatedMissionData.status).toBe('completed');
     expect(updatedMissionData.goalCriteriaState.overall).toBe('pass');
+  });
+});
+
+// ── Provider dispatch tests ────────────────────────────────────────────────────
+
+const DESCRIPTION_MISSION = {
+  id: 'mission-llm',
+  title: 'LLM Mission',
+  description: null,
+  goalCriteria: [{ type: 'description', description: 'All tasks shipped', label: 'Shipped' }],
+  goalCriteriaState: null,
+  autoVerify: null,
+  workingBranch: null,
+  status: 'active',
+  teamId: 'team-abc',
+  workspaceId: 'ws-xyz',
+};
+
+const DESCRIPTION_UNEVAL_STATE = {
+  evaluatedAt: '2026-08-29T00:00:00.000Z',
+  evaluatedBy: 'auto' as const,
+  overall: 'UNVERIFIED',
+  criteria: [
+    { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+  ],
+};
+
+function makeSuccessfulLLMResponse(verdict: string) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    json: async () => ({
+      content: [{ type: 'text', text: JSON.stringify({ verdicts: [{ index: 0, verdict, evidence: 'Confirmed.' }] }) }],
+    }),
+  };
+}
+
+function makeSuccessfulOpenRouterResponse(verdict: string) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    json: async () => ({
+      choices: [{ message: { content: JSON.stringify({ verdicts: [{ index: 0, verdict, evidence: 'Confirmed.' }] }) } }],
+    }),
+  };
+}
+
+describe('autoEvaluateMissionOnCompletion — provider dispatch', () => {
+  let savedAnthropicKey: string | undefined;
+  let savedOpenRouterKey: string | undefined;
+
+  beforeEach(() => {
+    savedAnthropicKey = process.env.ANTHROPIC_API_KEY;
+    savedOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+
+    mockPendingSelectWhere.mockReset();
+    mockMissionFindFirst.mockReset();
+    mockTaskFindMany.mockReset();
+    mockWorkerFindMany.mockReset();
+    mockArtifactFindMany.mockReset();
+    mockMissionsUpdate.mockReset();
+    mockNotesInsert.mockReset();
+    mockEvaluateGoalCriteria.mockReset();
+    mockResolveTierEntry.mockReset();
+    mockFetch.mockReset();
+    updatedMissionData = null;
+    insertedNoteValues = null;
+
+    mockPendingSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockMissionFindFirst.mockResolvedValue(DESCRIPTION_MISSION);
+    mockTaskFindMany.mockResolvedValue([]);
+    mockWorkerFindMany.mockResolvedValue([]);
+    mockArtifactFindMany.mockResolvedValue([]);
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedMissionData = data;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    }));
+    mockNotesInsert.mockImplementation(() => ({
+      values: mock((vals: any) => {
+        insertedNoteValues = vals;
+        return Promise.resolve();
+      }),
+    }));
+    mockResolveTierEntry.mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
+      source: 'default',
+    });
+    mockEvaluateGoalCriteria.mockImplementation((_mission: any, _criteria: any, context: any) => ({
+      evaluatedAt: '2026-08-29T00:00:00.000Z',
+      evaluatedBy: context.evaluatedBy,
+      overall: 'UNVERIFIED',
+      // Fresh objects each call — avoids mutation bleed between tests
+      criteria: [
+        { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: '' },
+      ],
+    }));
+  });
+
+  afterEach(() => {
+    if (savedAnthropicKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = savedAnthropicKey;
+    } else {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+    if (savedOpenRouterKey !== undefined) {
+      process.env.OPENROUTER_API_KEY = savedOpenRouterKey;
+    } else {
+      delete process.env.OPENROUTER_API_KEY;
+    }
+  });
+
+  it('calls resolveTierEntry with mission teamId and workspaceId (registry override honored)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    mockFetch.mockImplementation(async () => makeSuccessfulLLMResponse('pass'));
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    expect(mockResolveTierEntry).toHaveBeenCalledWith('budget', 'team-abc', 'ws-xyz');
+  });
+
+  it('openrouter: hits openrouter endpoint with Bearer header', async () => {
+    mockResolveTierEntry.mockResolvedValue({
+      provider: 'openrouter',
+      model: 'qwen/qwen-2.5-72b-instruct',
+      source: 'team',
+    });
+    process.env.OPENROUTER_API_KEY = 'or-test-key';
+
+    let capturedUrl: string | null = null;
+    let capturedHeaders: Record<string, string> | null = null;
+    mockFetch.mockImplementation(async (url: string, opts: any) => {
+      capturedUrl = url;
+      capturedHeaders = opts?.headers ?? {};
+      return makeSuccessfulOpenRouterResponse('pass');
+    });
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    expect(capturedUrl).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(capturedHeaders?.['Authorization']).toBe('Bearer or-test-key');
+    expect(updatedMissionData?.goalCriteriaState?.criteria?.[0]?.verdict).toBe('pass');
+  });
+
+  it('openai-codex: returns explicit unsupported reason without calling fetch', async () => {
+    mockResolveTierEntry.mockResolvedValue({
+      provider: 'openai-codex',
+      model: 'codex-mini',
+      source: 'team',
+    });
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    const criterionState = updatedMissionData?.goalCriteriaState?.criteria?.[0];
+    expect(criterionState?.verdict).toBe('NOT_EVALUATED');
+    expect(criterionState?.evidence).toBe('provider not supported for inline evaluation');
+  });
+
+  it('missing anthropic key: evidence names ANTHROPIC_API_KEY', async () => {
+    // ANTHROPIC_API_KEY is deleted in beforeEach
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    const criterionState = updatedMissionData?.goalCriteriaState?.criteria?.[0];
+    expect(criterionState?.verdict).toBe('NOT_EVALUATED');
+    expect(criterionState?.evidence).toBe('ANTHROPIC_API_KEY not configured');
+  });
+
+  it('missing openrouter key: evidence names OPENROUTER_API_KEY', async () => {
+    mockResolveTierEntry.mockResolvedValue({
+      provider: 'openrouter',
+      model: 'qwen/qwen-2.5-72b-instruct',
+      source: 'team',
+    });
+    // OPENROUTER_API_KEY is deleted in beforeEach
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    const criterionState = updatedMissionData?.goalCriteriaState?.criteria?.[0];
+    expect(criterionState?.verdict).toBe('NOT_EVALUATED');
+    expect(criterionState?.evidence).toBe('OPENROUTER_API_KEY not configured');
+  });
+
+  it('fetch network failure: evidence is distinguishable from ambiguous evidence', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    mockFetch.mockImplementation(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+
+    await autoEvaluateMissionOnCompletion('mission-llm');
+
+    const criterionState = updatedMissionData?.goalCriteriaState?.criteria?.[0];
+    expect(criterionState?.verdict).toBe('NOT_EVALUATED');
+    expect(criterionState?.evidence).toBe('LLM call failed: network error');
+    // Must NOT look like ambiguous evidence
+    expect(criterionState?.evidence).not.toBe('No relevant evidence found');
   });
 });
