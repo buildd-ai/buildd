@@ -1296,7 +1296,20 @@ export type GoalCriterionType =
   | 'metric'
   | 'description';
 
-export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED';
+/**
+ * A criterion's verdict.
+ *
+ * Only `pass` may gate a mission to `completed`. Everything else — including
+ * `PENDING` and `NOT_EVALUATED` — means "we do not have a verdict", which is
+ * never the same thing as "satisfied".
+ *
+ * - `pass` / `fail`      — a verdict was produced from evidence.
+ * - `UNVERIFIED`         — checked, but the evidence was ambiguous or absent.
+ * - `PENDING`            — a verification run is in flight (e.g. a `command`
+ *                          criterion whose verification task is dispatched).
+ * - `NOT_EVALUATED`      — never checked: no evaluator was reachable.
+ */
+export type CriterionVerdict = 'pass' | 'fail' | 'UNVERIFIED' | 'PENDING' | 'NOT_EVALUATED';
 
 export type GoalCriterion =
   | {
@@ -1305,6 +1318,11 @@ export type GoalCriterion =
       label?: string;
     }
   | {
+      /**
+       * Mechanical criterion: a command that must exit 0. Verified by dispatching
+       * a verification task whose runner executes the command and returns
+       * tamper-evident evidence — never by asking a model whether it would pass.
+       */
       type: 'command';
       command: string;
       label?: string;
@@ -1320,6 +1338,11 @@ export type GoalCriterion =
       label?: string;
     }
   | {
+      /**
+       * Reserved for the metric-query registry, which does not exist yet: these
+       * evaluate to UNVERIFIED forever and so would block completion
+       * permanently. Rejected at the write boundary — do not use as a gate.
+       */
       type: 'metric';
       query: string;
       operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
@@ -1328,9 +1351,24 @@ export type GoalCriterion =
       label?: string;
     }
   | {
-      /** Free-form natural-language criterion evaluated by LLM against mission evidence. */
+      /**
+       * Free-form natural-language criterion, graded by an LLM against mission
+       * evidence. The escape hatch of last resort: its verdict depends on a model
+       * being reachable at the moment it is needed, so it is the one criterion
+       * form that can silently degrade to NOT_EVALUATED.
+       *
+       * Because of that, writing one requires stating why no mechanical form
+       * (`command` / `all_prs_merged` / `no_open_tasks` / `artifact_exists`)
+       * could express the same thing — see `notMechanizableReason`.
+       */
       type: 'description';
       description: string;
+      /**
+       * Why this criterion could not be expressed mechanically. Required on write
+       * (POST/PATCH /api/missions); rows written before this field existed are
+       * read back unchanged.
+       */
+      notMechanizableReason?: string;
       label?: string;
     };
 
@@ -1351,7 +1389,20 @@ export interface GoalCriteriaState {
     verdict: CriterionVerdict;
     evidence?: string;
     evidenceRefs?: GoalCriteriaEvidenceRef[];
+    /**
+     * The verification task that owns this criterion's verdict (`command`
+     * criteria). Present while the verdict is PENDING and kept afterwards as
+     * the provenance of a pass/fail.
+     */
     workerTaskId?: string;
+    /**
+     * Identity of the criterion this verdict was produced for, from
+     * `criterionFingerprint()`. Array index alone is NOT identity: deleting one
+     * criterion renumbers the rest, and a cached verdict keyed on index would
+     * then be read as belonging to a criterion nobody evaluated. Any reuse of a
+     * stored verdict MUST match on this.
+     */
+    fingerprint?: string;
   }>;
 }
 

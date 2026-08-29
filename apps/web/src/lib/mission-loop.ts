@@ -1,13 +1,12 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, sql, desc, gt } from 'drizzle-orm';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
-import { isMissionBlocked, checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { isMissionBlocked } from '@/lib/mission-dependency';
+import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
-import type { GoalCriteriaState } from '@buildd/shared';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -15,37 +14,7 @@ const MAX_CYCLES_PER_CHAIN = 5;
 /** Debounce window (ms) to prevent concurrent re-triggers */
 const DEBOUNCE_MS = 10_000;
 
-export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit' | 'criteria_blocked';
-
-/**
- * Guard: returns false if the mission has goalCriteria whose stored overall is not 'pass'.
- * Posts a missionNote explaining the block when it fires.
- * Returns true when safe to complete (no criteria, or criteria already pass).
- */
-async function checkGoalCriteriaGuard(missionId: string, goalCriteria: unknown, goalCriteriaState: unknown): Promise<boolean> {
-  const criteria = Array.isArray(goalCriteria) ? goalCriteria : [];
-  if (criteria.length === 0) return true; // no criteria → allow completion
-
-  const state = goalCriteriaState as GoalCriteriaState | null;
-  if (state?.overall === 'pass') return true; // criteria verified → allow
-
-  const overall = state?.overall ?? 'not evaluated';
-  const failDetail = state?.criteria
-    ?.filter(c => c.verdict !== 'pass')
-    .map(c => `• [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`)
-    .join('\n') ?? 'No criteria state stored yet.';
-
-  await db.insert(missionNotes).values({
-    missionId,
-    authorType: 'system',
-    type: 'warning',
-    title: 'Mission completion blocked by goal criteria',
-    body: `Overall: ${overall}\n\nThe mission reached an all-tasks-terminal state but its goal criteria are not fully satisfied. It will remain active until criteria pass.\n\n${failDetail}`,
-    status: 'open',
-  } as any).catch(e => console.error('[mission-loop] Failed to post criteria-block note:', e));
-
-  return false;
-}
+export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit' | 'completion_blocked';
 
 /**
  * Evaluate whether a mission should start another planning cycle after
@@ -70,7 +39,9 @@ export async function maybeRetriggerMission(
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true, goalCriteria: true, goalCriteriaState: true },
+    // goalCriteria/goalCriteriaState are deliberately absent: the completion
+    // predicate reads them itself, so this function cannot decide on a stale copy.
+    columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true },
   });
 
   if (!mission || mission.status !== 'active') {
@@ -139,104 +110,32 @@ export async function maybeRetriggerMission(
     taskResult.missionComplete === true ||
     structuredOutput?.missionComplete === true
   ) {
-    // Heartbeat missions skip evaluation — the heartbeat IS the evaluation.
-    // Trust it and auto-complete directly.
-    // NOTE: The heartbeat organizer (an LLM) is trusted to have assessed ALL
-    // pending work including attempt/CI-retry tasks before setting missionComplete=true.
-    // If the organizer misses pending tasks, add explicit task-count checks to its prompt.
-    if (isHeartbeat) {
-      await db
-        .update(missions)
-        .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(missions.id, missionId));
-
-      if (mission.scheduleId) {
-        await db
-          .update(taskSchedules)
-          .set({ enabled: false, updatedAt: new Date() })
-          .where(eq(taskSchedules.id, mission.scheduleId));
-      }
-
-      await db.insert(missionNotes).values({
-        missionId,
-        authorType: 'system',
-        type: 'update',
-        title: 'Mission completed via heartbeat',
-        body: `Heartbeat organizer reported missionComplete=true. Completing without verifying individual task states — the heartbeat is trusted as the evaluation authority. Predicate: task ${completedPlanningTaskId} result.missionComplete=true.`,
-        status: 'open',
-      });
-
-      await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
-        console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
-      );
-
-      await triggerEvent(
-        channels.mission(missionId),
-        events.MISSION_LOOP_COMPLETED,
-        { missionId, reason: 'heartbeat_complete', planningTaskId: completedPlanningTaskId }
-      );
-      return { action: 'completed' };
-    }
-
-    // Non-heartbeat: check if all work tasks are terminal → auto-complete
-    const allMissionTasks = await db.query.tasks.findMany({
-      where: eq(tasks.missionId, missionId),
-      columns: { status: true, title: true },
+    // `missionComplete=true` is a PROPOSAL, whoever made it.
+    //
+    // The heartbeat used to be exempt from every check here on the rationale that
+    // "the heartbeat IS the evaluation authority". It is not: it is an LLM reading
+    // a checklist, it does not count task rows, and it is the path that actually
+    // closes missions in practice — so the lock was on every door but the one in
+    // use. M2 closed with two deliverables pending and four criteria never
+    // evaluated because of exactly this exemption. Both paths now ask the same
+    // predicate, and the answer, not the assertion, decides.
+    const proposal = await completeMissionIfVerified(missionId, {
+      path: isHeartbeat ? 'heartbeat' : 'agent_signal',
+      predicate: `task ${completedPlanningTaskId} result.missionComplete=true`,
+      proposed: true,
     });
-    const workTasks = allMissionTasks.filter(t =>
-      !t.title.startsWith('Aggregate results:') &&
-      !t.title.startsWith('Evaluate mission completion:') &&
-      !t.title.startsWith('Mission:')
-    );
-    const allDone = workTasks.length > 0 && workTasks.every(t =>
-      t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
-    );
-    const hasDeliverables = workTasks.some(t => t.status === 'completed');
 
-    if (allDone && hasDeliverables) {
-      const canComplete = await checkGoalCriteriaGuard(missionId, mission.goalCriteria, mission.goalCriteriaState);
-      if (!canComplete) return { action: 'criteria_blocked' };
+    if (proposal.completed) return { action: 'completed' };
 
-      await db
-        .update(missions)
-        .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(missions.id, missionId));
+    // Refused. A heartbeat mission has no retrigger of its own (cron drives it),
+    // so the refusal — with its surfaced reason — is the outcome.
+    if (isHeartbeat) return { action: 'completion_blocked' };
 
-      const m = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
-        columns: { scheduleId: true },
-      });
-      if (m?.scheduleId) {
-        await db
-          .update(taskSchedules)
-          .set({ enabled: false, updatedAt: new Date() })
-          .where(eq(taskSchedules.id, m.scheduleId));
-      }
-
-      const workStatusCounts: Record<string, number> = {};
-      for (const t of workTasks) workStatusCounts[t.status] = (workStatusCounts[t.status] ?? 0) + 1;
-      const workStatusSummary = Object.entries(workStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
-      console.log(`[mission-loop] Mission ${missionId} auto-completed (missionComplete signal): ${workStatusSummary}`);
-
-      await db.insert(missionNotes).values({
-        missionId,
-        authorType: 'system',
-        type: 'update',
-        title: 'Mission auto-completed',
-        body: `Planning task signaled missionComplete=true and all work tasks are terminal. Mission auto-completed.\n\nWork task breakdown: ${workStatusSummary}`,
-        status: 'open',
-      });
-
-      await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
-        console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
-      );
-
-      await triggerEvent(
-        channels.mission(missionId),
-        events.MISSION_LOOP_COMPLETED,
-        { missionId, reason: 'auto_complete_all_done', taskStatusCounts: workStatusCounts }
-      );
-      return { action: 'completed' };
+    // Non-heartbeat: work is genuinely unfinished or unverified. If the blocker is
+    // the criteria themselves, say so and stop; otherwise fall through to the
+    // independent evaluation task, which can reason about the remaining work.
+    if (isCriteriaBlockCode(proposal.decision.code) || proposal.decision.code === 'infra_stalled') {
+      return { action: 'completion_blocked' };
     }
 
     // Non-trivial state — spawn independent evaluation
@@ -256,83 +155,19 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // 5. Dormancy check — if all deliverable tasks are terminal, auto-complete the mission.
-  //    Fires regardless of whether any agent signaled missionComplete, covering the case
-  //    where tasks finish without an explicit completion signal.
-  const allMissionTasksForDormancy = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
-    columns: { status: true, title: true, mode: true, result: true },
-  });
+  // 5. Dormancy — no agent signalled anything, but the work may be finished.
+  //    Same predicate as the signalled path above: one function decides, and it
+  //    is the one that pulls a criteria verdict when the work is done.
+  const dormancy = await completeMissionIfVerified(missionId, { path: 'dormancy' });
+  if (dormancy.completed) return { action: 'completed' };
 
-  const deliverableTasks = allMissionTasksForDormancy.filter(isDeliverableTask);
-  const allDeliverablesDone = deliverableTasks.length > 0 && deliverableTasks.every(
-    t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
-  );
+  // Infra-stalled deliverables are not a dormant mission; they are a stuck one.
+  // Surfaced as 'stalled' so the caller (and the dashboard) sees an operator
+  // problem rather than "still working".
+  if (dormancy.decision.code === 'infra_stalled') return { action: 'stalled' };
 
-  // Block auto-completion when any deliverable task is infra-stalled: the task is
-  // technically 'failed' but the failure is infrastructure, not the task itself.
-  // Completing the mission would hide the stall from operators.
-  if (allDeliverablesDone) {
-    const stalledTasks = deliverableTasks.filter(
-      t => t.status === 'failed' && (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled'
-    );
-    if (stalledTasks.length > 0) {
-      const stalledTitles = stalledTasks.map(t => `"${t.title}"`).join(', ');
-      console.log(`[mission-loop] Mission ${missionId} dormancy blocked: ${stalledTasks.length} infra-stalled task(s)`);
-      await db.insert(missionNotes).values({
-        missionId,
-        authorType: 'system',
-        type: 'update',
-        title: 'Mission completion blocked: infra-stalled tasks',
-        body: `Mission auto-completion is blocked because ${stalledTasks.length} deliverable task(s) failed due to infrastructure errors after exhausting retries: ${stalledTitles}.\n\nThese tasks need manual intervention to unblock the mission.`,
-        status: 'open',
-      });
-      return { action: 'stalled' };
-    }
-  }
-
-  if (allDeliverablesDone) {
-    const canComplete = await checkGoalCriteriaGuard(missionId, mission.goalCriteria, mission.goalCriteriaState);
-    if (!canComplete) return { action: 'criteria_blocked' };
-
-    await db
-      .update(missions)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(eq(missions.id, missionId));
-
-    if (mission.scheduleId) {
-      await db
-        .update(taskSchedules)
-        .set({ enabled: false, updatedAt: new Date() })
-        .where(eq(taskSchedules.id, mission.scheduleId));
-    }
-
-    const deliverableStatusCounts: Record<string, number> = {};
-    for (const t of deliverableTasks) deliverableStatusCounts[t.status] = (deliverableStatusCounts[t.status] ?? 0) + 1;
-    const deliverableStatusSummary = Object.entries(deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
-    console.log(`[mission-loop] Mission ${missionId} auto-completed (dormancy): ${deliverableStatusSummary}`);
-
-    await db.insert(missionNotes).values({
-      missionId,
-      authorType: 'system',
-      type: 'update',
-      title: 'Mission auto-completed',
-      body: `All deliverable tasks are terminal. Mission auto-completed.\n\nDeliverable task breakdown: ${deliverableStatusSummary}`,
-      status: 'open',
-    });
-
-    await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
-      console.error(`[mission-loop] unblock failed for completed mission ${missionId}:`, e)
-    );
-
-    await triggerEvent(
-      channels.mission(missionId),
-      events.MISSION_LOOP_COMPLETED,
-      { missionId, reason: 'dormancy_auto_complete', taskStatusCounts: deliverableStatusCounts }
-    );
-
-    return { action: 'completed' };
-  }
+  // Work is done but unverified — do not retrigger planning, and do not close.
+  if (isCriteriaBlockCode(dormancy.decision.code)) return { action: 'completion_blocked' };
 
   // 6. Heartbeat missions don't self-retrigger — cron handles next cycle
   if (isHeartbeat) {

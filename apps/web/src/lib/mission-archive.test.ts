@@ -64,4 +64,32 @@ describe('selectMissionsToArchive', () => {
     // Disabled schedule does not block archiving
     expect(selectMissionsToArchive([candidate({ scheduleEnabled: false })], NOW)).toEqual(['m1']);
   });
+
+  // ── Awaiting verification is an open question, not a done mission ──────────
+  //
+  // M2 was archived a day after it closed. Archiving clears a mission off Home,
+  // which is precisely how a mission with four never-evaluated criteria stops
+  // being anybody's problem. A stated criterion without a passing verdict keeps
+  // the mission visible.
+
+  it('skips a mission whose goal criteria were never evaluated', () => {
+    const c = candidate({ criteriaCount: 4, criteriaOverall: null });
+    expect(selectMissionsToArchive([c], NOW)).toEqual([]);
+  });
+
+  it('skips a mission whose goal criteria are unverified or failing', () => {
+    for (const overall of ['UNVERIFIED', 'fail', 'PENDING', 'NOT_EVALUATED']) {
+      const c = candidate({ criteriaCount: 2, criteriaOverall: overall });
+      expect(selectMissionsToArchive([c], NOW)).toEqual([]);
+    }
+  });
+
+  it('archives when the criteria pass', () => {
+    const c = candidate({ criteriaCount: 2, criteriaOverall: 'pass' });
+    expect(selectMissionsToArchive([c], NOW)).toEqual(['m1']);
+  });
+
+  it('archives a mission that states no criteria (regression guard)', () => {
+    expect(selectMissionsToArchive([candidate({ criteriaCount: 0, criteriaOverall: null })], NOW)).toEqual(['m1']);
+  });
 });

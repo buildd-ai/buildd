@@ -132,7 +132,7 @@ export function deriveTaskHealthSignal(
  * for the mission detail page header chip and state-driven CTA.
  * Priority: complete > held > running > failed > manual > active.
  */
-export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review';
+export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification';
 
 export function deriveMissionDisplayState(opts: {
   status: string;
@@ -142,11 +142,21 @@ export function deriveMissionDisplayState(opts: {
   health: Health;
   /** Pass the computed 0-100 progress to unlock the 'review' state. */
   progress?: number;
+  /**
+   * True when the mission states goal criteria whose stored verdict is not
+   * `pass`. The work may be finished, but the mission is not complete and will
+   * not close — it is awaiting verification. Same vocabulary as
+   * `deriveInitiativeDisplayStatus`'s `awaiting_verification`, deliberately.
+   */
+  criteriaUnverified?: boolean;
 }): MissionDisplayState {
   if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
   if (opts.isHeld) return 'held';
   if (opts.activeAgents > 0) return 'running';
   if (opts.health === 'FAILING') return 'failed';
+  // Work done + verdict missing outranks 'review': "READY FOR REVIEW" would
+  // invite a human to close a mission the platform is refusing to close.
+  if (opts.criteriaUnverified && opts.progress !== undefined && opts.progress >= 100) return 'awaiting_verification';
   if (opts.progress !== undefined && opts.progress >= 100) return 'review';
   if (opts.orchestrationMode === 'manual') return 'manual';
   return 'active';
@@ -158,6 +168,8 @@ export function getMissionStateChip(state: MissionDisplayState): { label: string
     case 'running': return { label: 'RUNNING',          cls: 'border-status-success text-status-success' };
     case 'failed':  return { label: 'FAILED',           cls: 'border-status-error text-status-error' };
     case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };
+    case 'awaiting_verification':
+                    return { label: 'AWAITING VERIFICATION', cls: 'border-status-warning text-status-warning' };
     case 'manual':  return { label: 'MANUAL',           cls: 'border-border-default text-text-muted' };
     case 'complete':return { label: 'COMPLETE',         cls: 'border-border-default text-text-muted' };
     case 'active':  return { label: 'AUTO',             cls: 'border-status-info text-status-info' };

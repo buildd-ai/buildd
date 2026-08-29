@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { computeMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
@@ -272,6 +272,28 @@ export async function PATCH(
       }
       updateData.status = status;
 
+      // An explicit status write bypasses the goal-criteria gate on purpose — a
+      // person may always override. But this endpoint is also reachable with an
+      // admin API key (MCP `manage_missions`), so an override must never be
+      // invisible: record who closed a mission whose criteria had not passed.
+      if (status === 'completed') {
+        const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
+        const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
+        if (storedCriteria.length > 0 && storedVerdict !== 'pass') {
+          await db.insert(missionNotes).values({
+            missionId: id,
+            authorType: 'system',
+            type: 'warning',
+            title: 'Goal criteria gate overridden',
+            body:
+              `Mission was set to completed by ${apiAccount ? `API key (account ${apiAccount.id})` : `user ${user?.email ?? 'unknown'}`} ` +
+              `while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
+              `${storedCriteria.length} criteria were not satisfied at the time of the override.`,
+            status: 'open',
+          } as any).catch(e => console.error('[missions] override note failed:', e));
+        }
+      }
+
       if ((status === 'completed' || status === 'archived') && existing.scheduleId) {
         // Heartbeat schedules are owned by their mission — delete when mission is done
         await db.delete(taskSchedules).where(eq(taskSchedules.id, existing.scheduleId));
@@ -359,21 +381,12 @@ export async function PATCH(
 
     if (goalCriteria !== undefined) {
       if (goalCriteria !== null) {
-        if (!Array.isArray(goalCriteria)) {
-          return NextResponse.json({ error: 'goalCriteria must be an array' }, { status: 400 });
-        }
-        if (goalCriteria.length > 20) {
-          return NextResponse.json({ error: 'goalCriteria must have at most 20 criteria' }, { status: 400 });
-        }
-        const VALID_CRITERION_TYPES = ['all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description'];
-        for (let i = 0; i < goalCriteria.length; i++) {
-          const c = goalCriteria[i];
-          if (typeof c !== 'object' || c === null || Array.isArray(c)) {
-            return NextResponse.json({ error: `goalCriteria[${i}] must be an object` }, { status: 400 });
-          }
-          if (!VALID_CRITERION_TYPES.includes((c as any).type)) {
-            return NextResponse.json({ error: `goalCriteria[${i}].type must be one of: ${VALID_CRITERION_TYPES.join(', ')}` }, { status: 400 });
-          }
+        // Grandfather unchanged entries: the dashboard saves the whole array, so
+        // a mission holding a pre-gate prose criterion would otherwise 400 on
+        // every edit — including the edit that would fix it.
+        const criteriaError = validateGoalCriteria(goalCriteria, { stored: existing.goalCriteria });
+        if (criteriaError) {
+          return NextResponse.json({ error: criteriaError }, { status: 400 });
         }
       }
       updateData.goalCriteria = goalCriteria ?? null;

@@ -102,6 +102,9 @@ export const events = {
   MISSION_CYCLE_STARTED: 'mission:cycle_started',
   MISSION_LOOP_COMPLETED: 'mission:loop_completed',
   MISSION_LOOP_STALLED: 'mission:loop_stalled',
+  // Every completion decision — allowed or refused — with the predicate inputs
+  // that produced it, so "why did/didn't this mission complete" is diagnosable.
+  MISSION_COMPLETION_DECISION: 'mission:completion_decision',
   // Generic task status update (non-claiming — dashboard only, does NOT trigger runner re-claim)
   TASK_UPDATED: 'task:updated',
   // Failure loop prevention

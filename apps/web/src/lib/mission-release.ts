@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { eq, and, isNull, inArray, count } from 'drizzle-orm';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { canCompleteMission } from '@/lib/mission-completion';
 import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
 
@@ -53,9 +54,33 @@ export async function fireMissionReleaseIfComplete(
   const trigger = workspace?.releaseConfig?.trigger ?? 'every_merge';
   if (trigger !== 'on_mission_complete') return;
 
-  // Check that all tasks in the mission have reached terminal state
+  // Check that all tasks in the mission have reached terminal state. This bar is
+  // stricter than the completion predicate on purpose: it counts housekeeping
+  // rows too, because a release should not fire while any row of the mission is
+  // still moving.
   const pending = await countPendingTasksForMission(missionId);
   if (pending > 0) return;
+
+  // Same predicate as every completion path — including the goal-criteria gate.
+  // Before this, a mission could read COMPLETE (heartbeat's word) while the
+  // release gate refused to ship, and the only thing protecting production was
+  // that this side happened to be stricter. Now both sides ask one question, and
+  // this side keeps its extra bar above.
+  // `evaluateCriteria: false` — a release READS a verdict, it does not manufacture
+  // one. Evaluating here would let the release trigger dispatch verification tasks
+  // and spend tokens; the completion path (which calls back into this function on
+  // success) is what produces verdicts.
+  const decision = await canCompleteMission(missionId, {
+    path: 'release_trigger',
+    acceptCompleted: true,
+    evaluateCriteria: false,
+  });
+  if (!decision.ok) {
+    console.log(
+      `[mission-release] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`
+    );
+    return;
+  }
 
   // Atomic dedup: only the first caller to set releasedAt fires the release
   const won = await claimMissionRelease(missionId);

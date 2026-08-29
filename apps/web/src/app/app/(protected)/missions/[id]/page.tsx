@@ -323,6 +323,12 @@ export default async function MissionDetailPage({
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
   const isHeld = (mission as any).isHeld === true;
 
+  // Goal criteria that have not been verified keep the mission open — the header
+  // must say that rather than "READY FOR REVIEW".
+  const missionCriteria = (mission as any).goalCriteria as unknown[] | null;
+  const missionCriteriaOverall = ((mission as any).goalCriteriaState as { overall?: string } | null)?.overall ?? null;
+  const criteriaUnverified = Array.isArray(missionCriteria) && missionCriteria.length > 0 && missionCriteriaOverall !== 'pass';
+
   // Single derived display state for the header chip and CTA
   const displayState = deriveMissionDisplayState({
     status: mission.status,
@@ -331,6 +337,7 @@ export default async function MissionDetailPage({
     activeAgents,
     health: healthState,
     progress,
+    criteriaUnverified,
   });
   const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;

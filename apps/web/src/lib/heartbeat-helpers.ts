@@ -20,7 +20,7 @@ export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: 
 - [ ] When creating a batch of build tasks: include a pathManifest (list of files/globs each task will create or modify) so the platform can serialize tasks that touch the same files. Example: pathManifest=["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]. The API auto-adds dependsOn edges when manifests overlap — you only need to declare the paths, not the edges.
 - [ ] NEVER re-implement a file that is already declared in a sibling task's pathManifest or described as that task's primary deliverable. If you need code owned by a pending/active sibling task, report blocked with the sibling taskId so a dependsOn edge can be added.
 - [ ] Do NOT report OK if the mission has not made forward progress since last heartbeat
-- [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput`;
+- [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput. This PROPOSES completion — the platform then counts open tasks and evaluates the mission's goal criteria, and refuses if either does not clear. Setting the flag is not the same as the mission closing; check the mission's goal criteria (shown below when set) before asserting it, and if completion is refused the reason is posted to the mission feed`;
 
 // ── Hour formatting ──
 

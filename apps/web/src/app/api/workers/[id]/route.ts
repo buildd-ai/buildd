@@ -22,7 +22,8 @@ import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
-import { autoEvaluateMissionOnCompletion } from '@/lib/mission-criteria-eval';
+import { completeMissionIfVerified } from '@/lib/mission-completion';
+import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -1538,12 +1539,28 @@ export async function PATCH(
         }
       });
 
-      // Auto-evaluate mission goalCriteria when all tasks reach terminal state.
-      // Only fires when the mission has criteria and autoVerify != false.
-      // Idempotent — skips if an evaluation already exists.
-      await runStep('goal-criteria-eval', async () => {
+      // A finished goal-criterion verification task owns one criterion's verdict.
+      // Hand the runner's evidence back before the completion attempt below, so a
+      // criterion turning green completes the mission in the same request.
+      await runStep('criteria-verification-outcome', async () => {
+        const [taskForCriteria] = await db
+          .select({ context: tasks.context })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (!isCriteriaVerificationTask(taskForCriteria?.context)) return;
+        await handleCriteriaVerificationOutcome(taskId, verificationEvidence);
+      });
+
+      // Attempt mission completion. The predicate pulls a goal-criteria verdict
+      // when the work is done, refuses when it cannot get one, and is a cheap
+      // no-op while deliverables are still open — so this is safe to run on every
+      // task completion and is what makes the verdict a precondition rather than
+      // a side effect. `proposed: false`: nothing asserted completion here, so a
+      // still-working mission does not post a note.
+      await runStep('mission-completion-attempt', async () => {
         if (taskMissionId) {
-          await autoEvaluateMissionOnCompletion(taskMissionId);
+          await completeMissionIfVerified(taskMissionId, { path: 'criteria_eval', predicate: `task ${taskId} reached ${status}` });
         }
       });
 
