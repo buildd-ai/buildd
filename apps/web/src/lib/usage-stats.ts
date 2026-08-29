@@ -12,6 +12,7 @@
  */
 
 import type { ResultMeta } from '@buildd/core/db/schema';
+import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 
 /** Max entries the runner keeps in `workers.mcpCalls` (api/workers/[id]/route.ts). */
 const MCP_CALLS_CAP = 100;
@@ -122,13 +123,35 @@ export interface GroupEntry extends MetricBlock {
   perTask: PerTaskBlock;
 }
 
+export type PerTaskMetric = 'inputTokens' | 'outputTokens' | 'costUsd' | 'turns' | 'toolCalls';
+
+/**
+ * Per-task distributions, each over the tasks that actually recorded that
+ * metric.
+ *
+ * Every metric here is structurally absent for some auth modes and some
+ * workers: seat/OAuth accounts report no cost at all, and a worker that dies
+ * during provisioning records 0 tokens and 0 turns. Averaging those in produces
+ * a median that reads as a measurement ("$0.00 per task", "0 tokens per task")
+ * when it means "we never recorded this" — the exact ambiguity
+ * `docs/design/derived-metric-availability.md` rules out. So each metric is a
+ * `DerivedMetric`: a distribution over its contributing tasks, or `unavailable`
+ * with the reason, and never a zero standing in for absence.
+ *
+ * `contributing[metric]` is the n behind each distribution. Read the medians
+ * against it: a median over 12 of 259 tasks is a different claim than one over
+ * all 259.
+ */
 export interface PerTaskBlock {
-  inputTokens: Distribution;
-  outputTokens: Distribution;
-  costUsd: Distribution;
-  turns: Distribution;
-  /** Over tasks with a tool signal only — see `tools.coverage`. */
-  toolCalls: Distribution;
+  /** All tasks in scope, including those that recorded nothing. */
+  tasks: number;
+  /** Tasks with a nonzero value for each metric — the n of that distribution. */
+  contributing: Record<PerTaskMetric, number>;
+  inputTokens: DerivedMetric<Distribution>;
+  outputTokens: DerivedMetric<Distribution>;
+  costUsd: DerivedMetric<Distribution>;
+  turns: DerivedMetric<Distribution>;
+  toolCalls: DerivedMetric<Distribution>;
 }
 
 export interface UsageStats {
@@ -160,6 +183,33 @@ export function percentile(values: number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const rank = Math.ceil(p * sorted.length);
   return sorted[Math.min(Math.max(rank, 1) - 1, sorted.length - 1)];
+}
+
+/**
+ * Distribution over the nonzero values only, or `unavailable` when nothing
+ * recorded the metric.
+ *
+ * Zeros here are almost never measurements — a task with 0 tokens is a worker
+ * that never ran, and a task with $0.00 on seat auth is an account that reports
+ * no cost. Including them halves the median without telling anyone.
+ *
+ * `reason` is a descriptive string because that is what the shipped
+ * `DerivedMetric` carries and what `DerivedMetricDisplay` puts in its tooltip.
+ * When the reason enum in `docs/design/derived-metric-availability.md` lands,
+ * these are all the `no_baseline` case.
+ */
+export function measuredDistribution(
+  values: number[],
+  reason: string,
+): DerivedMetric<Distribution> {
+  const measured = values.filter(v => v > 0);
+  if (measured.length === 0) return derivedUnavailable<Distribution>(reason);
+  return derivedValue(distribution(measured));
+}
+
+/** Count of values that would contribute to `measuredDistribution`. */
+function countContributing(values: number[]): number {
+  return values.reduce((n, v) => (v > 0 ? n + 1 : n), 0);
 }
 
 export function distribution(values: number[]): Distribution {
@@ -252,6 +302,8 @@ interface TaskAgg {
   counts: Record<string, number>;
   /** Workers whose derived MCP counts hit the `mcpCalls` cap. */
   truncatedWorkers: number;
+  /** True once the canonical (non-attempt) task row has been folded in. */
+  canonicalSeen: boolean;
 }
 
 /**
@@ -285,6 +337,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
         toolSource: 'none',
         counts: {},
         truncatedWorkers: 0,
+        canonicalSeen: false,
       };
       byTask.set(key, agg);
     }
@@ -294,6 +347,12 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
     if (row.taskId === key) {
       agg.status = row.taskStatus;
       agg.roleSlug = row.roleSlug;
+      agg.canonicalSeen = true;
+    } else if (!agg.canonicalSeen && row.taskStatus === 'completed') {
+      // Parent is outside the window and we only have attempts. Row order is
+      // whatever Postgres returned, so without this a task with one failed and
+      // one successful attempt would report either outcome at random.
+      agg.status = 'completed';
     }
 
     agg.workers++;
@@ -349,14 +408,39 @@ function metricBlock(tasks: TaskAgg[]): MetricBlock {
 }
 
 function perTaskBlock(tasks: TaskAgg[]): PerTaskBlock {
+  const inputTokens = tasks.map(t => t.inputTokens);
+  const outputTokens = tasks.map(t => t.outputTokens);
+  const costUsd = tasks.map(t => t.costUsd);
+  const turns = tasks.map(t => t.turns);
+  // Tool calls are the one metric with an explicit "was this recorded" signal
+  // (`toolSource`), so availability is read off that rather than off a zero.
+  // Today the two agree — a task with a signal always has at least one call —
+  // but keying on the signal is what stays correct if a future writer records an
+  // explicit zero for an agent that answered without touching a tool.
+  const measuredToolTasks = tasks.filter(t => t.toolSource !== 'none');
+  const toolCalls = measuredToolTasks.map(t => t.toolCalls);
+
   return {
-    inputTokens: distribution(tasks.map(t => t.inputTokens)),
-    outputTokens: distribution(tasks.map(t => t.outputTokens)),
-    costUsd: distribution(tasks.map(t => t.costUsd)),
-    turns: distribution(tasks.map(t => t.turns)),
-    // Tasks with no tool signal would drag the median toward zero and read as
-    // "agents barely use tools" when it really means "we didn't record it".
-    toolCalls: distribution(tasks.filter(t => t.toolSource !== 'none').map(t => t.toolCalls)),
+    tasks: tasks.length,
+    contributing: {
+      inputTokens: countContributing(inputTokens),
+      outputTokens: countContributing(outputTokens),
+      costUsd: countContributing(costUsd),
+      turns: countContributing(turns),
+      toolCalls: measuredToolTasks.length,
+    },
+    inputTokens: measuredDistribution(inputTokens, 'No task in this window recorded input tokens'),
+    outputTokens: measuredDistribution(outputTokens, 'No task in this window recorded output tokens'),
+    // The overwhelmingly common cause, worth naming in the tooltip: seat-based
+    // (OAuth) accounts are billed per seat and report costUSD 0 on every result.
+    costUsd: measuredDistribution(
+      costUsd,
+      'No cost recorded — seat-based (OAuth) accounts report no per-task cost',
+    ),
+    turns: measuredDistribution(turns, 'No task in this window recorded turns'),
+    toolCalls: toolCalls.length > 0
+      ? derivedValue(distribution(toolCalls))
+      : derivedUnavailable<Distribution>('No task in this window recorded tool calls'),
   };
 }
 

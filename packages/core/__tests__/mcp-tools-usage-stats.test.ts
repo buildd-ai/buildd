@@ -28,11 +28,13 @@ const statsPayload = {
     costUsd: 42.5, turns: 300, toolCalls: 1_200,
   },
   perTask: {
-    inputTokens: { mean: 1_800_000, median: 1_400_000, p90: 3_200_000, max: 4_000_000 },
-    outputTokens: { mean: 20_000, median: 18_000, p90: 30_000, max: 40_000 },
-    costUsd: { mean: 3.54, median: 2.1, p90: 8.0, max: 10.0 },
-    turns: { mean: 25, median: 22, p90: 40, max: 60 },
-    toolCalls: { mean: 100, median: 85, p90: 190, max: 240 },
+    tasks: 12,
+    contributing: { inputTokens: 10, outputTokens: 10, costUsd: 10, turns: 12, toolCalls: 11 },
+    inputTokens: { kind: 'value', value: { mean: 1_800_000, median: 1_400_000, p90: 3_200_000, max: 4_000_000 } },
+    outputTokens: { kind: 'value', value: { mean: 20_000, median: 18_000, p90: 30_000, max: 40_000 } },
+    costUsd: { kind: 'value', value: { mean: 3.54, median: 2.1, p90: 8.0, max: 10.0 } },
+    turns: { kind: 'value', value: { mean: 25, median: 22, p90: 40, max: 60 } },
+    toolCalls: { kind: 'value', value: { mean: 100, median: 85, p90: 190, max: 240 } },
   },
   tools: {
     coverage: { tasks: 12, histogram: 9, derived: 2, none: 1, histogramRate: 0.75, truncated: 1 },
@@ -56,11 +58,13 @@ const statsPayload = {
       costUsd: 36, turns: 240, toolCalls: 1_000,
       completed: 6, failed: 2, successRate: 0.75,
       perTask: {
-        inputTokens: { mean: 2_250_000, median: 2_000_000, p90: 3_200_000, max: 4_000_000 },
-        outputTokens: { mean: 25_000, median: 22_000, p90: 30_000, max: 40_000 },
-        costUsd: { mean: 4.5, median: 3.2, p90: 8, max: 10 },
-        turns: { mean: 30, median: 28, p90: 40, max: 60 },
-        toolCalls: { mean: 125, median: 110, p90: 190, max: 240 },
+        tasks: 8,
+        contributing: { inputTokens: 8, outputTokens: 8, costUsd: 8, turns: 8, toolCalls: 8 },
+        inputTokens: { kind: 'value', value: { mean: 2_250_000, median: 2_000_000, p90: 3_200_000, max: 4_000_000 } },
+        outputTokens: { kind: 'value', value: { mean: 25_000, median: 22_000, p90: 30_000, max: 40_000 } },
+        costUsd: { kind: 'value', value: { mean: 4.5, median: 3.2, p90: 8, max: 10 } },
+        turns: { kind: 'value', value: { mean: 30, median: 28, p90: 40, max: 60 } },
+        toolCalls: { kind: 'value', value: { mean: 125, median: 110, p90: 190, max: 240 } },
       },
     },
   ],
@@ -136,6 +140,76 @@ describe('get_usage_stats', () => {
     mockApi.mockResolvedValueOnce({ ...statsPayload, truncatedScan: true });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx());
     expect(res.content[0].text).toMatch(/row cap hit/);
+  });
+
+  it('omits cost entirely and names the reason on a seat-auth window', async () => {
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      totals: { ...statsPayload.totals, costUsd: 0, cacheReadTokens: 0 },
+      perTask: {
+        ...statsPayload.perTask,
+        contributing: { ...statsPayload.perTask.contributing, costUsd: 0 },
+        costUsd: {
+          kind: 'unavailable',
+          reason: 'No cost recorded — seat-based (OAuth) accounts report no per-task cost',
+        },
+      },
+    });
+
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
+      .content[0].text;
+    expect(out).not.toMatch(/\$0\.00/);
+    expect(out).toMatch(/seat-based \(OAuth\) accounts report no per-task cost/);
+    // Tokens are unaffected by cost being absent.
+    expect(out).toMatch(/1\.4M median/);
+  });
+
+  it('shows the sample size when a median covers only some tasks', async () => {
+    mockApi.mockResolvedValueOnce(statsPayload);
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
+      .content[0].text;
+    // 10 of 12 tasks recorded input tokens.
+    expect(out).toMatch(/\[n=10\/12\]/);
+  });
+
+  it('prints a dash, not a zero, when no task recorded tokens', async () => {
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      perTask: {
+        ...statsPayload.perTask,
+        contributing: { inputTokens: 0, outputTokens: 0, costUsd: 0, turns: 0, toolCalls: 0 },
+        inputTokens: { kind: 'unavailable', reason: 'No task in this window recorded input tokens' },
+      },
+    });
+
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
+      .content[0].text;
+    expect(out).toMatch(/input — \(No task in this window recorded input tokens\)/);
+  });
+
+  it('explains an empty model split rather than leaving it silently absent', async () => {
+    mockApi.mockResolvedValueOnce({ ...statsPayload, byModel: [] });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
+      .content[0].text;
+    expect(out).toMatch(/By model: unavailable — the SDK reports no per-model usage on seat-based \(OAuth\) auth/);
+  });
+
+  it('marks a role group that recorded no tokens instead of showing 0', async () => {
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      groups: [{
+        ...statsPayload.groups[0],
+        perTask: {
+          ...statsPayload.groups[0].perTask,
+          inputTokens: { kind: 'unavailable', reason: 'No task in this window recorded input tokens' },
+          costUsd: { kind: 'unavailable', reason: 'No cost recorded' },
+        },
+      }],
+    });
+
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
+      .content[0].text;
+    expect(out).toMatch(/Builder: 8 task\(s\) · no tokens recorded · 75% success/);
   });
 
   it('does not crash when a group has no terminal tasks yet', async () => {
