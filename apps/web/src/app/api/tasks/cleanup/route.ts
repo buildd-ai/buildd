@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -15,8 +16,11 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 const MAX_TASK_FAILURES = 3;
 
 async function resetOrFailTask(taskId: string, now: Date, reason: string) {
-  // Only count code_failure workers against the cap — budget_limited and
-  // infra_failure exits reflect external constraints and should not burn retries.
+  // Only chargeable failures count against the cap — budget/infra/never-started/
+  // silent-start exits reflect external constraints, not task defects. The
+  // exclusion list lives in worker-exit-taxonomy (it used to be duplicated here
+  // and had already drifted: sandbox_mount_gap and condition_unmet were charged
+  // by this rail while stale-workers.ts exempted them).
   // Workers predating exitCause (null) default to code_failure for safety.
   const prior = await db.query.workers.findMany({
     where: and(
@@ -25,9 +29,7 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
     ),
     columns: { id: true, exitCause: true },
   });
-  const failureCount = prior.filter(
-    w => w.exitCause !== 'budget_limited' && w.exitCause !== 'infra_failure'
-  ).length;
+  const failureCount = prior.filter(w => consumesRetryAttempt(w.exitCause)).length;
 
   if (failureCount >= MAX_TASK_FAILURES) {
     const existing = await db.query.tasks.findFirst({

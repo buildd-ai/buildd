@@ -1417,3 +1417,253 @@ describe('cleanupStaleWorkers — outcome-first summaries (B.5)', () => {
     expect(taskUpdateSet.result.reaperForensics).toBeDefined();
   });
 });
+
+// ─── Orphan / silent-start taxonomy ─────────────────────────────────────────
+// Regression (2026-08-28): every reaped worker was booked as `infra_failure`
+// with "Stale worker expired (no update for 15+ minutes)" — including rows the
+// server minted at claim that NO runner ever started (started_at IS NULL), and
+// sessions that started but streamed nothing at all ($0, ≤2 turns). Both shapes
+// inflated the failure rate and were undiagnosable from the DB.
+describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => {
+  let workerUpdates: Array<{ vals: any; where: any }> = [];
+
+  beforeEach(() => {
+    workerUpdates = [];
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => ({
+        where: mock((where: any) => {
+          workerUpdates.push({ vals, where });
+          return Promise.resolve();
+        }),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('books a worker no runner ever started as never_started, not infra_failure', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'orphan-1', taskId: 'task-1', status: 'idle', startedAt: null, turns: 0, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([]) // failed workers (retry cap)
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(workerUpdates.length).toBeGreaterThan(0);
+    const update = workerUpdates[0].vals;
+    expect(update.status).toBe('failed');
+    expect(update.exitCause).toBe('never_started');
+    expect(update.error).not.toContain('no update for 15+ minutes');
+    expect(update.error.toLowerCase()).toContain('never started');
+  });
+
+  it('books a started-but-outputless worker as silent_start with diagnosable text', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'silent-1', taskId: 'task-1', status: 'running', startedAt: new Date(Date.now() - 20 * 60 * 1000), turns: 2, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    const update = workerUpdates[0].vals;
+    expect(update.exitCause).toBe('silent_start');
+    expect(update.error).toContain('no output');
+  });
+
+  it('splits a mixed batch into one update per exit cause', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'orphan-1', taskId: 'task-1', status: 'idle', startedAt: null, turns: 0, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+        { id: 'silent-1', taskId: 'task-2', status: 'running', startedAt: new Date(), turns: 1, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+        { id: 'real-1', taskId: 'task-3', status: 'running', startedAt: new Date(), turns: 44, costUsd: '0.230000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-1' },
+      { id: 'task-3', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    const causes = workerUpdates.map(u => u.vals.exitCause);
+    expect(causes).toContain('never_started');
+    expect(causes).toContain('silent_start');
+    expect(causes).toContain('infra_failure');
+
+    // Each update must target only the worker ids of its own class.
+    const byCause = new Map(workerUpdates.map(u => [u.vals.exitCause, u.where?.values ?? []]));
+    expect(byCause.get('never_started')).toEqual(['orphan-1']);
+    expect(byCause.get('silent_start')).toEqual(['silent-1']);
+    expect(byCause.get('infra_failure')).toEqual(['real-1']);
+  });
+
+  it('does not charge never_started workers against the retry cap', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'orphan-4', taskId: 'task-1', status: 'idle', startedAt: null, turns: 0, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'never_started' },
+        { id: 'f2', exitCause: 'never_started' },
+        { id: 'f3', exitCause: 'never_started' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('fails the task with a legible reason after 3 silent-start sessions', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'silent-4', taskId: 'task-1', status: 'running', startedAt: new Date(), turns: 1, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'silent_start' },
+        { id: 'f2', exitCause: 'silent_start' },
+        { id: 'f3', exitCause: 'silent_start' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.error).toContain('silent-start');
+  });
+
+  it('looks for silent-start workers on a shorter clock than the 15-minute stale rule', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    await cleanupStaleWorkers('account-1');
+
+    // Walk the captured where-tree for the cutoff Dates the query was built with.
+    const dates: Date[] = [];
+    const walk = (node: any, depth = 0) => {
+      if (!node || depth > 8) return;
+      if (node instanceof Date) { dates.push(node); return; }
+      if (Array.isArray(node)) { node.forEach(n => walk(n, depth + 1)); return; }
+      if (typeof node === 'object') { Object.values(node).forEach(n => walk(n, depth + 1)); }
+    };
+    walk(mockWorkersFindMany.mock.calls[0][0]);
+
+    const agesMin = dates.map(d => Math.round((Date.now() - d.getTime()) / 60000));
+    // 15-min stale rule + 5-min idle rule already existed; the silent-start rule
+    // must fire well before the generic 15-minute expiry.
+    expect(agesMin).toContain(15);
+    const silentWindow = agesMin.find(m => m > 5 && m < 15);
+    expect(silentWindow).toBeDefined();
+  });
+});
+
+describe('cleanupStaleWorkers — heartbeat path taxonomy', () => {
+  let workerUpdates: Array<{ vals: any; where: any }> = [];
+
+  beforeEach(() => {
+    workerUpdates = [];
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => ({
+        where: mock((where: any) => {
+          workerUpdates.push({ vals, where });
+          return Promise.resolve();
+        }),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('books a never-started row as never_started even when the runner heartbeat expired', async () => {
+    // No fresh heartbeat → section 2 fires.
+    mockWorkerHeartbeatsFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // section 1: no stale workers
+      .mockResolvedValueOnce([   // section 2: heartbeat orphans
+        { id: 'hb-orphan', taskId: 'task-9', startedAt: null, turns: 0, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+        { id: 'hb-worked', taskId: 'task-10', startedAt: new Date(), turns: 30, costUsd: '0.500000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValue([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-9', workspaceId: 'ws-1' },
+      { id: 'task-10', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-9', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    const byCause = new Map(workerUpdates.map(u => [u.vals.exitCause, u]));
+    expect(byCause.get('never_started')?.where?.values).toEqual(['hb-orphan']);
+    expect(byCause.get('infra_failure')?.where?.values).toEqual(['hb-worked']);
+    expect(byCause.get('infra_failure')?.vals.error).toContain('heartbeat expired');
+
+    // Restore the file-wide default (fresh heartbeat) for anything appended later.
+    mockWorkerHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+  });
+});
