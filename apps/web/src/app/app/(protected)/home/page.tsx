@@ -30,6 +30,7 @@ import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
+import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
@@ -179,6 +180,9 @@ export default async function HomePage({
   }[] = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
+  // Workspace channels HomeAutoRefresh subscribes to, so an open tab never
+  // holds a stale action queue (e.g. a Merge card for an already-merged PR).
+  let refreshWorkspaceIds: string[] = [];
 
   // Durable-arc rail — additive, above the ephemeral feed. Empty ⇒ collapses.
   let railInitiatives: InitiativeListItem[] = [];
@@ -270,6 +274,7 @@ export default async function HomePage({
         // No valid team cookie → show all user workspaces cross-team
         wsIds = await getUserWorkspaceIds(user.id);
       }
+      refreshWorkspaceIds = wsIds;
 
       // Initiative rail — team-scoped (matching the cookie/team logic above),
       // optionally narrowed by the active workspace filter. Independent of the
@@ -1346,6 +1351,7 @@ export default async function HomePage({
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
+      <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
       <div className="max-w-5xl mx-auto">
         {/* Workspace filter — desktop only; mobile header owns the picker */}
         {teamWorkspaces.length > 0 && (
