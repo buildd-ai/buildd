@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { deriveStage } from './StageChip';
+import { deriveStage } from '../lib/stage';
 
 describe('deriveStage — completed task + PR state', () => {
   it('returns OPEN for a completed task with an open PR and no mergedAt', () => {
