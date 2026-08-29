@@ -5472,4 +5472,60 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       expect(data.pendingMessages[1].id).toBe('msg-2');
     });
   });
+
+  // Regression: planning task whose runner returns free-form text (no structuredOutput)
+  // must be overridden to failed, not silently completed — otherwise the mission loop
+  // re-plans forever without ever creating child tasks.
+  it('overrides completed→failed when planning task returns no structuredOutput', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    // Ensure subsequent selects (loop rows etc.) resolve cleanly to empty
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-planning-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+
+    // terminalTaskRow returns a planning task with no loop config
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'auto', missionId: null, scheduleId: null, mode: 'planning' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      // Runner reports completed with free-form summary but no structuredOutput
+      body: { status: 'completed', summary: 'I thought about the mission and here is my plan in prose.' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Task must be overridden to failed — not completed
+    const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
+  });
 });
