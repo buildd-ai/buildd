@@ -39,6 +39,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     missionId?: string;
     missingConnectors?: string[];
     alternativeRole?: string;
+    backend?: string;
     active?: number;
     cap?: number;
     queuePosition?: number;
@@ -409,8 +410,14 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       ? 'Blocked: dependency PR not merged'
                       : gateData?.gateReason === 'mission_held'
                       ? 'Blocked: parent mission is held'
+                      : gateData?.gateReason === 'subject_dead'
+                      ? 'Blocked: subject PR is closed'
                       : gateData?.gateReason === 'connector_routing_mismatch'
                       ? 'Blocked: required connectors not available'
+                      : gateData?.gateReason === 'mission_budget_exhausted'
+                      ? 'Blocked: mission budget exhausted'
+                      : gateData?.gateReason === 'capability_mismatch'
+                      ? `Blocked: no ${gateData.backend ?? 'backend'} credential available`
                       : gateData?.gateReason === 'workspace_cap_reached'
                       ? `Workspace full (${gateData.active}/${gateData.cap} running)`
                       : 'Blocked'}
@@ -422,6 +429,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
                       ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
                       : gateData?.gateReason === 'mission_held'
                       ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
+                      : gateData?.gateReason === 'mission_budget_exhausted'
+                      ? 'The parent mission has spent its cost budget, so no worker will claim any of its tasks. Raise the mission budget to release them all, or force-start this one task.'
                       : gateData?.gateReason === 'connector_routing_mismatch'
                       ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
                       : gateData?.gateReason === 'capability_mismatch'

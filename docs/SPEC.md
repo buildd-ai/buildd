@@ -301,15 +301,11 @@ brutalist UI.
   infra liveness, not a user feature.
 - **`observations` table** — memory moved to the knowledge store / external service.
 - **`codex_credentials` table** — dropped (migration 0047); use `secrets`.
-- **`capability_mismatch` gate reason / `checkCapabilityMatch` / `requiredCapabilities`
-  matching** — removed from the claim route and `/start` in PR #1864; `claim-gates.ts`
-  (the hand-mirrored gate module) deleted in PR #1868. The capability abstraction was
-  a single check (does Codex have credentials) with a general-sounding name; it has
-  been replaced by the onboarding/workspace-configuration approach. See
-  `docs/design/mcp-start-task.md` for the credential-surfacing open thread.
-  — **Schema cleanup pending:** `tasks.requiredCapabilities` (`jsonb`) still exists in
-  `packages/core/db/schema.ts` and `packages/shared/src/types.ts`. It is unenforced
-  and safe to remove in a follow-on migration. Do not re-populate it.
+- **`checkCapabilityMatch` / `requiredCapabilities` matching** — removed from the
+  claim route and `/start` in PR #1864; `claim-gates.ts` (the hand-mirrored gate
+  module) deleted in PR #1868. The capability abstraction was a single check (does
+  Codex have credentials) with a general-sounding name; it has been replaced by the
+  onboarding/workspace-configuration approach.
 - **`apps/web/src/lib/claim-gates.ts`** — deleted (PR #1868). `/start` now imports
   directly from the canonical gate modules in `apps/web/src/app/api/workers/claim/`
   (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`).

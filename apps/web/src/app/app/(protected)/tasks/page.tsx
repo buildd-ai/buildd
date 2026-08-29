@@ -2,7 +2,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
-import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition } from '@/lib/task-presentation';
+import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition, isSubjectDead } from '@/lib/task-presentation';
+import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -60,6 +61,8 @@ export default async function TasksPage({
     parentTaskId: string | null;
     taskClass: string | null;
     loopExitConditionType: string | null;
+    subjectDead: boolean;
+    missionBudgetExhausted: boolean;
   }> = [];
 
   let teamWorkspaces: { id: string; name: string }[] = [];
@@ -126,6 +129,14 @@ export default async function TasksPage({
               loopState: true,
               parentTaskId: true,
               taskClass: true,
+              // Subject-liveness gate inputs. subjectAnchor carries `source`,
+              // which decides whether the anchor gates claims at all — an
+              // unselected column reads as undefined and the row would render
+              // as a healthy QUEUED task again.
+              subjectKind: true,
+              subjectPrNumber: true,
+              subjectResolution: true,
+              subjectAnchor: true,
             },
             orderBy: [desc(tasks.updatedAt)],
             limit: 200,
@@ -156,6 +167,10 @@ export default async function TasksPage({
                   loopState: true,
                   parentTaskId: true,
                   taskClass: true,
+                  subjectKind: true,
+                  subjectPrNumber: true,
+                  subjectResolution: true,
+                  subjectAnchor: true,
                 },
                 limit: 500,
               })
@@ -165,13 +180,22 @@ export default async function TasksPage({
           // Fetch mission titles for tasks that have missionId
           const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
           const missionTitleMap = new Map<string, string>();
+          // Missions whose cost budget is spent. The claim loop's mission gate #1
+          // skips EVERY task in such a mission and only a human raising
+          // costBudgetUsd clears it, so these rows must not render as QUEUED.
+          const budgetExhaustedMissionIds = new Set<string>();
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
               where: inArray(missions.id, missionIds),
-              columns: { id: true, title: true, initiativeId: true },
+              // `status` is load-bearing, not decorative: this query selects
+              // columns explicitly, and an unselected column reads as undefined,
+              // which computes the gate flag to false and silently re-hides the
+              // stall. Same failure mode as the subject-liveness columns below.
+              columns: { id: true, title: true, initiativeId: true, status: true },
             });
             for (const m of misns) {
               missionTitleMap.set(m.id, m.title);
+              if (m.status === 'budget_exhausted') budgetExhaustedMissionIds.add(m.id);
               if (initiativeId && m.initiativeId === initiativeId) {
                 initiativeMissionIds.push(m.id);
               }
@@ -338,6 +362,19 @@ export default async function TasksPage({
               parentTaskId: t.parentTaskId ?? null,
               taskClass: t.taskClass ?? null,
               loopExitConditionType: (t.loopConfig as any)?.exitCondition?.type ?? null,
+              // Same predicate the claim gate enforces in SQL — a task the gate
+              // excludes must not render as QUEUED.
+              subjectDead: isSubjectDead(t),
+              // Mission budget wall. Terminal rows are exempt (the gate only
+              // ever blocked a claim), and an operator force-start writes
+              // context.bypassMissionBudget — after which the claim loop DOES
+              // take the task, so flagging it here would contradict the gate
+              // that is actually in force.
+              missionBudgetExhausted:
+                !isTerminal
+                && !!t.missionId
+                && budgetExhaustedMissionIds.has(t.missionId)
+                && !hasBypassFlag(ctx, BYPASS_MISSION_BUDGET_KEY),
             };
           });
         }

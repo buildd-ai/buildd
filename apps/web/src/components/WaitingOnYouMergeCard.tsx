@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import ExternalLink from './ExternalLink';
 import { resolveWaitingCardState } from '@/lib/waiting-card-state';
+import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 interface WaitingOnYouMergeCardProps {
@@ -12,9 +14,21 @@ interface WaitingOnYouMergeCardProps {
 
 const MERGED_DISMISS_MS = 5000;
 
-type MergeState = 'idle' | 'confirming' | 'merging' | 'merged' | 'error' | 'conflict_dispatched' | 'conflict_exhausted';
+type MergeState =
+  | 'idle'
+  | 'confirming'
+  | 'merging'
+  | 'merged'
+  | 'stale'
+  | 'error'
+  | 'conflict_dispatched'
+  | 'conflict_exhausted';
+
+/** How long the ✓ / stale confirmation shows before the server re-render lands. */
+const RESOLVE_REFRESH_MS = 1200;
 
 export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
+  const router = useRouter();
   const cardState = resolveWaitingCardState(item.prLifecycleStatus);
   const [dismissed, setDismissed] = useState(false);
   const [collapsed, setCollapsed] = useState(cardState !== 'full');
@@ -49,23 +63,29 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId: item.workspaceId }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        if (data.conflictRetryDispatched) {
-          setConflictRetryTaskId(data.conflictRetryTaskId ?? null);
+      const data = res.ok ? null : await res.json().catch(() => null);
+      const outcome = resolveMergeOutcome(res.ok, res.status, data);
+
+      switch (outcome.kind) {
+        case 'merged':
+        case 'stale':
+          setMergeState(outcome.kind);
+          // Re-render Home so the card resolves (or disappears) instead of
+          // flipping back to an idle Merge button that looks like a dead click.
+          setTimeout(() => router.refresh(), RESOLVE_REFRESH_MS);
+          break;
+        case 'conflict_dispatched':
+          setConflictRetryTaskId(outcome.taskId);
           setMergeState('conflict_dispatched');
-          return;
-        }
-        if (data.conflictExhausted) {
+          break;
+        case 'conflict_exhausted':
           setMergeState('conflict_exhausted');
-          return;
-        }
-        setErrorMsg(data.error || 'Merge failed');
-        setMergeState('error');
-        return;
+          break;
+        case 'error':
+          setErrorMsg(outcome.message);
+          setMergeState('error');
+          break;
       }
-      setMergeState('merged');
-      setTimeout(() => setMergeState('idle'), 3000);
     } catch {
       setErrorMsg('Network error');
       setMergeState('error');
@@ -190,6 +210,14 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                   <path d="M20 6L9 17l-5-5" />
                 </svg>
                 Merged
+              </span>
+            )}
+            {mergeState === 'stale' && (
+              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-text-muted">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+                Already merged
               </span>
             )}
             {/* confirming: right slot empty — confirm strip renders below */}

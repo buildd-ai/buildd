@@ -426,26 +426,42 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.pathManifest).toEqual(['**']);
   });
 
-  it("conflict retry for manifest-less mission task serialises against sibling with ['**'] via dependsOn", async () => {
-    // Regression test for the #1759/#1763 ping-pong loop:
-    // Both tasks were filed by the organizer without a pathManifest (pre-PR #1773).
-    // PR #1780 ensures retries default to ['**'] for mission tasks and run the
-    // overlap check — so when a sibling also carries ['**'], a dependsOn edge is
-    // added and the two tasks are serialized instead of ping-ponging forever.
+  it("conflict retry for a manifest-less mission task does NOT auto-depend on wildcard siblings", async () => {
+    // The wildcard sentinel is advisory-only at claim time (findBlockingPr and the
+    // path_claims backstop both skip '**'), so the authoring path must not mint a
+    // hard dependsOn edge from it. Otherwise every conflict retry inherits an edge
+    // to every task alive in the workspace at retry time.
     //
     // MOCK_TASK already has: pathManifest: null, missionId: 'mission-1'
-    // Sibling is the other half of the ping-pong pair, also with ['**']
     mockTaskFindMany.mockResolvedValue([
       { id: 'sibling-mission-task', pathManifest: ['**'] },
+      { id: 'sibling-concrete-task', pathManifest: ['apps/web/src/lib/other.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
-    // Retry inherits ['**'] sentinel via the missionId fallback (PR #1780)
+    // Retry still inherits the ['**'] sentinel via the missionId fallback (PR #1780)
     expect(capturedInsertValues.pathManifest).toEqual(['**']);
-    // ['**'] overlaps ['**'] → dependsOn edge added → tasks serialized, no more ping-pong
-    expect(capturedInsertValues.dependsOn).toContain('sibling-mission-task');
+    // …but it buys no dependency edges, from wildcard or concrete siblings.
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+  });
+
+  it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      pathManifest: ['apps/web/src/lib'],
+      missionId: 'mission-1',
+    });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'wildcard-sibling', pathManifest: ['**'] },
+      { id: 'overlapping-sibling', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['overlapping-sibling']);
   });
 
   it('returns dispatched=false when workspace is not found', async () => {

@@ -579,3 +579,58 @@ describe('extractSubjectAnchor — anchor structural invariants', () => {
     expect(result.anchor?.confidence).toBeDefined();
   });
 });
+
+// ── Anchor-source coherence (input side of the claim gate) ───────────────────
+//
+// The subject gate treats an anchor as *binding* (able to make a task
+// unclaimable / sweepable) only when its source is structured AND its
+// confidence is not 'derived'. These tests pin what the extractor emits for
+// each path so that classification stays meaningful.
+
+describe('extractSubjectAnchor — source/confidence coherence', () => {
+  it('an explicit API anchor without an asserted confidence is derived, not exact', () => {
+    // The server did not resolve this PR against GitHub — per
+    // docs/design/task-subject-anchors.md, 'exact' requires that lookup. It
+    // therefore stays advisory for the claim gate rather than mortal.
+    const result = extract({
+      subjectAnchor: { version: 1, kind: 'pull_request', prNumber: 4242 } as any,
+      workspaceRepo: WS_REPO,
+    });
+    expect(result.anchor?.source).toBe('context');
+    expect(result.anchor?.confidence).toBe('derived');
+  });
+
+  it('an explicit API anchor may assert exact confidence and become binding', () => {
+    const result = extract({
+      subjectAnchor: { version: 1, kind: 'pull_request', prNumber: 4242, confidence: 'exact' } as any,
+      workspaceRepo: WS_REPO,
+    });
+    expect(result.anchor?.source).toBe('context');
+    expect(result.anchor?.confidence).toBe('exact');
+  });
+
+  it('trusted system context is always system/exact', () => {
+    const result = extract({ systemContext: { prNumber: 7, origin: 'retry' } });
+    expect(result.anchor?.source).toBe('system');
+    expect(result.anchor?.confidence).toBe('exact');
+  });
+
+  it('legacy structured context is context/exact — the other binding path', () => {
+    const result = extract({ context: { prNumber: 7 }, workspaceRepo: WS_REPO });
+    expect(result.anchor?.source).toBe('context');
+    expect(result.anchor?.confidence).toBe('exact');
+  });
+
+  it('prose- and URL-derived anchors are never exact', () => {
+    const fromUrl = extract({
+      title: 'see https://github.com/buildd-ai/buildd/pull/5',
+      workspaceRepo: WS_REPO,
+    });
+    expect(fromUrl.anchor?.source).toBe('url');
+    expect(fromUrl.anchor?.confidence).toBe('derived');
+
+    const fromText = extract({ title: 'follow-up to PR #5', workspaceRepo: WS_REPO });
+    expect(fromText.anchor?.source).toBe('text');
+    expect(fromText.anchor?.confidence).toBe('derived');
+  });
+});

@@ -2,7 +2,7 @@
 title: Timeline Dependency Geometry — DAG Shapes
 status: active
 owner: builder
-last_verified: 2026-08-28
+last_verified: 2026-08-29
 supersedes: []
 ---
 
@@ -171,9 +171,19 @@ into `filled` would claim work landed that did not.
 ### 2.6 Transitive reduction
 
 The auto-`dependsOn` pass in `apps/web/src/app/api/tasks/route.ts` adds an edge
-to every in-flight task with an overlapping `pathManifest`. Mission tasks without
-an explicit manifest default to `['**']`, which overlaps everything, so a task
-routinely carries 5–8 edges of which one or two are the real frontier.
+to every in-flight task whose `pathManifest` genuinely overlaps — concrete path
+or directory prefix, decided by `shouldSerializeByManifest()` in
+`packages/core/path-overlap.ts`. A wildcard (`['**']`) manifest on either side
+mints **no** edge: it declares "scope not stated", and the claim-time gates have
+always treated it as advisory, so authoring may not promote it to a hard edge
+(see §2.7).
+
+Reduction still matters. Tasks filed before that rule landed carry dense
+creation-order edge sets — up to 17 on one prod task, 136 edges across 17 tasks,
+of which 11 survive the concrete-overlap test — and a genuine fan-in can still
+produce more blockers than a rail can name. `scripts/prune-wildcard-deps.ts`
+retires the legacy sets; the rules below govern what the UI does with whatever
+edges exist.
 
 **Rule TR-1**: `chain.blockedBy` stays the truthful full set — it drives the
 BLOCKED badge and the `+N upstream` count. `chain.blockedByFrontier` is what the
@@ -189,8 +199,27 @@ cycle (malformed data) would otherwise leave a BLOCKED task with no visible
 reason; the full list is returned instead.
 
 **Rule TR-4**: Reduction is display-only. The stored `dependsOn` edges are not
-rewritten — the dense edge set is what serializes overlapping paths, and thinning
-it would let a dependent unblock when a mid-chain dep is cancelled.
+rewritten — an edge is the record of a real path conflict, and thinning it would
+let a dependent unblock when a mid-chain dep is cancelled. Pruning stored edges
+is a separate, deliberate migration (`scripts/prune-wildcard-deps.ts`), never a
+side effect of rendering.
+
+### 2.7 Advisory scope is serialized at claim time, not by edges
+
+A task whose manifest is `['**']` has declared no file scope. Such a task is
+serialized — if at all — by the claim loop, which defers it while a same-mission
+sibling with an equally undeclared scope is in flight. That deferral clears on
+the next poll.
+
+**Rule AS-1**: An advisory manifest MUST NOT appear in the rail as a blocker
+relationship, because no `dependsOn` edge exists to render. A task deferred by
+the advisory guard is `QUEUED`, not `BLOCKED` — nothing is blocking it; it is
+waiting its turn.
+
+**Rule AS-2**: The advisory predicate has exactly one definition
+(`isAdvisoryManifest()`). Authoring (`shouldSerializeByManifest`) and runtime
+(`findBlockingPr`, the path_claims backstop) MUST both delegate to it. Two
+copies of this rule is how the density defect survived.
 
 ---
 

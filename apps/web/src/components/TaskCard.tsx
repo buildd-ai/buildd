@@ -66,6 +66,21 @@ export interface TaskCardProps {
   loopExitConditionType?: string | null;
 
   /**
+   * True when the subject-liveness claim gate excludes this task (derive with
+   * isSubjectDead() from @/lib/task-presentation). Renders SUBJECT_DEAD instead
+   * of QUEUED — the row must not look healthy when nothing can ever claim it.
+   */
+  subjectDead?: boolean;
+
+  /**
+   * True when the parent mission's status is `budget_exhausted`, so the claim
+   * loop skips this task (mission gate #1) — and every sibling in the mission
+   * with it. Same class of failure as `subjectDead`: unclaimable, but rendered
+   * as a healthy QUEUED row until it was wired through here.
+   */
+  missionBudgetExhausted?: boolean;
+
+  /**
    * Override the internally derived stage. Callers with policy/reviewer context
    * (e.g. CondensedTimeline) use this to show REVIEWING instead of OPEN when an
    * agent review is in progress.
@@ -200,6 +215,8 @@ export function TaskCard({
   currentAction,
   taskType,
   loopExitConditionType,
+  subjectDead = false,
+  missionBudgetExhausted = false,
   stageOverride,
   density,
   groupScoped = false,
@@ -215,6 +232,8 @@ export function TaskCard({
     prUrl,
     prLifecycleStatus,
     isBlocked,
+    isSubjectDead: subjectDead,
+    isMissionBudgetExhausted: missionBudgetExhausted,
   });
 
   const timestampLabel = deriveTimestampLabel({
@@ -242,6 +261,8 @@ export function TaskCard({
     // show its loop chip even when the task status is pending (requeued).
     const showChip = displayStatus === 'running' || displayStatus === 'waiting_input' ||
                      displayStatus === 'failed' || displayStatus === 'cancelled' ||
+                     // A dead subject is never the section's default state — always show it.
+                     stage === 'SUBJECT_DEAD' ||
                      (!!loopMaxLoops && !!loopState && loopState !== 'satisfied' && loopState !== 'exhausted');
     // Done-group tasks (completed + terminal PR) compress to one line: title + #NNNN · status.
     // WaitingOnYou tasks (completed + open PR) omit the inline PR — PrStatusLine in

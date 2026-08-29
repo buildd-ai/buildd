@@ -30,6 +30,7 @@ import {
   insertClaims,
   registerWaiter,
 } from "@buildd/core/path-claim";
+import { isAdvisoryManifest } from "@buildd/core/path-overlap";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -899,7 +900,8 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const paths = rawPaths as string[];
 
         // Wildcard claims are not supported — '**' is advisory-only.
-        if (paths.includes('**')) {
+        // Shares isAdvisoryManifest with the path-claim route and the authoring gate.
+        if (isAdvisoryManifest(paths)) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: "Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks." }) }],
             isError: true,

@@ -8,7 +8,10 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
 import { checkMissionHeld } from '../../../workers/claim/held-gate';
+import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
+import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
+import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 
 /**
  * POST /api/tasks/[id]/start
@@ -164,7 +167,7 @@ export async function POST(
     // this gate (the bypassHeldGate context key is written below).
     const missionId = (task as any).missionId as string | null;
     const taskCtx = task.context as Record<string, unknown> | null;
-    const isBypassHeld = taskCtx?.bypassHeldGate === true || taskCtx?.bypassHeldGate === 'true';
+    const isBypassHeld = hasBypassFlag(taskCtx, BYPASS_HELD_GATE_KEY);
     if (missionId && !isBypassHeld && !forceOverride) {
       const isHeld = await checkMissionHeld(missionId);
       if (isHeld) {
@@ -178,6 +181,55 @@ export async function POST(
       }
     }
 
+    // ── Mission budget gate ─────────────────────────────────────────────────
+    // Mirrors mission gate #1 in the claim loop. `budget_exhausted` is a
+    // one-way door: only a human raising costBudgetUsd clears it
+    // (api/missions/[id] auto-resume), and it strands EVERY task in the mission
+    // at once. Until this gate existed, /start returned 200 and dispatched
+    // nothing while each task page rendered a plain QUEUED row.
+    const isBypassMissionBudget = hasBypassFlag(taskCtx, BYPASS_MISSION_BUDGET_KEY);
+    let missionBudgetExhausted = false;
+    if (missionId && !isBypassMissionBudget) {
+      missionBudgetExhausted = await checkMissionBudgetExhausted(missionId);
+      if (missionBudgetExhausted && !forceOverride) {
+        return NextResponse.json({
+          error: 'Task is blocked: its mission has exhausted its cost budget, so no worker can claim it. Raise the mission budget to resume every task, or force-start this one.',
+          gateReason: 'mission_budget_exhausted',
+          blockClass: 'policy',
+          missionId,
+          canForce: true,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Subject-liveness gate ───────────────────────────────────────────────
+    // Mirrors subjectLivenessCondition() in claim/route.ts. A task whose subject
+    // PR was reconciled (closed/merged, no live successor) is excluded from the
+    // claim query, so starting it broadcasts into the void — the button appeared
+    // to work and nothing ever happened. Only anchors that genuinely identify
+    // the subject count (source ∈ system|context); a PR number scraped from
+    // prose is advisory and never blocks. isSubjectDead() already honors
+    // context.bypassSubjectGate, so an earlier force-start passes straight
+    // through.
+    const subjectDead = isSubjectDead({
+      subjectKind: (task as any).subjectKind,
+      subjectPrNumber: (task as any).subjectPrNumber,
+      subjectResolution: (task as any).subjectResolution,
+      subjectAnchor: (task as any).subjectAnchor,
+      context: task.context as Record<string, unknown> | null,
+    });
+    if (subjectDead && !forceOverride) {
+      return NextResponse.json({
+        error: `Task is blocked: its subject PR #${(task as any).subjectPrNumber} is closed/merged with no live successor, so no worker can claim it. Force-start to run it anyway, or cancel the task.`,
+        gateReason: 'subject_dead',
+        blockClass: 'policy',
+        subjectKind: (task as any).subjectKind ?? null,
+        subjectPrNumber: (task as any).subjectPrNumber ?? null,
+        subjectResolution: (task as any).subjectResolution ?? null,
+        canForce: true,
+      }, { status: 422 });
+    }
+
     // ── Workspace concurrency cap gate ──────────────────────────────────────
     // Only repo-backed workspaces are capped; repo-less ones (coordination
     // workspaces) are never serialized.
@@ -186,7 +238,7 @@ export async function POST(
     // also skips the per-task cap check at claim time.
     const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
     const taskCtxForCap = task.context as Record<string, unknown> | null;
-    const isCapExemptAlready = taskCtxForCap?.capExempt === true;
+    const isCapExemptAlready = hasBypassFlag(taskCtxForCap, CAP_EXEMPT_KEY);
     if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
       // A mission may raise the effective cap above the workspace default —
       // match the GREATEST(workspaceCap, missionCap) logic in the claim route.
@@ -229,9 +281,15 @@ export async function POST(
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
     // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
-    // bypassStartGate — skip the deferred-start floor (when startAt is in future).
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
+    // bypassMissionBudget — skip the mission budget_exhausted gate.
+    // bypassSubjectGate — skip the subject-liveness gate (when the subject PR is dead).
     // capExempt — allow this single task to run as a 4th+ slot (one-time exception).
+    //
+    // There is deliberately NO bypassStartGate: the deferred-start override is
+    // expressed by clearing startAt below, which is the only thing the claim
+    // route reads. The old flag was written here and read by nothing — an
+    // operator-visible context key that looked like a working override.
     const hasDeps = dependsOn.length > 0;
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
@@ -246,8 +304,9 @@ export async function POST(
           ...existingContext,
           manualStartAt: now.toISOString(),
           ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
-          ...(forceOverride && hasStartGate ? { bypassStartGate: true } : {}),
           ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
+          ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
+          ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
           ...(capExempt ? { capExempt: true } : {}),
         },
         // Boost priority once on first manual start so task floats to top of claim queue.

@@ -10,6 +10,7 @@ import {
   insertClaims,
   registerWaiter,
 } from '@buildd/core/path-claim';
+import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CLAIM_RETRIES = 3;
@@ -77,8 +78,10 @@ export async function POST(
   const paths = rawPaths as string[];
 
   // Wildcard claims are not supported — '**' is advisory-only and must not
-  // become a held lock that blocks the entire workspace.
-  if (paths.includes('**')) {
+  // become a held lock that blocks the entire workspace. isAdvisoryManifest is
+  // the single definition of "scope not declared" (packages/core/path-overlap.ts);
+  // a local includes('**') here would be a fourth copy of that rule.
+  if (isAdvisoryManifest(paths)) {
     return NextResponse.json(
       { error: 'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.' },
       { status: 400 }

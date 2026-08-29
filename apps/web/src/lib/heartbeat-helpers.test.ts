@@ -91,6 +91,17 @@ describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('Do NOT report OK if the mission has not made forward progress');
   });
 
+  it('states that only a concrete pathManifest buys serialization', () => {
+    // The old text promised edges "when manifests overlap" — true only for
+    // concrete manifests. A task filed without paths defaults to '**', which is
+    // advisory and mints no edges at all.
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain(
+      'The API auto-adds dependsOn edges when manifests overlap',
+    );
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('concrete');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('no serialization');
+  });
+
   it('instructs to retry originating task for PR conflicts — not create an integration task', () => {
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('parentTaskId');
     // Must not instruct to CREATE an integration task (negation context is fine)

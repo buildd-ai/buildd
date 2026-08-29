@@ -6,6 +6,8 @@ import { LoopStatusChip } from '@/components/LoopStatus';
 // ─── Stage enum ───────────────────────────────────────────────────────────────
 
 export type Stage =
+  | 'SUBJECT_DEAD' // subject PR is dead — the claim gate excludes it; a human must intervene
+  | 'MISSION_BUDGET' // parent mission is out of budget — the claim loop skips every task in it
   | 'BLOCKED'
   | 'QUEUED'
   | 'RUNNING'
@@ -28,6 +30,18 @@ export interface StageInput {
   prLifecycleStatus?: string | null;
   mergedAt?: string | null;
   isBlocked?: boolean;
+  /**
+   * The subject-liveness claim gate excludes this task (isSubjectDead() in
+   * lib/subject-gate-contract.ts). It can never be picked up, so it must not
+   * render as QUEUED — that identical-to-healthy row is what hid a 5-day stall.
+   */
+  isSubjectDead?: boolean;
+  /**
+   * The parent mission's status is `budget_exhausted`, so the claim loop skips
+   * this task (mission gate #1). Only a human raising the mission budget clears
+   * it — another unclaimable-but-looks-queued state.
+   */
+  isMissionBudgetExhausted?: boolean;
 }
 
 /**
@@ -37,7 +51,7 @@ export interface StageInput {
  * context should override to REVIEWING when an agent review is in progress.
  */
 export function deriveStage(input: StageInput): Stage {
-  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked } = input;
+  const { taskStatus, workerStatus, prUrl, prLifecycleStatus, mergedAt, isBlocked, isSubjectDead, isMissionBudgetExhausted } = input;
 
   if (taskStatus === 'failed') return 'FAILED';
   if (taskStatus === 'cancelled') return 'CANCELLED';
@@ -59,7 +73,12 @@ export function deriveStage(input: StageInput): Stage {
 
   if (taskStatus === 'completed') return 'DONE';
 
-  // Pending family
+  // Pending family. SUBJECT_DEAD outranks BLOCKED: a blocked task clears when
+  // its dependency merges, a subject-dead task never clears on its own.
+  if (isSubjectDead) return 'SUBJECT_DEAD';
+  // Mission budget wall: also unclaimable, but a human can lift it in one click,
+  // so it ranks below SUBJECT_DEAD and above BLOCKED.
+  if (isMissionBudgetExhausted) return 'MISSION_BUDGET';
   if (taskStatus === 'assigned') return 'QUEUED';
   if (isBlocked) return 'BLOCKED';
 
@@ -81,6 +100,8 @@ interface ChipConfig {
 }
 
 const STAGE_CONFIG: Record<Stage, ChipConfig> = {
+  SUBJECT_DEAD: { label: 'Subject Closed', variant: 'soft', colorCls: 'bg-status-error/12 text-status-error' },
+  MISSION_BUDGET: { label: 'Budget Exhausted', variant: 'soft', colorCls: 'bg-status-error/12 text-status-error' },
   BLOCKED:      { label: 'Blocked',    variant: 'filled', colorCls: 'bg-status-warning text-white' },
   QUEUED:       { label: 'Queued',     variant: 'muted',  colorCls: 'text-text-muted' },
   RUNNING:      { label: 'Running',    variant: 'filled', colorCls: 'bg-status-running text-white', pulse: true },

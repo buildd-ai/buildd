@@ -964,6 +964,8 @@ export interface ClaimDiagnostics {
     connector_mismatch?: number;
     subject_dead?: number;
     path_overlap?: number;
+    /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
+    advisory_manifest?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;

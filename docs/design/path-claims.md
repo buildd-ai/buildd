@@ -4,7 +4,7 @@
 **Related:**
 `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`,
 `apps/web/src/app/api/mcp/route.ts` (check_path_claim tool, lines 297–325 / 595–718),
-`packages/core/path-overlap.ts` (pathsOverlap, serializeBatchByManifest, findBlockingPr),
+`packages/core/path-overlap.ts` (pathsOverlap, isAdvisoryManifest, shouldSerializeByManifest, findBlockingPr),
 `apps/web/src/app/api/workers/claim/route.ts` (siblingTaskManifests injection, lines 1381–1404; path-overlap backstop, lines 925–939),
 `apps/web/src/app/api/workers/[id]/route.ts` (pendingInstructions delivery, lines 1676–1692),
 `packages/core/db/schema.ts` (tasks.pathManifest, missions.mergePolicy),
@@ -17,7 +17,7 @@
 
 The platform serializes parallel agent tasks through two mechanisms today:
 
-1. **Declared-intent serialization** — `tasks.pathManifest` is set at creation time, and `serializeBatchByManifest()` inserts `dependsOn` edges between tasks with overlapping manifests when a mission batch is created. The claim loop backstop (`findBlockingPr` in `packages/core/path-overlap.ts`) defers a task whose manifest overlaps an open PR's task.
+1. **Declared-intent serialization** — `tasks.pathManifest` is set at creation time, and the auto-dependsOn pass in `POST /api/tasks` (mirrored in `apps/web/src/lib/conflict-retry.ts`) inserts `dependsOn` edges between the new task and in-flight tasks whose manifests overlap. The gate is `shouldSerializeByManifest()` in `packages/core/path-overlap.ts`, which requires **both** manifests to declare concrete scope: a repo-wide sentinel `'**'` on either side yields no edge. The claim loop backstop (`findBlockingPr`, same module) defers a task whose concrete manifest overlaps an open PR's task, and skips advisory manifests on both sides via the same `isAdvisoryManifest()` predicate.
 
 2. **Mid-task path expansion** — `check_path_claim` (MCP tool, also `POST /api/tasks/[id]/path-claim`) lets a running worker atomically extend its `pathManifest` via CAS when it discovers it needs to touch a file outside its original declaration.
 
@@ -42,6 +42,14 @@ Beyond the scope bug, the current design has three more gaps:
 ### `pathsOverlap()` — `packages/core/path-overlap.ts` lines 24–46
 
 Pure function; no DB access. Exact path equality + directory-prefix matching. Globs are treated as literal strings (not evaluated). `**` is a sentinel: if either array contains `**`, the function returns `true` unconditionally.
+
+That sentinel rule makes `pathsOverlap` a *spatial* answer ("could these touch the same file?"), not a policy answer. It is therefore **not** the function that decides whether to serialize. The policy predicates live alongside it:
+
+- `isAdvisoryManifest(manifest)` — true when the manifest contains `'**'`, i.e. the task never declared its scope. Single definition; both policy gates call it.
+- `shouldSerializeByManifest(a, b)` — the authoring-time gate. True only when both manifests are concrete and genuinely overlap. Used by the auto-dependsOn pass in `POST /api/tasks` and in `conflict-retry.ts`.
+- `findBlockingPr(candidate, openPrTasks)` — the claim-time gate. Skips the candidate and any sibling whose manifest is advisory.
+
+A cross-check test in `packages/core/__tests__/path-overlap.test.ts` iterates manifest pairs asserting the authoring rule and the claim rule return the same answer, so a stored edge can never contradict the runtime gate.
 
 ### `check_path_claim` — MCP tool + REST endpoint
 
@@ -137,11 +145,12 @@ There is no DB-level uniqueness constraint on `(workspace_id, path)` because con
 
 | Wildcard in | Treatment | Rationale |
 |---|---|---|
-| `tasks.pathManifest` (declared intent, `**` written at creation) | **Advisory-only** — claim-loop backstop skips the `findBlockingPr` call when the candidate manifest is `['**']` | A task that declares `**` is saying "I don't know my scope yet." Treating it as a hard repo-wide lock would stall all other work indefinitely on any broad task. |
+| `tasks.pathManifest` (declared intent, `**` written at creation) | **Advisory-only** — claim-loop backstop skips the `findBlockingPr` call when the candidate manifest is advisory | A task that declares `**` is saying "I don't know my scope yet." Treating it as a hard repo-wide lock would stall all other work indefinitely on any broad task. |
+| `tasks.pathManifest` at task creation (auto-dependsOn pass) | **Advisory-only** — `shouldSerializeByManifest()` returns false, so no `dependsOn` edge is stored in either direction | A stored edge blocks until the upstream task is `completed` AND its PR `merged` — far stronger than the short mutex a path conflict warrants. Minting hard edges from an undeclared scope turned creation-order FIFO into a permanent dependency graph. |
 | `path_claims` (held lock, written by `check_path_claim`) | **Advisory-only** — `check_path_claim` rejects the claim with a 400 ("wildcard claims are not supported; declare specific paths") | A worker that calls `check_path_claim(['**'])` mid-task is almost certainly wrong. The tool requires specific paths so the claim is meaningful. |
 | A sibling's `tasks.pathManifest` contains `**` | **Advisory-only** — the conflict check treats `**` siblings as non-blocking | Same rationale: `**` intent manifests are placeholders, not genuine scope locks. |
 
-**Crux**: `**` is advisory everywhere. A task with `**` never blocks another task at the path-claim layer. If scope isolation for broad tasks is required, the orchestrator should break the task into scoped subtasks or use mission-level `maxConcurrentTasks = 1`.
+**Crux**: `**` is advisory everywhere — at authoring time and at claim time. A task with `**` never blocks another task and never has an edge minted for or against it, so an undeclared scope buys no serialization at all. If scope isolation for broad tasks is required, the orchestrator should break the task into scoped subtasks or use mission-level `maxConcurrentTasks = 1`.
 
 #### 2d. Release triggers
 
@@ -321,10 +330,13 @@ No automatic priority promotion is implemented — this is a deliberate non-goal
 |---|---|---|---|
 | `tasks.pathManifest` declared at creation | In candidate task's manifest | Backstop skipped (no `findBlockingPr` call) | Unknown scope; don't block others on uncertainty |
 | `tasks.pathManifest` declared at creation | In a sibling's manifest | Sibling treated as non-blocking | Sibling's scope unknown; can't legitimately claim it blocks all files |
+| Auto-dependsOn pass in `POST /api/tasks` / `conflict-retry.ts` | In either manifest | No inferred `dependsOn` edge stored (`shouldSerializeByManifest` false) | Authoring rule must equal the claim rule; a stored edge from an undeclared scope outlives and contradicts the runtime gate |
+| Reviewer prompt (`apps/web/src/lib/reviewer.ts`) | In the reviewed task's manifest | Manifest is rendered as "no declared file scope"; the path-manifest completeness doctrine is withdrawn | Listing `**` as an entry told the reviewer to confirm a file literally named `**` was in the diff |
+| Mission organizer knowledge lookup (`apps/web/src/lib/mission-context.ts`) | In an active task's manifest | The `'**'` entry is dropped before the knowledge-store path lookup | `'**'` is not a path; searching for it returns nothing useful |
 | `check_path_claim` caller passes `['**']` | In the paths array | 400 error — wildcard not a valid held claim | Tool requires actionable paths |
 | `path_claims` active rows | Would-be match against `**` | `**` can never be inserted; 400 prevents it | N/A |
 
-**Summary**: `**` is advisory everywhere. It signals scope uncertainty, not ownership. Tasks that need to exclusively own a broad surface should instead use `maxConcurrentTasks: 1` at the mission level.
+**Summary**: `**` is advisory everywhere — no stored edge, no claim-time block, and not rendered as a path in agent-facing prompts. It signals scope uncertainty, not ownership. Tasks that need to exclusively own a broad surface should instead use `maxConcurrentTasks: 1` at the mission level.
 
 ---
 
@@ -382,7 +394,7 @@ Each phase is independently shippable. File as separate build tasks.
 **Deliverables**:
 - Extract sibling-overlap query into `checkPathClaimConflict(taskId, paths, db)` in new `packages/core/path-claim.ts`
 - Update `apps/web/src/app/api/tasks/[id]/path-claim/route.ts` and `apps/web/src/app/api/mcp/route.ts` to use the shared helper
-- Pure `pathsOverlap` / `findBlockingPr` / `serializeBatchByManifest` remain in `packages/core/path-overlap.ts`
+- Pure `pathsOverlap` / `isAdvisoryManifest` / `shouldSerializeByManifest` / `findBlockingPr` remain in `packages/core/path-overlap.ts`
 
 **Tests**: no behaviour change — existing tests pass with new call sites.
 

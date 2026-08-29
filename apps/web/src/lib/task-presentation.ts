@@ -4,6 +4,15 @@
  */
 
 import { DEP_SATISFYING_STATUSES, DEP_UNBLOCKING_PR_LIFECYCLE } from './dep-gate-contract';
+import { isSubjectDead, type SubjectGateFields } from './subject-gate-contract';
+
+/**
+ * Re-exported so display surfaces read the SAME predicate the claim gate
+ * enforces in SQL (api/workers/claim/subject-gate.ts). A subject-dead task can
+ * never be claimed; it must never render as a healthy queued row.
+ */
+export { isSubjectDead };
+export type { SubjectGateFields };
 
 // ─── Staleness thresholds ─────────────────────────────────────────────────────
 
@@ -56,6 +65,8 @@ export function deriveDisplayStatus(taskStatus: string, workerStatus?: string | 
  * the pending family.
  */
 export type TaskPhase =
+  | 'subject_dead'   // pending, but its subject PR is dead — unclaimable, needs a human
+  | 'mission_budget_exhausted' // pending, but its mission is out of budget — unclaimable
   | 'blocked'        // pending, waiting on unresolved dependencies
   | 'budget_paused'  // pending, reset to pending by budget/rate-limit exhaustion
   | 'pending'        // ready to start
@@ -77,6 +88,19 @@ export interface TaskPhaseInput {
   isBlocked?: boolean;
   /** pending + budgetExhausted flag in context. */
   isBudgetPaused?: boolean;
+  /**
+   * The subject-liveness gate excludes this task from the claim query — see
+   * isSubjectDead() / lib/subject-gate-contract.ts. Nothing will ever pick it
+   * up, so it must not present as QUEUED.
+   */
+  isSubjectDead?: boolean;
+  /**
+   * The parent mission's status is `budget_exhausted`, which makes the claim
+   * loop skip this task and every sibling in the mission (mission gate #1 in
+   * api/workers/claim/route.ts). Only a human raising the mission's
+   * costBudgetUsd clears it, so this must not present as QUEUED either.
+   */
+  isMissionBudgetExhausted?: boolean;
 }
 
 /**
@@ -103,6 +127,13 @@ export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
   }
 
   // Pending family (no live worker).
+  // subject_dead first: unlike blocked/budget_paused it will NEVER clear on its
+  // own — no dependency merging or budget reset makes the task claimable again.
+  if (i.isSubjectDead) return 'subject_dead';
+  // Next: the mission-wide budget wall. Like subject_dead it will not clear on
+  // its own, but unlike it there IS a one-click remedy (raise the budget), so
+  // it ranks below subject_dead and above every "waiting for something" phase.
+  if (i.isMissionBudgetExhausted) return 'mission_budget_exhausted';
   if (i.taskStatus === 'assigned') return 'assigned';
   if (i.isBlocked) return 'blocked';
   if (i.isBudgetPaused) return 'budget_paused';

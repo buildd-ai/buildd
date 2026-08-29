@@ -30,7 +30,12 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
 }));
 
-import { createReviewerTask, preflightEscalationCheck, isSchemaTouchingFile } from './reviewer';
+import {
+  createReviewerTask,
+  preflightEscalationCheck,
+  isSchemaTouchingFile,
+  renderManifestGuidance,
+} from './reviewer';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
 
@@ -57,6 +62,78 @@ describe('createReviewerTask', () => {
     });
 
     expect(insertedTask?.backend).toBe('codex');
+  });
+
+  it('never asks the reviewer to find a file named "**" in the diff', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-2',
+      originalTask: {
+        title: 'Mission task with no declared scope',
+        description: 'Filed by the organizer without a pathManifest',
+        backend: 'claude',
+        missionId: 'mission-1',
+        // The mission-task default in POST /api/tasks — "scope not declared".
+        pathManifest: ['**'],
+      },
+      worker: { branch: 'buildd/original-2' },
+      prNumber: 43,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/43',
+      headSha: 'def456',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    const description = insertedTask?.description as string;
+    expect(description).not.toContain('- **');
+    expect(description).toContain('declared no file scope');
+  });
+});
+
+// ── renderManifestGuidance ───────────────────────────────────────────────────
+
+describe('renderManifestGuidance', () => {
+  it('lists concrete manifest entries and keeps the completeness doctrine', () => {
+    const { doctrine, section } = renderManifestGuidance([
+      'apps/web/src/lib/reviewer.ts',
+      'packages/core/path-overlap.ts',
+    ]);
+    expect(section).toContain('## Expected Path Manifest (files this PR should touch)');
+    expect(section).toContain('- apps/web/src/lib/reviewer.ts');
+    expect(section).toContain('- packages/core/path-overlap.ts');
+    expect(doctrine).toContain('Every file in pathManifest must be present in the diff');
+  });
+
+  it('renders the advisory form for the repo-wide sentinel', () => {
+    const { doctrine, section } = renderManifestGuidance(['**']);
+    // Must not render the sentinel as if it were a file to look for.
+    expect(section).not.toContain('- **');
+    expect(section).toContain('declared no file scope');
+    expect(section).toContain('cannot be used as a completeness check');
+    // The completeness doctrine is vacuous here and must be withdrawn.
+    expect(doctrine).not.toContain('Every file in pathManifest must be present in the diff');
+    expect(doctrine).toContain('no declared manifest');
+  });
+
+  it('treats a manifest that merely contains the sentinel as undeclared', () => {
+    // check_path_claim extends a manifest in place, so '**' can ride along with
+    // concrete paths. The manifest is still not a completeness contract.
+    const { doctrine, section } = renderManifestGuidance(['**', 'apps/web/src/lib/foo.ts']);
+    expect(section).not.toContain('- **');
+    expect(section).toContain('declared no file scope');
+    expect(doctrine).not.toContain('Every file in pathManifest must be present in the diff');
+  });
+
+  it('renders the undeclared form for a missing or empty manifest', () => {
+    for (const manifest of [null, undefined, []] as Array<string[] | null | undefined>) {
+      const { doctrine, section } = renderManifestGuidance(manifest);
+      expect(section).toContain('## Expected Path Manifest');
+      expect(section).toContain('No pathManifest declared for this task');
+      expect(doctrine).not.toContain('Every file in pathManifest must be present in the diff');
+    }
   });
 });
 
