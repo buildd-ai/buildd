@@ -219,7 +219,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears; each criterion MUST have type (required) — one of: "all_prs_merged" | "command" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string; type-specific required fields: description→description:string, command→command:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string; example: [{type:"description",description:"All PRs merged and CI green",label:"CI green"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -2710,11 +2710,40 @@ export async function handleBuilddAction(
 
       const t = data.totals;
       const p = data.perTask;
+      // Per-task metrics are DerivedMetric<Distribution> — absent for seat auth
+      // (no cost) and for workers that died before recording anything. Print the
+      // reason rather than a zero that reads as a measurement.
+      const dist = (m: any) => (m && m.kind === 'value' ? m.value : null);
+      const nOf = (metric: string) => p?.contributing?.[metric] ?? 0;
+      const overN = (metric: string) =>
+        p?.tasks && nOf(metric) < p.tasks ? ` [n=${nOf(metric)}/${p.tasks}]` : '';
+
       const lines: string[] = [
         `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
-        `Totals: ${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out · ${fmtTokens(t.cacheReadTokens)} cache read · $${t.costUsd.toFixed(2)} · ${t.turns} turns · ${t.toolCalls} tool calls`,
-        `Per task: input ${fmtTokens(p.inputTokens.median)} median / ${fmtTokens(p.inputTokens.p90)} p90 / ${fmtTokens(p.inputTokens.max)} max · $${p.costUsd.median.toFixed(2)} median · ${Math.round(p.turns.median)} turns median · ${Math.round(p.toolCalls.median)} tool calls median`,
       ];
+
+      const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
+      if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);
+      if (t.costUsd > 0) totalsParts.push(`$${t.costUsd.toFixed(2)}`);
+      totalsParts.push(`${t.turns} turns`, `${t.toolCalls} tool calls`);
+      lines.push(`Totals: ${totalsParts.join(' · ')}`);
+
+      const perTaskParts: string[] = [];
+      const inputDist = dist(p?.inputTokens);
+      perTaskParts.push(inputDist
+        ? `input ${fmtTokens(inputDist.median)} median / ${fmtTokens(inputDist.p90)} p90 / ${fmtTokens(inputDist.max)} max${overN('inputTokens')}`
+        : `input — (${p?.inputTokens?.reason ?? 'unavailable'})`);
+      const costDist = dist(p?.costUsd);
+      if (costDist) {
+        perTaskParts.push(`$${costDist.median.toFixed(2)} median${overN('costUsd')}`);
+      }
+      const turnsDist = dist(p?.turns);
+      if (turnsDist) perTaskParts.push(`${Math.round(turnsDist.median)} turns median${overN('turns')}`);
+      const toolDist = dist(p?.toolCalls);
+      if (toolDist) perTaskParts.push(`${Math.round(toolDist.median)} tool calls median${overN('toolCalls')}`);
+      lines.push(`Per task: ${perTaskParts.join(' · ')}`);
+
+      if (!costDist && p?.costUsd?.reason) lines.push(`Cost: ${p.costUsd.reason}`);
 
       const cov = data.tools?.coverage;
       if (cov) {
@@ -2738,11 +2767,21 @@ export async function handleBuilddAction(
       const models: string[] = (data.byModel ?? []).slice(0, 5).map((m: any) =>
         `  ${m.model}: ${fmtTokens(m.inputTokens)} in / ${fmtTokens(m.outputTokens)} out (${Math.round(m.share * 100)}%)`
       );
-      if (models.length > 0) lines.push(`By model:\n${models.join('\n')}`);
+      if (models.length > 0) {
+        lines.push(`By model:\n${models.join('\n')}`);
+      } else if (t.inputTokens > 0) {
+        // modelUsage is only populated on API-key auth; seat auth leaves it empty.
+        lines.push('By model: unavailable — the SDK reports no per-model usage on seat-based (OAuth) auth');
+      }
 
       const groups: string[] = (data.groups ?? []).slice(0, 10).map((g: any) => {
         const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
-        return `  ${g.label ?? g.key}: ${g.tasks} task(s) · ${fmtTokens(g.perTask.inputTokens.median)} median in · $${g.perTask.costUsd.median.toFixed(2)} median · ${success} success`;
+        const gIn = dist(g.perTask?.inputTokens);
+        const gCost = dist(g.perTask?.costUsd);
+        const parts = [`${g.tasks} task(s)`, gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded'];
+        if (gCost) parts.push(`$${gCost.median.toFixed(2)} median`);
+        parts.push(`${success} success`);
+        return `  ${g.label ?? g.key}: ${parts.join(' · ')}`;
       });
       if (groups.length > 0) lines.push(`By ${data.groupBy}:\n${groups.join('\n')}`);
 
@@ -2952,6 +2991,11 @@ export async function handleBuilddAction(
               criteriaInfo += '\n' + criteriaArr.map((c: any) =>
                 `  • ${c.label ?? c.description ?? c.type ?? '(malformed criterion — missing type field)'}`
               ).join('\n');
+            }
+            // The gate, stated plainly: anything other than a passing verdict
+            // keeps the mission open, so an agent knows not to declare victory.
+            if (state?.overall !== 'pass') {
+              criteriaInfo += '\n  ⚠ Completion is BLOCKED until every criterion passes. An unevaluated criterion is not a pass.';
             }
           }
 

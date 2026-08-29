@@ -1,14 +1,24 @@
 /**
- * Lazy reconciliation: cross-check GitHub for workers stuck in the
- * "awaiting merge" state (prUrl set, mergedAt null) for longer than STALE_DAYS.
+ * Lazy reconciliation: cross-check GitHub for workers whose PR still looks
+ * un-merged, healing rows the pull_request webhook never delivered.
  *
- * Called by the /api/cron/pr-reconcile cron job (daily).
- * Also safe to call ad-hoc from scripts or admin routes.
+ * Tier 2 of the reconciliation model (PR #1630): the read-through refresh in
+ * pr-state-refresh.ts keeps rows fresh for workspaces someone is looking at;
+ * this sweep is what covers the rest. Called by /api/cron/pr-reconcile, and
+ * safe to call ad-hoc from scripts or admin routes.
+ *
+ * The gate is "when did we last check this row", not "how long has the row been
+ * quiet". The previous `updatedAt < now() - 7 days` gate had three failures
+ * measured against production: a webhook missed today was not a candidate for a
+ * week; any write to the row (including a read-through check) reset the clock,
+ * so busy rows were never candidates at all; and the overwhelming majority of
+ * what it did select was already known-closed, burning one GitHub call each,
+ * uncapped, inside a 60 s function.
  */
 
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
-import { and, isNull, isNotNull, eq, lt } from 'drizzle-orm';
+import { and, isNull, isNotNull, eq, lt, or, notInArray, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 
 /**
@@ -50,38 +60,92 @@ export async function refreshWorkerMergeStateIfStale(
   }
 }
 
-/** Workers older than this are candidates for reconciliation. */
-const STALE_DAYS = 7;
+/** A row is a candidate once its last check is older than this. */
+export const RECONCILE_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Rows per run. Bounded so a run always finishes inside the route's
+ * maxDuration (60 s) with RATE_LIMIT_MS between GitHub calls, and so a backlog
+ * drains predictably across runs rather than timing out mid-sweep.
+ */
+export const RECONCILE_BATCH_CAP = 40;
+
+/** Spacing between GitHub calls, matching pr-state-refresh.ts. */
+const RATE_LIMIT_MS = 200;
+
+/** Lifecycle states that need no further GitHub call. */
+const TERMINAL_STATUSES = ['merged', 'closed'] as (
+  'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null
+)[];
+
+/**
+ * Deferred so this module does not close an import cycle: task-dependencies
+ * imports refreshWorkerMergeStateIfStale from here.
+ */
+async function notifyDependents(taskId: string): Promise<void> {
+  const { checkDependsOnResolved } = await import('@/lib/task-dependencies');
+  await checkDependsOnResolved(taskId);
+}
 
 export interface ReconcileResult {
   total: number;
   stamped: number;
   closed: number;
   skipped: number;
+  /** Rows whose GitHub call failed; retried next run. */
+  errors: number;
 }
 
 /**
- * Reconcile stale awaiting-merge workers against GitHub.
+ * Reconcile awaiting-merge workers against GitHub.
  *
- * For each worker where prNumber IS NOT NULL AND mergedAt IS NULL AND
- * updatedAt < now() - STALE_DAYS, fetches the PR from GitHub and stamps
- * mergedAt / prLifecycleStatus accordingly. Open PRs are left untouched.
+ * For each candidate (PR set, not merged, not already terminal, unchecked for
+ * RECONCILE_STALE_MS), fetches the PR and stamps mergedAt / prLifecycleStatus
+ * accordingly. Open PRs are left open. Every row that is looked at — including
+ * ones that were unchanged, unreachable or errored — has prLastCheckedAt
+ * advanced, because the batch is ordered least-recently-checked first and a row
+ * that never records a check would sit at the head of it forever.
  */
 export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
-  const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000);
+  const cutoff = new Date(Date.now() - RECONCILE_STALE_MS);
 
   const candidates = await db.query.workers.findMany({
     where: and(
       isNotNull(workers.prNumber),
-      isNull(workers.mergedAt),
       isNotNull(workers.prUrl),
-      lt(workers.updatedAt, cutoff),
+      isNull(workers.mergedAt),
+      // notInArray is NULL-blind, so the null branch has to be explicit.
+      or(
+        isNull(workers.prLifecycleStatus),
+        notInArray(workers.prLifecycleStatus, TERMINAL_STATUSES),
+      ),
+      or(
+        isNull(workers.prLastCheckedAt),
+        lt(workers.prLastCheckedAt, cutoff),
+      ),
     ),
-    columns: { id: true, prNumber: true, workspaceId: true },
+    columns: { id: true, prNumber: true, workspaceId: true, taskId: true },
+    orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
+    limit: RECONCILE_BATCH_CAP,
   });
 
-  const result: ReconcileResult = { total: candidates.length, stamped: 0, closed: 0, skipped: 0 };
+  const result: ReconcileResult = {
+    total: candidates.length,
+    stamped: 0,
+    closed: 0,
+    skipped: 0,
+    errors: 0,
+  };
   if (candidates.length === 0) return result;
+
+  /** Advance the check clock so the row rotates to the back of the queue. */
+  const recordCheck = async (id: string, extra: Record<string, unknown> = {}) => {
+    const now = new Date();
+    await db
+      .update(workers)
+      .set({ prLastCheckedAt: now, ...extra })
+      .where(eq(workers.id, id));
+  };
 
   // Group by workspace so we share one installation token per workspace
   const byWorkspace = new Map<string, typeof candidates>();
@@ -89,6 +153,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     if (!byWorkspace.has(w.workspaceId)) byWorkspace.set(w.workspaceId, []);
     byWorkspace.get(w.workspaceId)!.push(w);
   }
+
+  let callIndex = 0;
 
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
@@ -98,7 +164,13 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     });
 
     if (!workspace?.repo || !workspace.githubInstallation?.installationId) {
-      result.skipped += wsWorkers.length;
+      // Unreconcilable, not transient: without a repo + installation no GitHub
+      // call is possible, so record the check rather than re-selecting these
+      // rows every run and starving the rest of the batch.
+      for (const worker of wsWorkers) {
+        result.skipped++;
+        await recordCheck(worker.id).catch(() => {});
+      }
       continue;
     }
 
@@ -108,6 +180,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
 
+      if (callIndex > 0) await new Promise<void>(r => setTimeout(r, RATE_LIMIT_MS));
+      callIndex++;
+
       try {
         const pr = await githubApi(
           installationId,
@@ -115,23 +190,41 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         ) as { state: string; merged: boolean; merged_at: string | null };
 
         if (pr.merged && pr.merged_at) {
-          await db.update(workers)
-            .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', updatedAt: new Date() })
-            .where(eq(workers.id, worker.id));
+          await recordCheck(worker.id, {
+            mergedAt: new Date(pr.merged_at),
+            prLifecycleStatus: 'merged',
+            updatedAt: new Date(),
+          });
           result.stamped++;
+          // Stamping mergedAt is not enough — the dependency gate has to be
+          // told, or the tasks this PR was blocking stay pending until some
+          // other write pokes them.
+          if (worker.taskId) {
+            // Awaited, not fire-and-forget: this runs in a serverless function
+            // that can be frozen the moment the handler resolves. Failure is
+            // logged, never fatal to the sweep.
+            await notifyDependents(worker.taskId).catch(err =>
+              console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
+            );
+          }
         } else if (pr.state === 'closed') {
-          await db.update(workers)
-            .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
-            .where(eq(workers.id, worker.id));
+          await recordCheck(worker.id, {
+            prLifecycleStatus: 'closed',
+            updatedAt: new Date(),
+          });
           result.closed++;
         } else {
-          // Still open — don't touch it
+          // Still open — record the check, change nothing else.
+          await recordCheck(worker.id);
           result.skipped++;
         }
-      } catch {
-        // Non-fatal: network error, 404 (PR deleted), rate-limit, etc.
-        // The next cron run will retry.
-        result.skipped++;
+      } catch (err) {
+        // Non-fatal: network error, 404 (PR deleted), rate-limit, etc. Record
+        // the check so a permanently failing row costs one call per run
+        // instead of blocking every run at the head of the queue.
+        console.warn(`[pr-reconcile] worker ${worker.id} PR #${worker.prNumber}:`, err);
+        result.errors++;
+        await recordCheck(worker.id).catch(() => {});
       }
     }
   }

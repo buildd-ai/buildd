@@ -34,6 +34,12 @@ function makeRequest(params: Record<string, string> = {}, apiKey?: string) {
 
 const user = { id: 'user-1' };
 
+/** Unwrap a DerivedMetric distribution from the JSON body. */
+function dist(m: any) {
+  if (m?.kind !== 'value') throw new Error(`expected a value, got: ${JSON.stringify(m)}`);
+  return m.value;
+}
+
 function worker(overrides: Record<string, any> = {}) {
   return {
     id: crypto.randomUUID(),
@@ -130,8 +136,8 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(body.totals.tasks).toBe(2);
     expect(body.totals.inputTokens).toBe(80_000);
     expect(body.totals.costUsd).toBeCloseTo(4.25);
-    expect(body.perTask.inputTokens.max).toBe(60_000);
-    expect(body.perTask.turns.mean).toBe(21);
+    expect(dist(body.perTask.inputTokens).max).toBe(60_000);
+    expect(dist(body.perTask.turns).mean).toBe(21);
   });
 
   it('surfaces the tool histogram with per-server breakdown', async () => {
@@ -215,6 +221,31 @@ describe('GET /api/stats/usage — aggregation', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     const body = await (await GET(makeRequest({ workspace: 'ws-2' }))).json();
     expect(body.workspaceIds).toEqual(['ws-2']);
+  });
+
+  it('reports cost as unavailable on a seat-auth window instead of $0.00', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', costUsd: '0' }),
+      worker({ taskId: 'b', costUsd: '0' }),
+    ]);
+
+    const body = await (await GET(makeRequest())).json();
+    expect(body.perTask.costUsd.kind).toBe('unavailable');
+    expect(body.perTask.costUsd.reason).toMatch(/seat-based/);
+    expect(dist(body.perTask.inputTokens).median).toBe(20_000);
+  });
+
+  it('excludes tasks that recorded nothing from the token median', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', inputTokens: 40_000 }),
+      worker({ taskId: 'b', inputTokens: 0, outputTokens: 0, turns: 0 }),
+      worker({ taskId: 'c', inputTokens: 0, outputTokens: 0, turns: 0 }),
+    ]);
+
+    const body = await (await GET(makeRequest())).json();
+    expect(dist(body.perTask.inputTokens).median).toBe(40_000);
+    expect(body.perTask.contributing.inputTokens).toBe(1);
+    expect(body.perTask.tasks).toBe(3);
   });
 
   it('does not flag truncation on a normal-sized scan', async () => {

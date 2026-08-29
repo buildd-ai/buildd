@@ -6,6 +6,8 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
 import type { UsageStats, ConsumptionStats, ScheduleRow, RecentFailure, CredentialHealthItem, BudgetForecast } from './page';
+import type { DerivedMetric } from '@buildd/core/derived-metric';
+import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -927,32 +929,40 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
 
+  /** "n of m tasks" — the sample behind a median, so it is never read as all of them. */
+  const sampleNote = (metric: PerTaskMetric) => {
+    const n = perTask.contributing[metric];
+    return n < perTask.tasks ? `${n} of ${perTask.tasks} tasks` : `all ${perTask.tasks} tasks`;
+  };
+
   return (
     <section data-testid="health-section-consumption" className="mb-6">
       <h2 className="section-label mb-3">Consumption ({window})</h2>
       <div className="card p-4 space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Stat
+          <MetricStat
             label="Tokens / task"
-            value={fmtTokens(perTask.inputTokens.median)}
-            sub={`p90 ${fmtTokens(perTask.inputTokens.p90)}`}
+            metric={perTask.inputTokens}
+            render={(d) => fmtTokens(d.median)}
+            sub={(d) => `p90 ${fmtTokens(d.p90)} · ${sampleNote('inputTokens')}`}
           />
-          <Stat
+          <MetricStat
             label="Cost / task"
-            value={fmtCost(perTask.costUsd.median)}
-            sub={`${fmtCost(totals.costUsd)} total`}
+            metric={perTask.costUsd}
+            render={(d) => fmtCost(d.median)}
+            sub={() => `${fmtCost(totals.costUsd)} total · ${sampleNote('costUsd')}`}
           />
-          <Stat
+          <MetricStat
             label="Turns / task"
-            value={`${Math.round(perTask.turns.median)}`}
-            sub={`p90 ${Math.round(perTask.turns.p90)}`}
+            metric={perTask.turns}
+            render={(d) => `${Math.round(d.median)}`}
+            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('turns')}`}
           />
-          <Stat
+          <MetricStat
             label="Tool calls / task"
-            value={tools.coverage.histogram + tools.coverage.derived > 0
-              ? `${Math.round(perTask.toolCalls.median)}`
-              : '—'}
-            sub={`p90 ${Math.round(perTask.toolCalls.p90)}`}
+            metric={perTask.toolCalls}
+            render={(d) => `${Math.round(d.median)}`}
+            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('toolCalls')}`}
           />
         </div>
 
@@ -993,21 +1003,53 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
         {groups.length > 0 && (
           <div className="space-y-2 pt-3 border-t border-border-default">
             <span className="text-xs text-text-secondary">By role</span>
-            {groups.slice(0, 5).map((g) => (
-              <div key={g.key} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
-                <span className="text-xs text-text-primary flex-1 truncate">{g.label}</span>
-                <span className="text-xs text-text-muted tabular-nums">
-                  {g.tasks} task{g.tasks !== 1 ? 's' : ''} · {fmtTokens(g.perTask.inputTokens.median)} · {fmtCost(g.perTask.costUsd.median)}
-                  {g.successRate !== null && ` · ${Math.round(g.successRate * 100)}%`}
-                </span>
-              </div>
-            ))}
+            {groups.slice(0, 5).map((g) => {
+              const gIn = g.perTask.inputTokens;
+              return (
+                <div key={g.key} className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                  <span className="text-xs text-text-primary flex-1 truncate">{g.label}</span>
+                  <span className="text-xs text-text-muted tabular-nums">
+                    {g.tasks} task{g.tasks !== 1 ? 's' : ''}
+                    {gIn.kind === 'value' ? ` · ${fmtTokens(gIn.value.median)}` : ''}
+                    {g.successRate !== null && ` · ${Math.round(g.successRate * 100)}%`}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
     </section>
   );
+}
+
+/**
+ * A stat tile over a `DerivedMetric`. On `unavailable` it shows an em-dash with
+ * the reason as a tooltip — never a zero, which would read as "this task cost
+ * nothing" instead of "we never recorded it".
+ */
+function MetricStat({
+  label,
+  metric,
+  render,
+  sub,
+}: {
+  label: string;
+  metric: DerivedMetric<Distribution>;
+  render: (d: Distribution) => string;
+  sub: (d: Distribution) => string;
+}) {
+  if (metric.kind === 'unavailable') {
+    return (
+      <div title={metric.reason}>
+        <div className="text-xs text-text-muted">{label}</div>
+        <div className="text-lg text-text-muted tabular-nums">—</div>
+        <div className="text-xs text-text-muted">not recorded</div>
+      </div>
+    );
+  }
+  return <Stat label={label} value={render(metric.value)} sub={sub(metric.value)} />;
 }
 
 function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {

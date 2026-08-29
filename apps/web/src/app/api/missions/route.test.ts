@@ -755,13 +755,61 @@ describe('POST /api/missions — goalCriteria validation', () => {
         title: 'Mission with good criteria',
         goalCriteria: [
           { type: 'all_prs_merged' },
-          { type: 'description', description: 'All tasks reviewed', label: 'Reviewed' },
+          { type: 'command', command: 'bun run test' },
           { type: 'no_open_tasks' },
         ],
       }),
     });
     const res = await POST(req);
     expect(res.status).toBe(201);
+  });
+
+  it('rejects a prose criterion that does not say why it cannot be mechanized', async () => {
+    // A description criterion's verdict needs a live model, so it is the one
+    // form that can silently degrade to NOT_EVALUATED. Writing one is allowed,
+    // but only deliberately.
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with prose criteria',
+        goalCriteria: [{ type: 'description', description: 'All tasks reviewed', label: 'Reviewed' }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/notMechanizableReason/);
+    expect(body.error).toMatch(/command/);
+  });
+
+  it('accepts a prose criterion that states its reason', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with justified prose criteria',
+        goalCriteria: [{
+          type: 'description',
+          description: 'The error copy reads as helpful rather than accusatory',
+          notMechanizableReason: 'Tone is a human judgement; no command can assert it.',
+        }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects a command criterion with no command (previously accepted, then unevaluatable)', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with empty command criterion',
+        goalCriteria: [{ type: 'command', label: 'tests pass' }],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/command is required/);
   });
 
   it('rejects non-object criterion (e.g. string)', async () => {

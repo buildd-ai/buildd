@@ -11,6 +11,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   computeUsageStats,
+  measuredDistribution,
   aggregateByTask,
   toolCountsForWorker,
   distribution,
@@ -21,6 +22,12 @@ import {
   UNASSIGNED_ROLE,
   type UsageWorkerRow,
 } from './usage-stats';
+
+/** Unwrap a DerivedMetric distribution, failing loudly if it is unavailable. */
+function dist(m: { kind: string } & Record<string, any>) {
+  if (m.kind !== 'value') throw new Error(`expected a value, got unavailable: ${m.reason}`);
+  return m.value as { mean: number; median: number; p90: number; max: number };
+}
 
 function row(overrides: Partial<UsageWorkerRow> = {}): UsageWorkerRow {
   return {
@@ -225,7 +232,9 @@ describe('computeUsageStats', () => {
   test('empty input produces a zeroed shape, not NaN or throw', () => {
     const stats = computeUsageStats([]);
     expect(stats.totals.tasks).toBe(0);
-    expect(stats.perTask.inputTokens.median).toBe(0);
+    expect(stats.perTask.inputTokens.kind).toBe('unavailable');
+    expect(stats.perTask.tasks).toBe(0);
+    expect(stats.perTask.contributing.inputTokens).toBe(0);
     expect(stats.tools.byTool).toEqual([]);
     expect(stats.tools.coverage.histogramRate).toBe(0);
     expect(stats.byModel).toEqual([]);
@@ -313,9 +322,9 @@ describe('computeUsageStats', () => {
     ]);
     // Nearest-rank median over the two measured tasks only ([40, 60] → 40).
     // With the three unmeasured tasks included it would have been 0.
-    expect(stats.perTask.toolCalls.median).toBe(40);
+    expect(dist(stats.perTask.toolCalls).median).toBe(40);
     // Token distributions still cover every task — those columns are always populated.
-    expect(stats.perTask.inputTokens.median).toBe(1000);
+    expect(dist(stats.perTask.inputTokens).median).toBe(1000);
   });
 
   test('groups by role with per-group success rate and token totals', () => {
@@ -329,7 +338,7 @@ describe('computeUsageStats', () => {
     expect(builder.inputTokens).toBe(8000);
     expect(builder.tasks).toBe(2);
     expect(builder.successRate).toBeCloseTo(0.5);
-    expect(builder.perTask.inputTokens.max).toBe(5000);
+    expect(dist(builder.perTask.inputTokens).max).toBe(5000);
     // Highest token consumer first — that's the ordering the health page wants.
     expect(stats.groups[0].key).toBe('builder');
   });
@@ -387,7 +396,127 @@ describe('computeUsageStats', () => {
     ]);
     expect(stats.totals.inputTokens).toBe(0);
     expect(stats.totals.costUsd).toBe(0);
-    expect(Number.isNaN(stats.perTask.costUsd.mean)).toBe(false);
+    expect(stats.perTask.costUsd.kind).toBe('unavailable');
+  });
+});
+
+describe('measuredDistribution', () => {
+  test('excludes zeros so a half-unrecorded window is not halved', () => {
+    // Five tasks, three of which never recorded a token.
+    const m = measuredDistribution([0, 0, 0, 1000, 3000], 'no tokens');
+    expect(m.kind).toBe('value');
+    expect(dist(m).median).toBe(1000);
+    expect(dist(m).mean).toBe(2000);
+  });
+
+  test('is unavailable, with the reason, when nothing recorded the metric', () => {
+    const m = measuredDistribution([0, 0, 0], 'seat auth reports no cost');
+    expect(m.kind).toBe('unavailable');
+    expect(m.kind === 'unavailable' && m.reason).toBe('seat auth reports no cost');
+  });
+
+  test('is unavailable on an empty input rather than a zeroed distribution', () => {
+    expect(measuredDistribution([], 'nothing').kind).toBe('unavailable');
+  });
+
+  test('negative values are treated as unrecorded, not as data', () => {
+    expect(measuredDistribution([-5, -1], 'nothing').kind).toBe('unavailable');
+  });
+});
+
+describe('zero-value tasks', () => {
+  test('workers that died before recording anything do not drag the median to 0', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 'a', inputTokens: 2_000_000, turns: 40 }),
+      row({ taskId: 'b', inputTokens: 1_000_000, turns: 20 }),
+      // Provision failures: terminal, but never consumed anything.
+      row({ taskId: 'c', inputTokens: 0, outputTokens: 0, turns: 0, costUsd: '0' }),
+      row({ taskId: 'd', inputTokens: 0, outputTokens: 0, turns: 0, costUsd: '0' }),
+      row({ taskId: 'e', inputTokens: 0, outputTokens: 0, turns: 0, costUsd: '0' }),
+    ]);
+
+    expect(dist(stats.perTask.inputTokens).median).toBe(1_000_000);
+    expect(stats.perTask.tasks).toBe(5);
+    expect(stats.perTask.contributing.inputTokens).toBe(2);
+    // Totals still count every task — a sum of zero is a true sum.
+    expect(stats.totals.tasks).toBe(5);
+    expect(stats.totals.inputTokens).toBe(3_000_000);
+  });
+
+  test('cost reads unavailable on a seat-auth window, never $0.00 per task', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 'a', inputTokens: 500_000, costUsd: '0' }),
+      row({ taskId: 'b', inputTokens: 700_000, costUsd: '0' }),
+    ]);
+    expect(stats.perTask.costUsd.kind).toBe('unavailable');
+    expect(stats.perTask.costUsd.kind === 'unavailable' && stats.perTask.costUsd.reason)
+      .toMatch(/seat-based/);
+    // Tokens are still measured — one metric being absent doesn't sink the rest.
+    expect(dist(stats.perTask.inputTokens).median).toBe(500_000);
+    expect(stats.perTask.contributing.costUsd).toBe(0);
+  });
+
+  test('per-group metrics are unavailable independently of the total', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 'a', roleSlug: 'builder', inputTokens: 900_000, costUsd: '2.00' }),
+      row({ taskId: 'b', roleSlug: 'organizer', inputTokens: 0, costUsd: '0' }),
+    ], 'role');
+
+    const builder = stats.groups.find(g => g.key === 'builder')!;
+    const organizer = stats.groups.find(g => g.key === 'organizer')!;
+    expect(dist(builder.perTask.costUsd).median).toBeCloseTo(2);
+    expect(organizer.perTask.inputTokens.kind).toBe('unavailable');
+    expect(organizer.perTask.costUsd.kind).toBe('unavailable');
+  });
+});
+
+describe('tool-call availability', () => {
+  test('the distribution covers exactly the tasks with a tool signal', () => {
+    const measured = (taskId: string, calls: Record<string, number>) => row({
+      taskId,
+      resultMeta: {
+        stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
+        toolCounts: calls,
+      },
+    });
+    const stats = computeUsageStats([
+      measured('t1', { Bash: 10 }),
+      measured('t2', { Bash: 20 }),
+      // An empty histogram carries no signal, so it is excluded rather than
+      // counted as a task that made zero calls.
+      measured('t3', {}),
+    ]);
+    expect(stats.perTask.contributing.toolCalls).toBe(2);
+    expect(dist(stats.perTask.toolCalls).median).toBe(10);
+    expect(dist(stats.perTask.toolCalls).max).toBe(20);
+  });
+
+  test('tool calls are unavailable when no task carried any tool signal', () => {
+    const stats = computeUsageStats([row({ taskId: 't1' }), row({ taskId: 't2' })]);
+    expect(stats.perTask.toolCalls.kind).toBe('unavailable');
+    expect(stats.perTask.contributing.toolCalls).toBe(0);
+  });
+});
+
+describe('attempt-only task groups', () => {
+  test('a completed attempt wins over a failed one regardless of row order', () => {
+    const failed = row({ taskId: 'att-1', parentTaskId: 'p', taskStatus: 'failed', roleSlug: 'builder' });
+    const done = row({ taskId: 'att-2', parentTaskId: 'p', taskStatus: 'completed', roleSlug: 'builder' });
+
+    for (const ordering of [[failed, done], [done, failed]]) {
+      const stats = computeUsageStats(ordering, 'role');
+      expect(stats.groups[0].completed).toBe(1);
+      expect(stats.groups[0].failed).toBe(0);
+      expect(stats.groups[0].successRate).toBe(1);
+    }
+  });
+
+  test('the canonical row still overrides a completed attempt', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 'att-1', parentTaskId: 'p', taskStatus: 'completed' }),
+      row({ taskId: 'p', taskStatus: 'failed' }),
+    ], 'role');
+    expect(stats.groups[0].failed).toBe(1);
   });
 });
 

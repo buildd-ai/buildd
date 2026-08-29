@@ -18,6 +18,10 @@ export interface ArchiveCandidate {
   updatedAt: Date | string;
   scheduleEnabled: boolean | null;
   tasks: { status: string; updatedAt: Date | string }[];
+  /** Count of stated goal criteria. Zero means the mission is not gated by them. */
+  criteriaCount?: number;
+  /** Stored `goalCriteriaState.overall`, or null when never evaluated. */
+  criteriaOverall?: string | null;
 }
 
 export function selectMissionsToArchive(
@@ -31,6 +35,10 @@ export function selectMissionsToArchive(
       if (m.scheduleEnabled === true) return false;
       if (m.tasks.length === 0) return false;
       if (!m.tasks.every((t) => t.status === 'completed')) return false;
+      // Awaiting verification is not "done and ignored" — it is an open question.
+      // Archiving clears the mission off Home, which is exactly how an unverified
+      // mission disappears without anyone answering it.
+      if ((m.criteriaCount ?? 0) > 0 && m.criteriaOverall !== 'pass') return false;
       const lastActivity = Math.max(
         new Date(m.updatedAt).getTime(),
         ...m.tasks.map((t) => new Date(t.updatedAt).getTime()),
@@ -44,7 +52,7 @@ export function selectMissionsToArchive(
 export async function archiveStaleDoneMissions(now = new Date()): Promise<string[]> {
   const candidates = await db.query.missions.findMany({
     where: eq(missions.status, 'active'),
-    columns: { id: true, status: true, updatedAt: true },
+    columns: { id: true, status: true, updatedAt: true, goalCriteria: true, goalCriteriaState: true },
     with: {
       schedule: { columns: { enabled: true } },
       tasks: { columns: { status: true, updatedAt: true } },
@@ -58,6 +66,8 @@ export async function archiveStaleDoneMissions(now = new Date()): Promise<string
       updatedAt: m.updatedAt,
       scheduleEnabled: m.schedule?.enabled ?? null,
       tasks: m.tasks ?? [],
+      criteriaCount: Array.isArray(m.goalCriteria) ? m.goalCriteria.length : 0,
+      criteriaOverall: m.goalCriteriaState?.overall ?? null,
     })),
     now,
   );

@@ -25,6 +25,7 @@ const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; ico
   pass: { label: 'Pass', cls: 'text-status-success border-status-success/40', icon: '✓' },
   fail: { label: 'Fail', cls: 'text-status-error border-status-error/40', icon: '✗' },
   UNVERIFIED: { label: 'Unverified', cls: 'text-text-muted border-border-default', icon: '?' },
+  PENDING: { label: 'Running', cls: 'text-status-warning border-status-warning/40', icon: '⟳' },
   NOT_EVALUATED: { label: 'No evaluator', cls: 'text-text-muted/50 border-border-default/50', icon: '–' },
 };
 
@@ -68,6 +69,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
   const [metricUnit, setMetricUnit] = useState('');
   const [requireBranchDeleted, setRequireBranchDeleted] = useState(false);
   const [description, setDescription] = useState('');
+  const [notMechanizableReason, setNotMechanizableReason] = useState('');
 
   function buildCriterion(): GoalCriterion | null {
     const base = label ? { label } : {};
@@ -86,8 +88,11 @@ function AddCriterionForm({ onAdd, onCancel }: {
       return { type, query: metricQuery.trim(), operator: metricOp, threshold: t, unit: metricUnit || undefined, ...base };
     }
     if (type === 'description') {
-      if (!description.trim()) return null;
-      return { type, description: description.trim(), ...base };
+      // A prose criterion needs a live model to grade it, so the API requires a
+      // stated reason why no mechanical form works. Mirror that here rather than
+      // letting the save fail with a 400.
+      if (!description.trim() || notMechanizableReason.trim().length < 10) return null;
+      return { type, description: description.trim(), notMechanizableReason: notMechanizableReason.trim(), ...base };
     }
     return null;
   }
@@ -107,27 +112,40 @@ function AddCriterionForm({ onAdd, onCancel }: {
           onChange={e => setType(e.target.value as GoalCriterionType)}
           className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
         >
+          <option value="command">Command passes (script)</option>
           <option value="all_prs_merged">All PRs merged</option>
           <option value="no_open_tasks">No open tasks</option>
           <option value="artifact_exists">Artifact exists</option>
-          <option value="command">Command passes</option>
-          <option value="metric">Metric threshold</option>
-          <option value="description">Description (LLM-evaluated)</option>
+          <option value="description">Description (LLM-graded — last resort)</option>
         </select>
       </div>
 
       {type === 'description' && (
-        <div className="flex items-start gap-2">
-          <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
-          <textarea
-            value={description}
-            onChange={e => setDescription(e.target.value)}
-            placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
-            rows={2}
-            className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
-            required
-          />
-        </div>
+        <>
+          <div className="flex items-start gap-2">
+            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
+              rows={2}
+              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+              required
+            />
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Why not a script?</label>
+            <textarea
+              value={notMechanizableReason}
+              onChange={e => setNotMechanizableReason(e.target.value)}
+              placeholder="A prose verdict needs a live model. Say why no command / PR / artifact / task check can express this."
+              rows={2}
+              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+              required
+              minLength={10}
+            />
+          </div>
+        </>
       )}
 
       {type === 'command' && (
@@ -297,13 +315,26 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
   // Save criteria to API
   async function saveCriteria(next: GoalCriterion[]) {
     setSavingCriteria(true);
+    setRunError(null);
     try {
-      await fetch(`/api/missions/${missionId}`, {
+      const res = await fetch(`/api/missions/${missionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ goalCriteria: next }),
       });
+      if (!res.ok) {
+        // Silently swallowing this made the edit appear to undo itself: local
+        // state had already been updated optimistically and router.refresh()
+        // reverted it, with no clue that the write was rejected.
+        const body = await res.json().catch(() => ({}));
+        setRunError(body.error ?? `Could not save criteria (HTTP ${res.status})`);
+        setCriteria(criteria);
+        return;
+      }
       startTransition(() => router.refresh());
+    } catch {
+      setRunError('Network error — criteria not saved');
+      setCriteria(criteria);
     } finally {
       setSavingCriteria(false);
     }
@@ -429,6 +460,11 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
                     {label}
                   </p>
+                  {isExpanded && c.type === 'description' && c.notMechanizableReason && (
+                    <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
+                      Prose (needs a model to grade) because: {c.notMechanizableReason}
+                    </p>
+                  )}
                   {cs?.evidence && (
                     <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
                       {cs.evidence}
