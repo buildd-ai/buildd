@@ -13,7 +13,7 @@ import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-ac
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
-import { pathsOverlap } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -510,14 +510,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Conservative default for mission tasks without an explicit pathManifest.
-    // When a task belongs to a mission but declares no paths, default to the
-    // repo-wide sentinel ['**'] so the auto-dependsOn pass below can serialise
-    // it against any sibling mission task that also carries ['**'] or touches
-    // the same files — preventing the silent path-overlap race that caused PR
-    // conflicts when sibling tasks edited the same files concurrently.
+    // Conservative default for mission tasks without an explicit pathManifest:
+    // record the repo-wide sentinel ['**'] to mark "scope undeclared".
+    //
+    // The sentinel is ADVISORY ONLY. It does NOT drive dependsOn serialization —
+    // the auto-dependsOn pass below uses shouldSerializeByManifest(), which
+    // refuses to mint an edge when either side carries '**' (matching the
+    // claim-time gates: findBlockingPr() and the path_claims layer-2 backstop
+    // both skip the sentinel). Treating it as a hard dependency turned
+    // creation-order FIFO into a permanent BLOCKED graph: manifest-less mission
+    // tasks inherited an edge to every task alive in the workspace at creation.
+    //
+    // What the sentinel still buys: it is inherited by conflict-retry tasks, it
+    // records that the filer never declared scope (visible to the organizer and
+    // reviewer prompts), and workers can narrow it mid-task via check_path_claim
+    // / POST /api/tasks/[id]/path-claim, which DO take real locks on concrete
+    // paths. Concurrent same-file edits between two scope-undeclared tasks are
+    // covered by those claim-time mutexes, not by stored edges.
+    //
     // Callers that know exactly which files they'll touch should always pass
-    // pathManifest explicitly to allow fine-grained parallelism.
+    // pathManifest explicitly — concrete manifests still auto-serialize.
     if (missionId && !pathManifest) {
       pathManifest = ['**'];
     }
@@ -540,7 +552,7 @@ export async function POST(req: NextRequest) {
 
     // Sequence-namespace anchor injection (see docs/design/change-intent.md §3).
     // If this task's pathManifest touches a sequenceNamespace directory (e.g. the
-    // Drizzle migrations dir), auto-append the anchorFile so the pathsOverlap check
+    // Drizzle migrations dir), auto-append the anchorFile so the overlap check
     // below can serialise on _journal.json — not on the individual migration filename,
     // which would be invisible because distinct filenames share the integer index.
     if (pathManifest && pathManifest.length > 0) {
@@ -551,11 +563,17 @@ export async function POST(req: NextRequest) {
     }
 
     // Auto-add dependsOn edges for path-overlap serialization.
-    // If this task declares a pathManifest and other active/pending tasks in the
-    // same workspace also declare manifests that share paths, we must run them
-    // sequentially to prevent conflicting PRs (regression: PRs #1126/#1129).
+    // If this task declares a CONCRETE pathManifest and other active/pending tasks
+    // in the same workspace declare concrete manifests that share paths, we must
+    // run them sequentially to prevent conflicting PRs (regression: PRs #1126/#1129).
+    //
+    // shouldSerializeByManifest() (not pathsOverlap()) is the gate: a repo-wide
+    // sentinel on either side produces NO edge, because the claim-time gates treat
+    // '**' as advisory and would never honour such an edge anyway. Caller-supplied
+    // dependsOn is copied in first and never modified — only inferred edges are
+    // subject to this rule.
     let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
-    if (pathManifest && pathManifest.length > 0) {
+    if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
         where: and(
@@ -566,9 +584,8 @@ export async function POST(req: NextRequest) {
         columns: { id: true, pathManifest: true },
       });
       for (const t of inFlightTasks) {
-        if (!t.pathManifest?.length) continue;
         if (existingDepsSet.has(t.id)) continue;
-        if (pathsOverlap(pathManifest, t.pathManifest as string[])) {
+        if (shouldSerializeByManifest(pathManifest, t.pathManifest as string[] | null)) {
           resolvedDependsOn.push(t.id);
           existingDepsSet.add(t.id);
         }

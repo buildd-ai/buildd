@@ -173,6 +173,8 @@ that must be fixed on the SAME branch before merging?
 Judge on these criteria:
 1. ONE-WORK-UNIT ADHERENCE: The PR touches only files in the task's pathManifest. No scope creep.
 2. PATH-MANIFEST CONFORMANCE: Every file in pathManifest is touched. No missing deliverables.
+   (Withdrawn for advisory manifests — `["**"]` declares no scope, so it cannot serve as a
+   completeness check. See `renderManifestGuidance` in `apps/web/src/lib/reviewer.ts`.)
 3. SPEC CONFORMANCE: What was built matches what the spec/task description asked for.
 4. OBVIOUS REGRESSIONS: Test failures, broken imports, incomplete migrations.
 

@@ -408,10 +408,14 @@ describe('POST /api/tasks/[id]/start', () => {
     const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
     expect(response.status).toBe(200);
     expect(mockTriggerEvent).toHaveBeenCalled();
+    // The override is expressed by clearing startAt — the ONLY mechanism the
+    // claim route reads. `bypassStartGate` was a context key no gate ever read
+    // (deleted); writing it again would recreate that false safety net.
     expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
       startAt: null,
-      context: expect.objectContaining({ bypassStartGate: true }),
     }));
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.bypassStartGate).toBeUndefined();
   });
 
   it('returns 422 when a completed dependency has an unmerged PR', async () => {
@@ -799,8 +803,12 @@ describe('POST /api/tasks/[id]/start', () => {
     const response = await callHandler(createMockRequest(), 'task-123');
     // Gate already bypassed — should pass straight through
     expect(response.status).toBe(200);
-    // missions.findFirst should NOT be queried at all
-    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    // The held probe (columns: { id }) must not run. The budget probe
+    // (columns: { id, status }) still does — it is a separate gate.
+    const heldProbes = mockMissionsFindFirst.mock.calls.filter(
+      (c: any) => c[0]?.columns && !('status' in c[0].columns),
+    );
+    expect(heldProbes).toHaveLength(0);
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
   });
 
@@ -1055,5 +1063,237 @@ describe('POST /api/tasks/[id]/start', () => {
       'task:assigned',
       expect.objectContaining({ task: expect.objectContaining({ id: 'task-clean' }) }),
     );
+  });
+});
+
+// ─── D2: subject gate ────────────────────────────────────────────────────────
+//
+// The claim query drops subject-dead tasks (api/workers/claim/subject-gate.ts).
+// Before this gate existed here, /start returned 200, bumped priority and
+// broadcast — and nothing ever claimed the task. The user got no error at all.
+
+describe('POST /api/tasks/[id]/start — subject gate', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockConnectorsFindMany.mockReset();
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockTriggerEvent.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockDbUpdate.set.mockClear();
+
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+  });
+
+  const subjectDeadTask = (overrides: Record<string, unknown> = {}) => ({
+    id: 'task-dead',
+    title: 'CI Retry #1',
+    description: null,
+    status: 'pending',
+    workspaceId: 'ws-1',
+    missionId: null,
+    dependsOn: null,
+    roleSlug: null,
+    context: {},
+    mode: null,
+    priority: 9,
+    startAt: null,
+    subjectKind: 'pull_request',
+    subjectPrNumber: 1789,
+    subjectResolution: 'reconciled',
+    subjectAnchor: { version: 1, kind: 'pull_request', prNumber: 1789, source: 'system', confidence: 'exact' },
+    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    ...overrides,
+  });
+
+  it('returns 422 subject_dead instead of a silent success', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask());
+
+    const response = await callHandler(createMockRequest(), 'task-dead');
+
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('subject_dead');
+    expect(data.blockClass).toBe('policy');
+    expect(data.subjectPrNumber).toBe(1789);
+    expect(data.canForce).toBe(true);
+    // The old behavior: broadcast + priority bump on an unclaimable task.
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockDbUpdate.set).not.toHaveBeenCalled();
+  });
+
+  it('force-starts a subject-dead task and writes bypassSubjectGate to context', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask());
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-dead');
+
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ bypassSubjectGate: true }),
+    }));
+  });
+
+  it('skips the gate when context.bypassSubjectGate is already set', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask({ context: { bypassSubjectGate: true } }));
+
+    const response = await callHandler(createMockRequest(), 'task-dead');
+
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('REGRESSION (aeb80f): a text/derived anchor never gates /start', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask({
+      id: 'aeb80f',
+      title: 'SPEC: deliverable uniqueness',
+      subjectAnchor: { version: 1, kind: 'pull_request', prNumber: 1789, source: 'text', confidence: 'derived' },
+    }));
+
+    const response = await callHandler(createMockRequest(), 'aeb80f');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.started).toBe(true);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    // No bypass flag needed — the anchor was never binding in the first place.
+    expect(mockDbUpdate.set).not.toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ bypassSubjectGate: true }),
+    }));
+  });
+
+  it('does not gate a task whose subject is still live', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask({ subjectResolution: 'attached' }));
+
+    const response = await callHandler(createMockRequest(), 'task-dead');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not write bypassSubjectGate on a force-start of a healthy task', async () => {
+    mockTasksFindFirst.mockResolvedValue(subjectDeadTask({
+      subjectKind: null,
+      subjectPrNumber: null,
+      subjectResolution: null,
+      subjectAnchor: null,
+    }));
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-dead');
+    expect(response.status).toBe(200);
+    const written = (mockDbUpdate.set.mock.calls[0] as any[])[0] as any;
+    expect(written.context.bypassSubjectGate).toBeUndefined();
+  });
+});
+
+// ─── D3: mission budget_exhausted gate ───────────────────────────────────────
+//
+// The claim loop skips every task whose mission is `budget_exhausted`
+// (claim/route.ts mission gate #1). Nothing clears that status except a human
+// raising costBudgetUsd, so /start returning 200 stranded the whole mission's
+// task set at once while each task page rendered a plain QUEUED row.
+
+describe('POST /api/tasks/[id]/start — mission budget gate', () => {
+  const missionTask = (overrides: Record<string, unknown> = {}) => ({
+    id: 'task-mb',
+    title: 'Mission task',
+    description: null,
+    status: 'pending',
+    workspaceId: 'ws-1',
+    missionId: 'mission-A',
+    dependsOn: null,
+    roleSlug: null,
+    context: {},
+    mode: null,
+    priority: 0,
+    startAt: null,
+    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    ...overrides,
+  });
+
+  /**
+   * /start asks the missions table two different questions through the same
+   * mocked findFirst: "is it held?" (columns: id) and "what is its status?"
+   * (columns: id + status). Discriminate on the requested columns so a
+   * budget_exhausted fixture does not also read as held.
+   */
+  const missionStatus = (status: string | null) => {
+    mockMissionsFindFirst.mockImplementation((opts: any) =>
+      Promise.resolve(opts?.columns?.status ? (status ? { id: 'mission-A', status } : null) : null),
+    );
+  };
+
+  beforeEach(() => {
+    mockTasksFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockTriggerEvent.mockClear();
+    mockDbUpdate.set.mockClear();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    missionStatus('budget_exhausted');
+  });
+
+  it('returns 422 mission_budget_exhausted instead of broadcasting into the void', async () => {
+    mockTasksFindFirst.mockResolvedValue(missionTask());
+
+    const response = await callHandler(createMockRequest(), 'task-mb');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('mission_budget_exhausted');
+    expect(data.blockClass).toBe('policy');
+    expect(data.canForce).toBe(true);
+    expect(data.missionId).toBe('mission-A');
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('force-starts the task and writes bypassMissionBudget to context', async () => {
+    mockTasksFindFirst.mockResolvedValue(missionTask());
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-mb');
+    expect(response.status).toBe(200);
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ bypassMissionBudget: true }),
+    }));
+  });
+
+  it('skips the gate when context.bypassMissionBudget is already set', async () => {
+    mockTasksFindFirst.mockResolvedValue(missionTask({ context: { bypassMissionBudget: true } }));
+
+    const response = await callHandler(createMockRequest(), 'task-mb');
+    expect(response.status).toBe(200);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not gate a task whose mission is active', async () => {
+    mockTasksFindFirst.mockResolvedValue(missionTask());
+    missionStatus('active');
+
+    const response = await callHandler(createMockRequest(), 'task-mb');
+    expect(response.status).toBe(200);
+  });
+
+  it('does not write bypassMissionBudget on a force-start of a healthy mission task', async () => {
+    mockTasksFindFirst.mockResolvedValue(missionTask());
+    missionStatus('active');
+
+    const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-mb');
+    expect(response.status).toBe(200);
+    const written = (mockDbUpdate.set.mock.calls.at(-1) as any[])[0] as any;
+    expect(written.context.bypassMissionBudget).toBeUndefined();
   });
 });

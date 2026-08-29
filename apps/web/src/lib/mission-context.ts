@@ -6,6 +6,28 @@ import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { buildWorkspaceStateContext, type OrganizerCause, type WorkspaceStateCauseData } from './workspace-state-context';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+
+/**
+ * Flatten active tasks' pathManifests into concrete search paths for the
+ * knowledge-store path lookup ("Recent work on relevant paths").
+ *
+ * The repo-wide sentinel `'**'` is not a path — it is the mission-task default
+ * meaning "scope not declared". Passing it through made the lookup search for a
+ * file literally named `**`. Filtering is per *entry* rather than per manifest
+ * (unlike the authoring-time edge rule, which is all-or-nothing via
+ * `isAdvisoryManifest`): concrete paths that ride alongside a sentinel — e.g. a
+ * manifest extended in place by `check_path_claim` — are still useful search
+ * terms. Callers must tolerate an empty result; `buildKnowledgeContext` skips the
+ * path lookup entirely when `paths` is empty or undefined.
+ */
+export function knowledgePathsFromManifests(
+  activeTasks: Array<{ pathManifest?: string[] | null }>,
+): string[] {
+  return activeTasks
+    .flatMap(t => t.pathManifest ?? [])
+    .filter(p => !!p && p !== REPO_WIDE_SENTINEL);
+}
 
 // Operational-only schema: no free-text string fields that could capture email
 // subjects, bodies, or sender addresses from sensitive workspaces. Consumers that
@@ -732,9 +754,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Queries memory, task, pr, and code corpora. Also runs a path-based PR lookup when
   // active tasks carry pathManifests (composes with overlap serialization from PR #1130).
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
-  const activePaths = allActiveTasks
-    .flatMap(t => (t as any).pathManifest || [])
-    .filter(Boolean) as string[];
+  const activePaths = knowledgePathsFromManifests(
+    allActiveTasks as Array<{ pathManifest?: string[] | null }>,
+  );
   const knowledgeParts = await buildKnowledgeContext(
     knowledgeQuery,
     mission.workspaceId,
@@ -1182,9 +1204,9 @@ Only create child tasks when the work requires:
   // ≥0.82/14-day gate before creating tasks. Widened to memory+task+pr+code corpora.
   // Also run path-based lookup when active tasks carry pathManifests.
   const knowledgeQuery = [mission.title, mission.description].filter(Boolean).join('\n');
-  const activePaths = (activeTasks as Array<{ pathManifest?: string[] | null }>)
-    .flatMap(t => t.pathManifest || [])
-    .filter(Boolean) as string[];
+  const activePaths = knowledgePathsFromManifests(
+    activeTasks as Array<{ pathManifest?: string[] | null }>,
+  );
   const heartbeatKnowledgeParts = await buildKnowledgeContext(
     knowledgeQuery,
     mission.workspaceId,

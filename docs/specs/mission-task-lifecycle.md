@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-08-23
+last_verified: 2026-08-29
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -72,6 +72,119 @@ an enum) to allow extension without migrations.
   `resolveCompletedTask()`
 - Stale reclaim: `apps/web/src/lib/stale-workers.ts` — `resolveStaleTask()`
 - Schema: `packages/core/db/schema.ts` — `tasks` table
+
+---
+
+## Claim-gate legibility contract
+
+Every condition that withholds a `pending` task from the claim query is a
+**gate**. Gates are not optional machinery — they prevent duplicate PRs, budget
+overruns and file collisions. What is not optional is that an operator can tell
+a gate apart from an idle queue.
+
+Two prod incidents defined this contract: task `aeb80faf` was unclaimable for 5
+days and `640e7da2` for 24, both rendering as ordinary `QUEUED` rows, both
+because a gate excluded them with no signal and no override. `aeb80faf` was
+additionally the root of a 20-task dependency funnel, so one invisible gate
+stalled a whole workspace.
+
+**Invariants**: for every gate,
+- **CG-1 (named)**: the gate MUST produce a stable `gateReason` string, and
+  `/api/tasks/[id]/start` MUST return `422` with that reason rather than a `200`
+  that dispatches nothing. A success response for a task that cannot be claimed
+  is a lie the operator acts on.
+- **CG-2 (visible)**: the blocking state MUST be derivable by the display layer
+  from data the task list already selects, and MUST NOT render as `QUEUED`.
+  Surfaces using explicit `columns` MUST select the fields their gate predicate
+  reads — an unselected column reads as `undefined` and silently re-hides the
+  state.
+- **CG-3 (overridable or declared)**: a gate MUST either honour a documented
+  bypass key (see `apps/web/src/lib/bypass-flags.ts`) or declare
+  `blockClass: 'capability'`, meaning force-start is refused on purpose. A
+  bypass key that no gate reads, or a gate that ignores its own key, is a false
+  safety net — `bypassStartGate` and `capExempt` were both in that state.
+- **CG-4 (one predicate)**: a gate's SQL prefilter and its in-loop guard MUST
+  derive from one shared contract module, never two hand-synchronised copies.
+  See `dep-gate-contract.ts`, `subject-gate-contract.ts`, `bypass-flags.ts`.
+  Divergence in either direction is a defect: SQL stricter than TS strands the
+  task, TS stricter than SQL admits work that should have waited.
+- **CG-5 (terminal gates terminate)**: when a gate concludes a task can never
+  become claimable, the task MUST be moved to a terminal status rather than left
+  `pending`. `cancelled` is the dependency gate's satisfying status, so
+  terminating a dead task is also what releases its dependents; leaving it
+  `pending` starves them indefinitely.
+- **CG-6 (transient gates self-clear)**: a gate that is expected to clear MUST
+  do so without human action, and MUST be expressed as a soft deferral —
+  `continue` plus a `deferrals` counter, retried next poll — never as a stored
+  `dependsOn` edge, which waits for `completed` + PR `merged`.
+
+**Gate inventory** (`gateReason` → class):
+
+| gateReason | Clears by | Class |
+|---|---|---|
+| `deferred_start` | time (`startAt`) | policy, forceable |
+| `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
+| `mission_held` | arming the mission | policy, forceable |
+| `mission_budget_exhausted` | raising the mission budget | policy, forceable |
+| `subject_dead` | never (terminal) | policy, forceable |
+| `workspace_cap_reached` | drain | policy, forceable |
+| `connector_routing_mismatch` | fixing the connector | capability |
+
+`StartTaskButton` also renders a `capability_mismatch` branch that no route
+emits. That is deliberate, not an oversight: the capability abstraction whose
+only real check was "does this backend have a credential" was removed in PR
+#1864 and replaced by the onboarding/workspace-configuration path (see
+`docs/SPEC.md` → Removed concepts). A task whose backend has no credential is
+therefore still stranded without a task-level gateReason — a known gap that must
+be closed through onboarding surfacing, NOT by reviving the gate.
+
+Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
+self-clear: `path_overlap`, `advisory_manifest`, `mission_concurrent`,
+`mission_paced`, `budget_paused`, `provider_unavailable`. They are not
+`gateReason` values — `/start` does not reject on them, because by the time an
+operator reads the response the deferral has usually already cleared.
+
+They are still reportable: `/api/cron/queue-stall` names a soft deferral once a
+task has been held by one for longer than the stall threshold, since "transient"
+stops being an excuse at that point. `advisory_manifest` is the case that
+matters — its blocking peer may be parked in `waiting_input`, holding the slot
+until a human answers, which never self-clears in practice.
+
+Two entries appear in the hard-gate table above rather than here, because the
+claim loop counts them but `/start` also rejects on them: `subject_dead`
+(terminal) and `workspace_cap` / `workspace_cap_reached`.
+
+**Acceptance criteria**:
+- AC-CG-1: GIVEN a task excluded by any gate WHEN `/start` is called without
+  `forceOverride` THEN the response is `422` with a `gateReason`, no Pusher
+  broadcast is emitted and the priority is unchanged.
+- AC-CG-2: GIVEN a gate with a bypass key WHEN `/start` is called with
+  `forceOverride` THEN the key is written to `task.context` AND the claim query
+  admits the task on the next poll.
+- AC-CG-3: GIVEN a bypass key written as boolean `true` or string `'true'` THEN
+  both the SQL prefilter and the in-loop guard accept it.
+- AC-CG-4: GIVEN a task pending beyond `QUEUE_STALL_THRESHOLD` with no
+  successful claim THEN `/api/cron/queue-stall` reports it with the first gate
+  actually blocking it — never a bare "stalled".
+- AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
+  reconciliation sweep runs THEN the task becomes `cancelled` AND its dependents
+  become claimable.
+
+**Code surface**:
+- Per-gate modules: `apps/web/src/app/api/workers/claim/` —
+  `connector-gate.ts`, `deferred-gate.ts`, `deps-gate.ts`, `held-gate.ts`,
+  `mission-budget-gate.ts`, `pacing-gate.ts`, `subject-gate.ts`,
+  `workspace-cap-gate.ts`. Each holds its SQL predicate and its per-task check
+  side by side, so the claim route and `/start` cannot drift (rule CG-4). There
+  is deliberately no aggregate `lib/claim-gates.ts` — it was a hand-mirrored
+  copy of these predicates and was deleted in PR #1868.
+- Gate contracts: `apps/web/src/lib/dep-gate-contract.ts`,
+  `apps/web/src/lib/subject-gate-contract.ts`,
+  `apps/web/src/lib/bypass-flags.ts`
+- Override surface: `apps/web/src/app/api/tasks/[id]/start/route.ts`
+- Display: `apps/web/src/lib/task-presentation.ts` — `deriveTaskPhase()`,
+  `apps/web/src/components/StageChip.tsx` — `deriveStage()`
+- Watchdog: `apps/web/src/app/api/cron/queue-stall/route.ts`
 
 ---
 

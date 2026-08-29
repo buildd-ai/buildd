@@ -193,6 +193,16 @@ mock.module('@/lib/storage', () => ({
 mock.module('@/lib/pushover', () => ({
   notify: mock(() => Promise.resolve()),
 }));
+// path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
+const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
+mock.module('@buildd/core/path-claim', () => ({
+  getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
+}));
+// Terminal-write dependency cascade (item 4: workspace_mismatch must run it).
+const mockResolveCompletedTask = mock(() => Promise.resolve());
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+}));
 
 import { POST } from './route';
 
@@ -3168,7 +3178,16 @@ describe('POST /api/workers/claim', () => {
         pacingMaxPerHour: null,
         lastTaskStartedAt: null,
       }]);
-      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', count: 2 }]));
+      // In-flight rows for the mission (one row per active worker) — the claim
+      // route derives the concurrency count from these rows and also reads their
+      // pathManifest for the advisory-serialization guard. Concrete manifests so
+      // this test exercises the concurrency cap ONLY: a null manifest is an
+      // undeclared scope (declaresNoScope), which would defer the candidate via
+      // the advisory guard instead and pass for the wrong reason.
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['packages/core/a.ts'] },
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['packages/core/b.ts'] },
+      ]));
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
@@ -3189,7 +3208,12 @@ describe('POST /api/workers/claim', () => {
         pacingMaxPerHour: null,
         lastTaskStartedAt: null,
       }]);
-      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', count: 1 }]));
+      // Concrete peer manifest: the mission's single scope-undeclared slot is
+      // a separate gate (see the advisory-manifest describe below), and a null
+      // manifest here would defer the candidate through it.
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['packages/core/b.ts'] },
+      ]));
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
@@ -4157,6 +4181,465 @@ describe('entity catalog injection at claim time', () => {
       // conn-A is in requiredConnectors → hard block despite advisory mode
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.connector_mismatch).toBe(1);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operator overrides and gate/prefilter parity.
+//
+// Every gate in this route is evaluated twice — once in the SQL prefilter and
+// once in the dispatch loop. When the two disagree, the task passes one and is
+// silently dropped by the other; that is the failure class this block guards.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('claim gate overrides', () => {
+  beforeEach(() => {
+    // Top-level suites do not inherit the file-wide beforeEach, and the suites
+    // above leave narrowed mocks behind (notably mockDbSelect). Re-establish a
+    // neutral baseline so each test only declares what it is about.
+    mockAuthenticateApiKey.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockReset();
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockOauthEpisodesFindMany.mockReset();
+    mockOauthEpisodesFindMany.mockResolvedValue([]);
+    mockBackendPausesFindMany.mockReset();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    mockGetActiveClaimsByWorkspace.mockReset();
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
+    mockDbSelect.mockReset();
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+  });
+
+  function apiAccount() {
+    return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
+  }
+
+  /** Every string literal reachable from a (mocked) drizzle condition tree. */
+  function conditionLiterals(node: any, out: string[] = [], seen = new Set<any>()): string[] {
+    if (node === null || node === undefined) return out;
+    if (typeof node === 'string') { out.push(node); return out; }
+    if (typeof node !== 'object') return out;
+    if (seen.has(node)) return out;
+    seen.add(node);
+    for (const value of Array.isArray(node) ? node : Object.values(node)) {
+      conditionLiterals(value, out, seen);
+    }
+    return out;
+  }
+
+  function setupClaimBase() {
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+  }
+
+  /** A repo-backed workspace with a cap of 1 — one active worker fills it. */
+  function cappedTask(context: Record<string, unknown>) {
+    return {
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Capped task',
+      backend: 'claude' as const,
+      dependsOn: [],
+      context,
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo', maxConcurrentTasks: 1 },
+    };
+  }
+
+  describe('capExempt (workspace concurrency cap)', () => {
+    it('SQL prefilter carries a capExempt bypass — without it the exempted task is filtered out exactly when the cap is hit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([]);
+
+      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+
+      const whereArg = (mockTasksFindMany.mock.calls[0] as any)[0]?.where;
+      expect(conditionLiterals(whereArg)).toContain('capExempt');
+    });
+
+    it('honours capExempt written as the string "true" (SQL ->> yields text, so both sides must accept both forms)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      // One active worker in ws-1 → workspace cap of 1 is already reached.
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
+      mockTasksFindMany.mockResolvedValueOnce([cappedTask({ capExempt: 'true' })]).mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('honours capExempt written as boolean true', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
+      mockTasksFindMany.mockResolvedValueOnce([cappedTask({ capExempt: true })]).mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('still enforces the cap for a task with no exemption', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
+      mockTasksFindMany.mockResolvedValueOnce([cappedTask({})]).mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+    });
+  });
+
+  describe('mission budget_exhausted override', () => {
+    function missionTask(id: string, context: Record<string, unknown>) {
+      return {
+        id,
+        workspaceId: 'ws-1',
+        missionId: 'mission-A',
+        title: `Task ${id}`,
+        backend: 'claude' as const,
+        dependsOn: [],
+        context,
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      };
+    }
+    const exhaustedMission = [{
+      id: 'mission-A',
+      status: 'budget_exhausted',
+      maxConcurrentTasks: null,
+      pacingMode: 'eager',
+      pacingMaxPerHour: null,
+      lastTaskStartedAt: null,
+    }];
+
+    it('claims a task from a budget_exhausted mission when the operator force-started it (bypassMissionBudget)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', { bypassMissionBudget: true })]).mockResolvedValue([]);
+      mockMissionsFindMany.mockResolvedValue(exhaustedMission);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('accepts the string form of the bypass too', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', { bypassMissionBudget: 'true' })]).mockResolvedValue([]);
+      mockMissionsFindMany.mockResolvedValue(exhaustedMission);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('without the bypass the task is still deferred (mission_budget)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', {})]).mockResolvedValue([]);
+      mockMissionsFindMany.mockResolvedValue(exhaustedMission);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.mission_budget).toBe(1);
+    });
+  });
+
+  describe('advisory-manifest mission serialization (compensating guard)', () => {
+    function advisoryTask(id: string, missionId: string | null, manifest: string[] = ['**']) {
+      return {
+        id,
+        workspaceId: 'ws-1',
+        missionId,
+        title: `Task ${id}`,
+        backend: 'claude' as const,
+        dependsOn: [],
+        pathManifest: manifest,
+        context: {},
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      };
+    }
+    const activeMission = [{
+      id: 'mission-A',
+      status: 'active',
+      maxConcurrentTasks: null,
+      pacingMode: 'eager',
+      pacingMaxPerHour: null,
+      lastTaskStartedAt: null,
+    }];
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockMissionsFindMany.mockResolvedValue(activeMission);
+      mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
+    });
+
+    it('defers a scope-undeclared task while a sibling in the SAME mission is in flight with a scope-undeclared manifest', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      // In-flight rows for the mission (same query that feeds the concurrency count)
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+    });
+
+    it('claims when the in-flight sibling declared concrete scope (no undeclared-vs-undeclared collision)', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('does not serialize across missions', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-B', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims a mission-less scope-undeclared task regardless of other in-flight work', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', null)]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims at most one scope-undeclared task per mission within a single poll', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A'), advisoryTask('task-2', 'mission-A')])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      // Second task deferred by the in-batch reservation (deferral counters are
+      // only reported on an empty claim, so assert the claim shape instead).
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('layer 2: a manifest of ["**","a.ts"] still respects a held path_claim on a.ts', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', null, ['**', 'apps/web/src/a.ts'])])
+        .mockResolvedValue([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValue(
+        new Map([['task-9', ['apps/web/src/a.ts']]]),
+      );
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+
+    // ── The null-manifest front door ──────────────────────────────────────
+    // isAdvisoryManifest(null) === false, so a task with NO manifest used to
+    // walk straight past this guard and edit the same files as an equally
+    // scope-undeclared sibling. "Undeclared scope" must mean null / [] / ['**']
+    // on BOTH sides of the comparison.
+
+    it('defers a task with a NULL manifest behind a scope-undeclared in-flight sibling', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', null as any)])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+    });
+
+    it('defers a task with an EMPTY manifest behind a scope-undeclared in-flight sibling', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', [])])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+    });
+
+    it('treats an in-flight sibling with a NULL manifest as scope-undeclared too', async () => {
+      // The gap is symmetric: the in-flight peer set was built with the same
+      // predicate, so a null-manifest worker looked like "no peer at all".
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: null },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+    });
+
+    it('still claims a NULL-manifest task when the in-flight sibling declared concrete scope', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', null as any)])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims at most one NULL-manifest task per mission within a single poll', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([
+          advisoryTask('task-1', 'mission-A', null as any),
+          advisoryTask('task-2', 'mission-A', null as any),
+        ])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it('a NULL-manifest task with no mission is never serialized', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', null, null as any)])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: null },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('layer 2: a pure ["**"] manifest stays advisory against held claims', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', null, ['**'])]).mockResolvedValue([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValue(
+        new Map([['task-9', ['apps/web/src/a.ts']]]),
+      );
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+  });
+
+  describe('workspace_mismatch terminal write', () => {
+    it('runs the dependency cascade so dependents do not starve behind a task that can never complete', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockResolveCompletedTask.mockClear();
+      mockTasksFindMany.mockResolvedValueOnce([{
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'Misrouted task',
+        backend: 'claude' as const,
+        dependsOn: [],
+        context: {},
+        project: 'other-repo',
+        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, projects: [{ name: 'this-repo' }] },
+      }]).mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(0);
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith('task-1', 'ws-1');
     });
   });
 });

@@ -401,6 +401,9 @@ that must be fixed on the SAME branch before merging?
 Judge on these criteria:
 1. ONE-WORK-UNIT ADHERENCE: The PR touches only files in the task's pathManifest. No scope creep.
 2. PATH-MANIFEST CONFORMANCE: Every file in pathManifest is touched. No missing deliverables.
+   Exception: a manifest of ["**"] means the task declared no file scope (the mission-task
+   default). It is advisory — do NOT report files as missing from it, and do not treat it as
+   a completeness check. Judge scope on the task description instead.
 3. SPEC CONFORMANCE: What was built matches what the spec/task description asked for.
 4. OBVIOUS REGRESSIONS: Test failures, broken imports, incomplete migrations.
 

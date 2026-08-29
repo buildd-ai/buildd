@@ -47,6 +47,13 @@ mock.module('@/lib/worker-deliverables', () => ({
   getWorkerArtifactCount: mockGetWorkerArtifactCount,
 }));
 
+// A task the retry cap fails must still cascade to its dependents — otherwise
+// they sit pending forever behind a task that will never complete.
+const mockResolveCompletedTask = mock((_taskId: string, _workspaceId: string) => Promise.resolve());
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+}));
+
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 
 mock.module('@buildd/core/db', () => ({
@@ -93,7 +100,9 @@ describe('POST /api/tasks/cleanup', () => {
     mockWorkersFindMany.mockReset();
     mockTasksFindMany.mockReset();
     mockTasksFindFirst.mockReset();
-    mockTasksFindFirst.mockResolvedValue({ context: {} });
+    mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-1' });
+    mockResolveCompletedTask.mockReset();
+    mockResolveCompletedTask.mockResolvedValue(undefined);
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockHeartbeatsFindMany.mockReset();
@@ -307,7 +316,7 @@ describe('POST /api/tasks/cleanup', () => {
         updatedAt: threeHoursAgo,
       },
     ]);
-    mockTasksFindFirst.mockResolvedValue({ context: { prior: 'context' } });
+    mockTasksFindFirst.mockResolvedValue({ context: { prior: 'context' }, workspaceId: 'ws-1' });
 
     let capturedSetData: any = null;
     mockTasksUpdate.mockReturnValue({
@@ -325,6 +334,101 @@ describe('POST /api/tasks/cleanup', () => {
     expect(capturedSetData.status).toBe('failed');
     expect(capturedSetData.context.terminalError).toBe('retry_cap_exceeded');
     expect(capturedSetData.context.prior).toBe('context');  // preserves existing context
+  });
+
+  it('cascades to dependents when the retry cap fails a task', async () => {
+    // Regression: this writer set status='failed' without calling
+    // resolveCompletedTask, so cascadeDependencyFailure never ran and every
+    // task depending on it stayed pending forever behind a task that can
+    // never complete ('failed' is not in DEP_SATISFYING_STATUSES).
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])
+      .mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]) // at cap
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'loop-task',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-9' });
+
+    const res = await POST(createMockRequest());
+
+    expect(res.status).toBe(200);
+    expect(mockResolveCompletedTask).toHaveBeenCalledTimes(1);
+    expect(mockResolveCompletedTask.mock.calls[0]).toEqual(['loop-task', 'ws-9']);
+  });
+
+  it('does not cascade when the task is only reset to pending', async () => {
+    // Under the cap the task returns to pending — a non-terminal state. Firing
+    // the terminal resolver here would cascade a failure that never happened.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])
+      .mockResolvedValueOnce([{ id: 'w-old' }]) // 1 prior failure, under cap
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'retryable-task',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+
+    const res = await POST(createMockRequest());
+
+    expect(res.status).toBe(200);
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('survives a cascade failure without aborting the cleanup pass', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])
+      .mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'loop-task',
+        status: 'assigned',
+        claimedBy: 'account-1',
+        claimedAt: new Date(),
+        expiresAt: new Date(),
+        updatedAt: threeHoursAgo,
+      },
+    ]);
+    mockResolveCompletedTask.mockRejectedValue(new Error('cascade blew up'));
+
+    const res = await POST(createMockRequest());
+
+    expect(res.status).toBe(200);
   });
 
   it('fails workers when their heartbeat is stale (runner offline)', async () => {

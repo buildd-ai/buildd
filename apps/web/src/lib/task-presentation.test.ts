@@ -704,3 +704,166 @@ describe('deriveTimestampLabel — terminal', () => {
     expect(label).toBe('1h ago');
   });
 });
+
+// ─── D3: subject-dead presentation ───────────────────────────────────────────
+//
+// A task whose binding subject anchor was reconciled can never be claimed. It
+// used to render identically to a healthy queued row (grep subjectResolution
+// across the UI returned zero hits), so a permanently-dead task looked normal.
+
+describe('deriveTaskPhase — subject_dead', () => {
+  it('pending + subject dead → subject_dead, never pending', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', isSubjectDead: true })).toBe('subject_dead');
+  });
+
+  it('subject_dead outranks blocked and budget_paused (nothing can run it at all)', () => {
+    expect(deriveTaskPhase({
+      taskStatus: 'pending',
+      isSubjectDead: true,
+      isBlocked: true,
+      isBudgetPaused: true,
+    })).toBe('subject_dead');
+  });
+
+  it('assigned + subject dead → subject_dead', () => {
+    expect(deriveTaskPhase({ taskStatus: 'assigned', isSubjectDead: true })).toBe('subject_dead');
+  });
+
+  it('a live worker still outranks subject_dead (work in flight is real)', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', isSubjectDead: true, workerStatus: 'running' })).toBe('running');
+  });
+
+  it('terminal statuses are unaffected', () => {
+    expect(deriveTaskPhase({ taskStatus: 'completed', isSubjectDead: true })).toBe('completed');
+    expect(deriveTaskPhase({ taskStatus: 'failed', isSubjectDead: true })).toBe('failed');
+  });
+
+  it('defaults to the old behavior when the flag is absent', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending' })).toBe('pending');
+  });
+});
+
+describe('task-presentation re-exports the subject gate contract', () => {
+  it('isSubjectDead is the same predicate the claim gate uses', async () => {
+    const presentation = await import('./task-presentation');
+    const contract = await import('./subject-gate-contract');
+    expect(presentation.isSubjectDead).toBe(contract.isSubjectDead);
+  });
+
+  it('a reconciled text/derived anchor is not subject-dead for display either (aeb80f)', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      subjectKind: 'pull_request',
+      subjectPrNumber: 1789,
+      subjectResolution: 'reconciled',
+      subjectAnchor: { source: 'text' },
+    })).toBe(false);
+  });
+
+  it('a reconciled system/exact anchor is subject-dead for display', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      subjectKind: 'pull_request',
+      subjectPrNumber: 1789,
+      subjectResolution: 'reconciled',
+      subjectAnchor: { source: 'system' },
+    })).toBe(true);
+  });
+});
+
+// ─── D4: mission-budget-exhausted presentation ───────────────────────────────
+//
+// The claim loop skips every task whose mission is `budget_exhausted`. That
+// status only clears when a human raises the mission budget, so the task is as
+// unclaimable as a subject-dead one — and it used to render as plain QUEUED.
+
+describe('deriveTaskPhase — mission_budget_exhausted', () => {
+  it('pending + mission budget exhausted → mission_budget_exhausted, never pending', () => {
+    expect(deriveTaskPhase({ taskStatus: 'pending', isMissionBudgetExhausted: true }))
+      .toBe('mission_budget_exhausted');
+  });
+
+  it('outranks blocked and budget_paused (neither of those is why it cannot run)', () => {
+    expect(deriveTaskPhase({
+      taskStatus: 'pending',
+      isMissionBudgetExhausted: true,
+      isBlocked: true,
+      isBudgetPaused: true,
+    })).toBe('mission_budget_exhausted');
+  });
+
+  it('subject_dead still outranks it — that one cannot be cleared at all', () => {
+    expect(deriveTaskPhase({
+      taskStatus: 'pending',
+      isSubjectDead: true,
+      isMissionBudgetExhausted: true,
+    })).toBe('subject_dead');
+  });
+
+  it('a live worker outranks it (work in flight is real)', () => {
+    expect(deriveTaskPhase({
+      taskStatus: 'pending',
+      isMissionBudgetExhausted: true,
+      workerStatus: 'running',
+    })).toBe('running');
+  });
+
+  it('terminal statuses are unaffected', () => {
+    expect(deriveTaskPhase({ taskStatus: 'completed', isMissionBudgetExhausted: true })).toBe('completed');
+    expect(deriveTaskPhase({ taskStatus: 'failed', isMissionBudgetExhausted: true })).toBe('failed');
+  });
+});
+
+// ─── D5: anchor-source coherence ─────────────────────────────────────────────
+//
+// `source: 'context'` is emitted by TWO extractor paths: the legacy structured
+// context mapping (confidence 'exact') and an explicitly-passed API
+// subjectAnchor (confidence defaults to 'derived', because the server never
+// resolved the reference against GitHub). Binding on source alone meant an API
+// caller passing `subjectAnchor: { prNumber }` as a hint got a task the PR
+// closing could kill — the aeb80f bug at smaller scale.
+
+describe('isSubjectDead — binding requires source AND confidence', () => {
+  const reconciled = {
+    subjectKind: 'pull_request',
+    subjectPrNumber: 1789,
+    subjectResolution: 'reconciled',
+  };
+
+  it('a context/derived anchor (the explicit-API default) is advisory, not mortal', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      ...reconciled,
+      subjectAnchor: { source: 'context', confidence: 'derived' },
+    })).toBe(false);
+  });
+
+  it('a context/exact anchor (legacy structured context) still gates', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      ...reconciled,
+      subjectAnchor: { source: 'context', confidence: 'exact' },
+    })).toBe(true);
+  });
+
+  it('a system/exact anchor (retry / watcher machinery) still gates', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      ...reconciled,
+      subjectAnchor: { source: 'system', confidence: 'exact' },
+    })).toBe(true);
+  });
+
+  it('an anchor with no confidence keeps its previous behaviour (confidence is required on persisted anchors)', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({ ...reconciled, subjectAnchor: { source: 'system' } })).toBe(true);
+  });
+
+  it('a derived confidence never rescues a non-binding source either', async () => {
+    const { isSubjectDead } = await import('./task-presentation');
+    expect(isSubjectDead({
+      ...reconciled,
+      subjectAnchor: { source: 'text', confidence: 'exact' },
+    })).toBe(false);
+  });
+});

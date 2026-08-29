@@ -20,7 +20,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
-import { pathsOverlap } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notify } from '@/lib/pushover';
@@ -133,7 +133,8 @@ export function buildConflictRetryTask(params: ConflictRetryInput): ConflictRetr
   const nextIteration = currentIteration + 1;
 
   // Inherit pathManifest from original task; fall back to ['**'] for mission tasks
-  // so the path-overlap serialization gate fires correctly for sibling tasks.
+  // to record "scope undeclared". The sentinel is advisory only — it does NOT
+  // create dependsOn edges (see the auto-dependsOn block in dispatchConflictRetry).
   const pathManifest: string[] | null =
     originalTask.pathManifest && originalTask.pathManifest.length > 0
       ? originalTask.pathManifest
@@ -370,9 +371,18 @@ export async function dispatchConflictRetry(
     return { dispatched: false, exhausted: true };
   }
 
-  // Auto-compute dependsOn for path-overlap serialization — same logic as POST /api/tasks.
+  // Auto-compute dependsOn for path-overlap serialization — same rule as POST /api/tasks.
+  // Uses shouldSerializeByManifest(), so a repo-wide sentinel ('**') on either side
+  // produces NO stored edge: the sentinel is advisory-only at claim time
+  // (findBlockingPr + the path_claims backstop both skip it), and a hard dependsOn
+  // edge blocks until the upstream task is completed AND its PR merged. Keeping this
+  // identical to the tasks route is deliberate — the two paths must not drift.
   const resolvedDependsOn: string[] = [];
-  if (retryTask.pathManifest && retryTask.pathManifest.length > 0) {
+  if (
+    retryTask.pathManifest &&
+    retryTask.pathManifest.length > 0 &&
+    !isAdvisoryManifest(retryTask.pathManifest)
+  ) {
     const inFlightTasks = await db.query.tasks.findMany({
       where: and(
         eq(tasks.workspaceId, workspaceId),
@@ -382,8 +392,7 @@ export async function dispatchConflictRetry(
       columns: { id: true, pathManifest: true },
     });
     for (const t of inFlightTasks) {
-      if (!t.pathManifest?.length) continue;
-      if (pathsOverlap(retryTask.pathManifest, t.pathManifest as string[])) {
+      if (shouldSerializeByManifest(retryTask.pathManifest, t.pathManifest as string[] | null)) {
         resolvedDependsOn.push(t.id);
       }
     }

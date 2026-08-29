@@ -533,6 +533,10 @@ export default async function MissionDetailPage({
 
   const rawGroups = groupChainUnits(condensedTasksForGrouping, condensedTaskMapForGrouping);
 
+  // Mission-level claim gate, hoisted once: `mission` is a reassignable `let`, so
+  // TS cannot narrow it inside the closure below.
+  const missionBudgetExhausted = mission?.status === 'budget_exhausted';
+
   // Convert a raw group member to a CondensedTimelineTask with enriched display fields
   function toTimelineTask(condensedTask: CondensedTask): CondensedTimelineTask {
     const task = taskMap.get(condensedTask.id)!;
@@ -547,6 +551,11 @@ export default async function MissionDetailPage({
       taskUpdatedAt: task.updatedAt.toISOString(),
       roleColor: role?.color ?? '#8A8478',
       chain: chainByTaskId.get(task.id) ?? null,
+      // Mission-level claim gate: a budget_exhausted mission blocks every one of
+      // its pending tasks until a human raises the budget, and it never clears on
+      // its own. Surfacing it per row keeps this timeline from showing an
+      // unclaimable task as QUEUED (rule CG-2).
+      missionBudgetExhausted: missionBudgetExhausted,
       latestWorker: condensedTask.workers[0] ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
       loopState: task.loopState ?? null,

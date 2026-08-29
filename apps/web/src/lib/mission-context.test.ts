@@ -112,7 +112,61 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Dynamic import so mocks are wired up
-const { buildMissionContext, getWorkspaceRoles } = await import('./mission-context');
+const { buildMissionContext, getWorkspaceRoles, knowledgePathsFromManifests } = await import('./mission-context');
+
+// ── knowledgePathsFromManifests ──
+// The repo-wide sentinel '**' is not a path — it means "scope not declared".
+// Passing it into the knowledge-store path lookup makes it search for a file
+// literally named '**'. Filter it out before the lookup.
+
+describe('knowledgePathsFromManifests', () => {
+  it('collects concrete paths from active task manifests', () => {
+    expect(knowledgePathsFromManifests([
+      { pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { pathManifest: ['packages/core/db/schema.ts', 'apps/web/src/lib/bar.ts'] },
+    ])).toEqual([
+      'apps/web/src/lib/foo.ts',
+      'packages/core/db/schema.ts',
+      'apps/web/src/lib/bar.ts',
+    ]);
+  });
+
+  it('drops the repo-wide sentinel', () => {
+    expect(knowledgePathsFromManifests([
+      { pathManifest: ['**'] },
+      { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ])).toEqual(['apps/web/src/lib/foo.ts']);
+  });
+
+  it('keeps concrete paths that ride alongside the sentinel', () => {
+    // check_path_claim extends a manifest in place, so '**' can coexist with
+    // real paths. The real paths are still useful search terms.
+    expect(knowledgePathsFromManifests([
+      { pathManifest: ['**', 'apps/web/src/lib/foo.ts'] },
+    ])).toEqual(['apps/web/src/lib/foo.ts']);
+  });
+
+  it('returns an empty array when every manifest is the sentinel', () => {
+    expect(knowledgePathsFromManifests([
+      { pathManifest: ['**'] },
+      { pathManifest: ['**'] },
+    ])).toEqual([]);
+  });
+
+  it('tolerates missing, null, and empty manifests', () => {
+    expect(knowledgePathsFromManifests([
+      {},
+      { pathManifest: null },
+      { pathManifest: [] },
+    ])).toEqual([]);
+  });
+
+  it('drops falsy entries', () => {
+    expect(knowledgePathsFromManifests([
+      { pathManifest: ['', 'apps/web/src/lib/foo.ts'] as string[] },
+    ])).toEqual(['apps/web/src/lib/foo.ts']);
+  });
+});
 
 describe('buildMissionContext', () => {
   beforeEach(() => {
