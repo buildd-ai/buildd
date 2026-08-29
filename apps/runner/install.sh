@@ -372,6 +372,49 @@ if [ -n "$SHELL_RC" ] && ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
   echo -e "${YELLOW}Added ~/.local/bin to PATH in $SHELL_RC${NC}"
 fi
 
+# Install codebase-memory-mcp binary.
+# This mirrors the layer in docker/worker/Dockerfile, but that Dockerfile is only
+# used when the worker image is explicitly rebuilt. Running install.sh is what
+# actually provisions binaries on Coder workspaces, so we install here too.
+CBM_VERSION="0.9.0"
+CBM_BINARY_PATH="/opt/buildd/bin/codebase-memory-mcp"
+
+if "$CBM_BINARY_PATH" --version >/dev/null 2>&1; then
+  CBM_EXISTING=$("$CBM_BINARY_PATH" --version 2>&1 | head -1 || true)
+  echo -e "${GREEN}codebase-memory-mcp already present: ${CBM_EXISTING}${NC}"
+else
+  echo -e "${GREEN}Installing codebase-memory-mcp v${CBM_VERSION}...${NC}"
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64)
+      CBM_ARCH="amd64"
+      CBM_SHA256="e2832a8d207c26beaa30efa6222ed4a37cb3f526ca4bee060bfbf336ed6fc679"
+      ;;
+    aarch64|arm64)
+      CBM_ARCH="arm64"
+      CBM_SHA256="68a345d9a6842f02a3cb07e187b28bc38c4f3a22967f47fadbcd0757ba93a680"
+      ;;
+    *)
+      echo -e "${YELLOW}Warning: Unsupported arch $ARCH — skipping CBM install.${NC}"
+      echo -e "${YELLOW}  Install manually: https://github.com/DeusData/codebase-memory-mcp/releases/v${CBM_VERSION}${NC}"
+      CBM_ARCH=""
+      ;;
+  esac
+
+  if [ -n "$CBM_ARCH" ]; then
+    curl -fsSL \
+      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-linux-${CBM_ARCH}.tar.gz" \
+      -o /tmp/cbm.tar.gz
+    echo "${CBM_SHA256}  /tmp/cbm.tar.gz" | sha256sum -c
+    sudo mkdir -p /opt/buildd/bin
+    sudo tar -xzf /tmp/cbm.tar.gz -C /opt/buildd/bin codebase-memory-mcp
+    sudo chmod +x "$CBM_BINARY_PATH"
+    rm /tmp/cbm.tar.gz
+    CBM_VER=$("$CBM_BINARY_PATH" --version 2>&1 | head -1 || echo "installed")
+    echo -e "${GREEN}codebase-memory-mcp installed: ${CBM_VER}${NC}"
+  fi
+fi
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
