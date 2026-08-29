@@ -507,7 +507,13 @@ If a near-duplicate exists, update it instead of creating a new entry.
     color: '#F59E0B',
     model: 'sonnet',
     isRole: true,
-    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'],
+    // The role's own content instructs it to run `buildd action=spec_compare`, so
+    // the declaration must list the tool. Note this field is only *enforced* on the
+    // useSkillAgents subagent path (workers.ts maps it to the SDK `tools` option);
+    // for a normal main-agent role it is descriptive, which is why the omission was
+    // not what blocked spec_compare. The actual blocker was action-level gating —
+    // spec_compare sat in adminActions and is now in workerActions.
+    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd'],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },

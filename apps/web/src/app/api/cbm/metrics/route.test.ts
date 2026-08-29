@@ -144,15 +144,79 @@ describe('GET /api/cbm/metrics', () => {
     expect(body.cbmDisabled.disableReasons.binary_absent).toBe(1);
   });
 
-  it('computes specTargets with correct delta pct', async () => {
+  it('suppresses deltas when the only disabled tasks are binary_absent', async () => {
     mockAuthenticateApiKey.mockResolvedValue(adminAccount);
-    // active: 8000 tokens, disabled: 12000 tokens → delta = (8000-12000)/12000 = -0.333...
+    // The single disabled task is binary_absent, so there is no control cohort:
+    // those workers never had the capability at all. Comparing against them is
+    // what produced a bogus -80% on first rollout.
     mockWorkersFindMany.mockResolvedValue([workerWithCbmEnforced, workerWithCbmDisabled]);
     const res = await GET(makeRequest({}, 'bld_admin'));
     const body = await res.json();
-    expect(body.specTargets.inputTokenDeltaPct).toBeCloseTo(-0.333, 2);
+    expect(body.cbmDisabled.comparableCount).toBe(0);
+    expect(body.specTargets.inputTokenDeltaPct).toBeNull();
+    expect(body.specTargets.fileAccessDeltaPct).toBeNull();
     expect(body.specTargets.fallbackRateTarget).toBe(0.05);
     expect(body.specTargets.fallbackRateMet).toBe(false); // 0.5 > 0.05
+  });
+
+  it('suppresses deltas and flags the reason when no graph tool calls were observed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    // 5 active workers with CBM mounted but never queried, against 5 legitimate
+    // (role_opt_out) controls. Both cohorts clear MIN_COHORT, so only the missing
+    // mechanism suppresses the delta. This is the exact first-rollout condition.
+    const mountedButUnused = {
+      ...workerWithCbmEnforced,
+      resultMeta: {
+        cbm: {
+          ...(workerWithCbmEnforced.resultMeta as any).cbm,
+          toolCalls: {},
+        },
+      },
+    };
+    const optedOut = {
+      ...workerWithCbmDisabled,
+      resultMeta: {
+        cbm: {
+          ...(workerWithCbmDisabled.resultMeta as any).cbm,
+          disableReason: 'role_opt_out',
+        },
+      },
+    };
+    mockWorkersFindMany.mockResolvedValue([
+      ...Array(5).fill(mountedButUnused),
+      ...Array(5).fill(optedOut),
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmActive.count).toBe(5);
+    expect(body.cbmActive.activeWithZeroToolCalls).toBe(5);
+    expect(body.cbmActive.mechanismObserved).toBe(false);
+    expect(body.cbmDisabled.comparableCount).toBe(5);
+    expect(body.specTargets.inputTokenDeltaPct).toBeNull();
+    expect(body.specTargets.deltasSuppressedBecause).toBe('no_graph_tool_calls_observed');
+  });
+
+  it('reports deltas once both cohorts are sufficient and the mechanism is observed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    const optedOut = {
+      ...workerWithCbmDisabled,
+      resultMeta: {
+        cbm: {
+          ...(workerWithCbmDisabled.resultMeta as any).cbm,
+          disableReason: 'role_opt_out',
+        },
+      },
+    };
+    mockWorkersFindMany.mockResolvedValue([
+      ...Array(5).fill(workerWithCbmEnforced), // these DO have toolCalls
+      ...Array(5).fill(optedOut),
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmActive.mechanismObserved).toBe(true);
+    expect(body.specTargets.deltasSuppressedBecause).toBeNull();
+    // active 8000 vs comparable 12000 → -0.333...
+    expect(body.specTargets.inputTokenDeltaPct).toBeCloseTo(-0.333, 2);
   });
 
   it('respects the window param', async () => {

@@ -134,6 +134,11 @@ export const triggerActions = [
 ] as const;
 
 export const workerActions = [
+  // spec_compare is read-only retrieval over {ws}:spec and {ws}:code. It grants no
+  // data access a worker lacks — query_knowledge/recall already reach both corpora —
+  // so gating it to admin only meant the spec-validator role could never run its own
+  // documented workflow (default-roles.ts instructs it to call spec_compare).
+  'spec_compare',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -167,7 +172,6 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
-  'spec_compare',
   'consolidate_knowledge',
   'memory_delete',
 ] as const;
@@ -240,7 +244,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -4001,31 +4005,60 @@ type MemoryActionCtx = {
  * bridge the prose→identifier vocabulary gap when querying the :code namespace
  * with lexical search.
  */
+type AnchorKind = 'symbol' | 'path' | 'route';
+
+/**
+ * Max anchors sent to the second-hop lexical query. Raised from 20: at 20 the cap
+ * was binding on ~80% of candidates (see the ranking note below), so the limit
+ * itself was suppressing recall rather than controlling query cost.
+ */
+const ANCHOR_LIMIT = 40;
+
 function extractImplementationAnchors(chunks: QueryResult[]): string[] {
   const combined = chunks.map(r => r.content).join('\n');
   const anchors = new Set<string>();
+  const kind = new Map<string, AnchorKind>();
 
   // File paths: apps/* and packages/*
   for (const m of combined.matchAll(/\b(?:apps|packages)\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|sql|md|mdx)\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'path');
   }
 
   // Route paths: /api/...
   for (const m of combined.matchAll(/\/api\/[a-zA-Z0-9/[\]_-]+/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'route');
   }
 
   // camelCase symbols (function/variable names): lowercase start, uppercase within, ≥6 chars
   for (const m of combined.matchAll(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g)) {
-    if (m[0].length >= 6) anchors.add(m[0]);
+    if (m[0].length >= 6) { anchors.add(m[0]); kind.set(m[0], 'symbol'); }
   }
 
   // PascalCase types/classes/interfaces: uppercase start, ≥6 chars
   for (const m of combined.matchAll(/\b[A-Z][a-z][a-zA-Z0-9]{4,}\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'symbol');
   }
 
-  return [...anchors].slice(0, 20);
+  // Rank before truncating. Previously this returned insertion order, which is
+  // pass order: every file path, then every /api/ route, then camelCase, then
+  // PascalCase. Measured over this repo's own design docs there are ~97 candidates
+  // per call against a 20-slot cap, so paths and route strings routinely consumed
+  // the whole budget and PascalCase types were dropped structurally — even though
+  // the second hop is a lexical identifier query where symbols are the high-signal
+  // terms. Symbols now rank ahead of paths, and paths ahead of bare route strings.
+  const RANK: Record<AnchorKind, number> = { symbol: 0, path: 1, route: 2 };
+  const ranked = [...anchors].sort((a, b) => {
+    const byKind = RANK[kind.get(a) ?? 'route'] - RANK[kind.get(b) ?? 'route'];
+    if (byKind !== 0) return byKind;
+    // Within a kind, prefer more specific (longer) anchors.
+    if (b.length !== a.length) return b.length - a.length;
+    return a.localeCompare(b);
+  });
+
+  return ranked.slice(0, ANCHOR_LIMIT);
 }
 
 /**

@@ -82,3 +82,71 @@ export async function detectCbmFleetDisabled(
     // Never let health tracking break the completion path.
   }
 }
+
+/** Consecutive enforced-but-unqueried outcomes that trigger the adoption alert. */
+export const CBM_UNUSED_THRESHOLD = 10;
+
+function isEnforcedAndUnused(cbm: unknown): boolean {
+  if (!cbm || typeof cbm !== 'object') return false;
+  const c = cbm as Record<string, unknown>;
+  if (c.outcome === 'disabled') return false;
+  const calls = c.toolCalls;
+  if (!calls || typeof calls !== 'object') return true; // mounted, nothing recorded
+  return Object.values(calls as Record<string, number>).reduce((a, b) => a + (b ?? 0), 0) === 0;
+}
+
+/**
+ * Detect CBM being mounted but never queried.
+ *
+ * This is the failure mode that replaced binary_absent. Once the binary shipped,
+ * enforcement started firing on every qualifying worker and the graph was indexed
+ * in ~12s per task — and on first rollout the first cohort of active workers made
+ * ZERO graph tool calls. That is invisible to detectCbmFleetDisabled, because
+ * nothing is "disabled": the capability is present, warm, and ignored.
+ *
+ * Without this signal the only trace is an empty `avgToolCalls` object on an
+ * endpoint nobody reads — the same shape of silent degradation that let
+ * binary_absent run for four weeks.
+ *
+ * Threshold is deliberately higher than the disabled check: a single task with no
+ * structural question is expected to make no graph calls, so only a sustained run
+ * of them indicates the steering is not working.
+ */
+export async function detectCbmEnforcedUnused(
+  workspaceId: string,
+  currentCbm: unknown,
+): Promise<void> {
+  try {
+    if (!opsEnabled()) return;
+    if (!isEnforcedAndUnused(currentCbm)) return;
+
+    const prior = await db.query.workers.findMany({
+      where: and(
+        eq(workers.workspaceId, workspaceId),
+        eq(workers.status, 'completed'),
+        isNotNull(workers.resultMeta),
+      ),
+      columns: { resultMeta: true },
+      orderBy: [desc(workers.completedAt)],
+      limit: CBM_UNUSED_THRESHOLD - 1,
+    });
+
+    if (prior.length < CBM_UNUSED_THRESHOLD - 1) return;
+
+    const allUnused = prior.every(row => {
+      const cbm = (row.resultMeta as Record<string, unknown> | null)?.cbm;
+      return isEnforcedAndUnused(cbm);
+    });
+    if (!allUnused) return;
+
+    await reportOps({
+      source: 'cbm-health',
+      severity: 'warning',
+      message: `CBM mounted but never queried on last ${CBM_UNUSED_THRESHOLD} workers`,
+      detail: `workspace=${workspaceId} — codebase-memory is enforced and pre-indexed, but no agent called an mcp__codebase-memory__* tool across ${CBM_UNUSED_THRESHOLD} consecutive tasks. The graph is being built and paid for and not used; prompt steering is likely ineffective.`,
+      dedupeKey: `cbm-enforced-unused:${workspaceId}`,
+    });
+  } catch {
+    // Never let health tracking break the completion path.
+  }
+}
