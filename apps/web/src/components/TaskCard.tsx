@@ -348,9 +348,15 @@ export function TaskCard({
             </div>
           )}
 
-          {/* T2 — DependencyRail (replaces prose blocked-on div) */}
-          {chain && chain.blockedBy.length > 0 && (
-            <DependencyRail blockedBy={chain.blockedBy} />
+          {/* T2 — DependencyRail. Renders the transitively reduced frontier, not
+              the raw edge list: the auto-dependsOn pass routinely writes 5–8
+              edges of which one or two are the real blocker. */}
+          {chain && chain.blockedByFrontier.length > 0 && (
+            <DependencyRail
+              blockedBy={chain.blockedByFrontier}
+              totalBlocked={chain.blockedBy.length}
+              max={1}
+            />
           )}
 
         </div>
@@ -427,8 +433,11 @@ export function TaskCard({
       {chain && chain.total > 1 && (
         <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 mb-1.5 pointer-events-none">
           <ChainStrip chain={chain} />
-          {chain.blockedBy.length > 0 && (
-            <DependencyRail blockedBy={chain.blockedBy} />
+          {chain.blockedByFrontier.length > 0 && (
+            <DependencyRail
+              blockedBy={chain.blockedByFrontier}
+              totalBlocked={chain.blockedBy.length}
+            />
           )}
           {chain.unblocks > 0 && chain.blockedBy.length === 0 && (
             <span className="text-[10px] text-text-muted">

@@ -2,7 +2,7 @@
 title: Timeline Dependency Geometry — DAG Shapes
 status: active
 owner: builder
-last_verified: 2026-08-21
+last_verified: 2026-08-28
 supersedes: []
 ---
 
@@ -27,11 +27,12 @@ rules so the dependency structure is unambiguous without prose annotation.
 | **chain** | A sequence of tasks where each depends on the previous. May be a sub-path in a larger DAG. |
 | **chain head** | The task in a chain with no dependency visible in the current section. |
 | **elbow** | The visual connector: left-border (`border-l`) + left-margin (`ml-4`) on a task row wrapper that signals "this row descends from the row above." |
-| **compact chip** | `DependencyRail` rendered with `blockerVisible=false`: a `← #N` monospaced reference beside the task row. |
+| **compact chip** | `DependencyRail` output: a monospaced `← {blocker title}` reference beside the task row, linking to the blocking task. |
 | **cross-section blocker** | A blocker task that lands in a different section (e.g., waitingOnYou) from the blocked task (blocked). |
 | **intra-section dependency** | Blocker and blocked both in the same section. |
 | **topological order** | Within a section, blockers appear before the tasks that depend on them. |
-| **gate-satisfied** | `isGateSatisfied()` returns true: dep.status === 'completed' AND no open (unmerged) PR. |
+| **gate-satisfied** | `isGateSatisfied()` returns true. See §2.5 — the definition is shared with the claim route, not restated here. |
+| **frontier blocker** | A blocker not transitively implied by another blocker: `chain.blockedByFrontier`. See §2.6. |
 
 ---
 
@@ -98,20 +99,28 @@ not by nesting.
 
 ### 2.3 Compact chip — everything else
 
-When the elbow conditions in §2.2 are not met, `DependencyRail` is rendered
-with `blockerVisible=false`. It emits a monospaced `← #N` chip for each direct
-blocker with a PR, or `← ${id.slice(0,6)}` for blockers without a PR.
+When the elbow conditions in §2.2 are not met, `DependencyRail` emits a
+monospaced `← {blocker title}` chip per named blocker, suffixed with `#{prNumber}`
+when the blocker is the half state (completed, PR still open). Each chip links to
+the blocking task.
 
-**Rule CC-1**: Multiple blockers are rendered as comma-separated chips on a
-single line: `← #12, #47`.
+**Rule CC-1**: Blockers are named, not hashed. The chip label is the blocker's
+title, truncated to `MAX_TITLE_CHARS`. `← ${id.slice(0,6)}` is banned — a 6-char
+hash gives the reader nothing to act on, which is why the rail was unreadable
+when a task carried eight of them.
 
 **Rule CC-2**: The compact chip MUST replace the prose `← blocked on {title}`
-div currently in `TaskRow`. The prose form is deleted; `DependencyRail` is the
-sole dependency signal.
+div. The prose form is deleted; `DependencyRail` is the sole dependency signal.
+Naming the blocker inside a chip is not prose — sentence form remains banned.
 
-**Rule CC-3**: A task's compact chip references only its **direct** blockers
-(`chain.blockedBy`), never transitive blockers. Transitive depth is visible via
-the chain-position indicator.
+**Rule CC-3**: The rail names only **frontier** blockers
+(`chain.blockedByFrontier`), never blockers that another named blocker already
+implies. Remaining blockers collapse into a `+N upstream` tail; transitive depth
+is visible via the chain-position indicator.
+
+**Rule CC-4**: The rail names at most `max` blockers (1 in `row` density, 2 in
+`full`). Overflow joins the `+N upstream` tail. Comma-separated chip lists of
+unbounded length are banned — they were the observed failure mode.
 
 ### 2.4 Cross-section blocker — the root-cause decision
 
@@ -136,6 +145,52 @@ chain.
 
 **Rule XS-3**: The cross-section chip carries the PR number (`← #N`) when the
 blocker has one, making it directly navigable.
+
+---
+
+### 2.5 Gate parity with the claim route
+
+**Rule GP-1**: `isGateSatisfied()` (display) and `dependenciesSatisfied()` (claim
+SQL) MUST agree on every input. Both read `DEP_SATISFYING_STATUSES` and
+`DEP_UNBLOCKING_PR_LIFECYCLE` from `apps/web/src/lib/dep-gate-contract.ts`; the
+contract is defined there and nowhere else.
+
+**Rule GP-2**: A dep with status `cancelled` is **satisfied** and carries no
+open-PR guard. A dep with status `completed` whose PR is unmerged but
+`prLifecycleStatus === 'closed'` is **satisfied**. Rendering either as a blocker
+is a phantom-blocker bug: the task is claimable while the UI shows BLOCKED.
+
+**Rule GP-3**: Any surface computing a chain MUST select `prLifecycleStatus` on
+dep workers and MUST NOT apply `limit: 1` — the gate asks whether *any* worker
+holds an open PR, so reading only the latest worker misses an older one.
+
+**Rule GP-4**: A `cancelled` dep renders as the `skipped` segment state (struck
+box), not `empty`. It is satisfied, but it was never delivered — collapsing it
+into `filled` would claim work landed that did not.
+
+### 2.6 Transitive reduction
+
+The auto-`dependsOn` pass in `apps/web/src/app/api/tasks/route.ts` adds an edge
+to every in-flight task with an overlapping `pathManifest`. Mission tasks without
+an explicit manifest default to `['**']`, which overlaps everything, so a task
+routinely carries 5–8 edges of which one or two are the real frontier.
+
+**Rule TR-1**: `chain.blockedBy` stays the truthful full set — it drives the
+BLOCKED badge and the `+N upstream` count. `chain.blockedByFrontier` is what the
+rail names.
+
+**Rule TR-2**: A blocker is dropped from the frontier only when another blocker
+reaches it by following `dependsOn` edges present in the dep set. Reachability
+walks through already-satisfied nodes; edges pointing outside the dep set are
+ignored.
+
+**Rule TR-3**: Reduction MUST NOT empty a non-empty blocker set. A dependency
+cycle (malformed data) would otherwise leave a BLOCKED task with no visible
+reason; the full list is returned instead.
+
+**Rule TR-4**: Reduction is display-only. The stored `dependsOn` edges are not
+rewritten — the dense edge set is what serializes overlapping paths, and thinning
+it would let a dependent unblock when a mid-chain dep is cancelled.
 
 ---
 
@@ -474,17 +529,19 @@ Primary files implementing this spec:
 - `apps/web/src/components/DependencyRail.tsx` — `DependencyRail`
 - `apps/web/src/components/StageChip.tsx` — `StageChip`, `deriveStage`
 - `apps/web/src/components/SegmentStrip.tsx` — `SegmentStrip`
-- `apps/web/src/lib/task-presentation.ts` — `deriveChainPosition`, `ChainPositionResult`, `deriveTimestampLabel`
+- `apps/web/src/lib/task-presentation.ts` — `deriveChainPosition`, `ChainPositionResult`, `isGateSatisfied`, `deriveTimestampLabel`
+- `apps/web/src/lib/dep-gate-contract.ts` — `DEP_SATISFYING_STATUSES`, `DEP_UNBLOCKING_PR_LIFECYCLE`
+- `apps/web/src/app/api/workers/claim/deps-gate.ts` — `dependenciesSatisfied` (the claim-side half of §2.5)
 
 ---
 
 ## Acceptance criteria
 
-**AC-1**: GIVEN a linear chain A→B→C→D (all in `blocked`, A blocked by a cross-section `waitingOnYou` task), WHEN the timeline renders, THEN B shows a compact chip `← #N`, and C/D/E each render with `ml-4 border-l` elbow wrapper (no prose `← blocked on` text appears).
+**AC-1**: GIVEN a linear chain A→B→C→D (all in `blocked`, A blocked by a cross-section `waitingOnYou` task), WHEN the timeline renders, THEN B shows a compact chip naming its blocker's title, and C/D/E each render with `ml-4 border-l` elbow wrapper (no prose `← blocked on` text appears).
 
 **AC-2**: GIVEN the same chain with `chain.total = 4`, WHEN the timeline renders, THEN each of B/C/D shows `step N/4` muted indicator, NOT on the waitingOnYou task at the head.
 
-**AC-3**: GIVEN a fan-in task D blocked by both B and C (`chain.blockedBy.length === 2`), WHEN the timeline renders, THEN D shows NO elbow indent and shows compact chip `← #B_pr, #C_pr` (multi-ref form).
+**AC-3**: GIVEN a fan-in task D blocked by both B and C where neither reaches the other (`chain.blockedByFrontier.length === 2`), WHEN the timeline renders, THEN D shows NO elbow indent and names both blockers by title (`row` density names one and tails `+1 upstream`).
 
 **AC-4**: GIVEN a diamond A→B, A→C, B→D, C→D (all in `blocked`), WHEN the timeline renders, THEN C's chip references A (not B), and D's chip references B and C. The rendering MUST NOT imply any dependency between B and C.
 
@@ -499,6 +556,16 @@ Primary files implementing this spec:
 **AC-9**: GIVEN a partially-complete chain A→B→C where A is done, B is running, C is nextQueued, WHEN the timeline renders, THEN A appears only in the done (wave-banded) section; C appears in nextQueued with no DependencyRail chip (all gates satisfied).
 
 **AC-10** (rejection): GIVEN any task row in the timeline, WHEN it is in the `blocked` group with a direct blocker, THEN the prose text `← blocked on` MUST NOT appear.
+
+**AC-11** (rejection): GIVEN any task row, WHEN `DependencyRail` renders, THEN no chip label matches `/^[0-9a-f]{6}$/` — blockers are named, never hashed (Rule CC-1).
+
+**AC-12**: GIVEN a task whose every dep is `cancelled`, WHEN the row renders, THEN the stage chip is `QUEUED` (not `BLOCKED`), no `DependencyRail` appears, and each dep's segment renders `skipped` (Rules GP-2, GP-4).
+
+**AC-13**: GIVEN a task with a `completed` dep whose PR is unmerged and `prLifecycleStatus === 'closed'`, WHEN the row renders, THEN that dep is not a blocker (Rule GP-2) — matching what the claim route would allow.
+
+**AC-14**: GIVEN a task with 8 deps of which 2 are `cancelled` and 5 are transitively implied by the 6th, WHEN the row renders in `row` density, THEN exactly one blocker is named and the tail reads `+5 upstream` (Rules CC-3, CC-4, TR-1).
+
+**AC-15**: GIVEN a dep set containing a cycle among blockers, WHEN the frontier is derived, THEN it is non-empty (Rule TR-3).
 
 ---
 

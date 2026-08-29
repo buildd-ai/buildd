@@ -1,21 +1,18 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { tasks, workers } from '@buildd/core/db/schema';
+import {
+  DEP_SATISFYING_STATUSES,
+  DEP_UNBLOCKING_PR_LIFECYCLE,
+} from '@/lib/dep-gate-contract';
 
 /**
- * Dependency statuses that SATISFY (unblock) a dependent task in the claim gate.
- *
- *   - `completed` — the delivered path (an open/unmerged PR still blocks; see below).
- *   - `cancelled` — an intentional "this won't be delivered" signal. Cancelling a
- *     dead/abandoned dependency is a deliberate act; its dependents should proceed
- *     rather than be gated forever. (Previously a cancelled dep blocked every
- *     dependent indefinitely — a footgun.)
- *
- * Any other status — notably `failed`, `pending`, `in_progress` — remains BLOCKING.
- *
- * This constant is the single source of truth: `dependenciesSatisfied()` builds
- * its SQL `IN (...)` list from it, so the SQL cannot drift from the contract.
+ * Re-exported for callers already importing the contract from the gate module.
+ * The definition lives in lib/dep-gate-contract.ts so the display gate
+ * (`isGateSatisfied` in lib/task-presentation.ts) reads the same constant —
+ * `dependenciesSatisfied()` below builds its SQL `IN (...)` list from it, so
+ * neither the SQL nor the UI can drift from the contract.
  */
-export const DEP_SATISFYING_STATUSES = ['completed', 'cancelled'] as const;
+export { DEP_SATISFYING_STATUSES };
 
 /**
  * Dependency-completion gate for the claim route.
@@ -56,7 +53,7 @@ export function dependenciesSatisfied(): SQL {
           WHERE w.task_id = t2.id
           AND w.pr_url IS NOT NULL
           AND w.merged_at IS NULL
-          AND COALESCE(w.pr_lifecycle_status, '') != 'closed'
+          AND COALESCE(w.pr_lifecycle_status, '') != ${DEP_UNBLOCKING_PR_LIFECYCLE}
         )
       )
     )

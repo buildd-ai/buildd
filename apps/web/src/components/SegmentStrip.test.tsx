@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { SegmentStrip } from './SegmentStrip';
 
-const seg = (id: string, state: 'solid' | 'empty' | 'half' | 'notch' = 'solid') => ({ taskId: id, state });
+const seg = (id: string, state: 'solid' | 'empty' | 'half' | 'notch' | 'skipped' = 'solid') => ({ taskId: id, state });
 const manySegs = Array.from({ length: 10 }, (_, i) => seg(`t${i}`));
 const fewSegs = [seg('a', 'solid'), seg('b', 'empty'), seg('c', 'half')];
 
@@ -81,5 +81,30 @@ describe('SegmentStrip', () => {
       expect(d).toContain(`aria-label="${label}"`);
       expect(c).toContain(`aria-label="${label}"`);
     });
+  });
+});
+
+// A cancelled dep is gate-satisfied but was never delivered. It must be visually
+// distinct from both 'solid' (delivered) and 'empty' (still blocking) — collapsing
+// it into either misreports what happened. See timeline-dependency-geometry §2.5 GP-4.
+describe('SegmentStrip — skipped state', () => {
+  it('renders a struck-through box, distinct from solid and empty', () => {
+    const skipped = renderToStaticMarkup(<SegmentStrip segments={[seg('a', 'skipped')]} continuous={false} />);
+    const solid = renderToStaticMarkup(<SegmentStrip segments={[seg('a', 'solid')]} continuous={false} />);
+    const empty = renderToStaticMarkup(<SegmentStrip segments={[seg('a', 'empty')]} continuous={false} />);
+    expect(skipped).not.toBe(solid);
+    expect(skipped).not.toBe(empty);
+    expect(skipped).toContain('linear-gradient(45deg');
+  });
+
+  it('is muted, not success-coloured — it did not land', () => {
+    const html = renderToStaticMarkup(<SegmentStrip segments={[seg('a', 'skipped')]} continuous={false} />);
+    expect(html).toContain('text-text-muted');
+    expect(html).not.toContain('text-status-success');
+  });
+
+  it('renders in continuous mode too', () => {
+    const html = renderToStaticMarkup(<SegmentStrip segments={[seg('a', 'skipped'), seg('b', 'solid')]} continuous={true} />);
+    expect(html).toContain('linear-gradient(45deg');
   });
 });

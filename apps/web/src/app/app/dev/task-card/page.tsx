@@ -196,6 +196,75 @@ const TASK_STANDALONE = {
   chain: null,
 };
 
+/**
+ * The prod fan-in shape: mission tasks default to pathManifest ['**'], so the
+ * auto-dependsOn pass in api/tasks/route.ts wires an edge to every in-flight
+ * task. This is task 233df6 as it existed on 2026-08-28 — 8 edges, of which two
+ * are cancelled (satisfied) and five are transitively implied by one blocker.
+ * The rail must name that one blocker, not print 8 hashes.
+ */
+const TASK_DENSE_FANIN = {
+  id: 'task-007',
+  title: 'Sync gate specs to shipped code',
+  taskStatus: 'pending',
+  workerStatus: null as null,
+  missionId: 'mission-gate',
+  missionTitle: 'Claim-gate consolidation: one implementation, delete capabilities',
+  workspaceName: 'buildd',
+  taskCreatedAt: ago(9 * hr),
+  taskUpdatedAt: ago(9 * hr),
+  workerStartedAt: null,
+  workerUpdatedAt: null,
+  intensity: null,
+  runnerName: null,
+  prUrl: null,
+  prNumber: null,
+  chain: deriveChainPosition({
+    task: { id: 'task-007', status: 'pending' },
+    deps: [
+      { id: 'dep-afa5b0', title: 'Single source of truth for claim gates', status: 'cancelled', workers: [], dependsOn: [] },
+      { id: 'dep-9a1e54', title: 'Remove the capability gate and requiredCapabilities matching', status: 'cancelled', workers: [], dependsOn: [] },
+      { id: 'dep-875ff4', title: 'Budget Forecast UI: stop presenting a p25 floor as high confidence', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'dep-8891ac', title: 'Fix planning-contract violation: runner not requesting outputFormat', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'dep-46bfab', title: 'Fix Pusher 413: heartbeat payloads exceed the 10KB event cap', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'dep-aeb80f', title: 'SPEC: deliverable uniqueness — creates-vs-modifies manifests', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'dep-0ced84', title: "AUDIT (read-only): why did #1854's card show CI failing hours after CI went green?", status: 'pending', workers: [], dependsOn: ['dep-875ff4', 'dep-8891ac', 'dep-46bfab', 'dep-aeb80f'] },
+      { id: 'dep-e4443f', title: 'DESIGN (read-only, Fable): make context inheritance for CI-fix workers actually work', status: 'pending', workers: [], dependsOn: ['dep-875ff4', 'dep-8891ac', 'dep-46bfab', 'dep-aeb80f', 'dep-0ced84'] },
+    ],
+    dependents: 1,
+  }),
+};
+
+/**
+ * Every blocker is cancelled — the task is claimable. Before the gate alignment
+ * this rendered BLOCKED with three phantom chips.
+ */
+const TASK_ALL_DEPS_CANCELLED = {
+  id: 'task-008',
+  title: 'Key OAuth budget learning on the credential, not the account',
+  taskStatus: 'pending',
+  workerStatus: null as null,
+  missionId: 'mission-budget',
+  missionTitle: 'OAuth budget forecast: aggregate per credential',
+  workspaceName: 'buildd',
+  taskCreatedAt: ago(80 * hr),
+  taskUpdatedAt: ago(80 * hr),
+  workerStartedAt: null,
+  workerUpdatedAt: null,
+  intensity: null,
+  runnerName: null,
+  prUrl: null,
+  prNumber: null,
+  chain: deriveChainPosition({
+    task: { id: 'task-008', status: 'pending' },
+    deps: [
+      { id: 'dep-2ba59f', title: "Determine whether the team's oauth account rows share one credential", status: 'cancelled', workers: [] },
+      { id: 'dep-f5129c', title: 'Abandoned PR — closed, never merged', status: 'completed', workers: [{ prUrl: 'https://github.com/buildd-ai/buildd/pull/1799', prNumber: 1799, mergedAt: null, prLifecycleStatus: 'closed' }] },
+    ],
+    dependents: 2,
+  }),
+};
+
 // ─── Fixture page ─────────────────────────────────────────────────────────────
 
 export default function TaskCardFixturePage() {
@@ -239,6 +308,16 @@ export default function TaskCardFixturePage() {
               {...TASK_STANDALONE}
               density="full"
             />
+
+            <TaskCard
+              {...TASK_DENSE_FANIN}
+              density="full"
+            />
+
+            <TaskCard
+              {...TASK_ALL_DEPS_CANCELLED}
+              density="full"
+            />
           </div>
         </section>
 
@@ -252,6 +331,8 @@ export default function TaskCardFixturePage() {
             <TaskCard {...TASK_COMPLETED} density="row" />
             <TaskCard {...TASK_HALF_BLOCKED} density="row" />
             <TaskCard {...TASK_STANDALONE} density="row" />
+            <TaskCard {...TASK_DENSE_FANIN} density="row" />
+            <TaskCard {...TASK_ALL_DEPS_CANCELLED} density="row" />
           </div>
         </section>
 
@@ -277,6 +358,9 @@ export default function TaskCardFixturePage() {
             <div className="px-3">
               <TaskCard {...TASK_STANDALONE} density="inline" />
             </div>
+            <div className="px-3">
+              <TaskCard {...TASK_DENSE_FANIN} density="inline" />
+            </div>
           </div>
         </section>
 
@@ -284,7 +368,7 @@ export default function TaskCardFixturePage() {
         <section>
           <div className="section-label mb-4">chain strip — segment states</div>
           <p className="text-[11px] text-text-muted mb-3 font-mono">
-            filled=merged · half=open-PR (silent blocker) · outlined=current · faint=pending
+            filled=merged · half=open-PR (silent blocker) · struck=cancelled (satisfied, undelivered) · outlined=current · faint=pending
           </p>
           <div className="space-y-1">
             <TaskCard
