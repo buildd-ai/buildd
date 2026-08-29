@@ -1,10 +1,12 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema';
-import type { WorkspaceReleaseConfig, ReleaseResult } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
+import { detectArchetype } from '@buildd/core/release-archetype';
+import { attributeRelease } from '@buildd/core/release-attribution';
 
 // Vercel deployment readback — polls until terminal state.
 // Returns { state: 'SKIPPED', url: null } when VERCEL_TOKEN is absent so the
@@ -211,6 +213,57 @@ async function mergeIntoProd(
   }
 }
 
+async function maybeCreateReleaseRow(params: {
+  workspaceId: string;
+  workspace: { name?: string | null; releaseConfig?: WorkspaceReleaseConfig | null; gitConfig?: WorkspaceGitConfig | null } | null | undefined;
+  headSha: string | undefined;
+  previousSha: string | undefined;
+  sourceRef: string | undefined;
+  prodBranch: string;
+  repo: { fullName: string; installation: { installationId: number } };
+}): Promise<void> {
+  const { workspaceId, workspace, headSha, previousSha, sourceRef, prodBranch, repo } = params;
+  if (!headSha) return;
+
+  const archetype = detectArchetype({
+    name: workspace?.name,
+    releaseConfig: workspace?.releaseConfig,
+    gitConfig: workspace?.gitConfig,
+  });
+  if (archetype !== 'continuous') return;
+
+  const inserted = await db
+    .insert(releases)
+    .values({
+      workspaceId,
+      archetype,
+      state: 'deploying',
+      triggeredBy: 'auto',
+      deployedAt: new Date(),
+      sourceRef,
+      targetRef: prodBranch,
+      headSha,
+      previousSha,
+      strategy: 'branch_merge',
+    })
+    .onConflictDoNothing()
+    .returning({ id: releases.id });
+
+  const releaseId = inserted[0]?.id;
+  if (!releaseId || !previousSha) return;
+
+  attributeRelease({
+    releaseId,
+    workspaceId,
+    previousSha,
+    headSha,
+    archetype,
+    repoFullName: repo.fullName,
+    githubInstallationId: repo.installation.installationId,
+    db,
+  }).catch(() => {});
+}
+
 export interface ReleaseInput {
   taskId: string;
   workerId: string;
@@ -235,7 +288,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     }),
     db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
-      columns: { releaseConfig: true, githubRepoId: true },
+      columns: { releaseConfig: true, githubRepoId: true, name: true, gitConfig: true },
     }),
   ]);
 
@@ -363,6 +416,13 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
       };
     }
 
+    // Fetch prodBranch HEAD before merge so releases row has previousSha
+    let rbPreviousSha: string | undefined;
+    try {
+      const ref = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/git/ref/heads/${prodBranch}`);
+      rbPreviousSha = ref?.object?.sha as string | undefined;
+    } catch { /* non-fatal */ }
+
     // CI is passing — merge the release PR now
     const mergeResp = await githubApi(
       repo.installation.installationId,
@@ -389,8 +449,18 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
 
     mergedAt = new Date().toISOString();
     mergeSha = mergeResp.sha as string | undefined;
+
+    await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, sourceRef: branchMerge.releaseBranch, prodBranch, repo });
   } else if (worker?.branch) {
     // Worker-branch path: merge the worker's feature branch into prodBranch
+
+    // Fetch prodBranch HEAD before merge so releases row has previousSha
+    let wbPreviousSha: string | undefined;
+    try {
+      const ref = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/git/ref/heads/${prodBranch}`);
+      wbPreviousSha = ref?.object?.sha as string | undefined;
+    } catch { /* non-fatal */ }
+
     const mergeResult = await mergeIntoProd(
       repo.installation.installationId,
       repo.fullName,
@@ -409,6 +479,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
 
     mergedAt = new Date().toISOString();
     mergeSha = mergeResult.sha;
+
+    await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, sourceRef: worker.branch, prodBranch, repo });
   }
 
   // Step 2: Poll Vercel for deployment
