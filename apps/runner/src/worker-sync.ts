@@ -189,14 +189,23 @@ export class WorkerSync {
           ...(t.parentAgentId ? { parentAgentId: t.parentAgentId } : {}),
         }));
 
+      // Drain the append-only buffers BEFORE awaiting the PATCH, not after. Two
+      // overlapping syncs both used to read the same populated buffer and clear it
+      // once, so every buffered MCP call / error trace was filed twice server-side.
+      // Restored below if the PATCH throws, so nothing is lost.
+      const drainedMcpCalls = worker.pendingMcpCalls?.length ? worker.pendingMcpCalls : null;
+      const drainedErrorTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
+      if (drainedMcpCalls) worker.pendingMcpCalls = [];
+      if (drainedErrorTraces) worker.pendingErrorTraces = [];
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
         milestones,
         localUiUrl: this.ctx.config.localUiUrl,
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
-        ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
-        ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
+        ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
+        ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
@@ -205,15 +214,15 @@ export class WorkerSync {
           options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
         };
       }
-      const response = await this.ctx.buildd.updateWorker(worker.id, update);
-
-      // Clear MCP call buffer after successful sync
-      if (worker.pendingMcpCalls?.length) {
-        worker.pendingMcpCalls = [];
-      }
-      // Clear error trace buffer after successful sync
-      if (worker.pendingErrorTraces?.length) {
-        worker.pendingErrorTraces = [];
+      let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;
+      try {
+        response = await this.ctx.buildd.updateWorker(worker.id, update);
+      } catch (err) {
+        // Sync failed — put the drained entries back at the front so the next
+        // sync ships them. (The outbox handles retry for the rest of the payload.)
+        if (drainedMcpCalls) worker.pendingMcpCalls = [...drainedMcpCalls, ...(worker.pendingMcpCalls ?? [])];
+        if (drainedErrorTraces) worker.pendingErrorTraces = [...drainedErrorTraces, ...(worker.pendingErrorTraces ?? [])];
+        throw err;
       }
 
       // Server says worker was already terminated
