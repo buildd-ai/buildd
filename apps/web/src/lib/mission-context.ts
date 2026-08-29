@@ -5,7 +5,7 @@ import { computeMissionProgress, computeInitiativeProgress, type ChildMissionPro
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
 import { buildWorkspaceStateContext, type OrganizerCause, type WorkspaceStateCauseData } from './workspace-state-context';
-import { LIVE_WORKER_STATUSES } from './task-timestamps';
+import { LIVE_WORKER_STATUSES } from './task-presentation';
 
 // Operational-only schema: no free-text string fields that could capture email
 // subjects, bodies, or sender addresses from sensitive workspaces. Consumers that
