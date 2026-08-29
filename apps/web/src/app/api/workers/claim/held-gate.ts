@@ -1,4 +1,5 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { sql, eq, and, type SQL } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 
 /**
@@ -31,4 +32,20 @@ export function missionNotHeld(): SQL {
       AND m.is_held = true
     )
   )`;
+}
+
+/**
+ * Per-task check for /api/tasks/[id]/start: returns true when the task's mission
+ * is held (and should be blocked), false otherwise. Mirrors the missionNotHeld()
+ * SQL gate semantics — both live in this file to keep the implementations together.
+ *
+ * The call site is responsible for checking bypassHeldGate / forceOverride before
+ * invoking this helper.
+ */
+export async function checkMissionHeld(missionId: string): Promise<boolean> {
+  const mission = await db.query.missions.findFirst({
+    where: and(eq(missions.id, missionId), eq(missions.isHeld, true)),
+    columns: { id: true },
+  });
+  return !!mission;
 }

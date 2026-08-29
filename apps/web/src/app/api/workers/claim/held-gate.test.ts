@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'bun:test';
-import { missionNotHeld, BYPASS_HELD_GATE_KEY } from './held-gate';
+import { describe, it, expect, mock } from 'bun:test';
+
+const mockMissionsFindFirst = mock(() => null as any);
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      missions: { findFirst: mockMissionsFindFirst },
+    },
+  },
+}));
+
+import { missionNotHeld, BYPASS_HELD_GATE_KEY, checkMissionHeld } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -13,6 +24,20 @@ import { missionNotHeld, BYPASS_HELD_GATE_KEY } from './held-gate';
  *   - Task under held mission but context[BYPASS_HELD_GATE_KEY]=true → claimable
  *     (force-start bypass set by /start with forceOverride=true and a missionId).
  */
+describe('checkMissionHeld', () => {
+  it('returns false when mission is not held', async () => {
+    mockMissionsFindFirst.mockResolvedValue(null);
+    const result = await checkMissionHeld('mission-123');
+    expect(result).toBe(false);
+  });
+
+  it('returns true when mission is held', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-123' });
+    const result = await checkMissionHeld('mission-123');
+    expect(result).toBe(true);
+  });
+});
+
 describe('held gate — bypass key contract', () => {
   it('bypass key is "bypassHeldGate"', () => {
     expect(BYPASS_HELD_GATE_KEY).toBe('bypassHeldGate');

@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
+import { tasks, workers, missions } from '@buildd/core/db/schema';
+import { eq, and, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { checkConnectorRouting, findAlternativeRole, checkMissionHeld, checkWorkspaceCap, type ConnectorFailure } from '@/lib/claim-gates';
+import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
+import { checkMissionHeld } from '../../../workers/claim/held-gate';
+import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 
 /**
  * POST /api/tasks/[id]/start
@@ -132,7 +134,6 @@ export async function POST(
     }
 
     // ── Connector routing gate ──────────────────────────────────────────────
-    // Mirrors the connectorMismatchTaskIds pre-filter in claim/route.ts.
     // If the task's role requires connectors not visible in this workspace,
     // no worker can ever claim it — surface the reason before broadcasting.
     const roleSlug = (task as any).roleSlug as string | null;
@@ -159,7 +160,6 @@ export async function POST(
     }
 
     // ── Mission held gate ───────────────────────────────────────────────────
-    // Mirrors missionNotHeld() SQL condition in claim/route.ts.
     // Held missions block all task claims until armed. forceOverride bypasses
     // this gate (the bypassHeldGate context key is written below).
     const missionId = (task as any).missionId as string | null;
@@ -179,7 +179,6 @@ export async function POST(
     }
 
     // ── Workspace concurrency cap gate ──────────────────────────────────────
-    // Mirrors the per-repo worker-count SQL condition in claim/route.ts.
     // Only repo-backed workspaces are capped; repo-less ones (coordination
     // workspaces) are never serialized.
     // capExempt=true bypasses the cap for this one task without changing the
@@ -189,9 +188,20 @@ export async function POST(
     const taskCtxForCap = task.context as Record<string, unknown> | null;
     const isCapExemptAlready = taskCtxForCap?.capExempt === true;
     if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
+      // A mission may raise the effective cap above the workspace default —
+      // match the GREATEST(workspaceCap, missionCap) logic in the claim route.
+      let missionMaxConcurrent: number | null = null;
+      if (missionId) {
+        const missionRow = await db.query.missions.findFirst({
+          where: eq(missions.id, missionId),
+          columns: { maxConcurrentTasks: true },
+        });
+        missionMaxConcurrent = missionRow?.maxConcurrentTasks ?? null;
+      }
       const capResult = await checkWorkspaceCap(
         task.workspaceId,
         wsForCap.maxConcurrentTasks ?? null,
+        missionMaxConcurrent,
       );
       if (capResult) {
         // Count other pending tasks to surface queue position in the UI.
