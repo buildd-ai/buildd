@@ -165,6 +165,7 @@ const schemaMock = {
   workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
+  releases: { id: 'id', workspaceId: 'workspaceId', state: 'state', runUrl: 'runUrl' },
   knowledgeIngestJobs: {
     id: 'id', workspaceId: 'workspaceId', repo: 'repo', trigger: 'trigger',
     sha: 'sha', prNumber: 'prNumber', scope: 'scope', status: 'status',
@@ -218,8 +219,9 @@ mock.module('@/lib/release/dispatch', () => ({
 }));
 
 // Pusher — no-op in tests; triggerEvent calls should be silently skipped
+const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('@/lib/pusher', () => ({
-  triggerEvent: mock(() => Promise.resolve()),
+  triggerEvent: mockTriggerEvent,
   channels: {
     workspace: (id: string) => `workspace-${id}`,
     task: (id: string) => `task-${id}`,
@@ -248,6 +250,7 @@ mock.module('@/lib/pusher', () => ({
     TASK_UPDATED: 'task:updated',
     TASK_RETRY_CAP: 'task:retry_cap',
     MISSION_NOTE_POSTED: 'mission:note_posted',
+    RELEASE_UPDATED: 'release:updated',
   },
 }));
 mock.module('@/lib/work-tracker', () => ({
@@ -387,6 +390,7 @@ function resetAll() {
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
+  mockTriggerEvent.mockReset();
 
   insertCalls = [];
   deleteCalls = [];
@@ -1958,5 +1962,106 @@ describe('inbound issues → tasks', () => {
     expect(res.status).toBe(200);
     const cancel = updateCalls.find((c) => (c.setValues as any).status === 'cancelled' && c.table === schemaMock.tasks);
     expect(cancel).toBeDefined();
+  });
+});
+
+// ── workflow_run → releases state advancement ────────────────────────────────
+describe('workflow_run → releases state advancement', () => {
+  beforeEach(resetAll);
+
+  const RUN_URL = 'https://github.com/test-org/test-repo/actions/runs/9999';
+
+  function makeWorkflowRunPayload(conclusion: string | null, overrides: Record<string, any> = {}) {
+    return {
+      action: 'completed',
+      workflow_run: {
+        id: 9999,
+        name: 'Release',
+        status: 'completed',
+        conclusion,
+        html_url: RUN_URL,
+        head_branch: 'dev',
+        repository: { full_name: 'test-org/test-repo' },
+        ...overrides.workflow_run,
+      },
+      installation: { id: 5000 },
+    };
+  }
+
+  it('advances release to deploying when workflow conclusion=success', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-1', workspaceId: 'ws-release', state: 'dispatched' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'deploying',
+    );
+    expect(releaseUpdate).toBeDefined();
+
+    const pusherCall = mockTriggerEvent.mock.calls.find(
+      ([, event, data]: any[]) => event === 'release:updated' && data?.state === 'deploying',
+    );
+    expect(pusherCall).toBeDefined();
+    expect(pusherCall[0]).toBe('workspace-ws-release');
+  });
+
+  it('advances release to failed when workflow conclusion=failure', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-2', workspaceId: 'ws-release', state: 'dispatched' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+    );
+    expect(releaseUpdate).toBeDefined();
+
+    const pusherCall = mockTriggerEvent.mock.calls.find(
+      ([, event, data]: any[]) => event === 'release:updated' && data?.state === 'failed',
+    );
+    expect(pusherCall).toBeDefined();
+  });
+
+  it('no-ops when no release row matches the run_url', async () => {
+    selectTableResults = () => null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+  });
+
+  it('no-ops on neutral conclusion (cancelled)', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-3', workspaceId: 'ws-release', state: 'dispatched' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('cancelled')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+  });
+
+  it('does not regress a release already in healthy state', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-4', workspaceId: 'ws-release', state: 'healthy' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
   });
 });
