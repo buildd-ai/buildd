@@ -113,8 +113,10 @@ has CBM, and already makes authenticated outbound calls to buildd.dev. Use it.
 Why this is better for this use case:
 
 - **No inbound networking, no tunnel, no new public surface.**
-- **No availability coupling.** If the workspace is down, KS serves slightly
-  stale anchors instead of failing. Option A fails the request.
+- **Availability coupling is substituted, not removed.** If the workspace is
+  down, KS serves stale anchors instead of failing. That is preferable ONLY with
+  the freshness contract in §4a — without it, this is a silent-staleness
+  generator, which for a drift detector is worse than an outage.
 - **It is already the prescribed pipe.** Parent spec line 364 says the offline
   structural graph should populate "the KnowledgeStore with stable structural
   edges that survive across sessions, visible in `spec_compare`, and queryable via
@@ -134,6 +136,97 @@ each worker's own worktree, so it sees **uncommitted work** — its whole advant
 A shared service indexes the mainline checkout and cannot replace it. These are
 two different consumers with different freshness requirements, and conflating
 them is the main design risk here.
+
+## 4a. The failure mode Option B substitutes rather than removes
+
+An earlier draft of §4 claimed Option B "removes the availability coupling." That
+was too generous, and the distinction matters more than the original framing did.
+
+- **Option A fails loud and closed.** Workspace stopped → the request errors. Bad,
+  but you know the answer is unavailable.
+- **Option B fails quiet and open.** Workspace stopped, or the indexer simply
+  hasn't run since the last mainline merge → `spec_compare` still returns an
+  answer, resolved against a stale symbol snapshot. Confident, wrong drift
+  verdicts: missed drift, or phantom drift against symbols that have since moved.
+
+For a drift detector specifically, silent staleness is arguably worse than an
+outage: the tool's only value is being trustworthy about whether code matches
+spec. Trading a loud failure for a quiet one is the same bug class that let CBM sit
+`binary_absent` for four weeks (#1743) — a subsystem degrading where nobody can
+see it.
+
+Option B is still the right default. It is only *safe* with the following, which
+are therefore requirements and not enhancements.
+
+### Freshness contract (required)
+
+1. Every pushed record carries the **mainline commit SHA** it was indexed from and
+   an **indexed-at timestamp**.
+2. `spec_compare` compares that SHA against mainline HEAD and **surfaces the lag**
+   in its output ("index is N commits / T minutes behind").
+3. Past a threshold, it **degrades to a warning and refuses a confident verdict**
+   rather than answering blind. N and T must be chosen before implementation, not
+   discovered in production.
+
+This is what production code-intel does. Sourcegraph links every precise index to
+a specific commit and keeps an explicit stale flag on the commit graph, so a
+completed upload is not used to resolve queries at commits it cannot serve. The
+same discipline applies here in miniature.
+
+## 4b. Symbol identity is path-derived — measured, and it constrains the design
+
+Verified against the deployed 0.9.0 binary:
+
+```json
+{"name":"buildCbmActivation",
+ "qualified_name":"home-coder-project-buildd.apps.runner.src.cbm-enforcement.buildCbmActivation",
+ "file_path":"apps/runner/src/cbm-enforcement.ts"}
+```
+
+Two consequences:
+
+**Moves break anchors exactly like renames.** The qualified name embeds
+`apps.runner.src.cbm-enforcement`. Relocate the file and the identity changes even
+though the symbol is semantically identical. So "the graph fixes renames" is true
+but narrower than it sounds — it fixes *identifier* renames, not relocation,
+split, or merge.
+
+**The project prefix is derived from the checkout path.** `home-coder-project-buildd`
+comes from `/home/coder/project/buildd`. The same symbol indexed from the mainline
+checkout and from a worker's worktree under
+`/home/coder/.buildd/roles/.../buildd_<hash>-...` therefore gets **different
+qualified names**. Pushed canonical records keyed on `qualified_name` would not
+match anything a per-worker CBM produces, and would silently churn if the checkout
+path ever changed.
+
+Required mitigations:
+
+- Pin the project name explicitly via `index_repository --name <repo>` ("Override
+  the derived project name") so the prefix is stable and path-independent.
+- Use **`(file_path, name)`** as the stored identity — both are returned as
+  separate fields — rather than the composite `qualified_name`.
+- Store the commit SHA alongside, so a move is representable as a change between
+  two known commits instead of an unexplained anchor miss.
+
+### Anchor resolution must be confidence-tiered, not a replacement
+
+Symbol resolution cannot cover every case, and one gap matters specifically for a
+spec-driven repo: **specs routinely describe symbols that do not exist in code
+yet.** There is nothing to resolve against, so resolution alone cannot detect
+"spec says X, code has not built X" — which is a case this project cares about.
+
+`spec_compare` should therefore return distinct states rather than a boolean:
+
+| state | meaning |
+|---|---|
+| `resolved + drift` | anchor found, code disagrees with spec |
+| `resolved + clean` | anchor found, code matches |
+| `unresolved-anchor` | no such symbol — in a spec-first flow this is a **signal**, not an error |
+
+Regex anchoring stays as the fallback for `unresolved-anchor`. Also known-uncovered
+and worth documenting rather than discovering: re-exports through barrel files can
+resolve to the re-export site, and type-only renames have weaker identity than
+call-graph edges.
 
 ## 5. Secondary: moving worker DB operations into the workspace
 
@@ -189,8 +282,14 @@ still has zero consumers in the codebase.
 3. **Extractor.** Runner-side job: index mainline checkout, emit canonical
    symbol/file/edge records. Reuse the `runCbmBootstrap` invocation shape from
    `cbm-bootstrap.ts` — note `--repo-path` is required (#1889).
-4. **Ingest path.** Upsert those records into `{workspaceId}:code`, versioned by
-   commit sha so stale edges are replaceable rather than duplicated.
+4. **Ingest path.** Upsert those records into `{workspaceId}:code` (the existing
+   corpus convention — `{workspaceId}` is repo-scoped in buildd, 1:1 with a
+   repoUrl, so no re-keying is needed), versioned by commit sha so stale edges are
+   replaceable rather than duplicated. Identity is `(file_path, name)` + sha, NOT
+   `qualified_name` (§4b). Pin the project name with `--name`.
+4b. **Freshness signal.** Store and expose indexed-sha + indexed-at; implement the
+   staleness threshold and the degrade-to-warning path from §4a. This is not
+   optional — it is what makes Option B safe rather than merely cheap.
 5. **Anchor grounding.** Replace regex anchor extraction in `spec_compare`'s
    second hop with canonical-symbol lookup, keeping regex as fallback.
 6. **Measure again.** spec_compare code-evidence hit rate before/after, against
