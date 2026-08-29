@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
@@ -1498,6 +1498,10 @@ async function handleWorkflowRunEvent(event: {
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
+  // Advance the releases row state — runs for ALL workflow_run events regardless
+  // of whether a task carries this runId (the two lookups are independent).
+  await advanceReleaseStateFromWorkflowRun(run);
+
   if (!matchingTask) return;
 
   const previous = (matchingTask.releaseResult ?? { status: 'pending_ci', message: '' }) as ReleaseResult;
@@ -1523,6 +1527,60 @@ async function handleWorkflowRunEvent(event: {
       priority: 1,
     });
   }
+}
+
+/**
+ * When a workflow_run completes, find the releases row tracking that run
+ * (matched by run_url = html_url) and advance its state:
+ *   conclusion=success → 'deploying'  (workflow passed; deploy underway)
+ *   conclusion=failure → 'failed'
+ *
+ * Emits a Pusher event so the UI refreshes in realtime.
+ */
+async function advanceReleaseStateFromWorkflowRun(run: {
+  id: number;
+  name: string;
+  conclusion: string | null;
+  html_url: string;
+  repository: { full_name: string };
+}): Promise<void> {
+  const newState =
+    run.conclusion === 'success'
+      ? ('deploying' as const)
+      : run.conclusion === 'failure'
+        ? ('failed' as const)
+        : null;
+
+  if (!newState) return;
+
+  const [matchingRelease] = await db
+    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state })
+    .from(releases)
+    .where(eq(releases.runUrl, run.html_url))
+    .limit(1);
+
+  if (!matchingRelease) return;
+
+  // Don't regress from a terminal state.
+  if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
+
+  const updateFields: Record<string, unknown> = { state: newState };
+  if (newState === 'deploying') {
+    updateFields.deployedAt = new Date();
+  } else {
+    updateFields.failureReason = `workflow conclusion: ${run.conclusion}`;
+  }
+
+  await db.update(releases).set(updateFields).where(eq(releases.id, matchingRelease.id));
+
+  console.log(
+    `[webhook:workflow_run] Release ${matchingRelease.id} → ${newState} (run ${run.id} on ${run.repository.full_name})`,
+  );
+
+  await triggerEvent(channels.workspace(matchingRelease.workspaceId), events.RELEASE_UPDATED, {
+    releaseId: matchingRelease.id,
+    state: newState,
+  });
 }
 
 // Work-tracker helper: if the PR belongs to a task with externalIssueId set and the

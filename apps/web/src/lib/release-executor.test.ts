@@ -10,6 +10,12 @@ const mockWorkersFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null) as any);
 const mockGithubReposFindFirst = mock(() => Promise.resolve(null) as any);
 
+// Releases insert chain: insert().values().onConflictDoNothing().returning()
+const mockDbInsertReturning = mock(() => Promise.resolve([] as any[]));
+const mockDbInsertOnConflict = mock(() => ({ returning: mockDbInsertReturning }));
+const mockDbInsertValues = mock(() => ({ onConflictDoNothing: mockDbInsertOnConflict }));
+const mockDbInsert = mock(() => ({ values: mockDbInsertValues }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -18,8 +24,15 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
+    insert: mockDbInsert,
   },
 }));
+
+const mockDetectArchetype = mock(() => 'none' as any);
+mock.module('@buildd/core/release-archetype', () => ({ detectArchetype: mockDetectArchetype }));
+
+const mockAttributeRelease = mock(() => Promise.resolve({ attributed: 0, skipped: 0 }));
+mock.module('@buildd/core/release-attribution', () => ({ attributeRelease: mockAttributeRelease }));
 
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
@@ -104,6 +117,16 @@ describe('executeRelease — releaseBranch', () => {
     mockWorkersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([]);
+    mockAttributeRelease.mockReset();
+    mockDetectArchetype.mockReturnValue('none');
   });
 
   it('returns not_configured when workspace has no releaseConfig', async () => {
@@ -185,6 +208,8 @@ describe('executeRelease — releaseBranch', () => {
         { name: 'lint', status: 'completed', conclusion: 'success' },
       ],
     });
+    // previousSha ref lookup (before merge)
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
     // merge PR
     mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha123', merged: true, message: 'PR merged' });
 
@@ -202,6 +227,8 @@ describe('executeRelease — releaseBranch', () => {
       { number: 47, head: { sha: 'deadbeef' }, html_url: 'https://github.com/org/repo/pull/47', title: 'Release v0.5.0' },
     ]);
     mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
+    // previousSha ref lookup (before merge)
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
     mockGithubApi.mockRejectedValueOnce(new Error('merge conflict'));
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
@@ -240,6 +267,16 @@ describe('executeRelease — worker branch', () => {
     mockWorkersFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([]);
+    mockAttributeRelease.mockReset();
+    mockDetectArchetype.mockReturnValue('none');
     delete process.env.VERCEL_TOKEN;
   });
 
@@ -248,6 +285,8 @@ describe('executeRelease — worker branch', () => {
     setupWorker();
     setupWorkspace();
     setupRepo();
+    // previousSha ref lookup (before merge)
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
     // The /merges call throws a 404 "Head does not exist"
     mockGithubApi.mockRejectedValueOnce(
       new Error('GitHub API error: 404 {"message":"Head does not exist","status":"404"}')
@@ -263,6 +302,8 @@ describe('executeRelease — worker branch', () => {
     setupWorker();
     setupWorkspace({ deployTarget: { type: 'vercel', projectId: 'proj_abc' } });
     setupRepo();
+    // previousSha ref lookup (before merge)
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
     // Merge succeeds
     mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha456', commit: {} });
     // VERCEL_TOKEN is not set (cleared in beforeEach)
@@ -283,6 +324,16 @@ describe('executeRelease — trigger policy', () => {
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([]);
+    mockAttributeRelease.mockReset();
+    mockDetectArchetype.mockReturnValue('none');
 
     // default: task with release='inherit', worker with branch
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
@@ -348,5 +399,191 @@ describe('executeRelease — trigger policy', () => {
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true });
     // Should not be skipped due to trigger — will proceed to branch_merge logic
     expect(result.status).not.toBe('skipped');
+  });
+});
+
+// ── Releases row creation (continuous archetype) ──────────────────────────────
+
+describe('executeRelease — releases row creation', () => {
+  function setupTask() {
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
+  }
+  function setupWorker() {
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: null, prUrl: null });
+  }
+  function setupRepo() {
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+  }
+  function setupContinuousWorkspace() {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      name: 'moa-ops',
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
+      gitConfig: { requiresPR: false, defaultBranch: 'main' },
+      githubRepoId: 'repo-1',
+    });
+    mockDetectArchetype.mockReturnValue('continuous');
+  }
+  function setupGatedWorkspace() {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      name: 'buildd',
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', releaseBranch: 'dev' },
+      gitConfig: { requiresPR: true, defaultBranch: 'dev' },
+      githubRepoId: 'repo-1',
+    });
+    mockDetectArchetype.mockReturnValue('gated');
+  }
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([{ id: 'release-abc' }]);
+    mockAttributeRelease.mockReset();
+    mockAttributeRelease.mockResolvedValue({ attributed: 1, skipped: 0 });
+    mockDetectArchetype.mockReturnValue('none');
+    delete process.env.VERCEL_TOKEN;
+  });
+
+  it('inserts a releases row with correct fields for a continuous workspace', async () => {
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    // ref lookup → previousSha
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    // merge succeeds
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
+
+    expect(mockDbInsert).toHaveBeenCalledTimes(1);
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      archetype: 'continuous',
+      state: 'deploying',
+      triggeredBy: 'auto',
+      headSha: 'headsha222',
+      previousSha: 'prevsha111',
+      targetRef: 'main',
+      sourceRef: 'buildd/my-feat',
+      strategy: 'branch_merge',
+    }));
+  });
+
+  it('calls attributeRelease once when a row is inserted', async () => {
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    // Wait for the fire-and-forget attribution promise to settle
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).toHaveBeenCalledWith(expect.objectContaining({
+      releaseId: 'release-abc',
+      workspaceId: 'ws-1',
+      headSha: 'headsha222',
+      previousSha: 'prevsha111',
+      archetype: 'continuous',
+      repoFullName: 'org/repo',
+      githubInstallationId: 99,
+    }));
+  });
+
+  it('double-fire guard: second call with same headSha produces no duplicate row or attribution', async () => {
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+
+    // First call — insert succeeds
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockDbInsertReturning.mockResolvedValueOnce([{ id: 'release-abc' }]);
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+
+    // Second call — ON CONFLICT DO NOTHING → no rows returned
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockDbInsertReturning.mockResolvedValueOnce([]);
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // insert called twice total (one per executeRelease), but attribution only once
+    expect(mockDbInsert).toHaveBeenCalledTimes(2);
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not insert a releases row when archetype is none', async () => {
+    setupTask();
+    setupWorker();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      name: 'My Workspace',
+      releaseConfig: null,
+      gitConfig: null,
+      githubRepoId: 'repo-1',
+    });
+    mockDetectArchetype.mockReturnValue('none');
+    setupRepo();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    // Not configured — returns early before merge
+    expect(result.status).toBe('not_configured');
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
+  it('does not insert a releases row for a gated workspace (trigger route owns that)', async () => {
+    // Gated workspace with releaseBranch — executeRelease skips row creation
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+
+    // releaseBranch path: task release flag is 'inherit' so it returns skipped early
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
+  it('skips attribution when headSha is undefined (already-merged no-op)', async () => {
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    // ref lookup
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    // merge returns no sha (already up-to-date, 204 path)
+    mockGithubApi.mockResolvedValueOnce(null);
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // headSha is undefined → early return in maybeCreateReleaseRow
+    expect(mockDbInsert).not.toHaveBeenCalled();
+    expect(mockAttributeRelease).not.toHaveBeenCalled();
   });
 });

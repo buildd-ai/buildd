@@ -2392,10 +2392,13 @@ export const releases = pgTable('releases', {
   deployUrl: text('deploy_url'),
   triggeredBy: text('triggered_by').$type<'user' | 'agent' | 'auto'>(),
   failureReason: text('failure_reason'),
+  ciStateAtDispatch: text('ci_state_at_dispatch').$type<'passing' | 'failing' | 'pending'>(),
+  commitsAheadAtDispatch: integer('commits_ahead_at_dispatch'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceIdx: index('releases_workspace_idx').on(t.workspaceId),
   stateIdx: index('releases_state_idx').on(t.state),
+  workspaceShaIdx: uniqueIndex('releases_workspace_sha_idx').on(t.workspaceId, t.headSha),
 }));
 
 export const releasesRelations = relations(releases, ({ one, many }) => ({

@@ -114,4 +114,6 @@ export const events = {
   WORKER_CONNECTOR_AUTH_EXPIRED: 'worker:connector-auth-expired',
   // GitHub App permission gap (mid-task 403 "Resource not accessible by integration")
   WORKER_CONNECTOR_PERMISSION_INSUFFICIENT: 'worker:connector-permission-insufficient',
+  // Release row state changed (dispatched → deploying → healthy / failed)
+  RELEASE_UPDATED: 'release:updated',
 } as const;
