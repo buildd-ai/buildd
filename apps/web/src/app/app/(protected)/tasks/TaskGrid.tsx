@@ -49,6 +49,15 @@ interface GridTask {
   taskClass?: string | null;
   parentTaskId?: string | null;
   loopExitConditionType?: string | null;
+  /** Subject-liveness claim gate excludes this task — see isSubjectDead(). */
+  subjectDead?: boolean;
+  /**
+   * Parent mission is `budget_exhausted`, so the claim loop skips this task —
+   * see checkMissionBudgetExhausted(). Derived in page.tsx, which must select
+   * `missions.status` for it: an unselected column reads as undefined and the
+   * row silently renders as a healthy QUEUED task again.
+   */
+  missionBudgetExhausted?: boolean;
 }
 
 function timeAgo(dateStr: string): string {
@@ -112,6 +121,8 @@ function renderTaskCard(
         prUrl={task.prUrl}
         prNumber={task.prNumber}
         taskType={task.taskType}
+        subjectDead={task.subjectDead}
+        missionBudgetExhausted={task.missionBudgetExhausted}
         density="row"
         groupScoped={groupScoped}
       />
@@ -208,6 +219,12 @@ function deriveGridTaskStage(task: GridTask): keyof StageCounts {
     return 'DONE';
   }
   if (task.status === 'pending' || task.status === 'assigned') {
+    // A subject-dead task can never be claimed — it belongs in BLOCKED, never
+    // in the QUEUED count (the stage bar has no narrower bucket for it).
+    if (task.subjectDead) return 'BLOCKED';
+    // Same for a task whose mission is out of budget: nothing will claim it
+    // until a human raises the budget, so it must not inflate QUEUED.
+    if (task.missionBudgetExhausted) return 'BLOCKED';
     if ((task.chain?.blockedBy?.length ?? 0) > 0) return 'BLOCKED';
     return 'QUEUED';
   }

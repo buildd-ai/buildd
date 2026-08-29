@@ -2,19 +2,40 @@
  * Reconciliation sweep for task subject anchors.
  *
  * On PR closed/merged webhook events and on retry-chain completion, sweep every
- * task anchored to the PR and every retry-chain member, persisting
- * subjectResolution when the subject is determined to be dead (no live
- * successor PR in the chain). Idempotent — re-running on already-reconciled
- * tasks is a no-op.
+ * task anchored to the PR and every retry-chain member. When the subject is
+ * determined to be dead (no live successor PR in the chain) the anchored task is
+ * both marked `subjectResolution = 'reconciled'` AND terminated
+ * (`status = 'cancelled'`). Idempotent — re-running on already-reconciled tasks
+ * is a no-op.
+ *
+ * WHY TERMINATE INSTEAD OF LEAVING IT PENDING:
+ * A reconciled task is permanently unclaimable (see api/workers/claim/
+ * subject-gate.ts) yet used to advertise itself as `pending` — a queued row that
+ * can never run. Worse, `deps-gate.ts` only treats a dependency as satisfied
+ * when it is `completed` (PR merged) or `cancelled`, so a pending-but-dead task
+ * starved every dependent behind it until a human intervened (the 5-day,
+ * 20-task stall). `cancelled` is the dep gate's designed escape hatch —
+ * "this won't be delivered, proceed" — so terminating drains the chain.
+ *
+ * ONLY THE IDENTIFYING ANCHOR CLASS IS ELIGIBLE:
+ * Reconciliation (and therefore termination) applies only to anchors whose
+ * `source` is in SUBJECT_BINDING_SOURCES (system | context, confidence exact).
+ * A PR number scraped from prose (`source: 'text' | 'url'`) is advisory: it must
+ * never gate a claim and must never cancel a task. Auto-cancelling that class
+ * would be strictly worse than the original bug.
  */
 
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { tasks, taskSubjectReports, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { isBindingSubjectAnchor } from './subject-gate-contract';
 
 export interface SubjectSweepResult {
   anchored: number;
+  /** Tasks stamped subjectResolution = 'reconciled' by this run. */
   reconciled: number;
+  /** Tasks terminated (status -> 'cancelled') by this run. Same set as reconciled. */
+  cancelled: number;
 }
 
 const DEAD_LIFECYCLE_STATUSES = new Set(['closed', 'merged']);
@@ -45,11 +66,21 @@ export async function sweepSubjectAnchoredTasks(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.subjectPrNumber, prNumber),
     ),
-    columns: { id: true, status: true, parentTaskId: true, subjectResolution: true },
+    // subjectAnchor carries `source` — there is no relational projection of it,
+    // so it MUST be selected. An unselected column reads as undefined, which the
+    // contract treats as advisory (fail open): the sweep would then stop
+    // reconciling anything rather than silently cancel the wrong tasks.
+    columns: {
+      id: true,
+      status: true,
+      parentTaskId: true,
+      subjectResolution: true,
+      subjectAnchor: true,
+    },
   });
 
   if (anchored.length === 0) {
-    return { anchored: 0, reconciled: 0 };
+    return { anchored: 0, reconciled: 0, cancelled: 0 };
   }
 
   // Step 2: expand to retry-chain members by following parentTaskId edges
@@ -91,40 +122,85 @@ export async function sweepSubjectAnchoredTasks(
 
   if (hasLiveSuccessorPr) {
     // A chain member has a live PR — the subject is still being worked on
-    return { anchored: taskIds.size, reconciled: 0 };
+    return { anchored: taskIds.size, reconciled: 0, cancelled: 0 };
   }
 
-  // Step 4: collect anchored tasks that are claimable and not yet reconciled
+  // Step 4: collect anchored tasks that are claimable, not yet reconciled, and
+  // whose anchor actually identifies the subject. Advisory anchors are left
+  // completely untouched — that means BOTH a non-binding source (text/url) and a
+  // binding source carrying `confidence: 'derived'` (an unverified caller-supplied
+  // hint). This MUST be the same predicate the claim gate and /start use: if the
+  // sweep classified more broadly than the gate, it would cancel a task that the
+  // gate considers perfectly claimable — trading a silent stall for silent
+  // destruction, which is strictly worse.
   const toReconcile = anchored.filter(
-    t => CLAIMABLE_STATUSES.has(t.status) && t.subjectResolution !== 'reconciled',
+    t => CLAIMABLE_STATUSES.has(t.status)
+      && t.subjectResolution !== 'reconciled'
+      && isBindingSubjectAnchor(t.subjectAnchor),
   );
 
   if (toReconcile.length === 0) {
-    return { anchored: taskIds.size, reconciled: 0 };
+    return { anchored: taskIds.size, reconciled: 0, cancelled: 0 };
   }
 
-  // Step 5: cancel tasks whose subject PR is dead.
+  // Step 5: mark them reconciled AND terminate them.
   //
-  // We cancel (not just mark reconciled) because the claim route's SQL
-  // pre-filter (subjectLivenessCondition) excludes tasks where
-  // subjectResolution='reconciled'. A task that is only marked reconciled but
-  // stays 'pending' becomes permanently invisible to the claim loop while still
-  // counting against queue depth and mission-completion gates
-  // (countPendingTasksForMission counts by status, not subjectResolution).
+  // We cancel (not just mark reconciled) for two reinforcing reasons:
   //
-  // This was the root cause of session-limit-deferred CI-retry tasks stranding
-  // for weeks: the task's budget-reset startAt passed, but the task was never
-  // re-claimed because the SQL filter hid it from the claim route entirely.
-  await db.update(tasks).set({
+  //  1. The claim route's SQL pre-filter (subjectLivenessCondition) excludes
+  //     tasks where subjectResolution='reconciled'. A task that is only marked
+  //     reconciled but stays 'pending' becomes permanently invisible to the
+  //     claim loop while still counting against queue depth and
+  //     mission-completion gates (countPendingTasksForMission counts by status,
+  //     not subjectResolution). This was the root cause of session-limit-deferred
+  //     CI-retry tasks stranding for weeks: the budget-reset startAt passed, but
+  //     the task was never re-claimed because the SQL filter hid it entirely.
+  //  2. `cancelled` is the dependency gate's satisfying status, so terminating a
+  //     dead task is also what stops it starving its dependents. Leaving it
+  //     pending is how one dead task stalled a 20-task chain.
+  //
+  // The status guard in the WHERE keeps the write race-safe: a task that a
+  // worker picked up between the read above and this write is no longer in a
+  // claimable status and is left alone. RETURNING tells us which rows actually
+  // changed, so the counts, the log line and the audit trail below describe
+  // reality rather than intent.
+  const terminated = await db.update(tasks).set({
     subjectResolution: 'reconciled',
     status: 'cancelled',
     updatedAt: new Date(),
-  }).where(inArray(tasks.id, toReconcile.map(t => t.id)));
+  }).where(and(
+    inArray(tasks.id, toReconcile.map(t => t.id)),
+    inArray(tasks.status, [...CLAIMABLE_STATUSES]),
+  )).returning({ id: tasks.id });
 
   console.log(
-    `[subject-sweep] PR #${prNumber} (workspace ${workspaceId}): cancelled ${toReconcile.length} pending task(s) whose subject PR has no live successor.`,
-    toReconcile.map(t => t.id),
+    `[subject-sweep] PR #${prNumber} (workspace ${workspaceId}): cancelled ${terminated.length} pending task(s) whose subject PR has no live successor.`,
+    terminated.map(row => row.id),
   );
 
-  return { anchored: taskIds.size, reconciled: toReconcile.length };
+  // Step 6: audit trail. taskSubjectReports is the existing per-task subject
+  // ledger (append-only, anchor snapshot included), so "why was this cancelled,
+  // which PR, when" stays legible after the fact without a new column.
+  const anchorById = new Map(toReconcile.map(t => [t.id, t.subjectAnchor ?? null]));
+  if (terminated.length > 0) {
+    try {
+      await db.insert(taskSubjectReports).values(
+        terminated.map(row => ({
+          taskId: row.id,
+          origin: 'system',
+          note: `subject_reconciled: PR #${prNumber} is dead (closed/merged, no live successor) — task cancelled so dependents unblock`,
+          anchorSnapshot: anchorById.get(row.id) ?? null,
+        })),
+      );
+    } catch (error) {
+      // Never fail the sweep over its own audit trail.
+      console.error('[subject-sweep] failed to persist reconciliation audit rows:', error);
+    }
+  }
+
+  return {
+    anchored: taskIds.size,
+    reconciled: terminated.length,
+    cancelled: terminated.length,
+  };
 }

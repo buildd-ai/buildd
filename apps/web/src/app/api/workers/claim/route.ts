@@ -28,7 +28,14 @@ import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-regist
 import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, pathsOverlap } from '@buildd/core/path-overlap';
+import { findBlockingPr, pathsOverlap, declaresNoScope, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
+import {
+  BYPASS_MISSION_BUDGET_KEY,
+  CAP_EXEMPT_KEY,
+  bypassFlagCondition,
+  hasBypassFlag,
+} from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
@@ -319,8 +326,13 @@ export async function POST(req: NextRequest) {
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the
-  // reconciliation sweep). Reads persisted task columns only — zero extra DB
-  // calls. Tasks with no subject anchor are unaffected (backwards compat).
+  // reconciliation sweep) *and* whose anchor actually identifies the subject
+  // (source ∈ system|context). A PR number merely scraped from prose is
+  // advisory and never gates a claim — see lib/subject-gate-contract.ts.
+  // Reads persisted task columns only — zero extra DB calls. Tasks with no
+  // subject anchor are unaffected (backwards compat).
+  // context.bypassSubjectGate=true (written by /start with forceOverride)
+  // bypasses this gate for a single force-started task.
   claimableConditions.push(subjectLivenessCondition());
 
   // Exclude tasks whose dependencies haven't been satisfied yet.
@@ -354,8 +366,17 @@ export async function POST(req: NextRequest) {
   // effective cap = 6). GREATEST ensures the mission value can only raise, never
   // lower, the workspace baseline — per-mission downward capping is handled by the
   // mission-level gate in the dispatch loop below.
+  //
+  // context.capExempt=true is the operator override (written by /start with
+  // capExempt). It MUST be honoured here and not only in the dispatch loop:
+  // without this clause the exempted task is filtered out of the candidate set
+  // precisely when the workspace is at cap — i.e. every time the button is
+  // actually used — so the in-loop check below never saw the task at all.
+  // Same accepted value forms on both sides via lib/bypass-flags.ts.
   claimableConditions.push(
-    sql`(
+    or(
+      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
+      sql`(
       SELECT COUNT(*) FROM ${workers} w2
       JOIN ${tasks} t3 ON t3.id = w2.task_id
       WHERE t3.workspace_id = ${tasks.workspaceId}
@@ -373,7 +394,8 @@ export async function POST(req: NextRequest) {
         (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
         0
       )
-    )`
+    )`,
+    ),
   );
 
   // Per-runner cooldown: skip tasks where this runner recently had a worker
@@ -1020,6 +1042,7 @@ export async function POST(req: NextRequest) {
     connector_mismatch: 0,
     subject_dead: 0,
     path_overlap: 0,
+    advisory_manifest: 0,
     mission_budget: 0,
     mission_concurrent: 0,
     mission_paced: 0,
@@ -1169,6 +1192,20 @@ export async function POST(req: NextRequest) {
   };
   const missionClaimMap = new Map<string, MissionClaimData>();
   const missionActiveCountMap = new Map<string, number>();
+  /**
+   * missionId → ids of that mission's in-flight tasks that declared no file
+   * scope. "No scope" is `declaresNoScope()`, NOT `isAdvisoryManifest()`: null,
+   * `[]` and `['**']` are all equally undeclared, and the sentinel-only reading
+   * let a manifest-less task (anything predating the `['**']` mission default)
+   * past this guard entirely.
+   *
+   * Feeds the compensating serialization guard in the dispatch loop: since the
+   * authoring pass no longer mints dependsOn edges from a wildcard manifest
+   * (packages/core/path-overlap.ts) and nothing writes path_claims rows
+   * automatically, two scope-undeclared tasks in one mission would otherwise run
+   * concurrently and ping-pong conflict retries on the same files.
+   */
+  const missionAdvisoryInFlight = new Map<string, Set<string>>();
 
   const filteredMissionIds = [...new Set(
     filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
@@ -1182,18 +1219,27 @@ export async function POST(req: NextRequest) {
       missionClaimMap.set(m.id, m as MissionClaimData);
     }
 
-    // Count active workers per mission for the concurrency gate.
-    const missionConcurrencyCounts = await db
-      .select({ missionId: tasks.missionId, count: sql<number>`COUNT(*)::int` })
+    // In-flight tasks per mission. ONE query feeds two gates: the concurrency
+    // count (was a COUNT(*) GROUP BY) and the advisory-manifest serialization
+    // guard below, which needs the in-flight tasks' manifests. Row-level instead
+    // of aggregated so we don't add a second round trip; the count is the same
+    // number of joined worker rows the aggregate produced.
+    const missionInFlightRows = await db
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
         inArray(tasks.missionId, filteredMissionIds),
         inArray(workers.status, ['running', 'starting', 'idle', 'waiting_input']),
-      ))
-      .groupBy(tasks.missionId);
-    for (const row of missionConcurrencyCounts) {
-      if (row.missionId) missionActiveCountMap.set(row.missionId, row.count);
+      ));
+    for (const row of missionInFlightRows) {
+      if (!row.missionId) continue;
+      missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
+      if (declaresNoScope(row.pathManifest as string[] | null)) {
+        const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
+        if (row.taskId) set.add(row.taskId);
+        missionAdvisoryInFlight.set(row.missionId, set);
+      }
     }
   }
 
@@ -1205,8 +1251,11 @@ export async function POST(req: NextRequest) {
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
     // exclude reconciled tasks, but a concurrent reconciliation sweep might have
-    // run between the initial query and this point.
-    if (!subjectStillLive(task as any)) {
+    // run between the initial query and this point. Same contract as the SQL
+    // predicate (lib/subject-gate-contract.ts) — subjectAnchor and context must
+    // be selected for it to see the anchor's source and the bypass flag; the
+    // candidate query above selects every task column.
+    if (!subjectStillLive(task)) {
       console.log(`[claim] task ${task.id} skipped: subject PR reconciled (dead)`);
       deferrals.subject_dead++;
       continue;
@@ -1233,15 +1282,23 @@ export async function POST(req: NextRequest) {
       // Path-overlap backstop (layer 2): also check active path_claims rows.
       // This catches tasks that are running but haven't opened a PR yet — the
       // window between task start and PR open where layer 1 would miss them.
-      // Skip '**' manifests — wildcard tasks are advisory-only.
-      if (!taskManifest.includes('**')) {
+      //
+      // The sentinel is stripped rather than treated as a veto on the whole
+      // check: a manifest of ['**', 'a.ts'] used to skip layer 2 entirely and
+      // therefore ignored a genuine held lock on a.ts. '**' says "scope not
+      // fully declared", which is no reason to discard the parts that ARE
+      // declared. A manifest (or claim) that is *only* the sentinel has no
+      // concrete paths left and stays advisory.
+      const concreteManifest = taskManifest.filter(p => p !== REPO_WIDE_SENTINEL);
+      if (concreteManifest.length > 0) {
         const activeClaims = activePathClaimsByWorkspace.get(task.workspaceId);
         if (activeClaims) {
           let blockedByActiveClaim = false;
           for (const [claimingTaskId, claimedPaths] of activeClaims) {
             if (claimingTaskId === task.id) continue; // own claims never block self
-            if (claimedPaths.includes('**')) continue; // advisory-only
-            if (pathsOverlap(taskManifest, claimedPaths)) {
+            const concreteClaimed = claimedPaths.filter(p => p !== REPO_WIDE_SENTINEL);
+            if (concreteClaimed.length === 0) continue; // advisory-only claim
+            if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
               deferrals.path_overlap++;
               blockedByActiveClaim = true;
@@ -1261,7 +1318,14 @@ export async function POST(req: NextRequest) {
       if (missionData) {
         // 1. Budget exhausted: never claim new tasks from an exhausted mission.
         //    Already-running workers are unaffected (they were claimed earlier).
-        if (missionData.status === 'budget_exhausted') {
+        // A one-way door: nothing clears budget_exhausted except a human raising
+        // costBudgetUsd, and it strands EVERY task in the mission at once. The
+        // operator override (/start with forceOverride → context.bypassMissionBudget)
+        // releases a single task without resuming the whole mission.
+        if (
+          missionData.status === 'budget_exhausted'
+          && !hasBypassFlag(taskContext, BYPASS_MISSION_BUDGET_KEY)
+        ) {
           console.log(`[claim] task ${task.id} skipped: mission ${taskMissionId} budget_exhausted`);
           deferrals.mission_budget++;
           continue;
@@ -1291,6 +1355,44 @@ export async function POST(req: NextRequest) {
           deferrals.mission_paced++;
           continue;
         }
+
+        // 4. Advisory-manifest serialization (compensating guard).
+        //    An undeclared scope — null, [], or '**' (declaresNoScope) — no
+        //    longer mints stored dependsOn edges (correct — those edges block
+        //    until completed+merged, which is not what a file conflict needs),
+        //    and neither path-overlap layer can help: layer 1 returns null for a
+        //    wildcard candidate and layer 2 has no concrete paths to compare
+        //    because nothing writes path_claims rows automatically. Two
+        //    scope-undeclared tasks in one mission would therefore edit the same
+        //    files concurrently and ping-pong conflict retries — the exact
+        //    failure mode the ['**'] default was introduced to stop.
+        //
+        //    So: at most one scope-undeclared task per mission in flight. This
+        //    is a SOFT deferral — the task stays pending and is retried on the
+        //    next poll (seconds), never a stored edge (which would wait for
+        //    completed + PR merged). Mission-scoped, so it cannot reintroduce
+        //    workspace-wide serialization.
+        //
+        //    The in-flight set includes `waiting_input` workers (same statuses
+        //    the mission concurrency count uses): that worker's worktree still
+        //    holds uncommitted edits, so treating it as free would reintroduce
+        //    the conflict. Cost: a mission's other scope-undeclared tasks wait
+        //    on a parked question — visible as the advisory_manifest deferral
+        //    counter and as the parked task's own "Needs Input" state.
+        if (declaresNoScope(taskManifest)) {
+          const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
+          const blockingPeer = advisoryPeers
+            ? [...advisoryPeers].find(id => id !== task.id)
+            : undefined;
+          if (blockingPeer) {
+            console.log(
+              `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
+              `(mission ${taskMissionId} already has scope-undeclared task ${blockingPeer} in flight)`,
+            );
+            deferrals.advisory_manifest++;
+            continue;
+          }
+        }
       }
     }
 
@@ -1300,7 +1402,7 @@ export async function POST(req: NextRequest) {
     // capExempt=true in context allows one-time bypass (set by /start with capExempt flag).
     // A mission may raise the effective cap above the workspace default; use the same
     // GREATEST logic as the SQL prefilter so in-batch behaviour is consistent.
-    const isCapExempt = taskContext?.capExempt === true;
+    const isCapExempt = hasBypassFlag(taskContext, CAP_EXEMPT_KEY);
     const taskWorkspace = (task as any).workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
     if (taskWorkspace?.repo && !isCapExempt) {
       const workspaceCap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
@@ -1422,6 +1524,20 @@ export async function POST(req: NextRequest) {
           },
         })
         .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+
+      // TERMINAL write → must run the same post-terminal resolution every other
+      // terminal writer runs (lib/stale-workers.ts, workers/[id] completion,
+      // interrupt, tasks/cleanup). Without it cascadeDependencyFailure never
+      // fires and every task depending on this one stays pending forever:
+      // 'failed' is not in DEP_SATISFYING_STATUSES, so the dep gate blocks the
+      // dependents behind a task that can never complete.
+      // Awaited (dependents must be consistent before we answer) but non-fatal:
+      // one bad cascade must not abort the rest of the claim batch.
+      try {
+        await resolveCompletedTask(task.id, task.workspaceId);
+      } catch (err) {
+        console.error(`[claim] dependency cascade failed for workspace-mismatched task ${task.id}:`, err);
+      }
       continue;
     }
 
@@ -1527,6 +1643,14 @@ export async function POST(req: NextRequest) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
       missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
+
+      // Reserve the mission's single scope-undeclared slot for the rest of the
+      // batch, so one poll cannot claim two '**' tasks from the same mission.
+      if (declaresNoScope((task as any).pathManifest as string[] | null)) {
+        const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
+        set.add(task.id);
+        missionAdvisoryInFlight.set(taskMissionId, set);
+      }
 
       const missionData = missionClaimMap.get(taskMissionId);
       if (missionData?.pacingMode === 'paced') {

@@ -5,6 +5,9 @@ const STATUS_LABELS: Record<string, string> = {
   starting: 'Starting',
   waiting_input: 'Needs Input',
   waiting_on_you: 'Waiting on you',
+  // The subject-liveness claim gate excludes this task — no worker can ever
+  // pick it up. See lib/subject-gate-contract.ts.
+  subject_dead: 'Subject Closed',
   completed: 'Completed',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -22,6 +25,7 @@ const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> =
   starting:               { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
   waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
   waiting_on_you:         { dot: 'bg-[#D97706] animate-status-pulse',        bg: 'bg-[#D97706]/10',      text: 'text-[#D97706]' },
+  subject_dead:           { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
   completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
   failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
   cancelled:              { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-muted line-through' },

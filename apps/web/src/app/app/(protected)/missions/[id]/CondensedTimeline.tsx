@@ -46,6 +46,14 @@ export type CondensedTimelineTask = {
     supersededByPrNumber: number | null;
   } | null;
   reviewerTaskHref: string | null;
+  /**
+   * True when the parent mission is `budget_exhausted`. Every pending task in
+   * such a mission is unclaimable until a human raises the budget, so rendering
+   * it as QUEUED repeats the silent-stall bug (docs/specs/mission-task-lifecycle.md,
+   * rule CG-2). Mission-level state, so the page sets it on every row — the
+   * mission row is already fetched in full and it costs no extra columns.
+   */
+  missionBudgetExhausted?: boolean;
 };
 
 /** Minimal bookkeeping task row for the expandable footer (§3.6). */
@@ -264,6 +272,7 @@ function TaskRow({
             taskStatus={task.status}
             workerStatus={latestWorker?.status ?? null}
             chain={task.chain ?? null}
+            missionBudgetExhausted={task.missionBudgetExhausted ?? false}
             taskCreatedAt={task.taskCreatedAt}
             taskUpdatedAt={task.taskUpdatedAt}
             startAt={task.startAt ?? null}

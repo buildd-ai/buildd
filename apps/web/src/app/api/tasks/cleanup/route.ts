@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { resolveCompletedTask } from '@/lib/task-dependencies';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -32,7 +33,7 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
   if (failureCount >= MAX_TASK_FAILURES) {
     const existing = await db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
-      columns: { context: true },
+      columns: { context: true, workspaceId: true },
     });
     const existingCtx = (existing?.context || {}) as Record<string, unknown>;
     await db
@@ -50,6 +51,22 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
         },
       })
       .where(eq(tasks.id, taskId));
+
+    // This is a TERMINAL write, so it must run the same post-terminal resolution
+    // every other terminal writer runs (lib/stale-workers.ts resolveStaleTask,
+    // workers/[id] completion, interrupt). Without it cascadeDependencyFailure
+    // never fires and every task depending on this one stays pending forever:
+    // `failed` is not in DEP_SATISFYING_STATUSES, so the claim gate blocks the
+    // dependents indefinitely behind a task that can never complete. The mission
+    // loop and parent-children rollup are missed for the same reason.
+    //
+    // Awaited (dependents must be consistent before we report counts) but
+    // non-fatal: one bad cascade must not abort the rest of the cleanup pass.
+    try {
+      await resolveCompletedTask(taskId, existing?.workspaceId ?? '');
+    } catch (err) {
+      console.error(`[cleanup] dependency cascade failed for task ${taskId}:`, err);
+    }
     return 'failed' as const;
   }
 

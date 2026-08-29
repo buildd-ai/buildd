@@ -14,6 +14,7 @@ import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema'
 import { eq, and } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
+import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
 import type { WorkspacePolicyConfig } from './workspace-policy';
 import {
@@ -253,6 +254,62 @@ interface BuildContextParams {
   policyConfig?: WorkspacePolicyConfig;
 }
 
+/** Doctrine bullets used when the task declared a concrete file scope. */
+const CONCRETE_MANIFEST_DOCTRINE = [
+  '- ONE-WORK-UNIT: The PR should touch only files in the pathManifest (plus lock files). Flag scope creep.',
+  '- PATH-MANIFEST CONFORMANCE: Every file in pathManifest must be present in the diff. Missing = incomplete delivery.',
+].join('\n');
+
+/** Doctrine bullets used when the task never declared a file scope. */
+const UNDECLARED_MANIFEST_DOCTRINE = [
+  '- ONE-WORK-UNIT: This task has no declared manifest, so judge scope against the task description — flag files the description does not account for.',
+  '- PATH-MANIFEST CONFORMANCE: Not applicable — with no declared manifest there is nothing to check the diff against. Do NOT report files as missing from the manifest.',
+].join('\n');
+
+/**
+ * Render the manifest-dependent parts of the reviewer prompt: the two scope
+ * doctrine bullets and the `## Expected Path Manifest` section.
+ *
+ * The repo-wide sentinel `'**'` (the mission-task default in POST /api/tasks)
+ * means "this task never declared its scope" — it is NOT a path. Rendering it as
+ * a manifest entry told the reviewer to confirm a file literally named `**`
+ * appears in the diff, an impossible check that polluted review output. Advisory
+ * manifests therefore get an honest "no declared scope" rendering and the
+ * completeness doctrine is withdrawn. `isAdvisoryManifest` is the single
+ * definition of that predicate (see packages/core/path-overlap.ts).
+ */
+export function renderManifestGuidance(
+  pathManifest?: string[] | null,
+): { doctrine: string; section: string } {
+  if (isAdvisoryManifest(pathManifest)) {
+    return {
+      doctrine: UNDECLARED_MANIFEST_DOCTRINE,
+      section: [
+        '## Expected Path Manifest',
+        '',
+        'This task declared no file scope — its manifest is the repo-wide sentinel `**`,',
+        'which is the default for mission tasks filed without paths. It is advisory, not a',
+        'list of files, so it cannot be used as a completeness check. Judge scope and',
+        'completeness from the task description and the diff alone.',
+      ].join('\n'),
+    };
+  }
+
+  if (!pathManifest || pathManifest.length === 0) {
+    return {
+      doctrine: UNDECLARED_MANIFEST_DOCTRINE,
+      section: '## Expected Path Manifest\n\n(No pathManifest declared for this task)',
+    };
+  }
+
+  return {
+    doctrine: CONCRETE_MANIFEST_DOCTRINE,
+    section: `## Expected Path Manifest (files this PR should touch)\n\n${pathManifest
+      .map((p) => `- ${p}`)
+      .join('\n')}`,
+  };
+}
+
 async function buildReviewerContext(params: BuildContextParams): Promise<string> {
   const { originalTaskId, originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig } = params;
 
@@ -302,11 +359,9 @@ async function buildReviewerContext(params: BuildContextParams): Promise<string>
     console.warn(`[reviewer] Failed to fetch artifacts for task ${originalTaskId}:`, err);
   }
 
-  // Path manifest
-  const pathManifest = originalTask.pathManifest;
-  const manifestSection = pathManifest && pathManifest.length > 0
-    ? `## Expected Path Manifest (files this PR should touch)\n\n${pathManifest.map((p) => `- ${p}`).join('\n')}`
-    : '## Expected Path Manifest\n\n(No pathManifest declared for this task)';
+  // Path manifest — doctrine + section vary by whether the scope was declared.
+  const { doctrine: manifestDoctrine, section: manifestSection } =
+    renderManifestGuidance(originalTask.pathManifest);
 
   const iterationInfo = originalTask.iteration != null
     ? `Iteration: ${originalTask.iteration}/${originalTask.maxIterations ?? 3}`
@@ -352,8 +407,7 @@ ${iterationInfo}
 ${originalTask.description ?? '(no description)'}
 
 ## Doctrine
-- ONE-WORK-UNIT: The PR should touch only files in the pathManifest (plus lock files). Flag scope creep.
-- PATH-MANIFEST CONFORMANCE: Every file in pathManifest must be present in the diff. Missing = incomplete delivery.
+${manifestDoctrine}
 - SPEC CONFORMANCE: What was built must match the task description.
 - NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.
 

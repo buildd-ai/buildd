@@ -53,6 +53,13 @@
       "method": "POST"
     },
     {
+      "$comment": "Queue-stall watchdog. Alerts when a task has been pending past the route's 4h threshold and was never successfully claimed, naming the claim gate that is holding it. Threshold and cadence are chosen together: the incident this fixes took 5 DAYS to notice, so the target is 'same working day', and hourly x 4h threshold makes worst-case detection ~5h. Daytime only (EST) for the same reason as the other DB-touching jobs — a sub-hourly job never lets Neon's compute autosuspend, and nobody can act on a stalled-queue push at 03:00; a stall that begins overnight is reported at 07:00. Do NOT make this finer than hourly: the route HTTP-probes connectors for role-gated tasks.",
+      "title": "Buildd: Queue Stall Watchdog",
+      "path": "/api/cron/queue-stall",
+      "schedule": "0 7-23 * * *",
+      "method": "POST"
+    },
+    {
       "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
       "title": "Buildd: Lease Expiry Guard",
       "path": "/api/cron/lease-expiry-guard",

@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
-import { deriveDisplayStatus } from '@/lib/task-presentation';
-import { deriveTaskPhase } from '@/lib/task-presentation';
+import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied } from '@/lib/task-presentation';
+import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -279,10 +279,24 @@ export default async function TaskDetailPage({
   const baseDisplayStatus = isTerminal
     ? task.status
     : deriveDisplayStatus(task.status, activeWorker?.status);
+  // The subject-liveness claim gate (api/workers/claim/subject-gate.ts) excludes
+  // this task from every claim query, so it can never run — it must not render
+  // as a healthy "Pending" row. Only binding anchors (source ∈ system|context)
+  // count; a PR number scraped from the description does not.
+  const subjectDead = !isTerminal && isSubjectDead({
+    subjectKind: task.subjectKind,
+    subjectPrNumber: task.subjectPrNumber,
+    subjectResolution: task.subjectResolution,
+    subjectAnchor: task.subjectAnchor,
+    context: task.context as Record<string, unknown> | null,
+  });
+
   // Override to "Waiting on you" when a non-mission task has open question notes
   const displayStatus = openQuestionCount > 0 && !isTerminal
     ? 'waiting_on_you'
-    : baseDisplayStatus;
+    : subjectDead && !activeWorker
+      ? 'subject_dead'
+      : baseDisplayStatus;
 
   const initiative = task.mission?.initiative ?? null;
 
@@ -321,15 +335,25 @@ export default async function TaskDetailPage({
     taskWorkers[0]?.prLifecycleStatus !== 'closed'
   );
 
-  // Dependency resolution checks
-  // A dep is unresolved if: not completed/cancelled, OR completed but has an open (non-closed) PR
-  const unresolvedDeps = depTasks.filter(d => {
-    if (d.status !== 'completed') return true;
-    const latestWorker = (d as any).workers?.[0];
-    return latestWorker?.prNumber && !latestWorker.mergedAt && latestWorker.prLifecycleStatus !== 'closed';
-  });
+  // Dependency resolution checks — via the SHARED gate predicate, not a local
+  // copy. The local copy treated any dep that was not `completed` as
+  // unresolved, so a CANCELLED dep rendered as a blocker and suppressed the
+  // Start button, while the claim route treats `cancelled` as satisfied
+  // (lib/dep-gate-contract.ts). Cancelled deps are now common: the subject
+  // sweep cancels tasks whose subject PR died.
+  const unresolvedDeps = depTasks.filter(
+    d => !isGateSatisfied(d, ((d as any).workers ?? []) as Parameters<typeof isGateSatisfied>[1]),
+  );
   const isBlocked = task.status === 'pending' && unresolvedDeps.length > 0;
   const isBudgetPaused = task.status === 'pending' && !!(task.context as any)?.budgetExhausted;
+  // The claim loop skips every task whose mission is `budget_exhausted`
+  // (mission gate #1 in api/workers/claim/route.ts) and nothing clears that
+  // status except a human raising the mission budget. Force-started tasks carry
+  // the bypass flag and are claimable again, so they must not show the banner.
+  const missionBudgetExhausted =
+    !isTerminal
+    && task.mission?.status === 'budget_exhausted'
+    && !hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_MISSION_BUDGET_KEY);
   const budgetBackendLabel = backendLabel(task.backend);
   const budgetResetsAtIso = (task.context as any)?.budgetResetsAt as string | undefined;
 
@@ -382,10 +406,12 @@ export default async function TaskDetailPage({
     workerWaitingFor: activeWorker?.waitingFor,
     isBlocked,
     isBudgetPaused,
+    isSubjectDead: subjectDead,
+    isMissionBudgetExhausted: missionBudgetExhausted,
   });
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
-  const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned';
+  const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
 
   // The next step in the execution plan — "what happens after this?" — surfaced as
   // a CTA when this task is done. The chain is the durable thread across workers.
@@ -638,6 +664,29 @@ export default async function TaskDetailPage({
             </div>
           );
         })()}
+
+        {/* Mission Budget Banner — the parent mission is out of budget, so the
+            claim loop skips this task and every sibling. Only raising the
+            mission budget (or force-starting this one task) clears it. */}
+        {missionBudgetExhausted && (
+          <div className="bg-status-error/10 border border-status-error/20 rounded-[10px] p-4 mb-6">
+            <div className="flex items-center gap-2 text-status-error font-medium text-sm mb-1">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              Mission budget exhausted — no worker can claim this task
+            </div>
+            <p className="text-[12px] text-text-secondary ml-6">
+              Every task in{' '}
+              {task.mission ? (
+                <Link href={`/app/missions/${task.mission.id}`} className="text-accent-text hover:underline">
+                  {task.mission.title}
+                </Link>
+              ) : 'this mission'}{' '}
+              is held until its cost budget is raised. Raise the mission budget to release them all, or force-start this one task.
+            </p>
+          </div>
+        )}
 
         {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
         {isBudgetPaused && !isBlocked && (

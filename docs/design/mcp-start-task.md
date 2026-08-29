@@ -59,7 +59,7 @@ a specific pending task, and it is the only one absent from MCP. That is the gap
 - Stamps `context.manualStartAt = now.toISOString()` (durable; survives Pusher drops)
 - Boosts `tasks.priority += 1` once (idempotent: skipped if `manualStartAt` already set)
 - Broadcasts `TASK_ASSIGNED` via Pusher to the workspace channel
-- Writes `bypassDepsGate`, `bypassStartGate`, `bypassHeldGate` to `task.context` when `forceOverride=true`
+- Writes `bypassDepsGate`, `bypassHeldGate`, `bypassSubjectGate`, `bypassMissionBudget`, `capExempt` to `task.context` when `forceOverride=true` (keys defined in `apps/web/src/lib/bypass-flags.ts`). There is deliberately no `bypassStartGate`: the deferred-start gate is a plain `startAt` comparison and the same UPDATE nulls `startAt`, so a second mechanism would only let a task render "Starts 3pm" while running.
 
 **Body params:**
 ```ts
@@ -240,7 +240,7 @@ backend-credential gate in the claim path. Implement in onboarding/settings UI.
 
 PR #1677 (task `8fe56c91`) had three acceptance items:
 1. ✅ Durable priority boost via `context.manualStartAt` + `priority+1`
-2. ✅ `bypassDepsGate` / `bypassStartGate` / `bypassHeldGate` context flags
+2. ✅ `bypassDepsGate` / `bypassHeldGate` / `bypassSubjectGate` / `bypassMissionBudget` / `capExempt` context flags
 
 **Item 3 was not delivered:** diagnose why manual Start acceptance never succeeded
 for Max, with runner-side Pusher subscription lifecycle as the prime suspect (a

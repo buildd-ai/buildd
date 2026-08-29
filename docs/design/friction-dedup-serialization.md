@@ -5,7 +5,7 @@
 **Verified:** `bwrap-incident-replay.test.ts` — full scenario test (phase 1–5)
 **Related:**
 - `apps/runner/src/error-trace-scanner.ts` — pattern definitions and `ErrorTrace` type
-- `packages/core/path-overlap.ts` — `pathsOverlap`, `findBlockingPr`
+- `packages/core/path-overlap.ts` — `pathsOverlap`, `shouldSerializeByManifest`, `isAdvisoryManifest`, `findBlockingPr`
 - `apps/web/src/app/api/tasks/route.ts` — `POST /api/tasks` (task creation + auto-dependsOn)
 - `apps/web/src/app/api/workers/claim/route.ts` — claim gate, `findBlockingPr` call
 - `apps/web/src/app/api/workers/claim/deps-gate.ts` — `dependenciesSatisfied()` SQL
@@ -56,13 +56,17 @@ The `pattern` slug is **deterministic and shared across all workers** that hit t
 
 ### How path-overlap machinery works today
 
-`pathsOverlap(a, b)` in `packages/core/path-overlap.ts` does exact + prefix matching on two path arrays. It is called in two places:
+`pathsOverlap(a, b)` in `packages/core/path-overlap.ts` does exact + prefix matching on two path arrays. It answers a purely *spatial* question ("could these two manifests touch the same file?") and deliberately treats the repo-wide sentinel `'**'` as overlapping everything. It is **not** the policy gate. Two policy gates sit on top of it:
 
-1. **Task creation** (`apps/web/src/app/api/tasks/route.ts:282–305`): scans `tasks` with `status IN ('pending','assigned','in_progress')` and `pathManifest IS NOT NULL`, auto-adds `dependsOn` edges for any overlap.
+1. **Task creation** (`POST /api/tasks`, auto-dependsOn pass): scans `tasks` with `status IN ('pending','assigned','in_progress')` and `pathManifest IS NOT NULL`, and calls `shouldSerializeByManifest(candidate, sibling)` — not `pathsOverlap` — to decide whether to store a `dependsOn` edge. The same pass runs in `apps/web/src/lib/conflict-retry.ts`.
 
-2. **Claim route** (`apps/web/src/app/api/workers/claim/route.ts:589–601`): calls `findBlockingPr(taskManifest, openPrTasks)` — compares the candidate task's `pathManifest` against workers that have an open PR (`prUrl IS NOT NULL AND mergedAt IS NULL`). The open PR workers' manifests come from their associated `tasks.pathManifest`, not from the GitHub changed-files API.
+2. **Claim route** (`apps/web/src/app/api/workers/claim/route.ts`): calls `findBlockingPr(taskManifest, openPrTasks)` — compares the candidate task's `pathManifest` against workers that have an open PR (`prUrl IS NOT NULL AND mergedAt IS NULL`). The open PR workers' manifests come from their associated `tasks.pathManifest`, not from the GitHub changed-files API.
 
-Both mechanisms are **no-ops when `pathManifest` is null**, which is the current state for all friction tasks.
+Both gates are **no-ops when `pathManifest` is null**, which is the current state for all friction tasks.
+
+Both gates are also no-ops when a manifest is **advisory** — i.e. it contains the repo-wide sentinel `'**'`, which is what mission tasks filed without paths default to. `isAdvisoryManifest()` is the single definition of that predicate, called by `shouldSerializeByManifest` (authoring) and `findBlockingPr` (claim), so the two cannot drift. Note the deliberately distinct sibling `declaresNoScope()`, a strict superset that also covers `null` / `[]`: the claim loop's advisory-serialization guard uses it, because a task with no manifest at all has declared just as little as one carrying the sentinel. They are not merged on purpose — the reviewer prompt and the wildcard-claim rejections have separate, differently-worded branches for "sentinel" and "no manifest", and widening the narrow predicate would make one of each pair dead code. Rationale: an undeclared scope is not the assertion "this task touches every file". Minting a stored `dependsOn` edge from it turned creation-order FIFO into a permanent dependency graph, and the resulting edge blocked until the upstream task was `completed` AND its PR `merged` — far stronger than the short mutex a path conflict warrants. A cross-check test in `packages/core/__tests__/path-overlap.test.ts` iterates manifest pairs asserting the authoring rule and the runtime rule agree.
+
+**Consequence for manifest inference below:** inferring a *concrete* manifest is what buys serialization. Falling back to `'**'` buys none.
 
 ### Where PR changed files are stored
 
@@ -201,7 +205,7 @@ if (title.startsWith('[friction] ') && signature && !pathManifest) {
 }
 ```
 
-The inferred `pathManifest` then flows into the existing auto-dependsOn logic at line 287 and is persisted on the task row normally. No changes to `path-overlap.ts` or the claim route are needed — the existing `findBlockingPr` call and `dependenciesSatisfied()` gate handle serialization automatically once the manifest is present.
+The inferred `pathManifest` then flows into the existing auto-dependsOn pass and is persisted on the task row normally. No changes to `path-overlap.ts` or the claim route are needed — the existing `findBlockingPr` call and `dependenciesSatisfied()` gate handle serialization automatically once a **concrete** manifest is present. Inference that yields nothing must leave the manifest null (or accept the `'**'` default) and accept that the task is not serialized; it must not emit `'**'` as a stand-in for "everything" hoping to gain serialization, because the sentinel is advisory on both sides.
 
 ---
 
@@ -209,14 +213,15 @@ The inferred `pathManifest` then flows into the existing auto-dependsOn logic at
 
 **Decision table** for when the new friction task's inferred `pathManifest` overlaps open PR tasks in the same workspace.
 
-The overlap check runs at task creation time against `tasks.pathManifest` of in-flight tasks (existing code, `tasks/route.ts:287–305`). This produces a `dependsOn` edge automatically. At claim time, `findBlockingPr` provides a second guard.
+The overlap check runs at task creation time against `tasks.pathManifest` of in-flight tasks (the auto-dependsOn pass in `tasks/route.ts`). Where both manifests are concrete and genuinely overlap, this produces a `dependsOn` edge automatically. At claim time, `findBlockingPr` provides a second guard. Neither fires if either side's manifest is the advisory sentinel `'**'`.
 
 The question is whether to also set `baseBranch = <pr-branch>` so the friction fix can be stacked on top of the blocking PR.
 
 | Scenario | Action |
 |---|---|
 | No manifest overlap with any open PR | Create normally; no baseBranch, no extra dependsOn |
-| Manifest overlaps an open PR task's manifest | Auto-dependsOn edge added by existing machinery; **no baseBranch** — friction fix lands on default branch after the PR merges |
+| Concrete manifest overlaps an open PR task's concrete manifest | Auto-dependsOn edge added by existing machinery; **no baseBranch** — friction fix lands on default branch after the PR merges |
+| Either manifest is the advisory sentinel `'**'` | No edge, no claim-time block — the task races. Treated the same as "no manifest" |
 | Manifest overlaps but agent explicitly requests `baseBranch` in context | Honor as-is (current behaviour) |
 
 **Why not baseBranch-on-PR-branch for friction tasks?** A friction task is a platform fix, not a feature that depends on another PR's code. Branching from a peer PR introduces a cascade: if the base PR's review changes the files, the friction branch must rebase. The simpler path is `dependsOn` — wait for the PR to merge, then the friction fix lands cleanly on the default branch.

@@ -2169,7 +2169,10 @@ describe('POST /api/tasks', () => {
     expect(captured().pathManifest).toBeUndefined();
   });
 
-  it('mission task with ["**"] default serialises against sibling with explicit paths via auto-dependsOn', async () => {
+  it('mission task with ["**"] default does NOT auto-depend on a sibling with explicit paths', async () => {
+    // The wildcard is advisory-only at claim time (findBlockingPr returns null for
+    // '**', and the path_claims backstop skips it). Authoring must not mint a hard
+    // dependsOn edge the runtime gate would refuse to honour.
     const captured = missionPathManifestSetup();
     // A sibling task already in-flight that has explicit paths
     mockTasksFindMany.mockResolvedValue([
@@ -2183,15 +2186,15 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(200);
-    // Got the conservative default
+    // Still gets the conservative default manifest…
     expect(captured().pathManifest).toEqual(['**']);
-    // The '**' sentinel overlaps with any explicit path → auto-dependsOn edge added
-    expect(captured().dependsOn).toContain('sibling-task-A');
+    // …but it buys no dependency edges.
+    expect(captured().dependsOn).toBeUndefined();
   });
 
-  it('two mission tasks with ["**"] default serialise against each other via auto-dependsOn', async () => {
+  it('mission task with explicit paths does NOT auto-depend on a wildcard-scoped sibling', async () => {
     const captured = missionPathManifestSetup();
-    // A sibling mission task that also received the '**' default
+    // Sibling never declared its scope — it cannot legitimately block every path.
     mockTasksFindMany.mockResolvedValue([
       { id: 'sibling-task-A', pathManifest: ['**'] },
     ]);
@@ -2199,12 +2202,87 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Mission task B',
+        missionId: 'mission-1',
+        pathManifest: ['apps/web/src/lib/shared.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toBeUndefined();
+  });
+
+  it('two mission tasks with ["**"] default do NOT serialise against each other', async () => {
+    // This is the FIFO-serialization bug: every manifest-less mission task used to
+    // inherit a hard edge to every task alive in the workspace at creation time.
+    const captured = missionPathManifestSetup();
+    // A sibling mission task that also received the '**' default
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-task-A', pathManifest: ['**'] },
+      { id: 'sibling-task-B', pathManifest: ['**'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task C', missionId: 'mission-1' },
     }));
 
     expect(response.status).toBe(200);
     expect(captured().pathManifest).toEqual(['**']);
-    expect(captured().dependsOn).toContain('sibling-task-A');
+    expect(captured().dependsOn).toBeUndefined();
+  });
+
+  it('still auto-depends when two concrete manifests genuinely overlap', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'sibling-wildcard', pathManifest: ['**'] },
+      { id: 'sibling-real-overlap', pathManifest: ['apps/web/src/lib'] },
+      { id: 'sibling-unrelated', pathManifest: ['packages/core/db/schema.ts'] },
+    ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Mission task B',
+        missionId: 'mission-1',
+        pathManifest: ['apps/web/src/lib/shared.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual(['sibling-real-overlap']);
+  });
+
+  it('preserves caller-supplied dependsOn on a wildcard-defaulted mission task', async () => {
+    const captured = missionPathManifestSetup();
+    // dependsOn validation re-uses findMany; return the referenced dep first,
+    // then the in-flight sibling scan result.
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ id: 'explicit-dep' }])
+      .mockResolvedValueOnce([
+        { id: 'sibling-wildcard', pathManifest: ['**'] },
+        { id: 'sibling-unrelated', pathManifest: ['packages/core/db/schema.ts'] },
+      ]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Mission task B',
+        missionId: 'mission-1',
+        dependsOn: ['explicit-dep'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    // Exactly the caller's edge — no inferred wildcard edges bolted on.
+    expect(captured().dependsOn).toEqual(['explicit-dep']);
   });
 
   // ── Prose-gate lint ────────────────────────────────────────────────────────
