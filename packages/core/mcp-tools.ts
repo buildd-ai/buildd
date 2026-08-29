@@ -3872,6 +3872,76 @@ function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean
   return `\n[savedAt: ${age} · superseded: ${superseded}]`;
 }
 
+/** Render a Date as a compact relative age string. */
+function relativeAge(date: Date): string {
+  const ms = Date.now() - date.getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1d ago' : `${days}d ago`;
+}
+
+/**
+ * Parse the source path from a chunk ID (which for file corpora is "path#startLine").
+ * Returns null when the ID does not have this structure.
+ */
+function parseSourcePath(id: string): string | null {
+  const hashIdx = id.lastIndexOf('#');
+  if (hashIdx <= 0) return null;
+  const path = id.slice(0, hashIdx);
+  const line = id.slice(hashIdx + 1);
+  if (!path || !/^\d+$/.test(line)) return null;
+  return `${path}#L${line}`;
+}
+
+/**
+ * Format a single QueryResult into a human-readable block showing corpus, path,
+ * timestamps, score breakdown, and lifecycle state.
+ * Memory corpus keeps the legacy savedAt/superseded format for backward compat.
+ */
+function formatKnowledgeResult(
+  r: import('./knowledge-store/types').QueryResult,
+  index: number,
+): string {
+  const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
+
+  if (r.corpus === 'memory') {
+    // Memory corpus: no file path, use existing savedAt/superseded format
+    const freshness = formatMemoryFreshness(r);
+    const linkOrType = r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType;
+    return `### ${index + 1}. ${typeTag}${linkOrType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+  }
+
+  // Non-memory: show corpus · path · timestamps · score breakdown
+  const path = r.sourcePath ?? parseSourcePath(r.id);
+  const pathStr = path ? `\`${path}\`` : r.sourceType;
+  const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
+  const header = `### ${index + 1}. ${typeTag}${r.corpus} · ${pathStr}${urlSuffix}`;
+
+  const sb = r.scoreBreakdown;
+  let scoreStr = `**Score:** ${r.score.toFixed(4)}`;
+  if (sb) {
+    const parts: string[] = [];
+    if (sb.dense !== undefined) parts.push(`dense: ${sb.dense.toFixed(3)}`);
+    if (sb.lexical !== undefined) parts.push(`lex: ${sb.lexical.toFixed(3)}`);
+    if (sb.rrf !== undefined) parts.push(`rrf: ${sb.rrf.toFixed(4)}`);
+    if (sb.rerank !== undefined) parts.push(`rerank: ${sb.rerank.toFixed(3)}`);
+    if (parts.length) scoreStr += ` (${parts.join(' · ')})`;
+  }
+
+  const metaParts: string[] = [scoreStr];
+  if (r.sourceTs) metaParts.push(`committed ${relativeAge(r.sourceTs)}`);
+  if (r.updatedAt) metaParts.push(`ingested ${relativeAge(r.updatedAt)}`);
+  if (r.isCurrent === false) {
+    metaParts.push(r.supersededBy ? `⚠ superseded by \`${r.supersededBy}\`` : '⚠ superseded');
+  }
+
+  return `${header}\n${metaParts.join(' · ')}\n\n${r.content}`;
+}
+
 // ── Shared memory action context type ────────────────────────────────────────
 
 type MemoryActionCtx = {
@@ -3999,12 +4069,7 @@ export async function handleRecallAction(
     return text(`No knowledge found for: "${query}"`);
   }
 
-  const formatted = results.map((r, i) => {
-    const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
-    const sourceLink = r.sourceUrl ? ` ([source](${r.sourceUrl}))` : '';
-    const freshness = scope === 'memory' ? formatMemoryFreshness(r) : '';
-    return `### ${i + 1}. ${typeTag}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}${sourceLink}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-  }).join('\n\n---\n\n');
+  const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
   return text(`Found ${results.length} result(s):\n\n${formatted}`);
 }
@@ -4376,10 +4441,7 @@ export async function handleMemoryAction(
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
-      const formatted = results.map((r, i) => {
-        const freshness = corpus === 'memory' ? formatMemoryFreshness(r) : '';
-        return `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-      }).join('\n\n---\n\n');
+      const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }
