@@ -543,6 +543,17 @@ export interface ResultMeta {
   provisionFailure?: { code: string; phase: string; message: string };
   /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
   cbm?: CbmMetrics;
+  /**
+   * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
+   * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
+   * not events — unlike `workers.mcpCalls` this is never truncated, and unlike
+   * `cbm.toolCalls` it covers built-in and non-CBM MCP tools too.
+   *
+   * Absent on workers that predate the histogram (runner release) or that called
+   * no tools. Consumers must treat absence as "unknown", not zero — see
+   * `apps/web/src/lib/usage-stats.ts`, which reports tool coverage explicitly.
+   */
+  toolCounts?: Record<string, number>;
 }
 
 export const workspaces = pgTable('workspaces', {

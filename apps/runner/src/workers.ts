@@ -28,6 +28,7 @@ import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
+import { recordToolCall } from './tool-metrics';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -1269,6 +1270,7 @@ export class WorkerManager {
       subagentTasksObservedCount: 0,
       checkpointEvents: new Set<CheckpointEventType>(),
       pendingMcpCalls: [],
+      toolCounts: {},
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -3090,6 +3092,25 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
         }
 
+        // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
+        // ships regardless of CBM activation; skipped entirely when no tool ran
+        // so a provision-failed worker doesn't get a resultMeta shell it never earned.
+        const toolCounts = worker.toolCounts ?? {};
+        if (Object.keys(toolCounts).length > 0) {
+          if (worker.resultMeta) {
+            worker.resultMeta.toolCounts = toolCounts;
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              toolCounts,
+            };
+          }
+        }
+
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
         // runner work (pr_checks_green = server reads webhooks; structured_predicate =
@@ -3707,6 +3728,12 @@ If something is missing or incomplete, describe what and fix it now.`;
               ok: true,
             });
           }
+
+          // Usage observability: count every tool call by exact name. The CBM
+          // counters below are a narrow slice (CBM tools + Read/Grep/Glob); this
+          // is the complete histogram the usage rollups read.
+          if (!worker.toolCounts) worker.toolCounts = {};
+          recordToolCall(worker.toolCounts, toolName);
 
           // CBM observability: count per-tool CBM calls and file-access tool calls.
           if (toolName.startsWith('mcp__codebase-memory__')) {

@@ -7,6 +7,14 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
+import {
+  computeUsageStats,
+  parseWindowMs,
+  UNASSIGNED_ROLE,
+  type GroupEntry,
+  type UsageStats as UsageRollup,
+} from '@/lib/usage-stats';
+import { fetchUsageRows } from '@/lib/usage-stats-query';
 import { HealthClient } from './HealthClient';
 
 export type { BudgetForecast };
@@ -37,6 +45,21 @@ export interface UsageStats {
   failed: number;
   unassigned: number;
   byRole: { slug: string; name: string; color: string; completed: number; failed: number; total: number }[];
+}
+
+/**
+ * Consumption rollup for the health page: what work costs, as opposed to
+ * `UsageStats` above, which counts whether it landed. Role groups carry the
+ * same name/color as the role block so the two read as one story.
+ */
+export interface ConsumptionGroup extends GroupEntry {
+  label: string;
+  color: string;
+}
+
+export interface ConsumptionStats extends Omit<UsageRollup, 'groups'> {
+  window: string;
+  groups: ConsumptionGroup[];
 }
 
 export interface RecentFailure {
@@ -105,7 +128,7 @@ export default async function HealthPage({
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
   // Parallel fetches: runners, usage, schedules, recent failures, credential health, budget forecast
-  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast] = await Promise.all([
+  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast, consumption] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
@@ -273,6 +296,40 @@ export default async function HealthPage({
 
     // Budget forecast
     getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null),
+
+    // Consumption (7d): tokens / cost / turns / tool calls per task, by role.
+    // Shorter window than the 30d role block above — spend shifts with model and
+    // prompt changes, so a month-long average hides the thing you'd act on.
+    (async (): Promise<ConsumptionStats | null> => {
+      const window = '7d';
+      const windowStart = new Date(Date.now() - parseWindowMs(window));
+      const rows = await fetchUsageRows({ workspaceIds: scopedWsIds, windowStart });
+      if (rows.length === 0) return null;
+
+      const stats = computeUsageStats(rows, 'role');
+      const slugs = stats.groups.map(g => g.key).filter(k => k !== UNASSIGNED_ROLE);
+      const roleRows = slugs.length > 0
+        ? await db.query.workspaceSkills.findMany({
+            where: and(
+              inArray(workspaceSkills.workspaceId, scopedWsIds),
+              eq(workspaceSkills.isRole, true),
+              inArray(workspaceSkills.slug, slugs),
+            ),
+            columns: { slug: true, name: true, color: true },
+          })
+        : [];
+      const roleBySlug = new Map((roleRows as any[]).map((r: any) => [r.slug as string, r]));
+
+      return {
+        ...stats,
+        window,
+        groups: stats.groups.map(g => ({
+          ...g,
+          label: roleBySlug.get(g.key)?.name ?? (g.key === UNASSIGNED_ROLE ? 'No role' : g.key),
+          color: roleBySlug.get(g.key)?.color ?? '#888',
+        })),
+      };
+    })().catch(() => null),
   ]);
 
   const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
@@ -302,6 +359,7 @@ export default async function HealthPage({
     <HealthClient
       runners={runners}
       usageStats={usageStats}
+      consumption={consumption ?? null}
       schedules={serializedSchedules}
       recentFailures={recentFailureRows ?? []}
       credentialHealth={credentialHealthRows ?? []}
