@@ -178,6 +178,13 @@ export default async function MissionsPage({
         .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
       const hasRelease = relRow?.maxHealthyAt != null;
 
+      const [latestRelRow] = await db
+        .select({ id: releases.id })
+        .from(releases)
+        .where(eq(releases.workspaceId, wsId))
+        .orderBy(desc(releases.createdAt))
+        .limit(1);
+
       const [queueRow] = await db
         .select({
           queueDepth: sql<number>`count(*)::int`,
@@ -199,6 +206,7 @@ export default async function MissionsPage({
         queueDepth: queueRow?.queueDepth ?? 0,
         oldestMergedAt: queueRow?.oldestMergedAt ?? null,
         hasRelease,
+        releaseId: latestRelRow?.id ?? null,
       });
     }));
   }
@@ -207,6 +215,7 @@ export default async function MissionsPage({
     await Promise.all(continuousWsIds.map(async (wsId) => {
       const [lastRelease] = await db
         .select({
+          id: releases.id,
           state: releases.state,
           deployedAt: sql<string | null>`deployed_at::text`,
           healthyAt: sql<string | null>`healthy_at::text`,
@@ -222,6 +231,7 @@ export default async function MissionsPage({
             state: lastRelease.state,
             deployedAt: lastRelease.deployedAt ?? null,
             healthyAt: lastRelease.healthyAt ?? null,
+            releaseId: lastRelease.id,
           }
         : null,
       );
