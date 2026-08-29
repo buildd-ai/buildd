@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
-import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
+import { dispatchWorkflowRelease, releasePreflight } from '@/lib/release/dispatch';
+import { detectArchetype } from '@buildd/core/release-archetype';
+import { attributeRelease } from '@buildd/core/release-attribution';
+import { db } from '@buildd/core/db';
+import { releases } from '@buildd/core/db/schema';
 
 /**
  * Trigger a release on a workspace's repo. The workspace declares HOW it
@@ -32,15 +37,15 @@ interface TriggerBody {
   force?: boolean;
 }
 
-async function isAdmin(req: NextRequest): Promise<boolean> {
+async function resolveAuth(req: NextRequest): Promise<{ authorized: boolean; triggeredBy: 'user' | 'agent' }> {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   if (apiKey) {
     const account = await authenticateApiKey(apiKey);
-    return account?.level === 'admin';
+    return { authorized: account?.level === 'admin', triggeredBy: 'agent' };
   }
   const user = await getCurrentUser();
-  return Boolean(user);
+  return { authorized: Boolean(user), triggeredBy: 'user' };
 }
 
 export async function POST(req: NextRequest) {
@@ -48,7 +53,8 @@ export async function POST(req: NextRequest) {
     if (!isGitHubAppConfigured()) {
       return NextResponse.json({ error: 'GitHub App not configured on this buildd instance' }, { status: 500 });
     }
-    if (!(await isAdmin(req))) {
+    const { authorized, triggeredBy } = await resolveAuth(req);
+    if (!authorized) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -69,6 +75,16 @@ export async function POST(req: NextRequest) {
     }
     const target = targetResult.target;
 
+    // Archetype check — none workspaces never trigger a release row or dispatch.
+    const archetype = detectArchetype({
+      name: target.workspaceName,
+      releaseConfig: target.releaseConfig,
+      gitConfig: target.gitConfig,
+    });
+    if (archetype === 'none') {
+      return NextResponse.json({ ok: true, status: 'skipped', reason: 'none archetype' });
+    }
+
     const overrides = {
       ref: body.ref,
       workflowFile: body.workflowFile,
@@ -78,8 +94,7 @@ export async function POST(req: NextRequest) {
     const resolution = resolveReleaseStrategy(target.releaseConfig, overrides);
 
     // Resolve a concrete workflow_dispatch even when the workspace isn't configured,
-    // PROVIDED the caller passed workflowFile + ref explicitly (ad-hoc dispatch).
-    // This keeps an escape hatch without reintroducing a buildd-specific default.
+    // PROVIDED the caller passed workflowFile + ref explicitly (an ad-hoc dispatch).
     let strategy = resolution.ok ? resolution.strategy : null;
     if (!resolution.ok && resolution.reason === 'not_configured' && body.workflowFile && body.ref) {
       const inputs: Record<string, string> = { ...(body.inputs ?? {}) };
@@ -115,17 +130,104 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // workflow_dispatch
+    // workflow_dispatch path
+    const sourceRef = strategy.ref;
+    const prodBranch = target.releaseConfig?.prodBranch ?? target.defaultBranch;
+
+    // Gather T1 readiness data at dispatch time.
+    let headSha: string | undefined;
+    let previousSha: string | undefined;
+    let ciStateAtDispatch: 'passing' | 'failing' | 'pending' | undefined;
+    let commitsAheadAtDispatch: number | undefined;
+
+    try {
+      const preflight = await releasePreflight(target.installationId, target.owner, target.name, {
+        ref: sourceRef,
+        prodBranch,
+      });
+      headSha = preflight.refHeadSha;
+      previousSha = preflight.previousSha;
+      if (preflight.ciState && preflight.ciState !== 'unknown') {
+        ciStateAtDispatch = preflight.ciState as 'passing' | 'failing' | 'pending';
+      }
+      commitsAheadAtDispatch = preflight.aheadBy;
+    } catch {
+      // Preflight failure is non-fatal — proceed without T1 data.
+    }
+
+    // Idempotency: if a row for this headSha already exists in an in-flight state, return it.
+    if (headSha) {
+      const existing = await db.query.releases.findFirst({
+        where: and(
+          eq(releases.workspaceId, target.workspaceId),
+          eq(releases.headSha, headSha),
+          inArray(releases.state, ['dispatched', 'deploying']),
+        ),
+      });
+      if (existing) {
+        return NextResponse.json({
+          ok: true,
+          strategy: 'workflow_dispatch',
+          repo: target.repoFullName,
+          releaseId: existing.id,
+          deduped: true,
+        });
+      }
+    }
+
+    // Insert the releases row before dispatch so we have a record even if dispatch fails.
+    const [releaseRow] = await db
+      .insert(releases)
+      .values({
+        workspaceId: target.workspaceId,
+        archetype,
+        strategy: 'workflow_dispatch',
+        sourceRef,
+        targetRef: prodBranch,
+        headSha,
+        previousSha,
+        state: 'dispatched',
+        verificationStrategy: archetype === 'gated' ? 'http' : 'none',
+        triggeredBy,
+        dispatchedAt: new Date(),
+        ciStateAtDispatch,
+        commitsAheadAtDispatch,
+      })
+      .returning({ id: releases.id });
+
+    const releaseId = releaseRow.id;
+
     try {
       const result = await dispatchWorkflowRelease(target.installationId, target.owner, target.name, {
         workflowFile: strategy.workflowFile,
         ref: strategy.ref,
         inputs: strategy.inputs,
       });
+
+      // Back-fill the run URL once we have it from the readback.
+      if (result.runUrl) {
+        await db.update(releases).set({ runUrl: result.runUrl }).where(eq(releases.id, releaseId));
+      }
+
+      // M1 attribution — fire-and-forget; does not block the response.
+      if (previousSha && headSha) {
+        void attributeRelease({
+          releaseId,
+          workspaceId: target.workspaceId,
+          previousSha,
+          headSha,
+          archetype,
+          repoFullName: target.repoFullName,
+          githubInstallationId: target.installationId,
+          db: db as any,
+        });
+      }
+
       return NextResponse.json({
         ok: true,
         strategy: 'workflow_dispatch',
         repo: target.repoFullName,
+        releaseId,
         ...result,
       });
     } catch (err) {

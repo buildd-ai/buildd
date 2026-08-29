@@ -5,12 +5,13 @@
 
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos } from '@buildd/core/db/schema';
-import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 
 export interface ReleaseTarget {
   workspaceId: string;
+  workspaceName: string;
   owner: string;
   name: string;
   repoFullName: string;
@@ -18,6 +19,7 @@ export interface ReleaseTarget {
   installationId: number;
   releaseConfig: WorkspaceReleaseConfig | null;
   defaultBranch: string;
+  gitConfig: WorkspaceGitConfig | null;
 }
 
 export type ResolveTargetResult =
@@ -63,12 +65,14 @@ export async function resolveReleaseTarget(params: {
     ok: true,
     target: {
       workspaceId: workspaceRow.id,
+      workspaceName: workspaceRow.name,
       owner: repoRow.owner,
       name: repoRow.name,
       repoFullName: repoRow.fullName,
       installationId: repoRow.installation.installationId,
       releaseConfig: workspaceRow.releaseConfig ?? null,
       defaultBranch: repoRow.defaultBranch ?? 'main',
+      gitConfig: workspaceRow.gitConfig ?? null,
     },
   };
 }
