@@ -447,7 +447,7 @@ export async function PATCH(
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1229,8 +1229,30 @@ export async function PATCH(
         }
       }
 
+      // Planning contract guard: a planning task that completes without structuredOutput
+      // is a runner bug (outputFormat was not requested), not a legitimate completion.
+      // The agent's plan was dropped as free-form text — child tasks cannot be created.
+      // Override to failed so the mission loop can retry with the correct outputFormat
+      // rather than silently producing nothing and re-planning forever.
+      const planningContractViolation = (
+        status === 'completed' &&
+        !shouldAutoRetry &&
+        terminalTaskRow[0]?.mode === 'planning' &&
+        !body.structuredOutput
+      );
+      if (planningContractViolation) {
+        console.error(
+          `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
+          `overriding completed→failed: planning task returned no structuredOutput. ` +
+          `Runner must request outputFormat for planning tasks (see @buildd/shared resolveOutputFormat).`
+        );
+        // Also mark the worker row failed so UI shows the correct terminal state.
+        updates.status = 'failed';
+        updates.error = 'Planning task completed without structuredOutput: runner did not request outputFormat';
+      }
+
       const taskUpdate: Record<string, unknown> = {
-        status: shouldAutoRetry ? 'pending' : (status === 'completed' ? 'completed' : 'failed'),
+        status: shouldAutoRetry ? 'pending' : (planningContractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
         updatedAt: new Date(),
         ...(shouldAutoRetry ? {
           claimedBy: null,
@@ -1238,6 +1260,11 @@ export async function PATCH(
           expiresAt: null,
           context: taskCtxForRetry,
           ...(infraRetryStartAt ? { startAt: infraRetryStartAt } : {}),
+        } : planningContractViolation ? {
+          result: {
+            error: 'Planning task completed without structuredOutput — runner did not request outputFormat. Mission will retry.',
+            errorType: 'planning_contract_violation',
+          },
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
           context: taskCtxForRetry,
@@ -1253,7 +1280,8 @@ export async function PATCH(
 
       // Snapshot worker stats into task.result on completion.
       // Skip for loop requeue: the task continues, so no terminal result snapshot yet.
-      if (status === 'completed' && loopDispatchResult?.kind !== 'requeue') {
+      // Skip for planning contract violations: already set error result above.
+      if (status === 'completed' && !planningContractViolation && loopDispatchResult?.kind !== 'requeue') {
         // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
         let summary = body.summary || undefined;
         if (typeof summary === 'string') {
@@ -1440,10 +1468,11 @@ export async function PATCH(
           : null;
         const retryCount =
           ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
+        const effectiveOutcome = planningContractViolation ? 'failed' : status;
         recordTaskOutcome({
           taskId: worker.taskId,
           accountId: worker.accountId,
-          outcome: status,
+          outcome: effectiveOutcome,
           totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
           totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
           durationMs,
@@ -1451,7 +1480,7 @@ export async function PATCH(
         }).catch(() => {});
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
-        recordRunnerOutcome(status === 'completed' ? 'completed' : 'failed').catch(() => {});
+        recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
       }
 
       // Post-completion side effects (non-fatal — must not block worker update).

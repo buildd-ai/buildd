@@ -217,6 +217,7 @@ export class RecoveryManager {
       workspace: { name: worker.workspaceName },
       status: 'assigned',
       priority: 1,
+      mode: worker.taskMode,
     };
 
     this.deps.startSession(worker, workspacePath, task as any).catch(err => {
@@ -373,6 +374,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       workspace: { name: worker.workspaceName },
       status: 'assigned',
       priority: 1,
+      mode: worker.taskMode,
     };
 
     // Start a new session with strict budget limits
@@ -422,6 +424,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
         workspace: { name: worker.workspaceName },
         status: 'assigned',
         priority: 1,
+        mode: worker.taskMode,
       };
 
       try {
@@ -548,6 +551,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       workspace: { name: worker.workspaceName },
       status: 'assigned',
       priority: 1,
+      mode: worker.taskMode,
     };
 
     await this.deps.startSession(worker, workspacePath, task as any);
