@@ -213,7 +213,40 @@ describe('runCbmBootstrap', () => {
     });
 
     expect(capturedCmd).toBe('/opt/buildd/bin/codebase-memory-mcp');
-    expect(capturedArgs).toEqual(['cli', 'index_repository', '/repo/worktree']);
+    expect(capturedArgs).toEqual(['cli', 'index_repository', '--repo-path', '/repo/worktree']);
+  });
+
+  // Regression: the path MUST travel as the value of the --repo-path flag. CBM
+  // 0.9.0 parses a bare trailing positional as raw JSON args, so it never
+  // populates repo_path — the index worker exits 1 with `repo_path is required`
+  // while the server reports the misleading "Indexing worker crashed on a file".
+  // The previous assertion encoded the bare-positional form, so it passed for
+  // four weeks while every real bootstrap failed.
+  it('passes the worktree path as the value of --repo-path, never as a bare positional', async () => {
+    let capturedArgs: string[] = [];
+    const capturingSpawn = (_cmd: string, args: string[], _opts: any) => {
+      capturedArgs = args;
+      const { EventEmitter } = require('events');
+      const proc = new EventEmitter();
+      (proc as any).stdout = new EventEmitter();
+      (proc as any).stderr = new EventEmitter();
+      (proc as any).kill = () => {};
+      Promise.resolve().then(() => proc.emit('close', 0));
+      return proc;
+    };
+
+    await runCbmBootstrap({
+      worktreePath: '/repo/worktree',
+      workerId: 'wk-flag',
+      serverConfig: fakeCbmConfig(),
+      spawnProcess: capturingSpawn as any,
+    });
+
+    const flagIndex = capturedArgs.indexOf('--repo-path');
+    expect(flagIndex).toBeGreaterThan(-1);
+    expect(capturedArgs[flagIndex + 1]).toBe('/repo/worktree');
+    // No bare positional after the subcommand.
+    expect(capturedArgs[2]).toBe('--repo-path');
   });
 
   it('exports CBM_INDEX_TIMEOUT_MS as 30000', () => {
