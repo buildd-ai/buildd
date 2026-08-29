@@ -17,6 +17,7 @@ import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
+import { detectCbmFleetDisabled } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
@@ -1481,6 +1482,15 @@ export async function PATCH(
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
         recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
+        // Fleet CBM-disabled detector: pages (error) when every recent worker in
+        // this workspace has binary_absent — a broken platform capability, not just
+        // one bad task. Only fires on completed workers (failed tasks may skew the
+        // reason). Passes the current worker's CBM outcome directly to avoid a
+        // timing gap between the DB write and the query.
+        if (status === 'completed') {
+          const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
+          detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
+        }
       }
 
       // Post-completion side effects (non-fatal — must not block worker update).
