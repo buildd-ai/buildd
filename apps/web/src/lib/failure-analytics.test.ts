@@ -137,11 +137,44 @@ describe('normalizeErrorSignature', () => {
     expect(normalizeErrorSignature(a)).toBe(normalizeErrorSignature(b));
   });
 
-  it('collapses long hex shas', () => {
+  it('collapses long hex shas to the same opaque-id placeholder', () => {
     const a = 'merge conflict on 9f3c1ab7d5e2f01aa2b3c4d5e6f708192a3b4c5d';
     const b = 'merge conflict on 0123456789abcdef0123456789abcdef01234567';
-    expect(normalizeErrorSignature(a)).toBe('merge conflict on <hash>');
+    expect(normalizeErrorSignature(a)).toBe('merge conflict on <id>');
     expect(normalizeErrorSignature(a)).toBe(normalizeErrorSignature(b));
+  });
+
+  it('normalizes a truncated hex ID and a full UUID to the SAME placeholder', () => {
+    // Regression: `2cbecdc0` is a truncated task ID (8 hex chars), so the hex rule
+    // claimed it as <hash> while the full UUID went to <id> — one semantic entity,
+    // two placeholders, one family reported as two rows.
+    const prose = (id: string) =>
+      `Builder task ${id} is still pending (not yet claimed). No branch or PR exists`;
+    const short = normalizeErrorSignature(prose('2cbecdc0'));
+    const full = normalizeErrorSignature(prose('2cbecdc0-0be1-4d2c-b10d-63b90ebd677d'));
+    expect(short).toBe(full);
+    expect(short).toBe('Builder task <id> is still pending (not yet claimed). No branch or PR exists');
+  });
+
+  it('uses <id> for every ID form across the real Builder-task strings', () => {
+    // These four prose variants legitimately remain distinct signatures — they are
+    // free text authored by different agents, and collapsing them would be wrong.
+    // What must NOT differ is the ID *form*: short vs full UUID is not a new family.
+    const raws = [
+      'Builder task 2cbecdc0 (Consolidate claim gates) is still pending — no workers have claimed it yet',
+      'Builder task 2cbecdc0 has not produced a PR yet — cannot review',
+      'Builder task 2cbecdc0 is still pending (not yet claimed). No branch or PR exists',
+      'Builder task 2cbecdc0-0be1-4d2c-b10d-63b90ebd677d is still pending (no workers, no branch, no PR)',
+    ];
+    for (const sig of raws.map(normalizeErrorSignature)) {
+      expect(sig).not.toContain('<hash>');
+      expect(sig).toContain('Builder task <id>');
+    }
+  });
+
+  it('leaves a short hex value in unrelated text alone', () => {
+    // Guard the opposite direction: the ID rule must not claim arbitrary short hex.
+    expect(normalizeErrorSignature('config key deadbe missing')).toBe('config key deadbe missing');
   });
 
   it('collapses decimal and integer numbers to one placeholder', () => {
