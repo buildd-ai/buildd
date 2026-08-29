@@ -63,13 +63,12 @@ async function resolveWorkerByPrNumber(
       inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
-      isNull(workers.mergedAt),
     ),
     with: { workspace: true },
   });
 
   if (matchingWorkers.length === 0) {
-    return { error: 'PR not found or already merged', status: 404 };
+    return { error: 'PR not found', status: 404 };
   }
 
   const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
@@ -558,6 +557,43 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
+    // Idempotent: already-merged PR returns success with existing metadata rather
+    // than attempting a re-merge (which would fail with 405 "not mergeable").
+    // Check BOTH mergedAt and prLifecycleStatus — webhook can set one before the other.
+    const alreadyMergedInDb = !!(worker.mergedAt || worker.prLifecycleStatus === 'merged');
+    if (alreadyMergedInDb) {
+      const dbMergedAtStr = worker.mergedAt instanceof Date
+        ? worker.mergedAt.toISOString()
+        : (worker.mergedAt ? String(worker.mergedAt) : null);
+      let idemMergedAt: string | null = dbMergedAtStr;
+      let idemMergedBy: string | null = null;
+      let idemMergeCommitSha: string | null = null;
+      try {
+        const prData = await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/pulls/${prNumber}`,
+        );
+        if (prData.merged) {
+          idemMergedAt = prData.merged_at ?? idemMergedAt;
+          idemMergedBy = prData.merged_by?.login ?? null;
+          idemMergeCommitSha = prData.merge_commit_sha ?? null;
+        }
+      } catch { /* non-fatal — return DB-only metadata */ }
+      return NextResponse.json({
+        ok: true,
+        merged: true,
+        message: 'Pull request was already merged',
+        alreadyMerged: true,
+        pr: {
+          number: prNumber,
+          url: worker.prUrl ?? null,
+          mergedAt: idemMergedAt,
+          mergedBy: idemMergedBy,
+          mergeCommitSha: idemMergeCommitSha,
+        },
+      });
+    }
+
     const result = await mergePullRequest(
       repo.installation.installationId,
       repo.fullName,
@@ -579,7 +615,40 @@ export async function PUT(req: NextRequest) {
         error: result.message,
         hint: 'GitHub App merge requires contents:write permission in addition to pull_requests:write. Update the App permissions at github.com/settings/apps and have org admins re-accept.',
       }, { status: 403 });
-    } else if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
+    } else if (/not mergeable/i.test(result.message)) {
+      // "Not mergeable" can mean already merged (race window: merged externally just
+      // before this call) OR unresolved conflicts. Verify with GitHub to distinguish.
+      try {
+        const prCheck = await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/pulls/${prNumber}`,
+        );
+        if (prCheck.merged === true) {
+          // Merged externally during the race window — stamp DB if not yet set and
+          // return idempotent success so the caller can distinguish this from a real failure.
+          if (!worker.mergedAt) {
+            await db
+              .update(workers)
+              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+              .where(eq(workers.id, worker.id));
+          }
+          return NextResponse.json({
+            ok: true,
+            merged: true,
+            message: 'Pull request was already merged',
+            alreadyMerged: true,
+            pr: {
+              number: prNumber,
+              url: worker.prUrl ?? null,
+              mergedAt: prCheck.merged_at ?? null,
+              mergedBy: prCheck.merged_by?.login ?? null,
+              mergeCommitSha: prCheck.merge_commit_sha ?? null,
+            },
+          });
+        }
+      } catch { /* non-fatal — fall through to conflict classification */ }
+    }
+    if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
       // PR has conflicts — dispatch a same-branch resolution retry instead of surfacing
       // a useless retry-the-merge button.
       let headSha = worker.lastCommitSha ?? '';
@@ -772,20 +841,44 @@ export async function GET(req: NextRequest) {
       pending: reviewStates.filter(s => s === 'PENDING').length,
     };
 
+    // Determine canonical state — GitHub is authoritative for merge detection;
+    // DB fills the gap when prLifecycleStatus='merged' but mergedAt raced to null.
+    const githubMerged = pr.merged === true;
+    const githubClosed = pr.state === 'closed';
+    const dbMerged = !!(worker.mergedAt || worker.prLifecycleStatus === 'merged');
+    let canonicalState: 'open' | 'merged' | 'closed_unmerged';
+    if (githubMerged || (dbMerged && githubClosed)) {
+      canonicalState = 'merged';
+    } else if (githubClosed) {
+      canonicalState = 'closed_unmerged';
+    } else {
+      canonicalState = 'open';
+    }
+
+    const dbMergedAt = worker.mergedAt
+      ? (worker.mergedAt instanceof Date ? worker.mergedAt.toISOString() : String(worker.mergedAt))
+      : null;
+
     return NextResponse.json({
       ok: true,
       pr: {
         number: prNumber,
         title: pr.title ?? null,
         body: pr.body ?? null,
-        state: pr.state ?? null,
+        state: canonicalState,
         url: pr.html_url ?? worker.prUrl ?? null,
-        mergeable: pr.mergeable ?? null,
-        mergeableState: pr.mergeable_state ?? null,
+        mergeable: canonicalState === 'open' ? (pr.mergeable ?? null) : null,
+        mergeableState: canonicalState === 'open' ? (pr.mergeable_state ?? null) : null,
         headSha: headSha ?? worker.lastCommitSha ?? null,
+        baseRef: pr.base?.ref ?? null,
         additions: pr.additions ?? null,
         deletions: pr.deletions ?? null,
         changedFiles: pr.changed_files ?? null,
+        mergedAt: canonicalState === 'merged' ? (pr.merged_at ?? dbMergedAt) : null,
+        mergeCommitSha: canonicalState === 'merged' ? (pr.merge_commit_sha ?? null) : null,
+        mergedBy: canonicalState === 'merged' ? (pr.merged_by?.login ?? null) : null,
+        mergedVia: canonicalState === 'merged' ? 'unknown' : null,
+        closedAt: canonicalState === 'closed_unmerged' ? (pr.closed_at ?? null) : null,
       },
       checks: ciSummary,
       reviews: reviewSummary,

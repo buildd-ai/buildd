@@ -1478,7 +1478,106 @@ describe('PUT /api/github/pr', () => {
 
     expect(res.status).toBe(404);
     const data = await res.json();
-    expect(data.error).toBe('PR not found or already merged');
+    expect(data.error).toBe('PR not found');
+  });
+
+  it('returns success with existing metadata when DB says PR already merged (mergedAt set)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prUrl: 'https://github.com/owner/repo/pull/1870',
+      mergedAt: new Date('2026-08-28T10:00:00Z'),
+      prLifecycleStatus: 'merged',
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      merged: true,
+      merged_at: '2026-08-28T10:00:05Z',
+      merged_by: { login: 'reviewer-bot' },
+      merge_commit_sha: 'abc123',
+    });
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 1870 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.alreadyMerged).toBe(true);
+    expect(data.pr.mergedAt).toBe('2026-08-28T10:00:05Z');
+    expect(data.pr.mergedBy).toBe('reviewer-bot');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('returns success when only prLifecycleStatus=merged is set (mergedAt null — race condition)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prUrl: 'https://github.com/owner/repo/pull/55',
+      mergedAt: null,
+      prLifecycleStatus: 'merged',
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub unavailable'));
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 55 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.alreadyMerged).toBe(true);
+    expect(data.pr.mergedAt).toBeNull();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('merge_pr by prNumber on already-merged PR returns success (idempotent)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-merged',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/1870',
+      prNumber: 1870,
+      prLifecycleStatus: 'merged',
+      mergedAt: new Date('2026-08-28T10:00:00Z'),
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      merged: true,
+      merged_at: '2026-08-28T10:00:05Z',
+      merged_by: { login: 'buildd-bot' },
+      merge_commit_sha: 'deadbeef',
+    });
+
+    const req = createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 1870 },
+    });
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.alreadyMerged).toBe(true);
+    expect(data.pr.number).toBe(1870);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -1860,6 +1959,183 @@ describe('GET /api/github/pr', () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.pr.number).toBe(149);
+  });
+
+  it('merged PR (workerId path) returns 200 with state=merged and merge metadata', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 1870,
+      prUrl: 'https://github.com/owner/repo/pull/1870',
+      mergedAt: new Date('2026-08-28T10:00:00Z'),
+      prLifecycleStatus: 'merged',
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    mockGithubApi.mockResolvedValueOnce({
+      number: 1870,
+      title: 'feat: reviewer auto-merge',
+      body: 'Fixes the auto-merge gate.',
+      state: 'closed',
+      merged: true,
+      merged_at: '2026-08-28T10:00:05Z',
+      merged_by: { login: 'mergebot' },
+      merge_commit_sha: 'abc123def456',
+      html_url: 'https://github.com/owner/repo/pull/1870',
+      head: { sha: 'headsha' },
+      base: { ref: 'dev' },
+      additions: 50, deletions: 5, changed_files: 3,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ status: 'completed', conclusion: 'success', name: 'CI' }] });
+    mockGithubApi.mockResolvedValueOnce([{ user: { login: 'reviewer-bot' }, state: 'APPROVED' }]);
+
+    const res = await GET(createGetRequest('w-1', 1870));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data.ok).toBe(true);
+    expect(data.pr.state).toBe('merged');
+    expect(data.pr.mergedAt).toBe('2026-08-28T10:00:05Z');
+    expect(data.pr.mergedBy).toBe('mergebot');
+    expect(data.pr.mergeCommitSha).toBe('abc123def456');
+    expect(data.pr.mergedVia).toBe('unknown');
+    expect(data.pr.baseRef).toBe('dev');
+    expect(data.pr.mergeable).toBeNull();
+    expect(data.checks.state).toBe('success');
+    expect(data.reviews.approved).toBe(1);
+  });
+
+  it('closed-unmerged PR returns 200 with state=closed_unmerged (distinguishable from merged)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      prNumber: 777,
+      prUrl: 'https://github.com/owner/repo/pull/777',
+      mergedAt: null,
+      prLifecycleStatus: 'closed',
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    mockGithubApi.mockResolvedValueOnce({
+      number: 777,
+      title: 'abandoned: old approach',
+      body: null,
+      state: 'closed',
+      merged: false,
+      merged_at: null,
+      closed_at: '2026-08-27T09:00:00Z',
+      html_url: 'https://github.com/owner/repo/pull/777',
+      head: { sha: 'headsha2' },
+      base: { ref: 'dev' },
+      additions: 10, deletions: 2, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest('w-1', 777));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data.ok).toBe(true);
+    expect(data.pr.state).toBe('closed_unmerged');
+    expect(data.pr.closedAt).toBe('2026-08-27T09:00:00Z');
+    expect(data.pr.mergedAt).toBeNull();
+    expect(data.pr.mergedBy).toBeNull();
+    expect(data.pr.mergeCommitSha).toBeNull();
+    expect(data.pr.mergedVia).toBeNull();
+  });
+
+  it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-merged',
+      taskId: 'task-1',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/1660',
+      prNumber: 1660,
+      prLifecycleStatus: 'merged',
+      mergedAt: new Date('2026-08-27T15:00:00Z'),
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    mockGithubApi.mockResolvedValueOnce({
+      number: 1660, title: 'feat: ci retry #1', body: null,
+      state: 'closed', merged: true,
+      merged_at: '2026-08-27T15:00:03Z',
+      merged_by: { login: 'buildd-bot' },
+      merge_commit_sha: 'cafe1234',
+      html_url: 'https://github.com/owner/repo/pull/1660',
+      head: { sha: 'sha1660' }, base: { ref: 'dev' },
+      additions: 30, deletions: 5, changed_files: 2,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest(null, 1660));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data.ok).toBe(true);
+    expect(data.pr.state).toBe('merged');
+    expect(data.pr.mergedAt).toBe('2026-08-27T15:00:03Z');
+    expect(data.pr.mergedBy).toBe('buildd-bot');
+    expect(data.pr.mergeCommitSha).toBe('cafe1234');
+  });
+
+  it('worker with prLifecycleStatus=merged but null mergedAt still reports merged', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-race',
+      taskId: 'task-race',
+      workspaceId: 'workspace-1',
+      prUrl: 'https://github.com/owner/repo/pull/999',
+      prNumber: 999,
+      prLifecycleStatus: 'merged',
+      mergedAt: null,
+      lastCommitSha: null,
+      workspace: WORKSPACE_OK,
+    }]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // GitHub returns closed=true even if merged:false (edge: API lag)
+    mockGithubApi.mockResolvedValueOnce({
+      number: 999, title: 'fix: race condition', body: null,
+      state: 'closed', merged: false,
+      html_url: 'https://github.com/owner/repo/pull/999',
+      head: { sha: 'sha999' }, base: { ref: 'dev' },
+      additions: 5, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    const res = await GET(createGetRequest(null, 999));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    // prLifecycleStatus='merged' + githubClosed → canonicalState = 'merged'
+    expect(data.pr.state).toBe('merged');
+  });
+
+  it('genuinely nonexistent PR number returns 404 with unambiguous message', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await GET(createGetRequest(null, 9999));
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe('PR not found');
+    expect(data.error).not.toContain('merged');
   });
 
   it('resolves by workspace name when workspaceId is a name (not UUID)', async () => {
