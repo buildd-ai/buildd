@@ -21,7 +21,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-08-27
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
 - [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
-- [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-21
+- [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-28
 - [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-07-18
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
 

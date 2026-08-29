@@ -8,7 +8,7 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
-import type { ChainPositionResult } from '@/lib/task-presentation';
+import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
 import { backendLabel } from '@buildd/core/backend-policy';
 
@@ -236,30 +236,35 @@ export default async function TasksPage({
               .filter(t => nonTerminalTaskIds.includes(t.id))
               .flatMap(t => (t.dependsOn as string[] | null) ?? [])
           )];
-          const depInfoMap = new Map<string, {
-            id: string; status: string;
-            workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }>;
-          }>();
+          const depInfoMap = new Map<string, ChainPositionDep>();
           if (allDepIds.length > 0) {
             const depTasks = await db.query.tasks.findMany({
               where: inArray(tasks.id, allDepIds),
-              columns: { id: true, status: true },
+              // title → readable rail chips; dependsOn → transitive reduction of
+              // the blocker set (deps are often not in the loaded page window).
+              columns: { id: true, title: true, status: true, dependsOn: true },
               with: {
                 workers: {
-                  columns: { prUrl: true, prNumber: true, mergedAt: true },
+                  // No limit: the gate asks "does ANY worker hold an open PR?",
+                  // matching dependenciesSatisfied() in the claim route. Reading
+                  // only the latest worker missed an older open PR.
+                  // prLifecycleStatus: a closed/abandoned PR unblocks dependents.
+                  columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
                   orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
-                  limit: 1,
                 },
               },
             });
             for (const dt of depTasks) {
               depInfoMap.set(dt.id, {
                 id: dt.id,
+                title: dt.title,
                 status: dt.status,
+                dependsOn: (dt.dependsOn as string[] | null) ?? [],
                 workers: dt.workers.map((w: any) => ({
                   prUrl: w.prUrl ?? null,
                   prNumber: w.prNumber ?? null,
                   mergedAt: w.mergedAt ? String(w.mergedAt) : null,
+                  prLifecycleStatus: w.prLifecycleStatus ?? null,
                 })),
               });
             }
@@ -273,9 +278,6 @@ export default async function TasksPage({
               }
             }
           }
-          // Build a title map from loaded tasks for dep display
-          const taskTitleMap = new Map(allTasks.map(t => [t.id, t.title]));
-
           gridTasks = allTasks.map(t => {
             const result = t.result as { summary?: string; prUrl?: string; prNumber?: number; files?: string[]; structuredOutput?: Record<string, unknown> } | null;
             const isTerminal = t.status === 'completed' || t.status === 'failed';
@@ -290,10 +292,9 @@ export default async function TasksPage({
             if (!isTerminal) {
               const depIds = (t.dependsOn as string[] | null) ?? [];
               if (depIds.length > 0) {
-                const deps = depIds.map(id => {
-                  const dt = depInfoMap.get(id);
-                  return dt ? { ...dt, title: taskTitleMap.get(id) ?? id } : null;
-                }).filter(Boolean) as Array<{ id: string; title: string; status: string; workers: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: string | null }> }>;
+                const deps = depIds
+                  .map(id => depInfoMap.get(id))
+                  .filter(Boolean) as ChainPositionDep[];
                 chain = deriveChainPosition({
                   task: { id: t.id, status: t.status },
                   deps,
