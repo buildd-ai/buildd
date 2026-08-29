@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-timestamps';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { TeamGrid } from './TeamGrid';
 
 export const dynamic = 'force-dynamic';
