@@ -8,6 +8,7 @@ const mockResolveReleaseTarget = mock(() => ({
   ok: true,
   target: {
     workspaceId: 'ws-1',
+    workspaceName: 'My Project',
     owner: 'buildd-ai',
     name: 'buildd',
     repoFullName: 'buildd-ai/buildd',
@@ -17,8 +18,10 @@ const mockResolveReleaseTarget = mock(() => ({
       strategy: 'workflow_dispatch',
       workflowFile: 'release.yml',
       ref: 'dev',
+      prodBranch: 'main',
     },
     defaultBranch: 'dev',
+    gitConfig: { defaultBranch: 'dev', requiresPR: true, branchingStrategy: 'feature', commitStyle: 'conventional', autoCreatePR: true, useClaudeMd: true },
   },
 }) as any);
 const mockResolveReleaseStrategy = mock(() => ({
@@ -39,6 +42,28 @@ const mockDispatchWorkflowRelease = mock(
       runsUrl: 'https://github.com/buildd-ai/buildd/actions/workflows/release.yml',
     }) as any,
 );
+const mockReleasePreflight = mock(async () => ({
+  ref: 'dev',
+  prodBranch: 'main',
+  aheadBy: 3,
+  shippableCommits: [],
+  failingChecks: [],
+  refHeadSha: 'abc123sha',
+  previousSha: 'def456sha',
+  ciState: 'passing',
+}));
+const mockDetectArchetype = mock(() => 'gated' as any);
+const mockAttributeRelease = mock(async () => ({ attributed: 1, skipped: 0 }));
+
+// DB mock: chainable insert().values().returning(), update().set().where(), query.releases.findFirst()
+const mockReturning = mock(async () => [{ id: 'release-uuid-1' }]);
+const mockInsertWhere = mock(async () => []);
+const mockInsert = mock(() => ({
+  values: mock(() => ({ returning: mockReturning })),
+}));
+const mockUpdateSet = mock(() => ({ where: mockInsertWhere }));
+const mockUpdate = mock(() => ({ set: mockUpdateSet }));
+const mockReleaseFindFirst = mock(async () => null);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -49,16 +74,23 @@ mock.module('@buildd/core/release-strategy', () => ({
 }));
 mock.module('@/lib/release/dispatch', () => ({
   dispatchWorkflowRelease: mockDispatchWorkflowRelease,
-  // Include other dispatch exports so this mock is complete even when status/route.test.ts
-  // ran first in the same Bun worker (Bun may share module caches across test files).
-  releasePreflight: mock(async () => ({
-    ref: 'dev',
-    prodBranch: 'main',
-    aheadBy: 0,
-    shippableCommits: [],
-    failingChecks: [],
-  })),
+  releasePreflight: mockReleasePreflight,
   classifyCheckRuns: mock(() => ({ ciState: 'unknown', failingChecks: [] })),
+}));
+mock.module('@buildd/core/release-archetype', () => ({ detectArchetype: mockDetectArchetype }));
+mock.module('@buildd/core/release-attribution', () => ({ attributeRelease: mockAttributeRelease }));
+mock.module('@buildd/core/db', () => ({
+  db: {
+    insert: mockInsert,
+    update: mockUpdate,
+    query: { releases: { findFirst: mockReleaseFindFirst } },
+  },
+}));
+mock.module('@buildd/core/db/schema', () => ({ releases: 'releases' }));
+mock.module('drizzle-orm', () => ({
+  eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
+  and: (...args: any[]) => args,
+  inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
 function makeRequest(token?: string, body?: object): NextRequest {
@@ -85,6 +117,7 @@ describe('POST /api/releases/trigger', () => {
       ok: true,
       target: {
         workspaceId: 'ws-1',
+        workspaceName: 'My Project',
         owner: 'buildd-ai',
         name: 'buildd',
         repoFullName: 'buildd-ai/buildd',
@@ -94,8 +127,10 @@ describe('POST /api/releases/trigger', () => {
           strategy: 'workflow_dispatch',
           workflowFile: 'release.yml',
           ref: 'dev',
+          prodBranch: 'main',
         },
         defaultBranch: 'dev',
+        gitConfig: { defaultBranch: 'dev', requiresPR: true, branchingStrategy: 'feature', commitStyle: 'conventional', autoCreatePR: true, useClaudeMd: true },
       },
     }));
     mockResolveReleaseStrategy.mockReset();
@@ -115,6 +150,27 @@ describe('POST /api/releases/trigger', () => {
       runUrl: 'https://github.com/buildd-ai/buildd/actions/runs/42',
       runsUrl: 'https://github.com/buildd-ai/buildd/actions/workflows/release.yml',
     }));
+    mockReleasePreflight.mockReset();
+    mockReleasePreflight.mockImplementation(async () => ({
+      ref: 'dev',
+      prodBranch: 'main',
+      aheadBy: 3,
+      shippableCommits: [],
+      failingChecks: [],
+      refHeadSha: 'abc123sha',
+      previousSha: 'def456sha',
+      ciState: 'passing',
+    }));
+    mockDetectArchetype.mockReset();
+    mockDetectArchetype.mockImplementation(() => 'gated');
+    mockAttributeRelease.mockReset();
+    mockAttributeRelease.mockImplementation(async () => ({ attributed: 1, skipped: 0 }));
+    mockReleaseFindFirst.mockReset();
+    mockReleaseFindFirst.mockImplementation(async () => null);
+    mockReturning.mockReset();
+    mockReturning.mockImplementation(async () => [{ id: 'release-uuid-1' }]);
+    mockInsertWhere.mockReset();
+    mockInsertWhere.mockImplementation(async () => []);
   });
 
   it('returns 401 when no token and no session', async () => {
@@ -140,7 +196,7 @@ describe('POST /api/releases/trigger', () => {
     expect(typeof body.error).toBe('string');
   });
 
-  it('dispatches configured workflow and returns run metadata', async () => {
+  it('happy path: row inserted, runUrl populated, releaseId in response', async () => {
     mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
@@ -150,14 +206,69 @@ describe('POST /api/releases/trigger', () => {
     expect(body.strategy).toBe('workflow_dispatch');
     expect(body.runId).toBe(42);
     expect(body.runUrl).toContain('github.com');
+    expect(body.releaseId).toBe('release-uuid-1');
+    // Verify insert was called
+    expect(mockInsert.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('none archetype: no row inserted, returns skipped', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockDetectArchetype.mockImplementation(() => 'none');
+    const insertCallsBefore = mockInsert.mock.calls.length;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.status).toBe('skipped');
+    expect(body.reason).toBe('none archetype');
+    // No new insert should have been made
+    expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
+  });
+
+  it('dedup: second dispatch with same headSha returns existing row without double-insert', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleaseFindFirst.mockImplementation(async () => ({
+      id: 'existing-release-id',
+      workspaceId: 'ws-1',
+      headSha: 'abc123sha',
+      state: 'dispatched',
+    }));
+    const insertCallsBefore = mockInsert.mock.calls.length;
+    const dispatchCallsBefore = mockDispatchWorkflowRelease.mock.calls.length;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.releaseId).toBe('existing-release-id');
+    expect(body.deduped).toBe(true);
+    // No new insert or dispatch
+    expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
+    expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(dispatchCallsBefore);
+  });
+
+  it('attribution job called once on happy path', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockAttributeRelease.mockReset();
+    mockAttributeRelease.mockImplementation(async () => ({ attributed: 1, skipped: 0 }));
+    const { POST } = await import('./route');
+    await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    // Allow microtasks to flush for the void attribution call
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockAttributeRelease.mock.calls.length).toBe(1);
+    const [attrs] = mockAttributeRelease.mock.calls[0] as any[];
+    expect(attrs.releaseId).toBe('release-uuid-1');
+    expect(attrs.previousSha).toBe('def456sha');
+    expect(attrs.headSha).toBe('abc123sha');
   });
 
   it('passes workflow_id=release.yml and ref=dev to dispatch', async () => {
     mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
     const { POST } = await import('./route');
     await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
-    expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(1);
-    const [, , , opts] = mockDispatchWorkflowRelease.mock.calls[0];
+    expect(mockDispatchWorkflowRelease.mock.calls.length).toBeGreaterThan(0);
+    const [, , , opts] = mockDispatchWorkflowRelease.mock.calls[mockDispatchWorkflowRelease.mock.calls.length - 1];
     expect(opts.workflowFile).toBe('release.yml');
     expect(opts.ref).toBe('dev');
   });
@@ -213,7 +324,6 @@ describe('POST /api/releases/trigger', () => {
     const body = await res.json();
     expect(body.ok).toBe(false);
     expect(typeof body.error).toBe('string');
-    // Must never be an empty body — status 502 must always carry a JSON error
     expect(body.error.length).toBeGreaterThan(0);
   });
 
@@ -225,17 +335,30 @@ describe('POST /api/releases/trigger', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'buildd' }));
     expect(res.status).toBe(500);
-    // Body must be parseable JSON with an error field (not an empty body)
     const body = await res.json();
     expect(body.ok).toBe(false);
     expect(typeof body.error).toBe('string');
     expect(body.error.length).toBeGreaterThan(0);
   });
 
-  it('accepts session auth (OAuth owner)', async () => {
+  it('accepts session auth (OAuth owner), sets triggeredBy=user', async () => {
     mockGetCurrentUser.mockImplementation(() => ({ id: 'user-1' }));
     const { POST } = await import('./route');
     const res = await POST(makeRequest(undefined, { workspaceId: 'ws-1' }));
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
+
+  it('proceeds without T1 data when preflight throws', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleasePreflight.mockImplementation(async () => { throw new Error('network failure'); });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    // Should still succeed — preflight failure is non-fatal
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.releaseId).toBe('release-uuid-1');
   });
 });

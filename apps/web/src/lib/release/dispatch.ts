@@ -104,6 +104,8 @@ export interface ReleasePreflight {
   shippableCommits: Array<{ sha: string; message: string }>;
   // Latest CI conclusion on the ref head, if resolvable.
   refHeadSha?: string;
+  // HEAD SHA of prodBranch (what's currently deployed). Populated from the compare base.
+  previousSha?: string;
   ciState?: 'passing' | 'failing' | 'pending' | 'unknown';
   failingChecks: string[];
   // An already-open release PR (ref → prodBranch), if any.
@@ -137,6 +139,7 @@ export async function releasePreflight(
     );
     out.aheadBy = cmp?.ahead_by ?? 0;
     out.refHeadSha = cmp?.commits?.length ? cmp.commits[cmp.commits.length - 1].sha : undefined;
+    out.previousSha = cmp?.base_commit?.sha as string | undefined;
     out.shippableCommits = (cmp?.commits ?? [])
       .slice(-30)
       .map((c: { sha: string; commit: { message: string } }) => ({
