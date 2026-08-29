@@ -1,160 +1,153 @@
-# Grounding `spec_compare` in the code graph — and why the pipeline is already built
+# Grounding `spec_compare` — what's actually broken, and the ~15 lines that fix it
 
-**Status:** proposed (substantially revised 2026-08-29 after review)
+**Status:** proposed (third revision, 2026-08-29 — two earlier drafts were wrong; see §0)
 **Follows:** [codebase-memory-mcp-integration.md](./codebase-memory-mcp-integration.md) §6, #1743, #1889
 
-## 0. Revision note — read this first
+## 0. What the earlier drafts got wrong
 
-The first draft of this document proposed building a runner-side job to index the
-mainline checkout with CBM and push canonical symbol records into
-`{workspaceId}:code`. **That pipeline already exists and runs in production**, built
-on SCIP + ast-grep rather than CBM. The original draft did not cite it, and its
-central recommendation was therefore largely redundant.
+**Draft 1** proposed a runner-side job to index the mainline checkout with CBM and
+push symbol records into `{workspaceId}:code`. That pipeline already exists (§1).
 
-What survives review is a much smaller and different finding: **buildd has two code
-graphs and consumes neither.** The rest of this document is rewritten around that.
+**Draft 2** correctly withdrew that but still framed the fix as "wire `spec_compare`
+to the entity graph." Adversarial review found the actual bottleneck is elsewhere,
+and cheaper (§3).
 
-## 1. What already exists (verified on `origin/dev`)
+Both drafts assumed the problem was **symbol identity**. It is not. It is
+**anchor truncation**, plus a permission bug that means nobody has ever run the
+code path being optimised.
 
-**A runner-side ingest poller.** `apps/runner/src/knowledge-ingest.ts`, wired into
-the runner at `apps/runner/src/workers.ts:412` / `:527`, polled every heartbeat tick
-at `:560` — the same `setInterval(...).catch(() => {})` idiom as the other runner
-pollers. It claims queued ingest jobs, reads the tree via `git ls-tree`/`git show`
-(no working-tree mutation), and chunks with ast-grep symbol-boundary alignment.
-This replaced an older CI-cron ingest (`.github/workflows/knowledge-ingest.yml`,
-deleted in v0.175.0).
+## 1. The ingest pipeline exists and is switched on (measured)
 
-**A precise graph, enabled in this deployment.** With `KNOWLEDGE_SCIP=1` the poller
-additionally runs `scip-typescript` and pushes call/import edges through
-`POST /api/knowledge/ingest-jobs/[id]/graph`, which is authenticated
-(`authenticateApiKey`), workspace-scoped, and idempotent by construction
-("re-running a job re-converges the graph"). It writes real
-`knowledge_entities` / `knowledge_edges` / `knowledge_aliases` tables.
+`apps/runner/src/knowledge-ingest.ts`, wired at `apps/runner/src/workers.ts:412`/`:527`
+and polled each heartbeat tick at `:560`. It claims SHA-keyed ingest jobs, reads the
+tree via `git ls-tree`/`git show`, chunks with ast-grep symbol alignment, and — behind
+`KNOWLEDGE_SCIP=1` (`knowledge-ingest.ts:104`) — runs `scip-typescript` and pushes
+entities/edges/aliases through the authenticated, idempotent
+`POST /api/knowledge/ingest-jobs/[id]/graph`.
 
-`KNOWLEDGE_SCIP=1` is set for this workspace in the infrastructure repo at
-`templates/claude-code/main.tf:254`, and `@sourcegraph/scip-typescript` is baked
-into the workspace image at `build/Dockerfile:63`. **This is live right now.**
+**The gate is open in production.** Measured on the live runner:
 
-**Identity is already file-anchored.** `packages/core/knowledge-store/scip-parser.ts:341`:
-
-```ts
-return { file, key: `${file}#${qualifiedName}`, qualifiedName, terminalName };
+```
+pid 58980  bun run apps/runner/src/index.ts   KNOWLEDGE_SCIP=1
 ```
 
-That is the `(file_path, name)` scheme the previous draft called a "required
-mitigation" for CBM's path-derived names. SCIP never had that problem, so the
-mitigation is moot for the existing pipeline.
+(Set from `templates/claude-code/main.tf:254` in the infrastructure repo;
+`@sourcegraph/scip-typescript` baked at `build/Dockerfile:63`. Note the screen/bash
+wrapper pids show it unset — read the env of the `bun` process, not its parents.)
 
-**Freshness scaffolding already exists.** `knowledge_ingest_jobs`
-(`packages/core/db/schema.ts:1646-1667`) carries `sha` and `finishedAt`, with a
-unique index on `(workspaceId, sha, scope)`. Per-workspace last-successful-SHA and
-completion time are already recorded. The previous draft specced this as new work.
+Identity is already file-anchored — `scip-parser.ts:341`,
+`key: ${file}#${qualifiedName}` plus a bare `terminalName` — and renames are already
+modelled in an `entityAliases` table. Freshness scaffolding already exists in
+`knowledge_ingest_jobs` (`schema.ts:1646-1667`: `sha`, `finishedAt`, unique on
+`(workspace, sha, scope)`).
 
-## 2. The actual gap
+**Action: verify graph rows are landing. Build nothing.**
 
-`spec_compare` (`packages/core/mcp-tools.ts:3732-3796`) does exactly two things:
-a hybrid `ks.query` against the `spec` and `code` **chunk** namespaces, then
-`extractImplementationAnchors(specHits)` — pure regex over chunk text
-(`mcp-tools.ts:3960-3985`): file-path patterns, `/api/...` routes, camelCase ≥6
-chars, PascalCase ≥6 chars, capped at 20.
+## 2. Indexing "the mainline checkout" is dead on arrival here
 
-**It never reads `knowledge_entities` or `knowledge_edges`.** The precise graph is
-being populated and nothing consumes it for anchor resolution.
+Measured in the live workspace:
 
-Meanwhile the *other* graph — per-worker CBM, fixed and enforcing as of #1889 — is
-also unconsumed: `/api/cbm/metrics` reports `cbmActive.count: 5` with
-`avgToolCalls: {}`, meaning the graph was mounted, indexed in ~12s, injected into
-`mcpServers`, and **never queried** by any agent.
+```
+/home/coder/project/buildd   3753b5cf   61 commits behind origin/dev   shallow=false
+```
 
-So the shape of the problem is not missing graph infrastructure. It is:
+Nothing refreshes it. `main.tf:168` clones five `maxjacu/*` repos and buildd is not
+among them; the one buildd clone refreshed at start (`$HOME/.buildd`, `main.tf:296`)
+is `--depth 1`, so it cannot compute "N commits behind" at all.
 
-| graph | populated? | consumed? |
-|---|---|---|
-| SCIP entities/edges (`{workspaceId}:code`) | yes, live | **no** — `spec_compare` uses regex |
-| Per-worker CBM (ephemeral worktree index) | yes, since #1889 | **no** — zero tool calls observed |
+Any design that indexes the mainline checkout would index a tree that is permanently
+stale, and Draft 2's freshness contract would trip on day one and stay tripped.
 
-Two working producers, zero consumers. That is the same failure pattern as the
-four-week `binary_absent` outage (#1743): built, wired, unobserved, unused.
+**The freshest tree in the system is the per-worker worktree — which CBM already
+indexes**, rooted at `CBM_ALLOWED_ROOT = sessionCwd` (`cbm-enforcement.ts`), warm in
+~12s since #1889. Draft 1 proposed replacing the fresh index with a stale one.
 
-## 3. Revised recommendation
+## 3. The real bottleneck: `.slice(0, 20)` and pass order
 
-**Do not build a second ingest pipeline.** Do these instead, smallest first:
+`extractImplementationAnchors` (`packages/core/mcp-tools.ts:3960-3985`) fills a `Set`
+in fixed order — file paths → `/api/…` routes → camelCase → PascalCase — then returns
+`[...anchors].slice(0, 20)`, space-joined into one lexical BM25 bag.
 
-1. **Make graph consumption observable** (prerequisite for judging anything else).
-   `/api/cbm/metrics` has zero consumers, and its `avgToolCalls` is the one field
-   that answers "do agents use the graph." Surface it. If it stays empty across a
-   meaningful number of structural tasks, prompt-steering (#1889) did not work and
-   needs a different intervention.
-   Also stop reporting cohort difference as efficacy: `specTargets` currently
+Simulated over buildd's own design docs: ~97 candidate anchors per call, of which the
+cap keeps ~20%. In the worst sample the 20 slots are exhausted by file paths and route
+strings **before a single symbol name is reached**, so PascalCase types are
+structurally dropped. The code comment calls these "high-signal exact matches," but
+non-identifier route strings crowd out the identifiers.
+
+Canonical symbols behind the same `.slice(0, 20)` would yield 20 canonical anchors
+instead of 20 regex anchors — still bag-joined, still fused to `topK=5`. **Swapping
+the anchor source does not touch the bottleneck.** Ranking and raising the cap does.
+
+## 4. The evidence base is n=1, and the path has never run
+
+- The vocabulary gap has exactly one measurement (PR #1429 / task `a61de0b5`): a
+  single query pair, `0.013` prose vs `0.789` identifier. Those values are now
+  **hardcoded literals in a mocked test**
+  (`packages/core/__tests__/mcp-tools-spec-compare.test.ts:52,60`), asserting the code
+  path against a fake store — not retrieval behaviour. `golden-queries.json` has zero
+  `spec_compare` cases, so there is no harness to re-measure with.
+- No telemetry: zero hits for `toolCall|trackToolUse|toolUsage` in `mcp-tools.ts`. You
+  cannot answer "has `spec_compare` ever been called."
+- **It is admin-gated** (`mcp-tools.ts:169` — `adminActions`, not `workerActions`), so
+  no worker can reach it.
+- The one role built to use it is broken: `default-roles.ts:457` instructs
+  spec-validator to run `buildd action=spec_compare`, but its `allowedTools`
+  (`:507`) is `['Read','Grep','Glob','WebSearch','WebFetch']` — **no
+  `mcp__buildd__buildd`**. Compare `reviewer` (`:434`), which lists it. A role told to
+  call a tool it cannot invoke is proof the path has never run.
+- `docs/design/knowledge-elevation.md:13` records that `{workspaceId}:spec` ingestion
+  "has never run for any client workspace."
+- The prose-only spec the gap requires barely exists: 51 of 57 `docs/design/*.md`
+  contain literal `apps/…` or `packages/…` paths (518 total, ~9 per doc); 55 of 57
+  contain backticked identifiers. The regex operates on an essentially fully-anchored
+  corpus.
+
+## 5. Recommendation — three small changes, no new pipeline
+
+1. **Fix `spec-validator`'s `allowedTools`**: add `mcp__buildd__buildd`. Nothing below
+   is measurable until the tool can be invoked. Trivial.
+2. **Rank and un-truncate the anchors** (~5-10 LOC in `extractImplementationAnchors`):
+   score by specificity, put identifiers ahead of `/api/` route strings, raise the cap.
+   Then re-run the #1429 prose pair. This is the only change that plausibly moves
+   `0.013`, and it is independent of any indexer.
+3. **Give `/api/cbm/metrics` a consumer**, and fix its efficacy maths. It currently
    compares post-fix `cbmActive` workers against pre-fix `cbmDisabled` workers and
-   produced an `inputTokenDeltaPct` of −0.808 that has **no mechanism behind it**,
-   because tool calls were zero. Same-window comparison at minimum.
+   reported `inputTokenDeltaPct: -0.808` — with **no mechanism behind it**, because
+   `avgToolCalls` was `{}`, i.e. zero graph tool calls. Same-window comparison at
+   minimum.
 
-2. **Wire `spec_compare` to the graph that already exists.** Replace or augment
-   `extractImplementationAnchors` with a lookup against `knowledge_entities` /
-   `knowledge_aliases`, keyed on the existing `file#qualifiedName` / `canonicalName`.
-   Estimated ~50-150 LOC in `mcp-tools.ts`. This is the whole original point of
-   parent-spec §6.2 and needs no new extractor.
+**Keep** the tri-state anchor result — `resolved+drift` / `resolved+clean` /
+`unresolved-anchor`. Cheap, indexer-independent, and in a spec-first repo "no such
+symbol yet" is the signal rather than an error.
 
-3. **Return tri-state instead of a boolean.** `resolved+drift`, `resolved+clean`,
-   `unresolved-anchor`. In a spec-driven repo, specs routinely describe symbols that
-   do not exist yet — there is nothing to resolve against, and `unresolved-anchor` is
-   a signal rather than an error. Keep regex as the fallback for that case.
+**Drop** the CBM extractor, the CBM ingest path, the mainline index, the
+CBM-specific freshness contract, and Option A's tunnel.
 
-4. **Surface freshness from data already stored.** Read `knowledge_ingest_jobs.sha`
-   / `finishedAt`, report the lag in `spec_compare` output, and degrade to a warning
-   past a threshold rather than answering blind against a stale graph. ~30-50 LOC.
-   A silently stale drift detector is worse than an unavailable one.
+## 6. The option both earlier drafts missed
 
-## 4. The open decision this document cannot make
+The worker **already has the graph**, rooted at its own worktree — strictly fresher
+than any mainline index. A spec-validator worker can resolve an unresolved anchor with
+`search_graph` in-session today, for the cost of a role-prompt edit. That is the
+cheapest possible version of "ground anchors in real symbols," and it needs no
+pipeline, no corpus write, and no freshness contract.
 
-**Does CBM add anything over SCIP for this use case?** SCIP already provides
-call/import edges with better identity. CBM's claimed marginal value (per the parent
-spec's table) is pre-computed blast-radius and hub-detection style queries that a raw
-edge table does not answer directly. That may be real, but:
+Whether agents will actually do so is exactly what recommendation 3 measures.
 
-- Nobody has compared the two on an actual `spec_compare` failure case.
-- No CBM bulk-symbol-dump path exists — `cbm-bootstrap.ts` only invokes
-  `index_repository`, and CBM's CLI exposes per-query tools, not a full dump. An
-  extractor would have to page 63k nodes through repeated stdio invocations. That is
-  genuinely new code with an unknown API surface.
-- Adding CBM as a second producer requires the existing `scip:*` / `astgrep:*` edge
-  `rule`-tagging discipline (`edge-builder.ts:156,179`) so the graphs layer
-  additively instead of clobbering each other.
+## 7. Option A (inbound CBM service) — rejected, unchanged
 
-**Recommendation: leave CBM as the per-worker interactive tool it now is, and do not
-make it a second ingest producer until step 1 shows agents actually use a graph and
-step 2 shows SCIP's edges are insufficient.**
+CBM 0.9.0 has no HTTP query API (stdio MCP, one-shot `cli <tool>`, and a
+localhost-bound `--ui` visualization). No inbound path exists to the workspace:
+Coder's default port share level is `owner` and host Tailscale is logged out.
+`spec_compare` runs on Vercel, which has no repo checkout for `--repo-path`.
 
-## 5. Option A (inbound CBM service) — still rejected, unchanged
+## 8. Secondary: worker DB operations in the workspace
 
-Retained from the original draft because the reasoning stands independently:
+**Claim and gating stay server-side** — correct only while one authority serializes
+them, and a workspace recreated on every start must not hold that authority; fencing
+tokens are the standard guard even then.
 
-- CBM 0.9.0 has no HTTP query API. Its transports are stdio MCP, one-shot
-  `cli <tool>`, and `--ui=true --port=N`, which is a graph visualization bound to
-  localhost, not a JSON query contract. A service means a shim you write and operate.
-- There is no inbound path to the workspace: Coder's default port share level is
-  `owner`, and host Tailscale is logged out. Vercel functions could not use the
-  tailnet regardless without Enterprise private networking.
-- `spec_compare` runs on Vercel, which has no repo checkout for `--repo-path`.
-
-None of this changes. It is simply no longer the interesting question, because the
-push side is already solved by a pipeline that exists.
-
-## 6. Secondary: moving worker DB operations into the workspace
-
-Unchanged from the original draft and still the firm boundary:
-
-**Claim and gating stay server-side.** They are correct only while one authority
-serializes them; a workspace recreated on every start must not hold that authority.
-Fencing tokens are the standard guard even with a single authority.
-
-**Append-only telemetry is the only legitimate candidate** — progress ticks,
-milestones, the CBM counters. Requirements: crash-tolerant across the runner's
-`while true` restart loop, never authoritative, and buffered inside `/home/coder`
-(the only path that survives container recreation). Use idempotent dedupe keys so
-at-least-once delivery is safe.
-
-**Commit to a numeric threshold before measuring** — writes/sec, bytes/sec, p95
-request-path contribution, storage growth — or the measurement will not produce a
-decision. Do not start here; there is no demonstrated cost yet.
+**Append-only telemetry is the only candidate** (progress ticks, milestones, CBM
+counters): crash-tolerant across the runner's `while true` restart loop, never
+authoritative, buffered inside `/home/coder` (the only path surviving container
+recreation), idempotent dedupe keys for at-least-once delivery. Commit to numeric
+thresholds before measuring, or the measurement yields no decision. Do not start here.
