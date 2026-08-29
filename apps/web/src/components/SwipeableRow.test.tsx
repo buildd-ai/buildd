@@ -5,6 +5,7 @@ import {
   getTrailingAction,
   getMenuActions,
   nextFocusIdx,
+  isInteractiveTarget,
   SwipeableRow,
   MENU_BTN_WIDTH,
   REVEAL_WIDTH_PX,
@@ -50,6 +51,73 @@ describe('classifyGestureAngle', () => {
 
   it('returns ambiguous at exactly 45°', () => {
     expect(classifyGestureAngle(100, 100)).toBe('ambiguous');
+  });
+});
+
+// ─── Interactive-target detection (click vs swipe) ─────────────────────────────
+//
+// Regression: pointerdown on the card called setPointerCapture on the swiping
+// container, which retargets the compatibility mouse events — so `click` fired
+// on the container and the in-card "Merge" button's onClick never ran. Gestures
+// that start on a control must be left alone so the control keeps its click.
+
+interface FakeEl {
+  tagName?: string;
+  attrs?: Record<string, string>;
+  parentElement?: FakeEl | null;
+  getAttribute?(name: string): string | null;
+}
+
+function el(tagName: string, attrs: Record<string, string> = {}, parent: FakeEl | null = null): FakeEl {
+  return {
+    tagName: tagName.toUpperCase(),
+    attrs,
+    parentElement: parent,
+    getAttribute: (name: string) => attrs[name] ?? null,
+  };
+}
+
+describe('isInteractiveTarget', () => {
+  it('detects a button target', () => {
+    expect(isInteractiveTarget(el('button'))).toBe(true);
+  });
+
+  it('detects a button ancestor when the target is the icon inside it', () => {
+    const card = el('div');
+    const button = el('button', {}, card);
+    const svg = el('svg', {}, button);
+    const path = el('path', {}, svg);
+    expect(isInteractiveTarget(path)).toBe(true);
+  });
+
+  it('detects anchors, inputs, selects and textareas', () => {
+    for (const tag of ['a', 'input', 'select', 'textarea', 'label', 'summary']) {
+      expect(isInteractiveTarget(el(tag))).toBe(true);
+    }
+  });
+
+  it('detects role="button" and role="menuitem"', () => {
+    expect(isInteractiveTarget(el('div', { role: 'button' }))).toBe(true);
+    expect(isInteractiveTarget(el('div', { role: 'menuitem' }))).toBe(true);
+  });
+
+  it('returns false for plain card markup', () => {
+    const card = el('div');
+    const title = el('span', {}, card);
+    expect(isInteractiveTarget(title)).toBe(false);
+  });
+
+  it('returns false for null', () => {
+    expect(isInteractiveTarget(null)).toBe(false);
+  });
+
+  it('stops walking at the card boundary', () => {
+    // A card nested inside some outer <button> must still swipe: the walk stops
+    // at the swipe container, so ancestors above it are not consulted.
+    const outerButton = el('button');
+    const container = el('div', {}, outerButton);
+    const title = el('span', {}, container);
+    expect(isInteractiveTarget(title, container)).toBe(false);
   });
 });
 

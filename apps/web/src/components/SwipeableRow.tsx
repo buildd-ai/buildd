@@ -60,6 +60,50 @@ export function classifyGestureAngle(
   return 'ambiguous';
 }
 
+/**
+ * True when a pointerdown landed on (or inside) an interactive control.
+ *
+ * Cards embed their own controls — the Merge button, PR links, the ⋯ menu. A
+ * swipe gesture must not claim those: capturing the pointer on the container
+ * retargets the compatibility mouse events, so `click` fires on the container
+ * and the control's onClick never runs.
+ *
+ * Walks `parentElement` up to (excluding) `stopAt` so it works on real DOM
+ * nodes and on plain objects in tests.
+ */
+const INTERACTIVE_TAGS = new Set([
+  'button',
+  'a',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  'summary',
+  'option',
+]);
+const INTERACTIVE_ROLES = new Set(['button', 'link', 'menuitem', 'checkbox', 'switch', 'tab']);
+
+interface InteractiveProbe {
+  tagName?: string;
+  getAttribute?(name: string): string | null;
+  parentElement?: InteractiveProbe | null;
+}
+
+export function isInteractiveTarget(
+  target: InteractiveProbe | null | undefined,
+  stopAt?: InteractiveProbe | null,
+): boolean {
+  let node: InteractiveProbe | null | undefined = target;
+  while (node && node !== stopAt) {
+    const tag = node.tagName?.toLowerCase();
+    if (tag && INTERACTIVE_TAGS.has(tag)) return true;
+    const role = node.getAttribute?.('role');
+    if (role && INTERACTIVE_ROLES.has(role)) return true;
+    node = node.parentElement ?? null;
+  }
+  return false;
+}
+
 /** Per §2.2 swipe action table — left swipe trailing action per card type. */
 export function getTrailingAction(cardType: SwipeCardType): TrailingActionConfig | null {
   switch (cardType) {
@@ -374,15 +418,15 @@ export function SwipeableRow({
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (!trailingAction) return;
+    // Controls inside the card (Merge, PR links, ⋯) own their own clicks —
+    // never start a gesture on them, and never capture their pointer.
+    if (isInteractiveTarget(e.target as HTMLElement, e.currentTarget as HTMLElement)) return;
     const g = gestureRef.current;
     g.active = true;
     g.startX = e.clientX;
     g.startY = e.clientY;
     g.direction = 'none';
     g.committed = false;
-    // Capture the pointer so move/up events keep arriving even if the pointer
-    // leaves the element's bounds while the card translates during a swipe.
-    e.currentTarget.setPointerCapture(e.pointerId);
   }, [trailingAction]);
 
   const handlePointerMove = useCallback(
@@ -411,6 +455,15 @@ export function SwipeableRow({
         g.direction = 'horizontal';
         g.committed = true;
         e.preventDefault();
+        // Capture only once the swipe is committed, so move/up keep arriving
+        // while the card translates. Capturing earlier (on pointerdown) also
+        // retargets the compatibility mouse events, which swallows clicks on
+        // buttons and links inside the card.
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Pointer already released — nothing to capture.
+        }
       }
 
       if (g.committed) {
