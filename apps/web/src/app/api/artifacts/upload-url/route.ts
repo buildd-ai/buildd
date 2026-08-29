@@ -9,6 +9,13 @@ import { ArtifactType } from '@buildd/shared';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
+/** Collapse a client-supplied filename to one traversal-free path segment. */
+function safeObjectFilename(filename: string): string {
+  const base = String(filename).split(/[/\\]/).pop() || '';
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
+  return cleaned.slice(0, 200) || 'upload.bin';
+}
+
 // POST /api/artifacts/upload-url - Get a presigned upload URL and create artifact record
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -72,7 +79,12 @@ export async function POST(req: NextRequest) {
   }
 
   const uuid = randomUUID();
-  const storageKey = `artifacts/${worker.workspaceId}/${uuid}/${filename}`;
+  // The prefix is server-derived, but `filename` arrives from the client. Left raw,
+  // `../../role-configs/bundle.zip` produces a key whose `..` segments collapse
+  // during URL normalisation on the way to R2 — i.e. a write outside this
+  // workspace's prefix. Reduce it to a single safe basename; the original is still
+  // preserved verbatim in artifact metadata below.
+  const storageKey = `artifacts/${worker.workspaceId}/${uuid}/${safeObjectFilename(filename)}`;
   const shareToken = randomBytes(24).toString('base64url');
 
   const artifactType = type || ArtifactType.FILE;
