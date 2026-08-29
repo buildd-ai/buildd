@@ -7,9 +7,15 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
+import {
+  getFailureAnalytics,
+  parseFailureWindow,
+  type FailureAnalytics,
+  type FailureWindow,
+} from '@/lib/failure-analytics';
 import { HealthClient } from './HealthClient';
 
-export type { BudgetForecast };
+export type { BudgetForecast, FailureAnalytics, FailureWindow };
 
 export const dynamic = 'force-dynamic';
 
@@ -62,9 +68,10 @@ export interface CredentialHealthItem {
 export default async function HealthPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string }>;
+  searchParams: Promise<{ workspace?: string; failureWindow?: string }>;
 }) {
-  const { workspace: wsFilter } = await searchParams;
+  const { workspace: wsFilter, failureWindow: rawFailureWindow } = await searchParams;
+  const failureWindow = parseFailureWindow(rawFailureWindow);
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
@@ -104,8 +111,17 @@ export default async function HealthPage({
 
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
-  // Parallel fetches: runners, usage, schedules, recent failures, credential health, budget forecast
-  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast] = await Promise.all([
+  // Parallel fetches: runners, usage, schedules, recent failures, credential health,
+  // budget forecast, aggregated failure analytics
+  const [
+    runners,
+    usageStats,
+    scheduleRows,
+    recentFailureRows,
+    credentialHealthRows,
+    budgetForecast,
+    failureAnalytics,
+  ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
@@ -273,6 +289,9 @@ export default async function HealthPage({
 
     // Budget forecast
     getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null),
+
+    // Aggregated worker failure analytics for the selected window
+    getFailureAnalytics(scopedWsIds, failureWindow).catch(() => null as FailureAnalytics | null),
   ]);
 
   const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
@@ -308,6 +327,8 @@ export default async function HealthPage({
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
       budgetForecast={budgetForecast ?? null}
+      failureAnalytics={failureAnalytics ?? null}
+      failureWindow={failureWindow}
     />
   );
 }
