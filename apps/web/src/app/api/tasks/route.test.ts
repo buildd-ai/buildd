@@ -645,6 +645,69 @@ describe('POST /api/tasks', () => {
     expect(data.priority).toBe(5);
   });
 
+  it('keeps a task attachment key inside the target workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+
+    let insertedValues: any = null;
+    const mockValues = mock((vals: any) => {
+      insertedValues = vals;
+      return { returning: mock(() => [{ id: 'task-123', workspaceId: 'ws-1', title: 'T' }]) };
+    });
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: {
+        workspaceId: 'ws-1',
+        title: 'T',
+        attachments: [
+          {
+            filename: 'shot.png',
+            mimeType: 'image/png',
+            storageKey: 'attachments/ws-1/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/shot.png',
+          },
+        ],
+      },
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(insertedValues?.context?.attachments).toHaveLength(1);
+  });
+
+  it('rejects a task attachment key that points outside the target workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+
+    const mockValues = mock(() => ({
+      returning: mock(() => [{ id: 'task-123', workspaceId: 'ws-1', title: 'T' }]),
+    }));
+    mockTasksInsert.mockReturnValue({ values: mockValues });
+
+    const foreign = [
+      'attachments/ws-2/u1/shot.png',
+      'roles/builder/deadbeef.json',
+      'attachments/ws-1/../ws-2/u1/shot.png',
+      'artifacts/ws-2/u1/report.pdf',
+    ];
+
+    for (const storageKey of foreign) {
+      const request = createMockRequest({
+        method: 'POST',
+        body: {
+          workspaceId: 'ws-1',
+          title: 'T',
+          attachments: [{ filename: 'shot.png', mimeType: 'image/png', storageKey }],
+        },
+      });
+      const response = await POST(request);
+      expect(response.status).toBe(400);
+    }
+
+    expect(mockValues).not.toHaveBeenCalled();
+  });
+
   it('creates task with assignToLocalUiUrl and triggers dispatch', async () => {
     const createdTask = {
       id: 'task-123',
