@@ -126,9 +126,14 @@ stalled a whole workspace.
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
-| `subject_dead` | never (terminal) | policy, forceable |
+| `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |
 | `connector_routing_mismatch` | fixing the connector | capability |
+
+¹ `subject_dead` has its own capability spec — see
+`docs/specs/subject-anchor-liveness.md` for binding classification, fail-open
+semantics, terminal cancellation and the override. This table records only its
+place in the gate ladder.
 
 `StartTaskButton` also renders a `capability_mismatch` branch that no route
 emits. That is deliberate, not an oversight: the capability abstraction whose
