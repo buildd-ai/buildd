@@ -2320,6 +2320,28 @@ export class WorkerManager {
       worker.cbmToolCounts = {};
       worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
 
+      // Steer the agent toward the graph when CBM is actually mounted. Without
+      // this, CBM was mounted but unmentioned: the tools appear in the tool list
+      // with no policy preferring them over a Read/Grep sweep, so structural
+      // questions kept being answered the expensive way. Appended only when
+      // enforced, so the instruction can never describe a server that is absent.
+      if (cbmEnforced) {
+        systemPrompt.append = (systemPrompt.append ?? '') +
+          '\n\n## Codebase graph (codebase-memory)\n' +
+          'This worktree is pre-indexed in the `codebase-memory` MCP server. For STRUCTURAL ' +
+          'questions about the code, query the graph instead of fanning out Read/Grep/Glob:\n' +
+          '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path\n' +
+          '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph\n' +
+          '- "what does this file import / how is this area laid out?" -> mcp__codebase-memory__get_architecture\n' +
+          '- locating a symbol, then reading it -> mcp__codebase-memory__search_code, then get_code_snippet\n' +
+          'One graph query replaces a Grep-and-Read sweep and stays accurate across files. ' +
+          'Keep using Read/Grep/Glob to read code you have already located, for non-code files, ' +
+          'and whenever the graph returns nothing useful — it is an accelerator, never a gate. ' +
+          'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.\n' +
+          'The graph answers structural questions ONLY. It is not a source of intent, history, or ' +
+          'prior decisions — use the buildd knowledge tools (recall) for those.';
+      }
+
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
       // currently has no sandbox.extraMounts option, so its supported custom
