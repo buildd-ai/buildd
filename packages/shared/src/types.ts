@@ -567,6 +567,10 @@ export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /** Row created at claim, never started by any runner (over-claim artifact). */
+  | 'never_started'
+  /** Session started but streamed no output at all (0 turns, $0). */
+  | 'silent_start'
   | 'reassigned'
   | 'condition_unmet'
   | 'sandbox_mount_gap';
@@ -973,6 +977,8 @@ export interface ClaimDiagnostics {
     provider_unavailable?: number;
     budget_paused?: number;
     routing_paused?: number;
+    /** Task already had a live worker when the atomic insert ran (dup guard). */
+    duplicate_worker?: number;
   };
   /**
    * Learned OAuth budget pressure for this account (seat-based auth only).
@@ -1430,3 +1436,95 @@ export interface InitiativeKPIState {
   }>;
 }
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
+
+// ============================================================================
+// WORKER FAILURE ANALYTICS
+// ============================================================================
+
+/** Selectable lookback windows for failure analytics. */
+export type FailureWindow = '24h' | '7d' | '30d';
+
+/** Exit-cause bucket, with `null` exit causes surfaced as 'unclassified'. */
+export type FailureExitCauseBucket = WorkerExitCause | 'unclassified';
+
+export interface FailureTotals {
+  /** Workers created inside the window (the denominator for failureRatePct). */
+  started: number;
+  completed: number;
+  failed: number;
+  /** failed / started, 0-100, rounded. */
+  failureRatePct: number;
+  /** Failures with turns <= 2 AND costUsd === 0 — consumed a slot, produced nothing. */
+  diedEarly: number;
+  /** diedEarly / failed, 0-100, rounded. */
+  diedEarlySharePct: number;
+}
+
+export interface FailureExitCauseRow {
+  exitCause: FailureExitCauseBucket;
+  count: number;
+  /** Share of all failures in the window, 0-100, rounded. */
+  sharePct: number;
+}
+
+/** A cluster of failures whose error messages normalize to the same signature. */
+export interface FailureSignatureRow {
+  /** Normalized error text (UUIDs/numbers/paths/timestamps replaced by placeholders). */
+  signature: string;
+  count: number;
+  /** ISO timestamp of the earliest failure in the cluster. */
+  firstSeen: string;
+  /** ISO timestamp of the most recent failure in the cluster. */
+  lastSeen: string;
+  /** Up to 3 worker IDs for drill-down. */
+  exampleWorkerIds: string[];
+  /** Raw (un-normalized) error text from one member of the cluster. */
+  exampleError: string | null;
+  /** A task ID from the cluster, for linking into the dashboard. */
+  exampleTaskId: string | null;
+  /** How many members of this cluster are in the died-early cohort. */
+  diedEarlyCount: number;
+  /** Distinct exit causes observed in this cluster, sorted. */
+  exitCauses: FailureExitCauseBucket[];
+}
+
+export interface FailureRoleRow {
+  /** Role slug, or '(no role)' for workers whose task had no role. */
+  roleSlug: string;
+  started: number;
+  failed: number;
+  failureRatePct: number;
+}
+
+export interface FailureWorkspaceRow {
+  workspaceId: string;
+  workspaceName: string;
+  started: number;
+  failed: number;
+  failureRatePct: number;
+}
+
+/** A task that burned more than one worker inside the window. */
+export interface FailureRepeatTaskRow {
+  taskId: string;
+  taskTitle: string | null;
+  workspaceId: string;
+  failedWorkers: number;
+  lastFailureAt: string;
+}
+
+export interface FailureAnalytics {
+  window: FailureWindow;
+  /** ISO timestamp the report was computed at. */
+  generatedAt: string;
+  /** ISO timestamp of the window's lower bound. */
+  windowStart: string;
+  totals: FailureTotals;
+  byExitCause: FailureExitCauseRow[];
+  signatures: FailureSignatureRow[];
+  /** Signature ranking restricted to the died-early cohort. */
+  diedEarlySignatures: FailureSignatureRow[];
+  byRole: FailureRoleRow[];
+  byWorkspace: FailureWorkspaceRow[];
+  repeatFailureTasks: FailureRepeatTaskRow[];
+}

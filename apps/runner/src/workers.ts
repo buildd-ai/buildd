@@ -920,60 +920,25 @@ export class WorkerManager {
 
       const started: LocalWorker[] = [];
       for (const claimedWorker of claimed) {
-        const task = claimedWorker.task;
-        if (!task) continue;
-
-        const workspacePath = this.resolver.resolve({
-          id: task.workspaceId,
-          name: task.workspace?.name || 'unknown',
-          repo: task.workspace?.repo,
-        });
-
-        if (!workspacePath) {
-          console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
-          // Fail the worker on server so it doesn't stay "running" forever
+        // Per-worker isolation. Anything that throws while preparing one claimed
+        // worker (path resolution, role sync, worktree setup) used to escape this
+        // loop into the outer catch, so every worker row behind it in the batch
+        // was never started AND never reported: the server kept them 'idle' with
+        // started_at NULL until the reaper killed them ~12 min later and booked
+        // them as infra failures (2026-08-28: 3 rows minted in 53ms, 1 started).
+        try {
+          const worker = await this.startClaimedWorker(claimedWorker);
+          if (worker) started.push(worker);
+        } catch (err: any) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[WorkerManager] Failed to start claimed worker ${claimedWorker.id}:`, err);
+          // Hand the row back to the server immediately so the task re-queues now
+          // instead of after the staleness window.
           this.buildd.updateWorker(claimedWorker.id, {
             status: 'failed',
-            error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+            error: `Runner failed to start session: ${message}`,
           }).catch(() => {});
-          continue;
         }
-
-        let resolvedPath = workspacePath;
-        if ((claimedWorker as any).roleConfig) {
-          const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-          if (roleConfig.type === 'service') {
-            const { cwd } = await syncRoleToLocal(roleConfig);
-            resolvedPath = cwd;
-          } else {
-            // Builder role: sync config, then overlay files into repo
-            const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-            await overlayRoleFiles(roleDir, workspacePath);
-          }
-        } else if (task.roleSlug && !task.workspace?.repo) {
-          // No roleConfig from claim (role registered via MCP but not uploaded to R2
-          // storage — configStorageKey/configHash absent). Fall back to the locally-
-          // synced role directory so service-role workers load the correct .mcp.json,
-          // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-          const localRoleDir = getRoleDir(task.roleSlug as string);
-          if (existsSync(localRoleDir)) {
-            resolvedPath = localRoleDir;
-            console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-          }
-        }
-        this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
-
-        // Notify the credential broker about credentials seen in this claim response.
-        // The broker acquires leases and schedules proactive refreshes; workers fetch
-        // their token from the broker socket at spawn (Phase 2 live path).
-        const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
-          Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
-        if (pendingRefreshes && pendingRefreshes.length > 0) {
-          notifyBrokerCredentials(pendingRefreshes);
-        }
-
-        const worker = await this.startFromClaim(claimedWorker, task, resolvedPath);
-        if (worker) started.push(worker);
       }
       return started;
     } catch (err: any) {
@@ -991,6 +956,66 @@ export class WorkerManager {
       }
       return [];
     }
+  }
+
+  /**
+   * Prepare and start a single claimed worker (cwd resolution + role sync).
+   * Extracted from the claim loop so a failure here is contained to one worker.
+   */
+  private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
+    const task = claimedWorker.task;
+    if (!task) return null;
+
+    const workspacePath = this.resolver.resolve({
+      id: task.workspaceId,
+      name: task.workspace?.name || 'unknown',
+      repo: task.workspace?.repo,
+    });
+
+    if (!workspacePath) {
+      console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+      // Fail the worker on server so it doesn't stay "running" forever
+      this.buildd.updateWorker(claimedWorker.id, {
+        status: 'failed',
+        error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+      }).catch(() => {});
+      return null;
+    }
+
+    let resolvedPath = workspacePath;
+    if ((claimedWorker as any).roleConfig) {
+      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
+      if (roleConfig.type === 'service') {
+        const { cwd } = await syncRoleToLocal(roleConfig);
+        resolvedPath = cwd;
+      } else {
+        // Builder role: sync config, then overlay files into repo
+        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
+        await overlayRoleFiles(roleDir, workspacePath);
+      }
+    } else if (task.roleSlug && !task.workspace?.repo) {
+      // No roleConfig from claim (role registered via MCP but not uploaded to R2
+      // storage — configStorageKey/configHash absent). Fall back to the locally-
+      // synced role directory so service-role workers load the correct .mcp.json,
+      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
+      const localRoleDir = getRoleDir(task.roleSlug as string);
+      if (existsSync(localRoleDir)) {
+        resolvedPath = localRoleDir;
+        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
+      }
+    }
+    this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
+
+    // Notify the credential broker about credentials seen in this claim response.
+    // The broker acquires leases and schedules proactive refreshes; workers fetch
+    // their token from the broker socket at spawn (Phase 2 live path).
+    const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
+      Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
+    if (pendingRefreshes && pendingRefreshes.length > 0) {
+      notifyBrokerCredentials(pendingRefreshes);
+    }
+
+    return this.startFromClaim(claimedWorker, task, resolvedPath);
   }
 
   /**
@@ -1333,12 +1358,20 @@ export class WorkerManager {
     // Subscribe to Pusher for commands
     this.pusherManager.subscribeToWorker(worker.id);
 
-    // Register localUiUrl with server
+    // Register localUiUrl with server. AWAITED on purpose: this is the PATCH
+    // that moves the row idle -> running. Firing it non-awaited let it overlap
+    // the other startup PATCHes below (resume branch, error traces), whose own
+    // writes then raced this one on the server's worker-row compare-and-swap.
+    // Settling it first keeps the startup writes serialized.
     if (this.config.localUiUrl) {
-      this.buildd.updateWorker(worker.id, {
-        localUiUrl: this.config.localUiUrl,
-        status: 'running',
-      }).catch(err => console.error('Failed to register localUiUrl:', err));
+      try {
+        await this.buildd.updateWorker(worker.id, {
+          localUiUrl: this.config.localUiUrl,
+          status: 'running',
+        });
+      } catch (err) {
+        console.error('Failed to register localUiUrl:', err);
+      }
     }
 
     // Set up git worktree for isolation (if branching strategy is not 'none')
