@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
@@ -317,7 +317,7 @@ export default async function MissionDetailPage({
     lastRunAt: (mission.schedule as any)?.lastRunAt || null,
     nextRunAt: (mission.schedule as any)?.nextRunAt || null,
   });
-  const healthState = deriveHealth(mission, mission.tasks || []);
+  const healthState = deriveTaskHealthSignal(mission, mission.tasks || []);
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';

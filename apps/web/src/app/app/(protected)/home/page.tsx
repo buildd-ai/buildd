@@ -39,7 +39,7 @@ import { sortInitiatives } from '@/lib/initiative-presentation';
 export const dynamic = 'force-dynamic';
 import {
   deriveMissionHealth,
-  deriveHealth,
+  deriveTaskHealthSignal,
   healthToGroup,
   formatNextRun,
   SECTION_DISPLAY,
@@ -672,7 +672,7 @@ export default async function HomePage({
               orchestrationMode,
               status: mission.status,
               segments,
-              healthState: deriveHealth(mission, mission.tasks),
+              healthState: deriveTaskHealthSignal(mission, mission.tasks),
               inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
               lastDeferralReason,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,

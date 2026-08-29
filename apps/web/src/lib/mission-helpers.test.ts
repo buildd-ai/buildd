@@ -3,7 +3,7 @@ import {
   healthToGroup,
   deriveMissionHealth,
   deriveDriveState,
-  deriveHealth,
+  deriveTaskHealthSignal,
   getDrivePresentation,
   selectInFlightTasks,
   computeGateChipMaxWaitMins,
@@ -329,9 +329,9 @@ describe('deriveDriveState', () => {
   });
 });
 
-// ── deriveHealth ──────────────────────────────────────────────────────────────
+// ── deriveTaskHealthSignal ──────────────────────────────────────────────────────────────
 
-describe('deriveHealth', () => {
+describe('deriveTaskHealthSignal', () => {
   const noDepMission = { dependsOnMissionId: null, dependencyMetAt: null };
 
   function makeTask(status: string, workers?: Array<{ status: string }>) {
@@ -339,75 +339,75 @@ describe('deriveHealth', () => {
   }
 
   it('NOMINAL when all tasks completed and no dependency', () => {
-    expect(deriveHealth(noDepMission, [makeTask('completed')])).toBe<Health>('NOMINAL');
+    expect(deriveTaskHealthSignal(noDepMission, [makeTask('completed')])).toBe<Health>('NOMINAL');
   });
 
   it('NOMINAL when task list is empty', () => {
-    expect(deriveHealth(noDepMission, [])).toBe<Health>('NOMINAL');
+    expect(deriveTaskHealthSignal(noDepMission, [])).toBe<Health>('NOMINAL');
   });
 
   it('BLOCKED when mission has unsatisfied dependency', () => {
-    expect(deriveHealth(
+    expect(deriveTaskHealthSignal(
       { dependsOnMissionId: 'upstream-id', dependencyMetAt: null },
       [makeTask('completed')],
     )).toBe<Health>('BLOCKED');
   });
 
   it('BLOCKED even when tasks are failing — dependency takes priority', () => {
-    expect(deriveHealth(
+    expect(deriveTaskHealthSignal(
       { dependsOnMissionId: 'upstream-id', dependencyMetAt: null },
       [makeTask('failed')],
     )).toBe<Health>('BLOCKED');
   });
 
   it('not BLOCKED when dependency is already met', () => {
-    expect(deriveHealth(
+    expect(deriveTaskHealthSignal(
       { dependsOnMissionId: 'upstream-id', dependencyMetAt: new Date() },
       [makeTask('completed')],
     )).toBe<Health>('NOMINAL');
   });
 
   it('FAILING when a deliverable task has status failed', () => {
-    expect(deriveHealth(noDepMission, [
+    expect(deriveTaskHealthSignal(noDepMission, [
       makeTask('completed'),
       makeTask('failed'),
     ])).toBe<Health>('FAILING');
   });
 
   it('FAILING ignores cancelled tasks', () => {
-    expect(deriveHealth(noDepMission, [
+    expect(deriveTaskHealthSignal(noDepMission, [
       makeTask('cancelled'),
       makeTask('failed'),
     ])).toBe<Health>('FAILING');
   });
 
   it('STALLED when deliverable pending task has no live worker', () => {
-    expect(deriveHealth(noDepMission, [makeTask('pending', [])])).toBe<Health>('STALLED');
+    expect(deriveTaskHealthSignal(noDepMission, [makeTask('pending', [])])).toBe<Health>('STALLED');
   });
 
   it('not STALLED when pending task has a running worker', () => {
-    expect(deriveHealth(noDepMission, [makeTask('pending', [{ status: 'running' }])])).toBe<Health>('NOMINAL');
+    expect(deriveTaskHealthSignal(noDepMission, [makeTask('pending', [{ status: 'running' }])])).toBe<Health>('NOMINAL');
   });
 
   it('not STALLED when pending task has a waiting_input worker', () => {
-    expect(deriveHealth(noDepMission, [makeTask('pending', [{ status: 'waiting_input' }])])).toBe<Health>('NOMINAL');
+    expect(deriveTaskHealthSignal(noDepMission, [makeTask('pending', [{ status: 'waiting_input' }])])).toBe<Health>('NOMINAL');
   });
 
   it('coordination tasks excluded from health assessment', () => {
     const coordTask = { status: 'pending', kind: 'coordination' as const, title: 'Coordinate', workers: [] };
-    expect(deriveHealth(noDepMission, [coordTask])).toBe<Health>('NOMINAL');
+    expect(deriveTaskHealthSignal(noDepMission, [coordTask])).toBe<Health>('NOMINAL');
   });
 
   it('manual+healthy mission — MANUAL drive, NOMINAL health (distinguishable)', () => {
     const drive = deriveDriveState({ status: 'active', orchestrationMode: 'manual' });
-    const health = deriveHealth(noDepMission, [makeTask('completed')]);
+    const health = deriveTaskHealthSignal(noDepMission, [makeTask('completed')]);
     expect(drive).toBe<DriveState>('MANUAL');
     expect(health).toBe<Health>('NOMINAL');
   });
 
   it('auto+failing mission — AUTO drive, FAILING health (distinguishable)', () => {
     const drive = deriveDriveState({ status: 'active', orchestrationMode: 'auto' });
-    const health = deriveHealth(noDepMission, [makeTask('completed'), makeTask('failed')]);
+    const health = deriveTaskHealthSignal(noDepMission, [makeTask('completed'), makeTask('failed')]);
     expect(drive).toBe<DriveState>('AUTO');
     expect(health).toBe<Health>('FAILING');
   });

@@ -8,7 +8,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { deriveMissionHealth, deriveHealth, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
 import { computeMissionProgress, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -385,7 +385,7 @@ export default async function MissionsPage({
         const w = (t.workers as any[])?.[0];
         return w?.prUrl && !w?.mergedAt && w?.prLifecycleStatus !== 'closed';
       }).length,
-      healthState: deriveHealth(obj, obj.tasks || []),
+      healthState: deriveTaskHealthSignal(obj, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
       initiativeId: obj.initiativeId || null,
