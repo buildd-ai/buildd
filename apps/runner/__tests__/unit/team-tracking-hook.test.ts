@@ -221,7 +221,8 @@ describe('PostToolUse team tracking hook', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
   });
 
@@ -544,7 +545,8 @@ describe('Full team session simulation', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
   });
 

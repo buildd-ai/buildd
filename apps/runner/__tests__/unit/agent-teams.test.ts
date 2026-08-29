@@ -213,7 +213,8 @@ describe('Agent Teams — env configuration', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
     mockSyncSkillToLocal.mockClear();
   });
@@ -330,7 +331,8 @@ describe('Skills as subagents (useSkillAgents)', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
     mockSyncSkillToLocal.mockClear();
   });
@@ -495,7 +497,8 @@ describe('Backwards compatibility', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
     mockSyncSkillToLocal.mockClear();
   });
