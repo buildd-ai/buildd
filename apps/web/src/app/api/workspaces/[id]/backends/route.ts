@@ -2,16 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { BACKEND_REGISTRY, DISPATCHABLE_BACKENDS } from '@buildd/core/backend-policy';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { hasCodexCredential } from '@/lib/codex-credential';
+import { isBackendConfigured, type BackendScope } from '@/lib/backend-failover';
 
 /**
  * GET /api/workspaces/[id]/backends
  *
- * Returns live backend availability for this workspace, sourced from the same
- * check the start gate uses so the two cannot drift.
+ * Returns live backend availability for this workspace, sourced from
+ * isBackendConfigured (the same check the start gate and failover use) so the
+ * UI can never drift from the claim route's view of "is this backend usable?".
+ *
+ * Adding a new backend to BACKEND_REGISTRY is enough — this route stays current
+ * with no hand-registration needed here.
  *
  * Response:
  * { backends: Array<{ id: string; label: string; available: boolean; reason?: string }> }
@@ -24,7 +29,6 @@ export async function GET(
 
   // Dual auth: API key or session
   let accountId: string | null = null;
-  let userId: string | null = null;
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -44,8 +48,7 @@ export async function GET(
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    userId = user.id;
-    const access = await verifyWorkspaceAccess(userId, workspaceId);
+    const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (!access) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
@@ -61,21 +64,21 @@ export async function GET(
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
-    const teamId = (workspace as any).teamId as string | null;
+    const teamId = (workspace as { teamId?: string | null }).teamId ?? null;
+    const scope: BackendScope = { teamId: teamId ?? undefined, workspaceId, accountId: accountId ?? undefined };
 
-    const codexAvailable = teamId
-      ? await hasCodexCredential({ teamId, workspaceId, accountId: accountId ?? null })
-      : false;
-
-    const backends = [
-      { id: 'claude', label: 'Claude', available: true },
-      {
-        id: 'codex',
-        label: 'Codex',
-        available: codexAvailable,
-        ...(!codexAvailable ? { reason: 'No server credentials configured' } : {}),
-      },
-    ];
+    const backends = await Promise.all(
+      DISPATCHABLE_BACKENDS.map(async (id) => {
+        const descriptor = BACKEND_REGISTRY[id];
+        const available = await isBackendConfigured(id, scope);
+        return {
+          id,
+          label: descriptor.label,
+          available,
+          ...(!available ? { reason: 'No server credentials configured' } : {}),
+        };
+      }),
+    );
 
     return NextResponse.json({ backends });
   } catch (error) {

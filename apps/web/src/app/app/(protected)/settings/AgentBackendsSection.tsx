@@ -125,7 +125,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}
-        <ProviderRoutingToggle teamId={teamId} />
+        <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} />
         <div className="border-t border-border-default" />
 
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
@@ -175,8 +175,11 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
  * in one switch, instead of editing every workspace/role.
  */
-function ProviderRoutingToggle({ teamId }: { teamId: string }) {
+function ProviderRoutingToggle({ teamId, workspaceId }: { teamId: string; workspaceId: string }) {
   const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
+  // Track which backends have credentials configured so we can block stranding toggles.
+  // claude is always available (implicitly configured via account auth).
+  const [configured, setConfigured] = useState<Record<RoutingBackend, boolean>>({ claude: true, codex: false });
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -184,18 +187,31 @@ function ProviderRoutingToggle({ teamId }: { teamId: string }) {
   const load = useCallback(async () => {
     if (!teamId) return;
     try {
-      const res = await fetch(`/api/teams/${teamId}`);
-      if (res.ok) {
-        const data = await res.json();
+      const fetches: [Promise<Response>, Promise<Response> | null] = [
+        fetch(`/api/teams/${teamId}`),
+        workspaceId ? fetch(`/api/workspaces/${workspaceId}/backends`) : null,
+      ];
+      const [teamRes, backendRes] = await Promise.all(fetches);
+      if (teamRes.ok) {
+        const data = await teamRes.json();
         const eb = data.team?.enabledBackends as RoutingBackend[] | null | undefined;
         setEnabled(eb && eb.length ? eb : ALL_BACKENDS); // null/empty => all enabled
+      }
+      if (backendRes?.ok) {
+        const data = await backendRes.json();
+        const map: Record<string, boolean> = {};
+        for (const b of (data.backends ?? []) as { id: string; available: boolean }[]) map[b.id] = b.available;
+        setConfigured({
+          claude: map['claude'] ?? true, // claude is always configured
+          codex: map['codex'] ?? false,
+        });
       }
     } catch {
       /* non-fatal */
     } finally {
       setLoaded(true);
     }
-  }, [teamId]);
+  }, [teamId, workspaceId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -206,6 +222,17 @@ function ProviderRoutingToggle({ teamId }: { teamId: string }) {
     const next = current.includes(b) ? current.filter((x) => x !== b) : [...current, b];
     if (next.length === 0) {
       setMsg({ type: 'error', text: 'At least one provider must stay enabled.' });
+      return;
+    }
+    // Refuse if no backend in the proposed enabled set has credentials configured.
+    // This prevents stranding pending tasks in a permanently unclaimable state.
+    const hasConfiguredBackend = next.some((id) => configured[id] ?? false);
+    if (!hasConfiguredBackend) {
+      const unconfigured = next.filter((id) => !(configured[id] ?? false));
+      setMsg({
+        type: 'error',
+        text: `${unconfigured.map(backendLabel).join(' & ')} ${unconfigured.length === 1 ? 'has' : 'have'} no credentials configured — enabling it alone would strand all pending tasks. Add ${unconfigured.map(backendLabel).join(' & ')} credentials first.`,
+      });
       return;
     }
     const prev = enabled;
