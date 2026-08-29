@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, GoalCriteriaEvidenceRef, CriterionVerdict } from '@buildd/shared';
+import { recalculateOverall } from '@/lib/mission-criteria-eval';
 
 const RATE_LIMIT_PER_HOUR = 6;
 const LLM_MODEL = 'claude-haiku-4-5-20251001';
@@ -171,15 +172,6 @@ Respond with exactly this JSON shape:
     console.error('[evaluate/llm] parse error:', parseErr, '| raw:', text.substring(0, 200));
     return [];
   }
-}
-
-function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
-  if (criteria.length === 0) return 'pass';
-  if (criteria.some(r => r.verdict === 'fail')) return 'fail';
-  // NOT_EVALUATED means "we could not check this" — that is not a pass
-  if (criteria.some(r => r.verdict === 'NOT_EVALUATED')) return 'UNVERIFIED';
-  if (criteria.every(r => r.verdict === 'pass')) return 'pass';
-  return 'UNVERIFIED';
 }
 
 /**
