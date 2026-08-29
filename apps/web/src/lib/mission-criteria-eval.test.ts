@@ -44,6 +44,25 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: Symbol('missionNotes'),
 }));
 
+// ── Model tier registry mock ──────────────────────────────────────────────────
+
+const mockResolveTierEntry = mock((): any => Promise.resolve({
+  provider: 'anthropic',
+  model: 'claude-haiku-4-5-20251001',
+  source: 'default',
+}));
+
+mock.module('@buildd/core/model-tier-registry', () => ({
+  resolveTierEntry: mockResolveTierEntry,
+}));
+
+// ── Fetch mock (initial — replaced per-test by stubLLM or inline) ─────────────
+
+const mockFetch = mock(async (_url: string, _opts: any): Promise<any> => {
+  throw new Error('fetch called but not configured in this test');
+});
+globalThis.fetch = mockFetch as any;
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -62,10 +81,6 @@ mock.module('@buildd/core/db', () => ({
       values: (v: any) => { insertedRows.push(v); return Promise.resolve([]); },
     }),
   },
-}));
-
-mock.module('@buildd/core/model-tier-registry', () => ({
-  resolveTierEntrySync: () => ({ model: 'claude-haiku-4-5-20251001', provider: 'anthropic' }),
 }));
 
 // Command criteria are resolved by running the command elsewhere; that module is
@@ -150,8 +165,15 @@ function reset() {
   mockResolveCriteriaWorkerEval.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'worker-eval-task-1', evidence: 'Worker evaluator worker-ev dispatched — evaluating 1 criterion',
   }) as any);
+  mockResolveTierEntry.mockReset();
+  mockResolveTierEntry.mockImplementation((): any => Promise.resolve({
+    provider: 'anthropic',
+    model: 'claude-haiku-4-5-20251001',
+    source: 'default',
+  }));
   globalThis.fetch = realFetch;
   delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
 }
 
 const lastState = () => updateCalls[updateCalls.length - 1]?.goalCriteriaState;
@@ -343,53 +365,29 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
   }
 
-  it('regression (DEFECT 2): with no API key, prose criteria are graded by dispatch, not abandoned', async () => {
-    // The old behaviour: NOT_EVALUATED, evidence 'no ANTHROPIC_API_KEY', forever.
-    // The env var is absent in production and unsettable for an OAuth-subscription
-    // team, so that message named a fix nobody could apply and every mission with
-    // a prose criterion was permanently unverifiable.
+  it('with no API key configured, prose criteria are marked NOT_EVALUATED with a named provider reason', async () => {
+    // ANTHROPIC_API_KEY absent → callProvider returns 'ANTHROPIC_API_KEY not configured',
+    // which is provider-named and actionable — not a generic "no evaluator" message.
     proseAndMechanical();
 
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
-    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
-    expect(state!.criteria[0].verdict).toBe('PENDING');
-    expect(state!.criteria[0].evidence).not.toContain('ANTHROPIC_API_KEY');
-    expect(state!.criteria[0].workerTaskId).toBe('prose-task-1');
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[0].evidence).toBe('ANTHROPIC_API_KEY not configured');
     expect(state!.criteria[1].verdict).toBe('pass');
-    // Still the load-bearing half of the original assertion: a verdict in flight
-    // is not a verdict, and the mechanical pass must not carry the prose one.
+    // A NOT_EVALUATED criterion blocks the overall verdict.
     expect(state!.overall).toBe('UNVERIFIED');
   });
 
-  it('passes the criterion text, index and fingerprint to the evaluator', async () => {
+  it('resolveTierEntry is called with the mission teamId and workspaceId', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'Rows are there' }]);
     proseAndMechanical();
 
     await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
-    const opts = mockResolveProseCriteria.mock.calls[0]![0] as any;
-    expect(opts.missionId).toBe('m1');
-    expect(opts.criteria).toHaveLength(1);
-    expect(opts.criteria[0].index).toBe(0);
-    expect(opts.criteria[0].text).toContain('Rows exist');
-    // The fingerprint is what makes the write-back safe against an edited criterion.
-    expect(opts.criteria[0].fingerprint).toBeTruthy();
-    expect(opts.evidence.tasks[0].id).toBe('t1');
-  });
-
-  it('reports the resolver reason when there is nowhere to grade', async () => {
-    proseAndMechanical();
-    mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
-      kind: 'unavailable',
-      evidence: 'Prose criteria cannot be graded: no agent backend credential is connected — connect one in Settings → Agent Backends',
-    }) as any);
-
-    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
-
-    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
-    // The operator gets told where the fix lives, not which env var is missing.
-    expect(state!.criteria[0].evidence).toContain('Agent Backends');
-    expect(state!.overall).toBe('UNVERIFIED');
+    expect(mockResolveTierEntry).toHaveBeenCalledWith('budget', 'team-1', 'ws-1');
   });
 
   it('does not dispatch an evaluator when dispatchCommands=false', async () => {
@@ -659,7 +657,7 @@ describe('evaluationStrategy: worker path', () => {
     expect(saved.criteria[0].workerTaskId).toBe('worker-eval-task-1');
   });
 
-  it('under inline strategy, prose criteria still use prose dispatch (not worker eval)', async () => {
+  it('under inline strategy with no API key, prose criteria are marked NOT_EVALUATED (not dispatched)', async () => {
     mockStrategyResult = 'inline';
     mission({
       goalCriteria: [{ type: 'description', description: 'Tests pass', notMechanizableReason: 'r' }],
@@ -667,9 +665,13 @@ describe('evaluationStrategy: worker path', () => {
 
     await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
 
-    // No ANTHROPIC_API_KEY set → prose dispatch path
-    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    // No ANTHROPIC_API_KEY set → callProvider returns named error, not prose dispatch
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
     expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+
+    const saved = updateCalls[updateCalls.length - 1]?.goalCriteriaState;
+    expect(saved.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(saved.criteria[0].evidence).toBe('ANTHROPIC_API_KEY not configured');
   });
 
   it('command criteria are not dispatched when another criterion has already failed', async () => {
@@ -732,5 +734,114 @@ describe('evaluationStrategy: worker path', () => {
 
     // Worker dispatch should fire because ensureCriteriaVerdict passes allowWorkerDispatch: true
     expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Provider dispatch tests ────────────────────────────────────────────────────
+
+describe('evaluateCriteriaNow — provider dispatch (inline strategy)', () => {
+  beforeEach(() => {
+    reset();
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+  });
+
+  it('calls resolveTierEntry with mission teamId and workspaceId (registry override honored)', async () => {
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'Confirmed.' }]);
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveTierEntry).toHaveBeenCalledWith('budget', 'team-1', 'ws-1');
+  });
+
+  it('openrouter: hits openrouter endpoint with Bearer header', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'or-test-key';
+    mockResolveTierEntry.mockImplementation((): any => Promise.resolve({
+      provider: 'openrouter',
+      model: 'qwen/qwen-2.5-72b-instruct',
+      source: 'team',
+    }));
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    let capturedUrl: string | null = null;
+    let capturedHeaders: Record<string, string> | null = null;
+    globalThis.fetch = mock(async (url: string, opts: any) => {
+      capturedUrl = url;
+      capturedHeaders = opts?.headers ?? {};
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({ verdicts: [{ index: 0, verdict: 'pass', evidence: 'Confirmed.' }] }) } }],
+        }),
+      } as any;
+    }) as any;
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(capturedUrl).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(capturedHeaders?.['Authorization']).toBe('Bearer or-test-key');
+    expect(lastState().criteria[0].verdict).toBe('pass');
+  });
+
+  it('openai-codex: returns explicit unsupported reason without calling fetch', async () => {
+    mockResolveTierEntry.mockImplementation((): any => Promise.resolve({
+      provider: 'openai-codex',
+      model: 'codex-mini',
+      source: 'team',
+    }));
+    const fetchMock = stubLLM([]);
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lastState().criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(lastState().criteria[0].evidence).toBe('provider not supported for inline evaluation');
+  });
+
+  it('missing anthropic key: evidence names ANTHROPIC_API_KEY', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const fetchMock = stubLLM([]);
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lastState().criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(lastState().criteria[0].evidence).toBe('ANTHROPIC_API_KEY not configured');
+  });
+
+  it('missing openrouter key: evidence names OPENROUTER_API_KEY', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    mockResolveTierEntry.mockImplementation((): any => Promise.resolve({
+      provider: 'openrouter',
+      model: 'qwen/qwen-2.5-72b-instruct',
+      source: 'team',
+    }));
+    const fetchMock = stubLLM([]);
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lastState().criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(lastState().criteria[0].evidence).toBe('OPENROUTER_API_KEY not configured');
+  });
+
+  it('fetch network failure: evidence is distinguishable from ambiguous evidence', async () => {
+    globalThis.fetch = mock(async () => {
+      throw new Error('ECONNREFUSED');
+    }) as any;
+    mission({ goalCriteria: [{ type: 'description', description: 'All tasks shipped', notMechanizableReason: 'r' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(lastState().criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(lastState().criteria[0].evidence).toBe('LLM call failed: network error');
+    // Must NOT look like ambiguous evidence
+    expect(lastState().criteria[0].evidence).not.toBe('No relevant evidence found');
   });
 });

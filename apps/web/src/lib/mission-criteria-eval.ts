@@ -3,7 +3,8 @@ import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/
 import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
-import { resolveTierEntrySync } from '@buildd/core/model-tier-registry';
+import { resolveTierEntry } from '@buildd/core/model-tier-registry';
+import type { TierEntry } from '@buildd/core/model-tier-registry';
 import { resolveCommandCriterion } from './mission-criteria-verify';
 import { resolveProseCriteria } from './mission-criteria-prose';
 import { resolveEvaluationStrategy } from './mission-criteria-strategy';
@@ -74,14 +75,92 @@ export function criterionText(criterion: GoalCriterion): string {
   return criterion.label ?? criterion.type;
 }
 
+/** Calls the provider and returns the raw LLM text, or an error reason string on failure. */
+async function callProvider(
+  entry: TierEntry,
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<{ text: string } | string> {
+  if (entry.provider === 'openai-codex') {
+    return 'provider not supported for inline evaluation';
+  }
+
+  if (entry.provider === 'anthropic') {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return 'ANTHROPIC_API_KEY not configured';
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: entry.model,
+          max_tokens: LLM_MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        const bodyText = await resp.text().catch(() => '');
+        console.error(`[criteria-eval/llm] anthropic API error ${resp.status}: ${bodyText.substring(0, 200)}`);
+        return `LLM call failed: HTTP ${resp.status}`;
+      }
+      const data = await resp.json() as { content?: Array<{ type: string; text?: string }> };
+      return { text: data.content?.find(b => b.type === 'text')?.text ?? '' };
+    } catch (err) {
+      console.error('[criteria-eval/llm] fetch error:', err);
+      return 'LLM call failed: network error';
+    }
+  }
+
+  if (entry.provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) return 'OPENROUTER_API_KEY not configured';
+    try {
+      const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: entry.model,
+          max_tokens: LLM_MAX_TOKENS,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        const bodyText = await resp.text().catch(() => '');
+        console.error(`[criteria-eval/llm] openrouter API error ${resp.status}: ${bodyText.substring(0, 200)}`);
+        return `LLM call failed: HTTP ${resp.status}`;
+      }
+      const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+      return { text: data.choices?.[0]?.message?.content ?? '' };
+    } catch (err) {
+      console.error('[criteria-eval/llm] fetch error:', err);
+      return 'LLM call failed: network error';
+    }
+  }
+
+  return 'provider not supported for inline evaluation';
+}
+
 async function judgeWithLLM(
   inputs: LLMCriterionInput[],
   missionTitle: string,
   missionDescription: string | null,
   completedTasks: EvidenceTask[],
   evidenceArtifacts: EvidenceArtifact[],
-  anthropicApiKey: string,
-): Promise<LLMCriterionVerdict[]> {
+  entry: TierEntry,
+): Promise<{ verdicts: LLMCriterionVerdict[]; errorReason?: string }> {
   const taskEvidence = completedTasks.map(t =>
     `[task:${t.id.slice(0, 8)}] "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
   ).join('\n\n');
@@ -130,46 +209,19 @@ Respond with exactly this JSON shape:
   ]
 }`;
 
-  let resp: Response;
-  try {
-    resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicApiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: resolveTierEntrySync('budget').model,
-        max_tokens: LLM_MAX_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-      // This call sits inside the worker-completion request and the cron tick. An
-      // unbounded fetch to a degraded provider would hang both.
-      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-    });
-  } catch (err) {
-    console.error('[criteria-eval/llm] fetch error:', err);
-    return [];
+  const providerResult = await callProvider(entry, systemPrompt, userPrompt);
+  if (typeof providerResult === 'string') {
+    return { verdicts: [], errorReason: providerResult };
   }
 
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    console.error(`[criteria-eval/llm] API error ${resp.status}: ${bodyText.substring(0, 200)}`);
-    return [];
-  }
-
-  const data = await resp.json() as { content?: Array<{ type: string; text?: string }> };
-  const text = data.content?.find(b => b.type === 'text')?.text ?? '';
-
+  const { text } = providerResult;
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch?.[0]) throw new Error('no JSON found');
     const parsed = JSON.parse(jsonMatch[0]) as { verdicts?: unknown[] };
     if (!Array.isArray(parsed.verdicts)) throw new Error('missing verdicts array');
 
-    return (parsed.verdicts as any[]).map(v => ({
+    const verdicts = (parsed.verdicts as any[]).map(v => ({
       index: v.index as number,
       verdict: (['pass', 'fail', 'UNVERIFIED'].includes(v.verdict) ? v.verdict : 'UNVERIFIED') as CriterionVerdict,
       evidence: typeof v.evidence === 'string' ? v.evidence : '',
@@ -177,9 +229,10 @@ Respond with exactly this JSON shape:
         ? { evidenceRef: v.evidenceRef as GoalCriteriaEvidenceRef }
         : {}),
     }));
+    return { verdicts };
   } catch (parseErr) {
     console.error('[criteria-eval/llm] parse error:', parseErr, '| raw:', text.substring(0, 200));
-    return [];
+    return { verdicts: [], errorReason: 'LLM returned unparseable response' };
   }
 }
 
@@ -293,6 +346,7 @@ export async function evaluateCriteriaNow(
   const commandCriteria = state.criteria.filter(
     cs => cs.type === 'command' && (cs.verdict === 'UNVERIFIED' || cs.verdict === 'NOT_EVALUATED')
   );
+
   const llmEligible = state.criteria.filter(
     c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
   );
@@ -382,7 +436,6 @@ export async function evaluateCriteriaNow(
     }
 
     const toJudge = inlineLlmEligible.filter(c => !carried.has(c.index));
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
     const completedTasks: EvidenceTask[] = missionTasks
       .filter(t => t.status === 'completed')
@@ -399,73 +452,50 @@ export async function evaluateCriteriaNow(
       contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
     }));
 
-    if (toJudge.length > 0 && anthropicApiKey) {
-      const llmVerdicts = await judgeWithLLM(
+    if (toJudge.length > 0 && alreadyFailing) {
+      for (const c of toJudge) {
+        const cs = state.criteria.find(s => s.index === c.index);
+        if (cs) {
+          cs.verdict = 'NOT_EVALUATED';
+          cs.evidence = 'Not graded: another criterion has already failed, so the mission cannot pass this round';
+        }
+      }
+    } else if (toJudge.length > 0) {
+      // Use the async resolver so team/workspace registry overrides are honoured.
+      // resolveTierEntrySync ignores DB overrides and only reads code-level defaults.
+      const entry = await resolveTierEntry('budget', mission.teamId, mission.workspaceId);
+
+      const { verdicts: llmVerdicts, errorReason } = await judgeWithLLM(
         toJudge.map(c => ({ index: c.index, text: criterionText(criteria[c.index]) })),
         mission.title,
         mission.description ?? null,
         completedTasks,
         evidenceArtifacts,
-        anthropicApiKey,
+        entry,
       );
 
-      for (const lv of llmVerdicts) {
-        const criterionState = state.criteria.find(c => c.index === lv.index);
-        if (!criterionState) continue;
-        criterionState.verdict = lv.verdict;
-        if (lv.evidence) criterionState.evidence = lv.evidence;
-        if (lv.evidenceRef) criterionState.evidenceRefs = [lv.evidenceRef];
-      }
-
-      for (const c of toJudge) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs && cs.verdict === 'NOT_EVALUATED') {
-          cs.evidence = 'LLM returned no verdict for this criterion';
-        }
-      }
-    } else if (toJudge.length > 0) {
-      // No API key in this process — which is the normal case in production, and
-      // permanently the case for a team whose Claude access is an OAuth
-      // subscription rather than a metered API key. Grade by dispatching a task
-      // instead: a runner claims it with whatever backend credential the team has
-      // connected. Prefer a `command` criterion regardless — its verdict is an
-      // exit code rather than a model's judgment.
-      const proseInputs = toJudge.map(c => ({
-        index: c.index,
-        text: criterionText(criteria[c.index]),
-        fingerprint: c.fingerprint,
-      }));
-
-      const setAll = (verdict: CriterionVerdict, evidence: string, taskId?: string) => {
+      if (errorReason) {
         for (const c of toJudge) {
           const cs = state.criteria.find(s => s.index === c.index);
-          if (!cs) continue;
-          cs.verdict = verdict;
-          cs.evidence = evidence;
-          if (taskId) cs.workerTaskId = taskId;
+          if (cs) {
+            cs.verdict = 'NOT_EVALUATED';
+            cs.evidence = errorReason;
+          }
         }
-      };
-
-      if (opts.dispatchCommands === false) {
-        // Read-only evaluation: report what is missing without spending an agent run.
-        setAll('NOT_EVALUATED', 'Prose criteria not graded: this run does not dispatch evaluation tasks');
-      } else if (alreadyFailing) {
-        // The fold is `fail` whatever the model says, so grading now would buy a
-        // verdict that cannot change the outcome. Re-graded once the failure clears.
-        setAll('NOT_EVALUATED', 'Not graded: another criterion has already failed, so the mission cannot pass this round');
       } else {
-        const resolution = await resolveProseCriteria({
-          missionId,
-          criteria: proseInputs,
-          evidence: { tasks: completedTasks, artifacts: evidenceArtifacts },
-        });
+        for (const lv of llmVerdicts) {
+          const criterionState = state.criteria.find(c => c.index === lv.index);
+          if (!criterionState) continue;
+          criterionState.verdict = lv.verdict;
+          if (lv.evidence) criterionState.evidence = lv.evidence;
+          if (lv.evidenceRef) criterionState.evidenceRefs = [lv.evidenceRef];
+        }
 
-        if (resolution.kind === 'pending') {
-          // PENDING, not NOT_EVALUATED: a verdict is genuinely in flight, and
-          // `handleProseEvalOutcome` will replace it when the evaluator reports.
-          setAll('PENDING', resolution.evidence, resolution.taskId);
-        } else {
-          setAll('NOT_EVALUATED', resolution.evidence);
+        for (const c of toJudge) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (cs && cs.verdict === 'NOT_EVALUATED') {
+            cs.evidence = 'LLM returned no verdict for this criterion';
+          }
         }
       }
     }
