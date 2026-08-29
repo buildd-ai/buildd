@@ -72,6 +72,27 @@ mock.module('@/lib/github', () => ({
   githubApi: mock(() => Promise.resolve(null) as any),
 }));
 
+// The shared completion predicate. Mocked here so this file stays about release
+// dedup + strategy dispatch; the predicate's own behaviour is covered in
+// mission-completion.test.ts. Default: the mission is cleared to ship.
+const mockCanCompleteMission = mock(() => Promise.resolve({
+  ok: true,
+  code: 'ok',
+  reason: 'All 1 goal criteria pass',
+  pendingDeliverables: 0,
+  pendingByStatus: {},
+  pendingAllTasks: 0,
+  deliverableStatusCounts: { completed: 1 },
+  criteriaCount: 1,
+  criteriaVerdict: 'pass',
+  criteriaEvaluatedAt: '2026-08-29T00:00:00.000Z',
+  infraStalledTitles: [],
+}) as any);
+
+mock.module('@/lib/mission-completion', () => ({
+  canCompleteMission: mockCanCompleteMission,
+}));
+
 // ── Import module under test ───────────────────────────────────────────────────
 
 import { fireMissionReleaseIfComplete } from './mission-release';
@@ -105,6 +126,7 @@ describe('fireMissionReleaseIfComplete', () => {
     mockExecuteRelease.mockReset();
     mockSelectWhere.mockReset();
     mockReturning.mockReset();
+    mockCanCompleteMission.mockClear();
 
     // Defaults: no pending tasks, claim wins, release succeeds
     mockSelectWhere.mockResolvedValue([{ count: 0 }]);
@@ -169,6 +191,48 @@ describe('fireMissionReleaseIfComplete', () => {
 
     expect(mockReturning).not.toHaveBeenCalled();
     expect(mockExecuteRelease).not.toHaveBeenCalled();
+  });
+
+  // ── Completion-predicate gate ─────────────────────────────────────────────
+
+  it('does not release when the shared predicate refuses (unverified goal criteria)', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ON_MISSION_WORKSPACE);
+    mockSelectWhere.mockResolvedValue([{ count: 0 }]);
+    mockCanCompleteMission.mockResolvedValueOnce({
+      ok: false,
+      code: 'criteria_unverified',
+      reason: 'Goal criteria not verified (overall: UNVERIFIED)',
+      pendingDeliverables: 0,
+      pendingByStatus: {},
+      pendingAllTasks: 0,
+      deliverableStatusCounts: { completed: 3 },
+      criteriaCount: 4,
+      criteriaVerdict: 'UNVERIFIED',
+      criteriaEvaluatedAt: null,
+      infraStalledTitles: [],
+    } as any);
+
+    await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+    // No claim on releasedAt, so a later verified attempt can still ship.
+    expect(mockReturning).not.toHaveBeenCalled();
+    expect(mockExecuteRelease).not.toHaveBeenCalled();
+  });
+
+  it('accepts an already-completed mission (the gate ran when it closed)', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ON_MISSION_WORKSPACE);
+    mockSelectWhere.mockResolvedValue([{ count: 0 }]);
+
+    await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+    expect(mockCanCompleteMission).toHaveBeenCalledWith('mission-1', {
+      path: 'release_trigger',
+      acceptCompleted: true,
+      // A release READS a verdict; it must not dispatch verification tasks or
+      // spend tokens producing one.
+      evaluateCriteria: false,
+    });
+    expect(mockExecuteRelease).toHaveBeenCalled();
   });
 
   // ── Happy path ────────────────────────────────────────────────────────────

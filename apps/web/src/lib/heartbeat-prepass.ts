@@ -16,8 +16,16 @@ export interface HeartbeatMissionState {
 export type HeartbeatPrepassDecision =
   | { action: 'invoke_llm'; stateKey: string }
   | { action: 'skip_blocked'; reason: string }
+  /**
+   * All deliverables are terminal — propose completion. Whether the mission
+   * actually closes is not decided here: the caller asks
+   * `completeMissionIfVerified`, which owns the goal-criteria gate and, crucially,
+   * PRODUCES a verdict when none exists. This prepass used to hold its own
+   * criteria check (`skip_criteria_blocked`) that could only ever block, never
+   * evaluate — so a mission with unevaluated criteria was refused here forever
+   * and no path ever produced the verdict that would have released it.
+   */
   | { action: 'skip_complete' }
-  | { action: 'skip_criteria_blocked'; reason: string }
   | { action: 'skip_no_change'; stateKey: string };
 
 /**
@@ -80,7 +88,8 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
  *
  * Returns a deterministic decision without invoking any model:
  * - skip_blocked: upstream dependency not yet met
- * - skip_complete: all deliverable tasks are terminal — mark mission done in code
+ * - skip_complete: all deliverable tasks are terminal — propose completion to the
+ *   shared predicate (which may refuse; this prepass does not close missions)
  * - skip_no_change: mission state identical to last heartbeat (and no open PRs)
  * - invoke_llm: genuine planning decision needed; includes current stateKey to persist
  *
@@ -92,8 +101,6 @@ export async function evaluateHeartbeatPrepass(input: {
   gateCondition: 'merged' | 'completed';
   dependencyMetAt: Date | null;
   lastHeartbeatStateHash: string | null;
-  goalCriteria?: unknown;
-  goalCriteriaState?: unknown;
 }): Promise<HeartbeatPrepassDecision> {
   // 1. Dependency gate — skip if upstream mission's gate condition isn't met
   const blockStatus = await isMissionBlocked({
@@ -119,15 +126,6 @@ export async function evaluateHeartbeatPrepass(input: {
     nonCancelledDeliverables.length > 0 &&
     nonCancelledDeliverables.every(t => t.status === 'completed' || t.status === 'failed')
   ) {
-    // Guard: goal criteria must pass before we complete. NOT_EVALUATED is non-pass.
-    const criteria = Array.isArray(input.goalCriteria) ? input.goalCriteria : [];
-    if (criteria.length > 0) {
-      const state = input.goalCriteriaState as { overall?: string } | null | undefined;
-      if (state?.overall !== 'pass') {
-        const overall = state?.overall ?? 'not_evaluated';
-        return { action: 'skip_criteria_blocked', reason: `goal criteria not satisfied (overall: ${overall})` };
-      }
-    }
     return { action: 'skip_complete' };
   }
 

@@ -514,7 +514,7 @@ describe('PATCH /api/missions/[id]', () => {
       body: JSON.stringify({
         goalCriteria: [
           { type: 'all_prs_merged' },
-          { type: 'description', description: 'Ship the feature' },
+          { type: 'command', command: 'bun run test' },
         ],
       }),
     });
@@ -522,8 +522,21 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
     expect(updatedSetData.goalCriteria).toEqual([
       { type: 'all_prs_merged' },
-      { type: 'description', description: 'Ship the feature' },
+      { type: 'command', command: 'bun run test' },
     ]);
+  });
+
+  it('rejects a PATCH that adds a prose criterion with no stated reason', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        goalCriteria: [{ type: 'description', description: 'Ship the feature' }],
+      }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/notMechanizableReason/);
   });
 
   it('accepts null goalCriteria to clear criteria', async () => {
