@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { UsageStats, ScheduleRow, RecentFailure, CredentialHealthItem, BudgetForecast } from './page';
+import type { UsageStats, ConsumptionStats, ScheduleRow, RecentFailure, CredentialHealthItem, BudgetForecast } from './page';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -147,6 +147,7 @@ function humanizeCron(expr: string): string {
 interface Props {
   runners: RunnerHeartbeat[];
   usageStats: UsageStats | null;
+  consumption: ConsumptionStats | null;
   schedules: ScheduleRow[];
   recentFailures: RecentFailure[];
   credentialHealth: CredentialHealthItem[];
@@ -158,6 +159,7 @@ interface Props {
 export function HealthClient({
   runners,
   usageStats,
+  consumption,
   schedules,
   recentFailures,
   credentialHealth,
@@ -657,6 +659,10 @@ export function HealthClient({
         </section>
       )}
 
+      {consumption && consumption.totals.tasks > 0 && (
+        <ConsumptionSection stats={consumption} />
+      )}
+
       {/* 4. Schedules — collapsed by default */}
       {schedules.length > 0 && (
         <section data-testid="health-section-schedules" className="mb-6">
@@ -884,6 +890,132 @@ export function HealthClient({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Consumption ───────────────────────────────────────────────────────────────
+
+/** Compact token counts — per-task input runs into the millions. */
+function fmtTokens(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return `${Math.round(n)}`;
+}
+
+function fmtCost(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
+}
+
+/** Strip the `mcp__server__` prefix for display; the server is shown separately. */
+function shortToolName(name: string): string {
+  if (name === '__other__') return 'other';
+  if (!name.startsWith('mcp__')) return name;
+  const parts = name.split('__');
+  return parts.slice(2).join('__') || name;
+}
+
+/**
+ * What work costs, next to whether it landed. Medians (not means) lead every
+ * row: one runaway task skews a mean badly enough to make the number useless.
+ */
+function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
+  const { totals, perTask, tools, groups, window } = stats;
+  const topTools = tools.byTool.slice(0, 5);
+  const maxToolCalls = topTools[0]?.calls ?? 0;
+  const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
+
+  return (
+    <section data-testid="health-section-consumption" className="mb-6">
+      <h2 className="section-label mb-3">Consumption ({window})</h2>
+      <div className="card p-4 space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Stat
+            label="Tokens / task"
+            value={fmtTokens(perTask.inputTokens.median)}
+            sub={`p90 ${fmtTokens(perTask.inputTokens.p90)}`}
+          />
+          <Stat
+            label="Cost / task"
+            value={fmtCost(perTask.costUsd.median)}
+            sub={`${fmtCost(totals.costUsd)} total`}
+          />
+          <Stat
+            label="Turns / task"
+            value={`${Math.round(perTask.turns.median)}`}
+            sub={`p90 ${Math.round(perTask.turns.p90)}`}
+          />
+          <Stat
+            label="Tool calls / task"
+            value={tools.coverage.histogram + tools.coverage.derived > 0
+              ? `${Math.round(perTask.toolCalls.median)}`
+              : '—'}
+            sub={`p90 ${Math.round(perTask.toolCalls.p90)}`}
+          />
+        </div>
+
+        {topTools.length > 0 && (
+          <div className="space-y-2 pt-1 border-t border-border-default">
+            <div className="flex items-center justify-between pt-3">
+              <span className="text-xs text-text-secondary">Top tools</span>
+              {coverageGap > 0 && (
+                <span
+                  className="text-xs text-text-muted"
+                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor."
+                >
+                  {tools.coverage.histogram}/{tools.coverage.tasks} tasks measured exactly
+                </span>
+              )}
+            </div>
+            {topTools.map((t) => (
+              <div key={t.name} className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-primary flex-1 truncate" title={t.name}>
+                    {shortToolName(t.name)}
+                  </span>
+                  <span className="text-xs text-text-muted tabular-nums">
+                    {t.calls} · {Math.round(t.share * 100)}%
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${maxToolCalls > 0 ? (t.calls / maxToolCalls) * 100 : 0}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {groups.length > 0 && (
+          <div className="space-y-2 pt-3 border-t border-border-default">
+            <span className="text-xs text-text-secondary">By role</span>
+            {groups.slice(0, 5).map((g) => (
+              <div key={g.key} className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                <span className="text-xs text-text-primary flex-1 truncate">{g.label}</span>
+                <span className="text-xs text-text-muted tabular-nums">
+                  {g.tasks} task{g.tasks !== 1 ? 's' : ''} · {fmtTokens(g.perTask.inputTokens.median)} · {fmtCost(g.perTask.costUsd.median)}
+                  {g.successRate !== null && ` · ${Math.round(g.successRate * 100)}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div>
+      <div className="text-xs text-text-muted">{label}</div>
+      <div className="text-lg text-text-primary tabular-nums">{value}</div>
+      <div className="text-xs text-text-muted tabular-nums">{sub}</div>
     </div>
   );
 }

@@ -144,6 +144,7 @@ export const workerActions = [
   'list_schedules', 'trace_schedule',
   'get_task', 'get_task_messages',
   'get_budget_forecast',
+  'get_usage_stats',
   'list_connectors',
   'list_releases',
   'get_release',
@@ -229,6 +230,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
+    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus release_tasks with task title, status, and prNumber.',
@@ -277,6 +279,14 @@ function timeUntilFromIso(iso: string | null | undefined): string {
   if (h < 1) return `${Math.ceil(ms / 60000)}m`;
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+/** Compact token counts — usage numbers run to millions and raw digits are unreadable. */
+function fmtTokens(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '?';
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${Math.round(n)}`;
 }
 
 const errorResult = (t: string): ToolResult => ({
@@ -2682,6 +2692,60 @@ export async function handleBuilddAction(
       }
 
       if (lines.length === 0) return text('No active budgets configured. All backends are running uncapped.');
+      return text(lines.join('\n'));
+    }
+
+    case 'get_usage_stats': {
+      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
+      const query = new URLSearchParams();
+      if (wsId) query.set('workspace', wsId);
+      if (typeof params.window === 'string') query.set('window', params.window);
+      if (typeof params.groupBy === 'string') query.set('groupBy', params.groupBy);
+
+      const data = await api(`/api/stats/usage${query.size > 0 ? `?${query}` : ''}`);
+      if (!data || data.totals?.tasks === 0) {
+        return text(`No completed work in the last ${data?.window ?? '7d'}.`);
+      }
+
+      const t = data.totals;
+      const p = data.perTask;
+      const lines: string[] = [
+        `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
+        `Totals: ${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out · ${fmtTokens(t.cacheReadTokens)} cache read · $${t.costUsd.toFixed(2)} · ${t.turns} turns · ${t.toolCalls} tool calls`,
+        `Per task: input ${fmtTokens(p.inputTokens.median)} median / ${fmtTokens(p.inputTokens.p90)} p90 / ${fmtTokens(p.inputTokens.max)} max · $${p.costUsd.median.toFixed(2)} median · ${Math.round(p.turns.median)} turns median · ${Math.round(p.toolCalls.median)} tool calls median`,
+      ];
+
+      const cov = data.tools?.coverage;
+      if (cov) {
+        lines.push(
+          `Tool coverage: ${cov.histogram}/${cov.tasks} task(s) with exact counts` +
+          `${cov.derived > 0 ? `, ${cov.derived} reconstructed (floor)` : ''}` +
+          `${cov.none > 0 ? `, ${cov.none} unmeasured` : ''}`
+        );
+      }
+
+      const topTools: string[] = (data.tools?.byTool ?? []).slice(0, 8).map((tool: any) =>
+        `  ${tool.name}: ${tool.calls} (${Math.round(tool.share * 100)}%) across ${tool.tasks} task(s)`
+      );
+      if (topTools.length > 0) lines.push(`Top tools:\n${topTools.join('\n')}`);
+
+      const servers: string[] = (data.tools?.byServer ?? []).slice(0, 6).map((s: any) =>
+        `  ${s.server}: ${s.calls}`
+      );
+      if (servers.length > 0) lines.push(`By server:\n${servers.join('\n')}`);
+
+      const models: string[] = (data.byModel ?? []).slice(0, 5).map((m: any) =>
+        `  ${m.model}: ${fmtTokens(m.inputTokens)} in / ${fmtTokens(m.outputTokens)} out (${Math.round(m.share * 100)}%)`
+      );
+      if (models.length > 0) lines.push(`By model:\n${models.join('\n')}`);
+
+      const groups: string[] = (data.groups ?? []).slice(0, 10).map((g: any) => {
+        const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
+        return `  ${g.label ?? g.key}: ${g.tasks} task(s) · ${fmtTokens(g.perTask.inputTokens.median)} median in · $${g.perTask.costUsd.median.toFixed(2)} median · ${success} success`;
+      });
+      if (groups.length > 0) lines.push(`By ${data.groupBy}:\n${groups.join('\n')}`);
+
       return text(lines.join('\n'));
     }
 

@@ -206,6 +206,9 @@ export interface LocalWorker {
   cbmBootstrapFailReason?: string;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
+  // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
+  // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
+  toolCounts?: Record<string, number>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -305,6 +308,12 @@ export interface ResultMeta {
   permissionDenials?: Array<{ tool: string; reason: string }>;
   /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
   cbm?: CbmMetrics;
+  /**
+   * Every tool_use in the session counted by exact tool name (`Bash`,
+   * `mcp__buildd__buildd`, …). Absent on workers that predate the histogram or
+   * that called no tools; consumers must treat absence as "unknown", not zero.
+   */
+  toolCounts?: Record<string, number>;
 }
 
 // Loop exit condition (spec §1)
