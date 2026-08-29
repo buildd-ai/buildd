@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { deriveStage } from './StageChip';
+import { deriveStage } from '../lib/stage';
 
 /**
  * deriveStage is the single source of truth for the row chip. These tests pin

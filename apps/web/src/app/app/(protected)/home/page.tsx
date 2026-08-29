@@ -51,7 +51,8 @@ import {
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { StageChip, deriveStage } from '@/components/StageChip';
+import { StageChip } from '@/components/StageChip';
+import { deriveStage } from '@/lib/stage';
 
 // --- Helpers ---
 

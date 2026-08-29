@@ -10,7 +10,8 @@ import {
   type IntensityResult,
   type IntensityTier,
 } from '@/lib/task-presentation';
-import { StageChip, deriveStage, type Stage } from '@/components/StageChip';
+import { StageChip } from '@/components/StageChip';
+import { deriveStage, type Stage } from '@/lib/stage';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
 import type { LoopState } from '@buildd/shared';
