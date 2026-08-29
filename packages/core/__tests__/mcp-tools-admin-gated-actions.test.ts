@@ -72,7 +72,9 @@ describe('Admin-gated actions return structured 403 for non-admin tokens', () =>
   it('trigger_release', () => expectForbidden('trigger_release', { workspaceId: WS_ID }));
   it('release_status', () => expectForbidden('release_status', { workspaceId: WS_ID }));
   it('send_agent_message', () => expectForbidden('send_agent_message', { taskId: 'task-1', message: 'hi' }));
-  it('spec_compare', () => expectForbidden('spec_compare', { feature: 'auth' }));
+  // spec_compare moved to workerActions: read-only retrieval over {ws}:spec and
+  // {ws}:code, both already reachable by a worker via query_knowledge/recall.
+  // Worker-level access is asserted in mcp-tools-spec-compare.test.ts.
   // trigger level also gets a structured 403 for admin actions
   it('manage_secrets: trigger token also gets structured 403', () =>
     expectForbidden('manage_secrets', { action: 'list' }, 'trigger'));

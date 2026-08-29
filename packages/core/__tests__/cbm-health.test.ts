@@ -28,7 +28,12 @@ mock.module('../report-ops', () => ({
   },
 }));
 
-import { detectCbmFleetDisabled, CBM_FLEET_THRESHOLD } from '../cbm-health';
+import {
+  detectCbmFleetDisabled,
+  CBM_FLEET_THRESHOLD,
+  detectCbmEnforcedUnused,
+  CBM_UNUSED_THRESHOLD,
+} from '../cbm-health';
 
 const WS = 'ws-abc-123';
 
@@ -96,5 +101,60 @@ describe('detectCbmFleetDisabled', () => {
     await detectCbmFleetDisabled(WS, null);
     await detectCbmFleetDisabled(WS, undefined);
     expect(reportOpsCalls).toHaveLength(0);
+  });
+});
+
+describe('detectCbmEnforcedUnused', () => {
+  beforeEach(() => {
+    findManyResult = [];
+    reportOpsCalls = [];
+    process.env.OPS_ALERTS_ENABLED = '1';
+  });
+
+  const mountedUnused = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: {} } } });
+  const mountedUsed = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 } } } });
+
+  it('alerts when a full streak of enforced workers never queried the graph', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(1);
+    const call = reportOpsCalls[0] as Record<string, unknown>;
+    expect(call.source).toBe('cbm-health');
+    expect(call.dedupeKey).toBe(`cbm-enforced-unused:${WS}`);
+    expect(String(call.message)).toContain('never queried');
+  });
+
+  it('stays silent when the current worker did call a graph tool', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: { trace_path: 1 } });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('stays silent when any prior worker in the streak used the graph', async () => {
+    findManyResult = [
+      ...Array.from({ length: CBM_UNUSED_THRESHOLD - 2 }, mountedUnused),
+      mountedUsed(),
+    ];
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('does not fire for disabled workers — that is the other detector', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('stays silent without enough history', async () => {
+    findManyResult = Array.from({ length: 2 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('is a no-op when ops alerting is disabled', async () => {
+    delete process.env.OPS_ALERTS_ENABLED;
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(0);
   });
 });
