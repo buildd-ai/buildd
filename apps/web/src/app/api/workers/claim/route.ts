@@ -1030,6 +1030,7 @@ export async function POST(req: NextRequest) {
     provider_unavailable: 0,
     budget_paused: 0,
     routing_paused: 0,
+    duplicate_worker: 0,
   };
   // Number of tasks that reached the atomic claim attempt (UPDATE...WHERE status='pending').
   // If lockAttempts === 0 at the end of the loop, every candidate was deferred — no
@@ -1580,9 +1581,13 @@ export async function POST(req: NextRequest) {
       branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
     }
 
-    // Atomic conditional insert: only creates worker if under concurrency limit.
-    // This prevents the TOCTOU race where multiple requests pass the count check
-    // but then all insert, exceeding the limit.
+    // Atomic conditional insert: only creates worker if under concurrency limit
+    // AND the task has no live worker already. This prevents two TOCTOU races:
+    //   1. multiple requests pass the count check, then all insert (over the limit)
+    //   2. the candidate query's NOT EXISTS live-worker filter is a snapshot read;
+    //      by the time this insert runs another claim (or a reaper re-queue racing
+    //      a still-live worker) may already own the task. A second row for a task
+    //      that already has one can only ever rot into a stale-worker kill.
     const insertResult = await db.execute(sql`
       INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
       SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
@@ -1591,12 +1596,39 @@ export async function POST(req: NextRequest) {
         WHERE account_id = ${account.id}
         AND status IN ('idle', 'running', 'starting', 'waiting_input')
       ) < ${account.maxConcurrentWorkers}
+      AND NOT EXISTS (
+        SELECT 1 FROM ${workers} w_dup
+        WHERE w_dup.task_id = ${task.id}
+        AND w_dup.status IN ('idle', 'running', 'starting', 'waiting_input')
+      )
       RETURNING *
     `);
 
     const worker = insertResult.rows?.[0] as any;
 
     if (!worker) {
+      // The conditional insert can no-op for two reasons. Only one of them
+      // justifies rolling the task back to pending.
+      const liveWorkers = await db.query.workers.findMany({
+        where: and(
+          eq(workers.taskId, task.id),
+          inArray(workers.status, ['idle', 'running', 'starting', 'waiting_input']),
+        ),
+        columns: { id: true },
+        limit: 1,
+      });
+
+      if (liveWorkers.length > 0) {
+        // Dup guard fired: another worker already owns this task. Leave the task
+        // assigned to it (rolling back to pending here is what let a second,
+        // never-started row be minted on the next poll) and try the next task.
+        console.warn(
+          `[claim] Duplicate-worker guard: task ${task.id} already has live worker ${liveWorkers[0].id} — skipping`,
+        );
+        deferrals.duplicate_worker++;
+        continue;
+      }
+
       // Concurrency limit reached — roll back the task claim
       await db
         .update(tasks)

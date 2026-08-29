@@ -4,12 +4,21 @@ import { eq, and, or, not, inArray, lt, gt, notInArray, sql } from 'drizzle-orm'
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
+import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import type { LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
+
+/**
+ * Maximum consecutive silent-start sessions (started, streamed nothing) before
+ * the task is failed with a legible reason instead of being re-queued forever.
+ * Silent starts don't consume the code-failure retry budget — without their own
+ * ceiling a task whose sessions never stream re-queues on every runner poll
+ * (2026-08-28: one nudge task burned 4 silent workers in 4 hours).
+ */
+const MAX_SILENT_START_ATTEMPTS = 3;
 
 /** 150 minutes — 2.5× the 60-min poll cycle so one dropped beat doesn't kill in-flight workers */
 export const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
@@ -175,8 +184,23 @@ async function resolveStaleTask(
       columns: { id: true, exitCause: true },
     });
     const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
+    const silentStarts = failedWorkers.filter(w => w.exitCause === 'silent_start');
 
-    if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
+    if (silentStarts.length >= MAX_SILENT_START_ATTEMPTS && chargeableFailures.length < MAX_WORKER_RETRIES) {
+      // Every attempt started and streamed nothing — re-queueing again just
+      // books another $0 worker. Fail with a reason that names the shape so the
+      // runner/SDK side is the obvious place to look.
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          result: {
+            error: `Task failed after ${silentStarts.length} silent-start sessions (worker started but produced no output) — check the runner log for the last worker id`,
+          } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    } else if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
       // Retry cap reached — permanently fail the task
       await db
         .update(tasks)
@@ -231,8 +255,14 @@ export async function cleanupStaleWorkers(accountId: string) {
   //    - 'idle': no update in 5+ minutes (should transition almost immediately; lingering idle = runner crashed before starting)
   const STALE_THRESHOLD_MS = 15 * 60 * 1000;
   const IDLE_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+  //    - silent start: started, but ≤2 turns and $0 spend with no sync in 10+ min.
+  //      A live session syncs on a 30s cycle, so 10 minutes of silence with zero
+  //      output means the SDK stream died — surface it well before the generic
+  //      15-minute rule (and 30-minute recovery window) would notice.
+  const SILENT_START_THRESHOLD_MS = 10 * 60 * 1000;
   const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
   const idleStaleThreshold = new Date(Date.now() - IDLE_STALE_THRESHOLD_MS);
+  const silentStartThreshold = new Date(Date.now() - SILENT_START_THRESHOLD_MS);
 
   const staleWorkers = await db.query.workers.findMany({
     where: and(
@@ -240,25 +270,57 @@ export async function cleanupStaleWorkers(accountId: string) {
       or(
         and(inArray(workers.status, ['running', 'starting']), lt(workers.updatedAt, staleThreshold)),
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
+        // Silent-start rule, expressed in SQL so the shorter clock is applied by
+        // the DB rather than by post-filtering the 15-minute window.
+        sql`${workers.status} IN ('running', 'starting')
+            AND ${workers.startedAt} IS NOT NULL
+            AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}
+            AND COALESCE(${workers.costUsd}, 0) = 0
+            AND ${workers.updatedAt} < ${silentStartThreshold}`,
       ),
     ),
-    columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
+    columns: {
+      id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
+      // Needed to tell a never-started row and a silent session apart from a
+      // worker that did real work before going offline.
+      status: true, startedAt: true, turns: true, costUsd: true,
+    },
   });
 
   if (staleWorkers.length > 0) {
     const staleWorkerIds = staleWorkers.map(w => w.id);
     const staleTaskIds = staleWorkers.map(w => w.taskId).filter(Boolean) as string[];
 
-    await db
-      .update(workers)
-      .set({
-        status: 'failed',
-        exitCause: 'infra_failure',
-        error: 'Stale worker expired (no update for 15+ minutes)',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(inArray(workers.id, staleWorkerIds));
+    // Book each reaped worker under the cause that actually applies. One UPDATE
+    // per cause keeps this to at most three statements for the whole batch.
+    const byCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
+    for (const w of staleWorkers) {
+      const { exitCause, error } = classifyStaleExit(w as any);
+      const group = byCause.get(exitCause);
+      if (group) group.ids.push(w.id);
+      else byCause.set(exitCause, { ids: [w.id], error });
+    }
+
+    const reapedAt = new Date();
+    for (const [exitCause, group] of byCause) {
+      await db
+        .update(workers)
+        .set({
+          status: 'failed',
+          exitCause,
+          error: group.error,
+          completedAt: reapedAt,
+          updatedAt: reapedAt,
+        })
+        .where(inArray(workers.id, group.ids));
+    }
+
+    const neverStartedCount = byCause.get('never_started')?.ids.length ?? 0;
+    if (neverStartedCount > 0) {
+      console.warn(
+        `[stale-workers] Reaped ${neverStartedCount} worker row(s) no runner ever started for account ${accountId} — over-claim, not an infra failure`,
+      );
+    }
 
     // Release concurrency seats for OAuth accounts. activeSessions is incremented at
     // claim time and must be decremented whenever a live worker reaches a terminal state.
@@ -319,23 +381,43 @@ export async function cleanupStaleWorkers(accountId: string) {
         inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         lt(workers.updatedAt, heartbeatCutoff),
       ),
-      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true },
+      columns: {
+        id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
+        startedAt: true, turns: true, costUsd: true,
+      },
     });
 
     if (orphanedByHeartbeat.length > 0) {
       const orphanIds = orphanedByHeartbeat.map(w => w.id);
       const orphanTaskIds = orphanedByHeartbeat.map(w => w.taskId).filter(Boolean) as string[];
 
-      await db
-        .update(workers)
-        .set({
-          status: 'failed',
-          exitCause: 'infra_failure',
-          error: 'Worker runner went offline (heartbeat expired)',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(inArray(workers.id, orphanIds));
+      // Same taxonomy as section 1: an offline runner is an infra failure, but a
+      // row that runner never started is still a never-started row, and must not
+      // be charged to the task.
+      const hbByCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
+      for (const w of orphanedByHeartbeat) {
+        const { exitCause, error } = classifyStaleExit(w as any);
+        const message = exitCause === 'infra_failure'
+          ? 'Worker runner went offline (heartbeat expired)'
+          : error;
+        const group = hbByCause.get(exitCause);
+        if (group) group.ids.push(w.id);
+        else hbByCause.set(exitCause, { ids: [w.id], error: message });
+      }
+
+      const hbReapedAt = new Date();
+      for (const [exitCause, group] of hbByCause) {
+        await db
+          .update(workers)
+          .set({
+            status: 'failed',
+            exitCause,
+            error: group.error,
+            completedAt: hbReapedAt,
+            updatedAt: hbReapedAt,
+          })
+          .where(inArray(workers.id, group.ids));
+      }
 
       // Release concurrency seats for the orphaned workers (same pattern as section 1).
       await db

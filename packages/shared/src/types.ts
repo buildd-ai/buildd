@@ -567,6 +567,10 @@ export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /** Row created at claim, never started by any runner (over-claim artifact). */
+  | 'never_started'
+  /** Session started but streamed no output at all (0 turns, $0). */
+  | 'silent_start'
   | 'reassigned'
   | 'condition_unmet'
   | 'sandbox_mount_gap';
@@ -971,6 +975,8 @@ export interface ClaimDiagnostics {
     provider_unavailable?: number;
     budget_paused?: number;
     routing_paused?: number;
+    /** Task already had a live worker when the atomic insert ran (dup guard). */
+    duplicate_worker?: number;
   };
   /**
    * Learned OAuth budget pressure for this account (seat-based auth only).
