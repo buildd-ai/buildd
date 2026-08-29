@@ -2710,11 +2710,40 @@ export async function handleBuilddAction(
 
       const t = data.totals;
       const p = data.perTask;
+      // Per-task metrics are DerivedMetric<Distribution> — absent for seat auth
+      // (no cost) and for workers that died before recording anything. Print the
+      // reason rather than a zero that reads as a measurement.
+      const dist = (m: any) => (m && m.kind === 'value' ? m.value : null);
+      const nOf = (metric: string) => p?.contributing?.[metric] ?? 0;
+      const overN = (metric: string) =>
+        p?.tasks && nOf(metric) < p.tasks ? ` [n=${nOf(metric)}/${p.tasks}]` : '';
+
       const lines: string[] = [
         `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
-        `Totals: ${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out · ${fmtTokens(t.cacheReadTokens)} cache read · $${t.costUsd.toFixed(2)} · ${t.turns} turns · ${t.toolCalls} tool calls`,
-        `Per task: input ${fmtTokens(p.inputTokens.median)} median / ${fmtTokens(p.inputTokens.p90)} p90 / ${fmtTokens(p.inputTokens.max)} max · $${p.costUsd.median.toFixed(2)} median · ${Math.round(p.turns.median)} turns median · ${Math.round(p.toolCalls.median)} tool calls median`,
       ];
+
+      const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
+      if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);
+      if (t.costUsd > 0) totalsParts.push(`$${t.costUsd.toFixed(2)}`);
+      totalsParts.push(`${t.turns} turns`, `${t.toolCalls} tool calls`);
+      lines.push(`Totals: ${totalsParts.join(' · ')}`);
+
+      const perTaskParts: string[] = [];
+      const inputDist = dist(p?.inputTokens);
+      perTaskParts.push(inputDist
+        ? `input ${fmtTokens(inputDist.median)} median / ${fmtTokens(inputDist.p90)} p90 / ${fmtTokens(inputDist.max)} max${overN('inputTokens')}`
+        : `input — (${p?.inputTokens?.reason ?? 'unavailable'})`);
+      const costDist = dist(p?.costUsd);
+      if (costDist) {
+        perTaskParts.push(`$${costDist.median.toFixed(2)} median${overN('costUsd')}`);
+      }
+      const turnsDist = dist(p?.turns);
+      if (turnsDist) perTaskParts.push(`${Math.round(turnsDist.median)} turns median${overN('turns')}`);
+      const toolDist = dist(p?.toolCalls);
+      if (toolDist) perTaskParts.push(`${Math.round(toolDist.median)} tool calls median${overN('toolCalls')}`);
+      lines.push(`Per task: ${perTaskParts.join(' · ')}`);
+
+      if (!costDist && p?.costUsd?.reason) lines.push(`Cost: ${p.costUsd.reason}`);
 
       const cov = data.tools?.coverage;
       if (cov) {
@@ -2738,11 +2767,21 @@ export async function handleBuilddAction(
       const models: string[] = (data.byModel ?? []).slice(0, 5).map((m: any) =>
         `  ${m.model}: ${fmtTokens(m.inputTokens)} in / ${fmtTokens(m.outputTokens)} out (${Math.round(m.share * 100)}%)`
       );
-      if (models.length > 0) lines.push(`By model:\n${models.join('\n')}`);
+      if (models.length > 0) {
+        lines.push(`By model:\n${models.join('\n')}`);
+      } else if (t.inputTokens > 0) {
+        // modelUsage is only populated on API-key auth; seat auth leaves it empty.
+        lines.push('By model: unavailable — the SDK reports no per-model usage on seat-based (OAuth) auth');
+      }
 
       const groups: string[] = (data.groups ?? []).slice(0, 10).map((g: any) => {
         const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
-        return `  ${g.label ?? g.key}: ${g.tasks} task(s) · ${fmtTokens(g.perTask.inputTokens.median)} median in · $${g.perTask.costUsd.median.toFixed(2)} median · ${success} success`;
+        const gIn = dist(g.perTask?.inputTokens);
+        const gCost = dist(g.perTask?.costUsd);
+        const parts = [`${g.tasks} task(s)`, gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded'];
+        if (gCost) parts.push(`$${gCost.median.toFixed(2)} median`);
+        parts.push(`${success} success`);
+        return `  ${g.label ?? g.key}: ${parts.join(' · ')}`;
       });
       if (groups.length > 0) lines.push(`By ${data.groupBy}:\n${groups.join('\n')}`);
 
