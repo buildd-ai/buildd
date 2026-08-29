@@ -42,7 +42,7 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mock(() => Promise.resolve(false)),
 }));
 
-import { checkConnectorRouting } from './claim-gates';
+import { checkConnectorRouting } from './connector-gate';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

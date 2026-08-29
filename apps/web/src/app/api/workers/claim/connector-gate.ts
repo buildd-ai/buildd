@@ -1,20 +1,9 @@
-/**
- * Claim-gate predicates for /api/tasks/[id]/start.
- *
- * These helpers are called by /start to surface typed 422 errors before
- * broadcasting TASK_ASSIGNED to workers. Each helper mirrors the corresponding
- * SQL condition in /api/workers/claim/route.ts; /start queries a single task
- * in isolation rather than doing bulk SQL filtering.
- */
-
 import { db } from '@buildd/core/db';
 import {
   workspaceSkills,
   connectors,
   connectorShares,
   connectorWorkspaces,
-  missions,
-  workers,
   secrets,
 } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, ne } from 'drizzle-orm';
@@ -48,6 +37,11 @@ const PROBE_BUDGET_MS = 5000;
  * Check whether the task's role requires connectors that are not usable in its
  * workspace. Returns a list of typed failures (with mode), or null when all
  * connectors are available and healthy.
+ *
+ * Used by both the claim route (for explicit single-task 422s) and
+ * /api/tasks/[id]/start (for pre-broadcast gate checks). This is the single
+ * canonical per-task implementation — the claim route's bulk SQL pre-filter
+ * still handles throughput, but this function is the authoritative check.
  *
  * Failure modes (in evaluation order):
  * 1. never_mounted      — connector not in DB / wrong team / disabled for this workspace
@@ -296,24 +290,6 @@ export async function checkConnectorRouting(
 }
 
 /**
- * Check whether the task's mission is held. Returns true when the claim route
- * would reject this task via the missionNotHeld() SQL gate.
- *
- * The call site is responsible for checking bypassHeldGate / forceOverride
- * before invoking this helper — it is only called when those guards are clear.
- */
-export async function checkMissionHeld(missionId: string): Promise<boolean> {
-  const mission = await db.query.missions.findFirst({
-    where: and(
-      eq(missions.id, missionId),
-      eq(missions.isHeld, true),
-    ),
-    columns: { id: true },
-  });
-  return !!mission;
-}
-
-/**
  * Find an alternative role in the same workspace that could run the task.
  * Returns the slug of the first sibling role that:
  *   - is enabled, isRole=true, different slug than blockedRoleSlug
@@ -356,25 +332,4 @@ export async function findAlternativeRole(
   }
 
   return null;
-}
-
-/**
- * Check whether the workspace is at its per-repo concurrency cap. Only applies
- * to repo-backed workspaces (repo-less ones are never capped). Returns
- * { active, cap } when the cap is reached, or null when the task can proceed.
- */
-export async function checkWorkspaceCap(
-  workspaceId: string,
-  maxConcurrentTasks: number | null,
-): Promise<{ active: number; cap: number } | null> {
-  const cap = maxConcurrentTasks ?? 3;
-  const activeWorkers = await db.query.workers.findMany({
-    where: and(
-      eq(workers.workspaceId, workspaceId),
-      inArray(workers.status, ['running', 'starting', 'idle']),
-    ),
-    columns: { id: true },
-  });
-  const active = activeWorkers.length;
-  return active >= cap ? { active, cap } : null;
 }
