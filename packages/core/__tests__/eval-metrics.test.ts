@@ -1,63 +1,15 @@
 /**
  * Unit tests for retrieval eval metric helpers.
  *
- * These functions are defined inline in eval-retrieval.ts. Tests here verify
- * the formulas before a live DB run so CI catches metric regressions.
+ * These import the real implementations from scripts/eval-metrics.ts. They
+ * previously re-implemented them inline "to mirror eval-retrieval.ts exactly",
+ * which meant the suite could only ever test its own copy — and it passed
+ * while the real recall@k and ndcg were unbounded, reporting recall of 118%
+ * and NDCG of 4.377 on metrics defined to top out at 1.0.
  */
 
 import { describe, it, expect } from 'bun:test';
-
-// ── Inline metric helpers (mirrors eval-retrieval.ts exactly) ────────────────
-
-function dcg(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  let gain = 0;
-  const capped = results.slice(0, k);
-  for (let i = 0; i < capped.length; i++) {
-    const r = capped[i];
-    const relevant = relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath));
-    if (relevant) {
-      gain += 1 / Math.log2(i + 2);
-    }
-  }
-  return gain;
-}
-
-function idcg(numRelevant: number, k: number): number {
-  const n = Math.min(numRelevant, k);
-  let gain = 0;
-  for (let i = 0; i < n; i++) {
-    gain += 1 / Math.log2(i + 2);
-  }
-  return gain;
-}
-
-function ndcg(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  const ideal = idcg(relevantSet.size, k);
-  if (ideal === 0) return 0;
-  return dcg(results, relevantSet, k) / ideal;
-}
-
-function reciprocalRank(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  for (let i = 0; i < Math.min(results.length, k); i++) {
-    const r = results[i];
-    if (relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath))) {
-      return 1 / (i + 1);
-    }
-  }
-  return 0;
-}
-
-function recallAtK(results: Array<{ id: string; sourcePath: string | null }>, relevantSet: Set<string>, k: number): number {
-  if (relevantSet.size === 0) return 0;
-  const topK = results.slice(0, k);
-  const found = topK.filter(r => relevantSet.has(r.id) || (r.sourcePath !== null && relevantSet.has(r.sourcePath))).length;
-  return found / relevantSet.size;
-}
-
-function mean(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  return xs.reduce((a, b) => a + b, 0) / xs.length;
-}
+import { dcg, idcg, ndcg, reciprocalRank, recallAtK, matchedSource, mean } from '../scripts/eval-metrics';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -70,8 +22,6 @@ const TOP5 = [
   r('d', 'file-d.ts'),
   r('e', 'file-e.ts'),
 ];
-
-// ── NDCG tests ───────────────────────────────────────────────────────────────
 
 describe('ndcg', () => {
   it('returns 1.0 when sole relevant item is rank 1', () => {
@@ -189,5 +139,99 @@ describe('mean', () => {
 
   it('averages correctly', () => {
     expect(mean([0.5, 1.0, 0.0])).toBeCloseTo(0.5, 10);
+  });
+});
+
+// ── Duplicate-source handling ────────────────────────────────────────────────
+// The bug these cover: a file is chunked into many pieces sharing one
+// sourcePath, and every chunk was counted as a separate find. The numerator
+// counted returned chunks while the denominator counted expected sources, so N
+// chunks of one relevant file scored N/1. In CI this surfaced as recall@10 of
+// 118% and, on the spec corpus, 950% — read as a +301% improvement.
+
+describe('recallAtK with duplicate chunks of one source', () => {
+  it('counts a source once, not once per chunk', () => {
+    const relevant = new Set(['src/a.ts']);
+    const results = [
+      { id: 'c1', sourcePath: 'src/a.ts' },
+      { id: 'c2', sourcePath: 'src/a.ts' },
+      { id: 'c3', sourcePath: 'src/a.ts' },
+    ];
+    expect(recallAtK(results, relevant, 10)).toBe(1);
+  });
+
+  it('never exceeds 1.0', () => {
+    const relevant = new Set(['src/a.ts']);
+    const results = Array.from({ length: 20 }, (_, i) => ({
+      id: `c${i}`,
+      sourcePath: 'src/a.ts',
+    }));
+    expect(recallAtK(results, relevant, 10)).toBeLessThanOrEqual(1);
+  });
+
+  it('still reports partial recall across distinct sources', () => {
+    const relevant = new Set(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    const results = [
+      { id: 'c1', sourcePath: 'src/a.ts' },
+      { id: 'c2', sourcePath: 'src/a.ts' },
+      { id: 'c3', sourcePath: 'src/b.ts' },
+    ];
+    // Two of three sources found — duplicates of a.ts must not inflate this.
+    expect(recallAtK(results, relevant, 10)).toBeCloseTo(2 / 3, 5);
+  });
+});
+
+describe('ndcg with duplicate chunks of one source', () => {
+  it('cannot exceed 1.0', () => {
+    const relevant = new Set(['src/a.ts', 'src/b.ts']);
+    const results = [
+      { id: 'c1', sourcePath: 'src/a.ts' },
+      { id: 'c2', sourcePath: 'src/a.ts' },
+      { id: 'c3', sourcePath: 'src/a.ts' },
+      { id: 'c4', sourcePath: 'src/b.ts' },
+    ];
+    expect(ndcg(results, relevant, 10)).toBeLessThanOrEqual(1);
+  });
+
+  it('credits a source at its best rank, ignoring later duplicates', () => {
+    const relevant = new Set(['src/a.ts']);
+    const first = [{ id: 'c1', sourcePath: 'src/a.ts' }];
+    const withDupes = [
+      { id: 'c1', sourcePath: 'src/a.ts' },
+      { id: 'c2', sourcePath: 'src/a.ts' },
+    ];
+    // Adding a redundant chunk of the same file adds no information, so it
+    // must not change the score.
+    expect(ndcg(withDupes, relevant, 10)).toBe(ndcg(first, relevant, 10));
+  });
+
+  it('dcg stays within idcg for any duplicate-heavy result set', () => {
+    const relevant = new Set(['x', 'y']);
+    const results = [
+      { id: 'a', sourcePath: 'x' },
+      { id: 'b', sourcePath: 'x' },
+      { id: 'c', sourcePath: 'y' },
+      { id: 'd', sourcePath: 'y' },
+    ];
+    expect(dcg(results, relevant, 10)).toBeLessThanOrEqual(idcg(relevant.size, 10));
+  });
+});
+
+describe('matchedSource', () => {
+  it('prefers sourcePath so chunks of one file share a key', () => {
+    expect(matchedSource({ id: 'c1', sourcePath: 'src/a.ts' }, new Set(['src/a.ts']))).toBe('src/a.ts');
+  });
+
+  it('falls back to id when sourcePath does not match', () => {
+    expect(matchedSource({ id: 'c1', sourcePath: 'other.ts' }, new Set(['c1']))).toBe('c1');
+  });
+
+  it('returns null for a miss', () => {
+    expect(matchedSource({ id: 'c1', sourcePath: 'other.ts' }, new Set(['x']))).toBeNull();
+  });
+
+  it('treats a null sourcePath as id-only', () => {
+    expect(matchedSource({ id: 'c1', sourcePath: null }, new Set(['c1']))).toBe('c1');
+    expect(matchedSource({ id: 'c1', sourcePath: null }, new Set(['x']))).toBeNull();
   });
 });
