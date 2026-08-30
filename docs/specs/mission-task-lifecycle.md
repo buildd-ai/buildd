@@ -344,6 +344,27 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `loopConfig.exitCondition = { type: 'command', command }`, and the runner's
   evidence — not an agent's summary — decides. A `command` criterion MUST NOT be
   graded by the LLM evaluator.
+- `description` (prose) criteria MUST NOT depend on `ANTHROPIC_API_KEY` being
+  present in the web app's environment. That variable is unset in production and
+  is unsettable for a team whose Claude access is an OAuth subscription, so a
+  grader keyed on it reported `NOT_EVALUATED` forever and named a fix no operator
+  could apply. When the key is absent the evaluator MUST dispatch a
+  `taskClass = 'bookkeeping'` grading task instead, which a runner claims with
+  whatever backend credential the team has connected, and mark the criteria
+  `PENDING`. When the key IS present the inline call is used and no task is
+  dispatched — never both.
+- A prose grading task is deduplicated on its `context.criteriaProseEval` marker,
+  matched in SQL. Mechanical evaluation re-runs on every completion attempt, so an
+  undeduplicated dispatch would create one grading task per round.
+- A prose verdict MUST be written back only onto the criterion it graded, matched
+  on `criterionFingerprint`, and only for indices named in the dispatching
+  marker: an agent MUST NOT be able to overwrite a mechanically-derived verdict
+  with prose. Every criterion in the marker leaves the write-back non-`PENDING`,
+  including ones the evaluator ignored — a criterion left `PENDING` with no task
+  in flight holds the mission open with nothing that could resolve it.
+- No prose criterion is dispatched while another criterion already reads `fail`,
+  and a finished grading run that returned no verdicts is not retried until it
+  ages past `PROSE_VERDICT_TTL_MS` — the same economics as the command path.
 - The release trigger keeps one additional bar above the predicate: no task of
   the mission in `pending`, `assigned`, or `in_progress`, housekeeping rows
   included (`countPendingTasksForMission`). It MUST NOT be loosened to match a
@@ -373,6 +394,15 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   completion is attempted THEN `missions.status` becomes `completed`, the linked
   schedule is disabled, and the `on_mission_complete` release trigger also
   passes its own check.
+- AC-11d: GIVEN a mission with a `description` criterion, no `ANTHROPIC_API_KEY`
+  in the environment, and a connected agent backend credential WHEN criteria are
+  evaluated THEN one `bookkeeping` grading task is dispatched, the criterion reads
+  `PENDING` with that task id, and `overall` is `UNVERIFIED` — and WHEN that task
+  completes with `criteriaVerdicts` THEN the verdicts land on the criteria,
+  `overall` is re-folded, and completion is re-attempted in the same request.
+- AC-11e: GIVEN the same mission with NO agent backend credential connected WHEN
+  criteria are evaluated THEN no task is dispatched and the criterion reads
+  `NOT_EVALUATED` with evidence naming Settings → Agent Backends.
 - AC-11d: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
   task is dispatched, the criterion reads `PENDING` with its `workerTaskId`, and
   the mission does NOT complete until that task's evidence resolves it.
@@ -401,6 +431,8 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `ensureCriteriaVerdict()`, `evaluateCriteriaNow()`
 - Command criteria: `apps/web/src/lib/mission-criteria-verify.ts` —
   `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
+- Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
+  `resolveProseCriteria()`, `handleProseEvalOutcome()`
 - Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
   `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`
 - Callers: `apps/web/src/lib/mission-loop.ts`,

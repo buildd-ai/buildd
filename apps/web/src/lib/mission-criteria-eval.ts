@@ -5,6 +5,7 @@ import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-h
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
 import { resolveTierEntrySync } from '@buildd/core/model-tier-registry';
 import { resolveCommandCriterion } from './mission-criteria-verify';
+import { resolveProseCriteria } from './mission-criteria-prose';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -193,7 +194,11 @@ export async function evaluateCriteriaNow(
     evaluatedBy: 'auto' | 'manual' | 'mcp';
     /** Title of the summary note; the on-demand route's rate limit counts these. */
     noteTitle?: string;
-    /** Dispatch verification tasks for `command` criteria (default true). */
+    /**
+     * Dispatch verification tasks for criteria that need one — `command` criteria
+     * and, when no API key is present in this process, prose criteria (default true).
+     * `false` makes this a read-only evaluation that spends no agent runs.
+     */
     dispatchCommands?: boolean;
   },
 ): Promise<GoalCriteriaState | null> {
@@ -327,22 +332,22 @@ export async function evaluateCriteriaNow(
     const toJudge = llmEligible.filter(c => !carried.has(c.index));
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
-    if (toJudge.length > 0 && anthropicApiKey) {
-      const completedTasks: EvidenceTask[] = missionTasks
-        .filter(t => t.status === 'completed')
-        .map(t => ({
-          id: t.id,
-          title: t.title,
-          summary: (t.result as any)?.summary as string | undefined,
-        }));
-
-      const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
-        id: a.id,
-        title: a.title,
-        type: a.type,
-        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+    const completedTasks: EvidenceTask[] = missionTasks
+      .filter(t => t.status === 'completed')
+      .map(t => ({
+        id: t.id,
+        title: t.title,
+        summary: (t.result as any)?.summary as string | undefined,
       }));
 
+    const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
+      id: a.id,
+      title: a.title,
+      type: a.type,
+      contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+    }));
+
+    if (toJudge.length > 0 && anthropicApiKey) {
       const llmVerdicts = await judgeWithLLM(
         toJudge.map(c => ({ index: c.index, text: criterionText(criteria[c.index]) })),
         mission.title,
@@ -367,14 +372,48 @@ export async function evaluateCriteriaNow(
         }
       }
     } else if (toJudge.length > 0) {
-      // No API key. Say so plainly and leave the criterion unevaluated — an
-      // unreachable evaluator is never a pass. Prefer a `command` criterion:
-      // its verdict does not depend on a model being reachable.
-      for (const c of toJudge) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs) {
-          cs.verdict = 'NOT_EVALUATED';
-          cs.evidence = 'LLM evaluator not configured (no ANTHROPIC_API_KEY) — prose criteria cannot be graded';
+      // No API key in this process — which is the normal case in production, and
+      // permanently the case for a team whose Claude access is an OAuth
+      // subscription rather than a metered API key. Grade by dispatching a task
+      // instead: a runner claims it with whatever backend credential the team has
+      // connected. Prefer a `command` criterion regardless — its verdict is an
+      // exit code rather than a model's judgment.
+      const proseInputs = toJudge.map(c => ({
+        index: c.index,
+        text: criterionText(criteria[c.index]),
+        fingerprint: c.fingerprint,
+      }));
+
+      const setAll = (verdict: CriterionVerdict, evidence: string, taskId?: string) => {
+        for (const c of toJudge) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (!cs) continue;
+          cs.verdict = verdict;
+          cs.evidence = evidence;
+          if (taskId) cs.workerTaskId = taskId;
+        }
+      };
+
+      if (opts.dispatchCommands === false) {
+        // Read-only evaluation: report what is missing without spending an agent run.
+        setAll('NOT_EVALUATED', 'Prose criteria not graded: this run does not dispatch evaluation tasks');
+      } else if (alreadyFailing) {
+        // The fold is `fail` whatever the model says, so grading now would buy a
+        // verdict that cannot change the outcome. Re-graded once the failure clears.
+        setAll('NOT_EVALUATED', 'Not graded: another criterion has already failed, so the mission cannot pass this round');
+      } else {
+        const resolution = await resolveProseCriteria({
+          missionId,
+          criteria: proseInputs,
+          evidence: { tasks: completedTasks, artifacts: evidenceArtifacts },
+        });
+
+        if (resolution.kind === 'pending') {
+          // PENDING, not NOT_EVALUATED: a verdict is genuinely in flight, and
+          // `handleProseEvalOutcome` will replace it when the evaluator reports.
+          setAll('PENDING', resolution.evidence, resolution.taskId);
+        } else {
+          setAll('NOT_EVALUATED', resolution.evidence);
         }
       }
     }

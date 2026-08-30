@@ -25,6 +25,7 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
+import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -1591,6 +1592,19 @@ export async function PATCH(
           .limit(1);
         if (!isCriteriaVerificationTask(taskForCriteria?.context)) return;
         await handleCriteriaVerificationOutcome(taskId, verificationEvidence);
+      });
+
+      // A finished prose grading task owns the verdicts for the criteria it was
+      // asked about. Same ordering rationale: apply before the completion attempt
+      // below so criteria turning green complete the mission in this request.
+      await runStep('criteria-prose-outcome', async () => {
+        const [taskForProse] = await db
+          .select({ context: tasks.context })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (!isProseEvalTask(taskForProse?.context)) return;
+        await handleProseEvalOutcome(taskId, body.structuredOutput);
       });
 
       // Attempt mission completion. The predicate pulls a goal-criteria verdict
