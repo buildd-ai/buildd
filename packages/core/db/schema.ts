@@ -54,6 +54,13 @@ export const teams = pgTable('teams', {
   // Team-wide default for which evaluator runs mission criteria. Overridden per
   // workspace by workspaces.criteriaEvaluationStrategy; code default is 'inline'.
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
+
+  // Which actions may spend a metered inference call instead of dispatching an
+  // agent run. NULL (or empty) = none, which is today's behaviour — so storing an
+  // inference key changes nothing until the operator opts a capability in.
+  // Same shape as enabledBackends: a reversible mask above the resolution chain,
+  // not another default inside it. See packages/core/inference-policy.ts.
+  enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));

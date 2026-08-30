@@ -313,6 +313,29 @@ Corrections to this doc's assumptions:
   parse) do NOT dispatch — they report and let the next evaluation round retry, so
   a provider blip never costs an agent run.
 
+Also landed, beyond this doc's original scope:
+
+- **Per-capability spend policy** (`packages/core/inference-policy.ts`,
+  `teams.enabledInferenceCapabilities`). This doc treated "has a key" as the only
+  gate; that conflates two decisions. An inference call is seconds and metered
+  cents, an agent run is slower and spends a subscription seat already paid for,
+  and which trade is right differs per action and per team — an enterprise may want
+  every judgment inline, a solo operator on a subscription may want only the
+  actions that have no agent path. So capabilities are named
+  (`criteria_grading`, `visual_qa`, `task_classification`, `mission_summary`) and
+  opted in individually. Default is empty: storing a key changes no behaviour and
+  no team's costs move when this ships.
+- The check lives inside `inferenceCall`, ahead of tier resolution, so a new call
+  site cannot forget it and a disabled capability costs one query rather than a
+  round trip. `capability_disabled` joins `missing_key` and
+  `unsupported_provider` as errors meaning "no inference path" — for
+  `criteria_grading` all three route to the dispatched agent run.
+- Each capability declares `fallback: 'agent' | 'none'`. This is the distinction
+  the settings UI must not flatten: switching off `criteria_grading` makes it
+  slower, while switching off `visual_qa` turns the feature off, because an agent
+  run cannot see a screenshot. Answers Open Question Q2's "product decision"
+  half — the mechanism is per-capability opt-in; pricing stays separate.
+
 Remaining:
 
 - **Step 4 — `judgeCapture`** (`/api/qa/judge`) still holds its own `fetch` and
