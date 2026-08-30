@@ -1,6 +1,6 @@
 # Inference Calls as a First-Class Primitive
 
-**Status:** Proposed
+**Status:** Partially implemented — Step 1 (the client) and Step 3 (the judge) are done; see "Implementation status" below.
 **Related:** `packages/core/task-classifier.ts:66-128`, `apps/web/src/lib/mission-criteria-eval.ts:42-146`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts:67-174`, `apps/web/src/app/api/qa/judge/route.ts:75-203`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
 
 ---
@@ -277,3 +277,47 @@ Unknown — needs audit in Step 5. Likely yes (runners call `supportedModels()` 
 **Q4: Should the on-demand evaluate route (`/api/missions/[id]/evaluate`) return 422 or 503 on missing key?**
 
 Lean 422 — it is a user-initiated action and the error is "this feature requires configuration," not "the server is down." 503 implies the server cannot serve any requests right now. 422 + `{ error: 'inference_key_missing' }` is more actionable for a UI to display "Configure your Anthropic key in settings."
+
+---
+
+## Implementation status (2026-08-30)
+
+Landed:
+
+- **Step 1 — `packages/core/inference-client.ts`.** `inferenceCall` owns tier
+  resolution, provider routing, key resolution, JSON extraction, the retry
+  contract, and the typed error taxonomy. Both providers are real: **OpenRouter is
+  implemented, not stubbed** as this doc originally proposed, because routing
+  buildd's own LLM calls through OpenRouter was the motivating requirement.
+  Multimodal is supported on both (Anthropic base64 block, OpenRouter data-URI
+  `image_url`), so Step 4 has nothing left to build in the client.
+- **Step 3 — the judge.** `judgeWithLLM` in `mission-criteria-eval.ts` is
+  migrated. The duplicate copy in `evaluate/route.ts` this doc listed as Site 3 no
+  longer exists — it was removed when `recalculateOverall` was deduplicated, so
+  there was one judge to migrate, not two.
+- Key storage: `purpose: 'inference_key'`, `label` = provider name, resolved
+  workspace → team → env, with an existing `anthropic_api_key` row accepted for
+  Anthropic so nobody pastes the same key twice. No schema migration — `purpose`
+  is a `text` column and only its TypeScript union changed.
+
+Corrections to this doc's assumptions:
+
+- **Site 1 (`classifyTask`) is dead code.** It has no production callers; the only
+  import is its own test. The `classifyTask` wired into `POST /api/tasks` is a
+  different, keyword-based function in `apps/web/src/lib/task-category.ts`. Step 2
+  should be a deletion decision, not a migration.
+- **The missing-key path is not only a degradation.** For prose goal criteria,
+  `missing_key` now routes to a dispatched agent run
+  (`mission-criteria-prose.ts`), which can use the OAuth subscription an inference
+  call structurally cannot. Non-credential errors (transport, 5xx, rate limit,
+  parse) do NOT dispatch — they report and let the next evaluation round retry, so
+  a provider blip never costs an agent run.
+
+Remaining:
+
+- **Step 4 — `judgeCapture`** (`/api/qa/judge`) still holds its own `fetch` and
+  its hardcoded model. Migrating it is now mechanical.
+- **Step 5 — retire the dead resolvers.** `resolveTierEntrySync` still has
+  non-inference callers; audit before removing.
+- Cost accounting (Point 6): `inferenceCall` returns `usage` on every success, but
+  no caller records it yet.

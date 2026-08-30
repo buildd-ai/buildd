@@ -27,6 +27,14 @@ const mockResolveProseCriteria = mock((_opts: any) => Promise.resolve({
   kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
 }) as any);
 
+/**
+ * The inference primitive. Default: no key configured, which is production's
+ * normal state and the condition that routes grading to a dispatched agent run.
+ */
+const mockInferenceCall = mock((_p: any) => Promise.resolve({
+  ok: false, error: { kind: 'missing_key', provider: 'anthropic' },
+}) as any);
+
 mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
   inArray: (...args: any[]) => ({ _op: 'inArray', args }),
@@ -64,6 +72,12 @@ mock.module('@buildd/core/model-tier-registry', () => ({
   resolveTierEntrySync: () => ({ model: 'claude-haiku-4-5-20251001', provider: 'anthropic' }),
 }));
 
+mock.module('@buildd/core/inference-client', () => ({
+  inferenceCall: mockInferenceCall,
+  describeInferenceError: (e: any) =>
+    e.kind === 'missing_key' ? `no ${e.provider} inference key configured for this team` : e.kind,
+}));
+
 // Command criteria are resolved by running the command elsewhere; that module is
 // tested in mission-criteria-verify.test.ts.
 mock.module('./mission-criteria-verify', () => ({
@@ -89,14 +103,30 @@ afterAll(() => {
   else process.env.ANTHROPIC_API_KEY = originalApiKey;
 });
 
-/** Stub the Anthropic call with a canned verdict list. */
+/**
+ * Stub the inference transport with a canned verdict list.
+ *
+ * Deliberately runs the caller's real `validate` callback on the canned payload
+ * rather than handing back pre-built data: the verdict coercion ("an unrecognised
+ * verdict string is not a pass") lives in that callback, so stubbing past it would
+ * leave the coercion untested.
+ */
 function stubLLM(verdicts: Array<Record<string, unknown>>) {
-  const fetchMock = mock(() => Promise.resolve({
-    ok: true,
-    json: () => Promise.resolve({ content: [{ type: 'text', text: JSON.stringify({ verdicts }) }] }),
+  mockInferenceCall.mockImplementation(((p: any) => {
+    const data = p.validate({ verdicts });
+    return Promise.resolve(
+      data === null
+        ? { ok: false, error: { kind: 'parse', raw: JSON.stringify({ verdicts }) } }
+        : { ok: true, data, model: 'claude-haiku-4-5-20251001', provider: 'anthropic', usage: { inputTokens: 0, outputTokens: 0 } }
+    );
   }) as any);
-  globalThis.fetch = fetchMock as any;
-  return fetchMock;
+  return mockInferenceCall;
+}
+
+/** Stub the transport failing in a way that is NOT a missing credential. */
+function stubLLMError(error: Record<string, unknown>) {
+  mockInferenceCall.mockImplementation((() => Promise.resolve({ ok: false, error })) as any);
+  return mockInferenceCall;
 }
 
 function mission(overrides: Record<string, unknown> = {}) {
@@ -109,6 +139,8 @@ function mission(overrides: Record<string, unknown> = {}) {
     autoVerify: null,
     workingBranch: 'mission/m1',
     status: 'active',
+    teamId: 'team-1',
+    workspaceId: 'ws-1',
     ...overrides,
   };
 }
@@ -127,6 +159,10 @@ function reset() {
   mockResolveProseCriteria.mockReset();
   mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
+  }) as any);
+  mockInferenceCall.mockReset();
+  mockInferenceCall.mockImplementation(() => Promise.resolve({
+    ok: false, error: { kind: 'missing_key', provider: 'anthropic' },
   }) as any);
   globalThis.fetch = realFetch;
   delete process.env.ANTHROPIC_API_KEY;
@@ -394,18 +430,79 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     expect(state!.overall).toBe('fail');
   });
 
-  it('grades inline and does not dispatch when an API key is present', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-test';
+  it('grades inline and does not dispatch when an inference key is available', async () => {
     stubLLM([{ index: 0, verdict: 'pass', evidence: 'Rows are there' }]);
     proseAndMechanical();
 
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
-    // Never both: dispatching alongside a working inline path would spend an
+    // Never both: dispatching alongside a working inference path would spend an
     // agent run to re-answer a question already answered.
     expect(mockResolveProseCriteria).not.toHaveBeenCalled();
     expect(state!.criteria[0].verdict).toBe('pass');
     expect(state!.overall).toBe('pass');
+  });
+
+  it('spends the budget tier and scopes the call to the mission team', async () => {
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'yes' }]);
+    proseAndMechanical();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    const p = mockInferenceCall.mock.calls[0]![0] as any;
+    // The tier is named; the provider, model and credential are the registry's
+    // business — which is what lets a team route judgments to OpenRouter.
+    expect(p.tier).toBe('budget');
+    expect(p.teamId).toBe('team-1');
+    expect(p.workspaceId).toBe('ws-1');
+    expect(p.system).toContain('evidence-grounded');
+    expect(p.user).toContain('Rows exist');
+  });
+
+  it('coerces an unrecognised verdict string to UNVERIFIED, never pass', async () => {
+    stubLLM([{ index: 0, verdict: 'definitely-yes', evidence: 'trust me' }]);
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('reports a provider error without dispatching an agent run', async () => {
+    stubLLMError({ kind: 'provider_error', status: 500, body: 'boom' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // A call that reached the provider and failed is a blip: the next evaluation
+    // round retries. Burning an agent run on it would be the expensive answer to
+    // a transient problem.
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[0].evidence).toContain('Not graded');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('reports a parse failure without dispatching an agent run', async () => {
+    stubLLMError({ kind: 'parse', raw: 'I would rather not' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+  });
+
+  it('falls back to dispatch when the tier points at a provider that cannot serve inference', async () => {
+    stubLLMError({ kind: 'unsupported_provider', provider: 'openai-codex' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // No inference path exists for this team at all — same situation as no key,
+    // so the dispatched agent run is the right answer rather than an error.
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
   });
 
   it('applies an LLM verdict with its evidence reference', async () => {
@@ -509,7 +606,7 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
     expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
-    expect(state!.criteria[0].evidence).toBe('LLM returned no verdict for this criterion');
+    expect(state!.criteria[0].evidence).toBe('The evaluator returned no verdict for this criterion');
   });
 });
 
