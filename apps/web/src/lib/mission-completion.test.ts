@@ -352,7 +352,7 @@ describe('canCompleteMission — the goal-criteria gate', () => {
 
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(true);
-    expect(d.criteriaVerdict).toBe('none');
+    expect(d.criteriaVerdict).toEqual({ kind: 'unavailable', reason: 'not_evaluated' });
     expect(d.criteriaCount).toBe(0);
   });
 
@@ -367,7 +367,7 @@ describe('canCompleteMission — the goal-criteria gate', () => {
 
     expect(mockEnsureCriteriaVerdict).toHaveBeenCalledWith('m1', { trigger: 'heartbeat' });
     expect(d.ok).toBe(true);
-    expect(d.criteriaVerdict).toBe('pass');
+    expect(d.criteriaVerdict).toEqual({ kind: 'value', value: 'pass' });
     expect(d.criteriaEvaluatedAt).toBe(PASSING_STATE.evaluatedAt);
   });
 
@@ -385,7 +385,7 @@ describe('canCompleteMission — the goal-criteria gate', () => {
 
     expect(d.ok).toBe(false);
     expect(d.code).toBe('criteria_unverified');
-    expect(d.criteriaVerdict).toBe('NOT_EVALUATED');
+    expect(d.criteriaVerdict).toEqual({ kind: 'unavailable', reason: 'not_evaluated' });
   });
 
   it('refuses with the failing criteria named when the verdict is fail', async () => {
@@ -429,7 +429,7 @@ describe('canCompleteMission — the goal-criteria gate', () => {
 
     expect(mockEnsureCriteriaVerdict).not.toHaveBeenCalled();
     expect(d.ok).toBe(true);
-    expect(d.criteriaVerdict).toBe('pass');
+    expect(d.criteriaVerdict).toEqual({ kind: 'value', value: 'pass' });
   });
 });
 
@@ -452,16 +452,16 @@ describe('canCompleteMission — diagnosability', () => {
 
     expect(d.code).toBe('pending_deliverables');
     expect(d.criteriaCount).toBe(2);
-    expect(d.criteriaVerdict).toBe('UNVERIFIED');
-    expect(d.criteriaVerdict).not.toBe('none');
+    expect(d.criteriaVerdict).toEqual({ kind: 'value', value: 'UNVERIFIED' });
+    expect(d.criteriaVerdict.kind).toBe('value');
   });
 
-  it('reports NOT_EVALUATED (not "none") when criteria exist but were never evaluated', async () => {
+  it('reports not_evaluated (not "none") when criteria exist but were never evaluated', async () => {
     activeMission({ goalCriteria: [{ type: 'no_open_tasks' }] });
     taskRows = [work('pending', 'still going')];
 
     const d = await canCompleteMission('m1');
-    expect(d.criteriaVerdict).toBe('NOT_EVALUATED');
+    expect(d.criteriaVerdict).toEqual({ kind: 'unavailable', reason: 'not_evaluated' });
   });
 
   it('every criteria refusal is recognised by isCriteriaBlockCode', async () => {
@@ -553,7 +553,7 @@ describe('completeMissionIfVerified — allowed', () => {
       allowed: true,
       code: 'ok',
       pendingDeliverables: 0,
-      criteriaVerdict: 'pass',
+      criteriaVerdict: { kind: 'value', value: 'pass' },
       criteriaCount: 1,
       predicate: 'task pt1 result.missionComplete=true',
       deliverableStatusCounts: { completed: 1, failed: 1 },

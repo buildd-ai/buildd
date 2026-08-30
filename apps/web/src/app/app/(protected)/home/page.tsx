@@ -19,6 +19,7 @@ import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-q
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -756,10 +757,24 @@ export default async function HomePage({
 
                 const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
 
-                // Without a healthy baseline row the COALESCE fallback would silently
-                // count every worker ever merged (epoch baseline). Instead: no baseline
-                // → no count. The comparison `mergedAt > NULL` evaluates to NULL in
-                // PostgreSQL, so the WHERE clause matches nothing and count() returns 0.
+                // Explicit baseline check: if no healthy releases row exists, the queue
+                // depth is structurally unavailable (no_baseline), not zero.
+                const [baselineRow] = await db
+                  .select({ baseline: sql<string | null>`MAX(${releases.healthyAt})::text` })
+                  .from(releases)
+                  .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
+
+                if (!baselineRow?.baseline) {
+                  return {
+                    workspaceId: wsId,
+                    workspaceName: ws.name,
+                    queueDepth: derivedUnavailable<number>('no_baseline'),
+                    oldestMergedAt: derivedUnavailable<string>('no_baseline'),
+                    ciState,
+                    latestReleaseId: latestRelease?.id ?? null,
+                  };
+                }
+
                 const [queueRow] = await db
                   .select({
                     queueDepth: sql<number>`count(*)::int`,
@@ -771,15 +786,17 @@ export default async function HomePage({
                     and(
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
-                      sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
+                      sql`${workers.mergedAt} > ${baselineRow.baseline}::timestamptz`,
                     ),
                   );
 
                 return {
                   workspaceId: wsId,
                   workspaceName: ws.name,
-                  queueDepth: queueRow?.queueDepth ?? 0,
-                  oldestMergedAt: queueRow?.oldestMergedAt ?? null,
+                  queueDepth: derivedValue(queueRow?.queueDepth ?? 0),
+                  oldestMergedAt: queueRow?.oldestMergedAt
+                    ? derivedValue(queueRow.oldestMergedAt)
+                    : derivedUnavailable<string>('no_scope'),
                   ciState,
                   latestReleaseId: latestRelease?.id ?? null,
                 };
