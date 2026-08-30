@@ -46,6 +46,13 @@ export type CondensedTimelineTask = {
     supersededByPrNumber: number | null;
   } | null;
   reviewerTaskHref: string | null;
+  /** The most-recent fix task dispatched when a reviewer requested changes. */
+  reviewerRetryTask: {
+    id: string;
+    status: string;
+    title: string;
+    prNumber: number | null;
+  } | null;
   /**
    * True when the parent mission is `budget_exhausted`. Every pending task in
    * such a mission is unclaimable until a human raises the budget, so rendering
@@ -330,6 +337,45 @@ function TaskRow({
 
         if (note.type === 'reviewer_request_changes') {
           const iteration = note.title.match(/\(iteration (\d+\/\d+)\)/)?.[1];
+          const retryTask = task.reviewerRetryTask;
+          let retryLine: React.ReactNode = null;
+          if (retryTask) {
+            const attempt = retryTask.title.match(/\[reviewer retry #(\d+)\]/i)?.[1] ?? '1';
+            const taskLink = (
+              <Link href={`/app/tasks/${retryTask.id}`} className="underline hover:text-text-primary">
+                retry #{attempt}
+              </Link>
+            );
+            if (retryTask.status === 'completed') {
+              retryLine = (
+                <p className="text-[10px] text-status-success mt-0.5">
+                  → {taskLink} done{retryTask.prNumber ? ` — pushed to #${retryTask.prNumber}` : ''}
+                </p>
+              );
+            } else if (retryTask.status === 'failed') {
+              retryLine = (
+                <p className="text-[10px] text-status-error mt-0.5">
+                  → {taskLink} failed
+                </p>
+              );
+            } else if (retryTask.status === 'running' || retryTask.status === 'waiting_input') {
+              retryLine = (
+                <p className="text-[10px] text-text-muted mt-0.5">
+                  → {taskLink} running
+                </p>
+              );
+            } else {
+              retryLine = (
+                <p className="text-[10px] text-text-muted mt-0.5">
+                  → {taskLink} queued{lw?.branch ? ` on same branch (${lw.branch})` : ''}
+                </p>
+              );
+            }
+          } else if (lw?.branch) {
+            retryLine = (
+              <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({lw.branch})</p>
+            );
+          }
           return (
             <div className="pl-7 pb-1 mt-1">
               <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
@@ -342,9 +388,7 @@ function TaskRow({
                   {iteration && <span className="text-[10px] text-[#D97706]/70">(iteration {iteration})</span>}
                 </div>
                 <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
-                {lw?.branch && (
-                  <p className="text-[10px] text-text-muted mt-0.5">→ Retry queued on same branch ({lw.branch})</p>
-                )}
+                {retryLine}
               </div>
             </div>
           );
