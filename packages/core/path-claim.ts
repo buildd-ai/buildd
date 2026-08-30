@@ -38,6 +38,16 @@ export interface ReleaseResult {
   notifiedWaiters: string[];
 }
 
+// ── Path utilities ───────────────────────────────────────────────────────────
+
+/**
+ * Count the number of segments in a file path (split by '/', empty strings filtered).
+ * Examples: 'packages/core/path-claim.ts' → 3, 'foo' → 1, '' → 0.
+ */
+export function countPathSegments(path: string): number {
+  return path.split('/').filter(s => s.length > 0).length;
+}
+
 // ── Conflict detection ───────────────────────────────────────────────────────
 
 /**
