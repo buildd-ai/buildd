@@ -1115,6 +1115,14 @@ export async function PATCH(
           | undefined;
         const effectiveCost = reportedCost > 0 ? reportedCost : estimateCostUsd(usageForCost);
 
+        // Write effectiveCost back to the worker row so per-worker aggregations
+        // (e.g. mission spend) see a non-null value for OAuth workers that don't
+        // self-report costUsd. Only overwrite when the runner didn't report a
+        // positive cost (reportedCost > 0 means line 387 already set the right value).
+        if (effectiveCost > 0 && reportedCost <= 0) {
+          updates.costUsd = effectiveCost.toString();
+        }
+
         if (effectiveCost > 0) {
           // Aggregate budget is tracked at the team level so all token-accounts
           // under the same owner share one monthly cap (the Claude Agent SDK
