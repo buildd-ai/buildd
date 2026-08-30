@@ -183,6 +183,10 @@ export interface LocalWorker {
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
+  // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
+  // on the next successful claim call. Also included in update_progress PATCH body so
+  // the server can register them retroactively if the hook never recovers.
+  pendingPaths?: string[];
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   /**
    * Running per-turn token tally, accumulated from backend turn_complete usage.

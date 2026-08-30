@@ -207,6 +207,10 @@ export class WorkerSync {
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
         ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
         ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
+        // Paths written while path-claim endpoint was unreachable; server registers retroactively.
+        // Included on every sync while the queue is non-empty — the hook clears it on the next
+        // successful claim call, so this is a safety net, not the primary flush path.
+        ...(worker.pendingPaths?.length ? { pendingPaths: [...worker.pendingPaths] } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
