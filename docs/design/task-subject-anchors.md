@@ -431,61 +431,29 @@ context and cannot trigger automatic closure of human PRs.
 
 #### Implementation status (2026-08-29)
 
-§6 shipped **partially**, and the missing halves produced a 5-day outage: task
-`aeb80faf` sat `pending` and unclaimable while the dashboard rendered it as a
-normal `QUEUED` row, and it was the root of a 20-task dependency funnel. The
-gate's *skip* was built; the "proposal", the hold state, and the force-start
-acknowledgement above were not. A skip with no surface and no override is
-indistinguishable from a queue that is merely slow.
+The liveness half of this section is **shipped and now specified as a contract**:
+see `docs/specs/subject-anchor-liveness.md`. That spec is authoritative for
+binding classification (source AND confidence), fail-open semantics, terminal
+cancellation, and the `/start` override. Do not restate those rules here — update
+the spec instead.
 
-What now exists, and where it departs from the text above:
+What shipped differs from the proposal above in three ways worth recording:
 
-- **Source *and* confidence decide whether the gate binds.** The doc's
-  human-vs-system-filed distinction (§3) is enforced as
-  `SUBJECT_BINDING_SOURCES = ['system', 'context']` in
-  `apps/web/src/lib/subject-gate-contract.ts`, AND the anchor's `confidence`
-  must not be `derived` (`isBindingSubjectAnchor()`). Both halves are needed:
-  `source: 'context'` is emitted by two different extractor paths — the legacy
-  structured-context mapping, which resolves the PR and earns `exact`, and an
-  explicit API-supplied `subjectAnchor`, which defaults to `derived`. Gating on
-  source alone therefore made an unverified caller-supplied hint fatal. This
-  matches what §2 of this doc already required — `exact` means *verified*, and a
-  `derived` anchor "can only run with context until a human or GitHub lookup
-  confirms" it — so the extractor's default was right and the gate was the
-  incoherent side.
-
-  This is the direct fix for the outage. `aeb80faf`'s anchor was derived from a
-  PR number *mentioned in its own description*, so closing that PR killed a task
-  that was never about it; `640e7da2` ("Worker commit identity blocks all Vercel
-  previews") died the same way and sat unclaimable for 24 days. A prose citation
-  is context, not identity.
-- **`subject_review` was never built.** Instead, a dead subject on a *binding*
-  anchor cancels the task (`lib/subject-sweep.ts`), which is the doc's
-  "conditionally cancel" branch. Cancellation is load-bearing beyond honesty:
-  `cancelled` is the deps-gate's designed satisfying status, so terminating the
-  dead task is what drains the chain behind it. Leaving it `pending` is what
-  made one dead task strand twenty live ones.
+- **`subject_review` was never built.** A dead subject on a binding anchor
+  cancels the task (this section's "conditionally cancel" branch). Cancellation
+  is load-bearing rather than cosmetic: `cancelled` satisfies the dependency
+  gate, so terminating the dead task is what releases its dependents.
 - **Force-start uses `bypassSubjectGate`**, matching the sibling
   `bypassDepsGate` / `bypassHeldGate` keys, rather than the `fileAnywayReason`
-  recording proposed above. `/start` returns 422 `gateReason: 'subject_dead'`
-  with `canForce: true` instead of the previous silent 200-and-nothing-happens.
-- **Display**: `subject_dead` is a first-class task phase with its own chip, so
-  the state is legible without reading the database.
-- **Fail-open on absent data**, where the doc says fail closed for
-  `unknown/stale`. The distinction: a *missing* anchor column or absent anchor
-  means the gate cannot make a claim about liveness and must not invent one —
-  that is what turned a nullable column into a silent kill switch. A genuinely
-  stale-but-present anchor is still out of scope; the refresh/`subject_review`
-  path remains unbuilt.
+  recording proposed above.
+- **Fail-open on absent data**, where this section says fail closed for
+  `unknown/stale`. A missing anchor means the gate cannot make a claim about
+  liveness and must not invent one. A genuinely stale-but-present anchor remains
+  out of scope — the refresh path is still unbuilt.
 
-One predicate, four consumers: the claim SQL, the in-loop guard, `/start`, and
-the reconciliation sweep all call `isBindingSubjectAnchor`. The sweep matters
-most here — if it classified more broadly than the gate, it would cancel a task
-the gate considers claimable, trading a silent stall for silent destruction.
-
-Deferred, not fixed: a genuinely stale-but-present anchor still has no refresh
-path, so the `subject_liveness_unknown` / `subject_review` branch of §6 remains
-unbuilt.
+Two production incidents motivated the contract: tasks `aeb80faf` (5 days
+unclaimable) and `640e7da2` (24 days), both killed by a PR number cited in prose.
+Both are recorded in the spec's rationale section.
 
 ### 7. Prior-work injection
 

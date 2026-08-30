@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (18)
+## Active (19)
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-07-18
@@ -19,6 +19,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-07-18
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-08-27
+- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
 - [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-29

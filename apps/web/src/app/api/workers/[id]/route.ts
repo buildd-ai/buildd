@@ -17,7 +17,7 @@ import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
-import { detectCbmFleetDisabled } from '@buildd/core/cbm-health';
+import { detectCbmFleetDisabled, detectCbmEnforcedUnused } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
@@ -1491,6 +1491,8 @@ export async function PATCH(
         if (status === 'completed') {
           const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
           detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
+          // Same shape, opposite condition: mounted-and-ignored rather than absent.
+          detectCbmEnforcedUnused(worker.workspaceId, currentCbm).catch(() => {});
         }
       }
 
