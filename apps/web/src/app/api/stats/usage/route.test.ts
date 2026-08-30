@@ -231,7 +231,7 @@ describe('GET /api/stats/usage — aggregation', () => {
 
     const body = await (await GET(makeRequest())).json();
     expect(body.perTask.costUsd.kind).toBe('unavailable');
-    expect(body.perTask.costUsd.reason).toMatch(/seat-based/);
+    expect(body.perTask.costUsd.detail).toMatch(/seat-based/);
     expect(dist(body.perTask.inputTokens).median).toBe(20_000);
   });
 
