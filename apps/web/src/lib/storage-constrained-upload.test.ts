@@ -1,10 +1,11 @@
 /**
  * The size cap must live in the SIGNATURE, not just in a server-side `if`.
  *
- * `generateUploadUrl` signs only Bucket/Key/ContentType, so the URL it returns
- * permits an unbounded body — a compromised runner could PUT gigabytes.
- * `generateConstrainedUploadUrl` binds `content-length` into the canonical
- * request, so R2 rejects any other body length before storing a byte.
+ * A signer that covers only Bucket/Key/ContentType leaves the URL it returns
+ * permitting an unbounded body — a compromised runner could PUT gigabytes.
+ * `generateConstrainedUploadUrl` binds `content-length` (and `content-type`)
+ * into the canonical request, so R2 rejects any other body length before
+ * storing a byte.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/web/src/lib/storage-constrained-upload.test.ts
  */
@@ -22,7 +23,7 @@ mock.module('@buildd/core/config', () => ({
   },
 }));
 
-const { generateConstrainedUploadUrl, generateUploadUrl, isStorageConfigured } = await import('./storage');
+const { generateConstrainedUploadUrl, isStorageConfigured } = await import('./storage');
 
 const KEY = 'sessions/team/workspace/worker/transcript.jsonl';
 
@@ -55,12 +56,6 @@ describe('generateConstrainedUploadUrl', () => {
   it('expires — the signature is short-lived', async () => {
     const url = await generateConstrainedUploadUrl(KEY, 'application/x-ndjson', 10);
     expect(Number(new URL(url).searchParams.get('X-Amz-Expires'))).toBeLessThanOrEqual(600);
-  });
-
-  it('documents the gap in the unconstrained helper it replaces', async () => {
-    const url = await generateUploadUrl(KEY, 'application/x-ndjson');
-    const signed = decodeURIComponent(new URL(url).searchParams.get('X-Amz-SignedHeaders') || '');
-    expect(signed.split(';')).not.toContain('content-length');
   });
 
   it('reports configured when credentials are present', () => {

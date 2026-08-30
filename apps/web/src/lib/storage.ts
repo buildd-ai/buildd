@@ -61,13 +61,16 @@ export async function generateSizedUploadUrl(
 }
 
 /**
- * Presigned PUT whose maximum body size is bound into the signature itself.
+ * Presigned PUT whose maximum body size AND content type are bound into the
+ * signature itself.
  *
- * `generateUploadUrl` above signs only Bucket/Key/ContentType, so the resulting
- * URL permits an unbounded body — the holder can PUT gigabytes. Signing
- * `content-length` makes the exact byte count part of the canonical request:
- * a PUT with any other length fails SigV4 verification at R2, before a single
- * byte is stored. Use this for anything a runner or browser uploads directly.
+ * A signer that only covers Bucket/Key/ContentType permits an unbounded body —
+ * the holder can PUT gigabytes. Signing `content-length` (as `generateSizedUploadUrl`
+ * above does) closes that gap; this variant additionally signs `content-type`,
+ * for callers where the content type itself must not be substitutable. A PUT
+ * with any other length or type fails SigV4 verification at R2, before a
+ * single byte is stored. Use this for anything a runner or browser uploads
+ * directly.
  */
 export async function generateConstrainedUploadUrl(
   key: string,

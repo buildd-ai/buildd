@@ -3,12 +3,18 @@
  *
  * The key is derived SERVER-SIDE from the authenticated worker row and is never
  * accepted from the client. A client-supplied key would let a compromised runner
- * or agent overwrite arbitrary objects in the shared bucket — role-config bundles
- * (`role-configs/...`), other tenants' artifacts (`artifacts/...`), anything.
+ * or agent overwrite arbitrary objects in the shared bucket — role-config
+ * bundles, other tenants' artifacts, anything.
  *
  * Keys are deterministic so an object is locatable from the `workers.id` that
  * already exists in Postgres — no index row, no new table, no bulk payload in Neon.
+ *
+ * The key string itself is assembled by `buildSessionArtifactKey` in
+ * `./storage-keys`, the single module allowed to assemble object keys
+ * (`storage-keys.guard.test.ts` fails the build if a call site starts
+ * assembling its own).
  */
+import { buildSessionArtifactKey } from './storage-keys';
 
 export const SESSION_ARTIFACT_KINDS = ['transcript', 'session-log'] as const;
 
@@ -56,5 +62,5 @@ export function sessionArtifactKey(input: {
   const workspaceId = segment('workspaceId', input.workspaceId);
   const workerId = segment('workerId', input.workerId);
   const { filename } = SESSION_ARTIFACT_FILES[input.kind];
-  return `sessions/${teamId}/${workspaceId}/${workerId}/${filename}`;
+  return buildSessionArtifactKey(teamId, workspaceId, workerId, filename);
 }
