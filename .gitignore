@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Secrets are NOT in this repo. Source of truth: Doppler project `buildd`.
+# See doppler.yaml and SECRETS.md.
 .env
 .env.*
 !.env*.example
