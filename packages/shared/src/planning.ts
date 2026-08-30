@@ -73,20 +73,54 @@ export interface PlanningStructuredOutput {
 export const planningOutputSchema = {
   type: 'object',
   properties: {
-    triageOutcome: { type: 'string', enum: ['single_task', 'multi_task', 'conflict'] },
+    triageOutcome: {
+      type: 'string',
+      enum: ['single_task', 'multi_task', 'conflict'],
+      description:
+        'single_task: the mission needs one step. multi_task: it decomposes into several. conflict: the request ' +
+        'contradicts existing work or itself and needs human input (surface it in questions).',
+    },
     plan: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          ref: { type: 'string' },
-          title: { type: 'string' },
-          description: { type: 'string' },
-          dependsOn: { type: 'array', items: { type: 'string' } },
-          baseBranch: { type: 'string' },
-          roleSlug: { type: 'string' },
-          outputRequirement: { type: 'string' },
-          priority: { type: 'integer' },
+          ref: {
+            type: 'string',
+            description:
+              'Short stable identifier for this step, unique within the plan (e.g. "design", "build-api", "review"). ' +
+              'Other steps reference it in dependsOn. It is resolved to the real task id after the plan is approved.',
+          },
+          title: { type: 'string', description: 'Imperative one-line title for the task.' },
+          description: {
+            type: 'string',
+            description:
+              'Self-contained instructions for the agent that will execute this step. It runs in a fresh session ' +
+              'with no memory of this plan, so state everything it needs.',
+          },
+          dependsOn: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Refs of steps that MUST finish before this one starts. Declare an edge whenever this step consumes ' +
+              'another step\'s output — reviewing or testing its PR, building on its schema change, or documenting ' +
+              'what it built. Steps you leave undeclared are treated as independent and become claimable ' +
+              'IMMEDIATELY, so they can run at the same time as the step they depend on; the agent then finds no PR ' +
+              'and the attempt is wasted. Only leave this empty when the step genuinely can run first.',
+          },
+          baseBranch: {
+            type: 'string',
+            description:
+              'Ref of the step whose branch this one should build on, when it must continue that work rather than ' +
+              'branch from the default. Usually paired with a dependsOn edge on the same ref.',
+          },
+          roleSlug: { type: 'string', description: 'Slug of the role/agent persona that should execute this step.' },
+          outputRequirement: {
+            type: 'string',
+            description:
+              'What this step must deliver: "pr_required" (code change), "artifact_required" (report/analysis), or "none".',
+          },
+          priority: { type: 'integer', description: 'Higher runs sooner among steps that are all unblocked.' },
           // Smart-routing hints. Optional — router falls back to defaults
           // when absent. See plans/buildd/smart-model-routing.md.
           kind: {
@@ -101,8 +135,16 @@ export const planningOutputSchema = {
         required: ['ref', 'title', 'description'],
       },
     },
-    summary: { type: 'string' },
-    missionComplete: { type: 'boolean' },
+    summary: {
+      type: 'string',
+      description: 'Brief explanation of the plan and the reasoning behind its ordering.',
+    },
+    missionComplete: {
+      type: 'boolean',
+      description:
+        'True only when the mission goal is already fully satisfied and no further work is needed. ' +
+        'When true, plan should be empty.',
+    },
     questions: {
       type: 'array',
       items: {

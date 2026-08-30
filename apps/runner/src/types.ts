@@ -153,6 +153,13 @@ export interface LocalWorker {
   // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
   // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
   toolInFlight?: boolean;
+  // Transient (never persisted): set by loadAllWorkers when it rewrites a
+  // 'working' worker to 'error' because SDK sessions cannot survive a runner
+  // restart. restoreWorkersFromDisk reads it to notify the server, which would
+  // otherwise leave the row 'running' until the reaper expires it. A marker,
+  // rather than re-deriving intent from the error string, keeps the two sides
+  // from silently drifting the way the status check did.
+  killedByRestart?: boolean;
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;
