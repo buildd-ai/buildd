@@ -208,6 +208,11 @@ watching GitHub can see an agent is on it without opening the dashboard.
   origin. GitHub fetches comment images server-side through camo, so animated
   SVG/CSS does not survive sanitization and a localhost origin renders broken;
   a non-public `NEXT_PUBLIC_APP_URL` MUST fall back to production.
+- Timestamps MUST render in the owning team's timezone (`teams.timezone`,
+  resolved from the workspace), and MUST carry the zone label so a reader
+  elsewhere is not misled. A team with no zone renders UTC.
+- The zone MUST be applied at render time and MUST NOT be stored in the state
+  block, so changing a team's zone re-stamps the whole log on the next edit.
 
 **Acceptance criteria**:
 - AC-10: WHEN a reviewer task is dispatched for a PR THEN a comment containing
@@ -218,6 +223,9 @@ watching GitHub can see an agent is on it without opening the dashboard.
 
 - AC-12: WHEN the newest entry is a terminal state THEN the rendered comment
   contains no reference to the spinner asset.
+- AC-13: GIVEN a team with `timezone = 'America/New_York'` WHEN an entry stamped
+  `14:03Z` is rendered THEN the comment reads `Aug 29, 10:03 EDT`; GIVEN the
+  team has no zone THEN it reads `Aug 29, 14:03 UTC`.
 
 **Code surface**:
 - Lib: `apps/web/src/lib/pr-activity-comment.ts`
@@ -226,6 +234,8 @@ watching GitHub can see an agent is on it without opening the dashboard.
 - Callers: `apps/web/src/app/api/github/webhook/route.ts` (reviewer dispatch,
   pre-flight escalation, CI retry/exhaustion, branch pushes),
   `apps/web/src/app/api/workers/[id]/route.ts` (reviewer verdicts)
+- Timezone resolution: `packages/core/timezone.ts`,
+  `apps/web/src/lib/team-timezone.ts`
 
 ---
 

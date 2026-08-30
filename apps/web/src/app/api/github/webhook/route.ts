@@ -564,6 +564,7 @@ async function handlePullRequestEvent(event: {
             detail: `\`${pr.head.sha.slice(0, 7)}\` on \`${pr.head.ref}\``,
           },
           onlyIfPresent: true,
+          workspaceId: openWorker.workspaceId,
         });
       }
     }
@@ -1038,6 +1039,7 @@ async function handleCheckSuiteFailure(
           repoFullName: repository.full_name,
           prNumber: pr.number,
           entry: { kind: 'ci_exhausted', detail: exhaustionDetail, url: ciLogs.runUrl },
+          workspaceId: task.workspaceId,
         });
         continue;
       }
@@ -1103,6 +1105,7 @@ async function handleCheckSuiteFailure(
             detail: `attempt ${retryTask.context.iteration} of ${retryTask.context.maxIterations}`,
             url: ciLogs.runUrl,
           },
+          workspaceId: retryTask.workspaceId,
         });
       } else {
         console.log(`Skipping duplicate CI retry for ${task.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
@@ -1337,6 +1340,7 @@ async function maybeDispatchReviewer(
         repoFullName,
         prNumber: pr.number,
         entry: { kind: 'human_review_required', detail: reason },
+        workspaceId: openWorker.workspaceId,
       });
       return true; // handled — skip auto-merge
     }
@@ -1391,6 +1395,7 @@ async function maybeDispatchReviewer(
           kind: 'reviewing',
           detail: `reviewer role \`${policy.agentReview!.reviewerRole}\``,
         },
+        workspaceId: openWorker.workspaceId,
       });
     }
 

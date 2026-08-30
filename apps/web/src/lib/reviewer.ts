@@ -462,7 +462,7 @@ export async function supersedeReviewerTaskOnMerge(
         eq(tasks.category, 'review'),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
       ),
-      columns: { id: true, missionId: true },
+      columns: { id: true, missionId: true, workspaceId: true },
       orderBy: [desc(tasks.createdAt)],
       with: {
         workers: {
@@ -519,6 +519,7 @@ export async function supersedeReviewerTaskOnMerge(
       repoFullName,
       prNumber,
       entry: { kind: 'review_superseded_by_merge' },
+      workspaceId: reviewerTask.workspaceId,
     }).catch(() => {});
 
     return { superseded: true, reviewerTaskId: reviewerTask.id };

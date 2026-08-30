@@ -15,6 +15,8 @@
  * lifecycle step that triggered it.
  */
 
+import { DEFAULT_TIMEZONE, formatStamp } from '@buildd/core/timezone';
+
 export const ACTIVITY_COMMENT_MARKER = '<!-- buildd-activity -->';
 
 /**
@@ -144,18 +146,6 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
   },
 };
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** Deterministic UTC stamp — no locale dependence, stable across environments. */
-function formatUtc(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return 'unknown time';
-  const month = MONTHS[d.getUTCMonth()];
-  const day = d.getUTCDate();
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${month} ${day}, ${hh}:${mm} UTC`;
-}
 
 function normalize(entry: PrActivityEntry): Required<Pick<PrActivityEntry, 'kind' | 'at'>> & PrActivityEntry {
   return {
@@ -166,8 +156,16 @@ function normalize(entry: PrActivityEntry): Required<Pick<PrActivityEntry, 'kind
   };
 }
 
-/** Render the full comment body (marker, headline, activity log, state block). */
-export function renderPrActivityComment(entries: PrActivityEntry[]): string {
+/**
+ * Render the full comment body (marker, headline, activity log, state block).
+ *
+ * `timezone` is applied at render time and never stored in the state block, so
+ * changing a team's zone re-stamps the whole log on the next update.
+ */
+export function renderPrActivityComment(
+  entries: PrActivityEntry[],
+  timezone: string = DEFAULT_TIMEZONE,
+): string {
   const kept = entries.slice(-MAX_ACTIVITY_ENTRIES).map(normalize);
   const latest = kept[kept.length - 1];
   const head = latest ? PRESENTATION[latest.kind] : null;
@@ -176,7 +174,7 @@ export function renderPrActivityComment(entries: PrActivityEntry[]): string {
     const p = PRESENTATION[entry.kind];
     const detail = entry.detail ? ` — ${entry.detail}` : '';
     const link = entry.url ? ` ([details](${entry.url}))` : '';
-    return `- ${p.icon} \`${formatUtc(entry.at)}\` **${p.label}**${detail}${link}`;
+    return `- ${p.icon} \`${formatStamp(entry.at, timezone)}\` **${p.label}**${detail}${link}`;
   });
 
   // The spinner is the whole point of the header: it moves while buildd is
@@ -184,7 +182,7 @@ export function renderPrActivityComment(entries: PrActivityEntry[]): string {
   const marker = head?.working
     ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="14" height="14" alt="working" align="top" />`
     : (head?.icon ?? '');
-  const since = latest ? ` <sub>· since ${formatUtc(latest.at)}</sub>` : '';
+  const since = latest ? ` <sub>· since ${formatStamp(latest.at, timezone)}</sub>` : '';
 
   return [
     ACTIVITY_COMMENT_MARKER,
@@ -232,6 +230,23 @@ async function getGithubApi() {
   return githubApi;
 }
 
+/**
+ * The zone to stamp this comment in: the owning team's, or UTC.
+ *
+ * Resolved lazily and defensively — the comment is a best-effort surface, so a
+ * missing workspace or an unreachable DB must degrade to UTC rather than skip
+ * the update.
+ */
+async function resolveCommentTimezone(workspaceId?: string | null): Promise<string> {
+  if (!workspaceId) return DEFAULT_TIMEZONE;
+  try {
+    const { getWorkspaceTimezone } = await import('@/lib/team-timezone');
+    return await getWorkspaceTimezone(workspaceId);
+  } catch {
+    return DEFAULT_TIMEZONE;
+  }
+}
+
 /** Locate the sticky comment. Scans up to 3 pages — ours is posted early. */
 async function findActivityComment(
   githubApi: (installationId: number, path: string, options?: RequestInit) => Promise<unknown>,
@@ -262,6 +277,9 @@ async function findActivityComment(
  * `onlyIfPresent` skips creating a new comment — used for follow-up signals
  * (a push to the branch) that are only interesting once buildd has already
  * announced it is working the PR.
+ *
+ * `workspaceId` selects the wall clock: timestamps render in the owning team's
+ * timezone. Omit it and the comment stamps in UTC.
  */
 export async function appendPrActivity(params: {
   installationId: number;
@@ -269,10 +287,12 @@ export async function appendPrActivity(params: {
   prNumber: number;
   entry: PrActivityEntry;
   onlyIfPresent?: boolean;
+  workspaceId?: string | null;
 }): Promise<AppendResult> {
-  const { installationId, repoFullName, prNumber, entry, onlyIfPresent } = params;
+  const { installationId, repoFullName, prNumber, entry, onlyIfPresent, workspaceId } = params;
   try {
     const githubApi = await getGithubApi();
+    const timezone = await resolveCommentTimezone(workspaceId);
     const existing = await findActivityComment(githubApi, installationId, repoFullName, prNumber);
     const next = normalize(entry);
 
@@ -285,7 +305,7 @@ export async function appendPrActivity(params: {
       await githubApi(installationId, `/repos/${repoFullName}/issues/comments/${existing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: renderPrActivityComment([...entries, next]) }),
+        body: JSON.stringify({ body: renderPrActivityComment([...entries, next], timezone) }),
       });
       return { action: 'updated', commentId: existing.id };
     }
@@ -297,7 +317,7 @@ export async function appendPrActivity(params: {
     const created = (await githubApi(installationId, `/repos/${repoFullName}/issues/${prNumber}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body: renderPrActivityComment([next]) }),
+      body: JSON.stringify({ body: renderPrActivityComment([next], timezone) }),
     })) as { id?: number } | null;
     return { action: 'created', commentId: created?.id ?? 0 };
   } catch (error) {
