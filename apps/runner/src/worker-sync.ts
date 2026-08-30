@@ -3,6 +3,7 @@ import type { BuilddClient } from './buildd';
 import type { LocalUIConfig } from './types';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { execSync } from 'child_process';
 import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { cleanupWorktree } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
@@ -25,6 +26,23 @@ function repoPathFromWorktree(worktreePath: string): string {
   const marker = join('.buildd-worktrees', '');
   const idx = worktreePath.indexOf(marker);
   return idx > 0 ? worktreePath.substring(0, idx) : worktreePath;
+}
+
+/**
+ * Compute files touched on the current branch vs origin/HEAD (or origin/dev as fallback).
+ * Uses git diff --name-only with a three-dot range so only branch-specific changes are counted.
+ * Returns an empty array on any error — this is passive infrastructure; never throws.
+ */
+function computeTouchedPaths(worktreePath: string): string[] {
+  try {
+    const output = execSync(
+      'git diff --name-only origin/HEAD...HEAD 2>/dev/null || git diff --name-only origin/dev...HEAD 2>/dev/null',
+      { cwd: worktreePath, timeout: 5000 },
+    ).toString().trim();
+    return output ? output.split('\n').filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -206,6 +224,12 @@ export class WorkerSync {
       if (drainedMcpCalls) worker.pendingMcpCalls = [];
       if (drainedErrorTraces) worker.pendingErrorTraces = [];
 
+      // Passive observed-touches: compute files touched on the branch for §6d.
+      // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
+      const touchedPaths = worker.worktreePath && existsSync(worker.worktreePath)
+        ? computeTouchedPaths(worker.worktreePath)
+        : undefined;
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
@@ -218,6 +242,8 @@ export class WorkerSync {
         // Included on every sync while the queue is non-empty — the hook clears it on the next
         // successful claim call, so this is a safety net, not the primary flush path.
         ...(worker.pendingPaths?.length ? { pendingPaths: [...worker.pendingPaths] } : {}),
+        // Observed touches from git diff — server accumulates into workers.observedTouches.
+        ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
