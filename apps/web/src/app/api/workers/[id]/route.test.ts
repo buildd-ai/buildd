@@ -5919,5 +5919,19 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
     expect(failedUpdate).toBeDefined();
     expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
+
+    /**
+     * The recorded reason must not assert a cause the server cannot observe.
+     * The original text said "runner did not request outputFormat", but the
+     * server sees only the absence of structuredOutput — it has no visibility
+     * into whether outputFormat was requested. That claim is also very likely
+     * false: the claim route hands the runner the full task row, so
+     * resolveOutputFormat() does receive `mode: 'planning'` and does request the
+     * schema. Naming a specific wrong cause sends whoever debugs this straight
+     * to the wrong file.
+     */
+    expect(failedUpdate.result.error).not.toContain('runner did not request outputFormat');
+    // Still has to say what was actually observed, so the failure stays diagnosable.
+    expect(failedUpdate.result.error.toLowerCase()).toContain('structuredoutput');
   });
 });

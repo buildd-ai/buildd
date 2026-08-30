@@ -1319,11 +1319,18 @@ export async function PATCH(
         }
       }
 
-      // Planning contract guard: a planning task that completes without structuredOutput
-      // is a runner bug (outputFormat was not requested), not a legitimate completion.
-      // The agent's plan was dropped as free-form text — child tasks cannot be created.
-      // Override to failed so the mission loop can retry with the correct outputFormat
-      // rather than silently producing nothing and re-planning forever.
+      // Planning contract guard: a planning task that completes without
+      // structuredOutput is not a legitimate completion — the plan came back as
+      // free-form text, so no child tasks can be created and the mission would
+      // silently produce nothing and re-plan forever. Override to failed.
+      //
+      // Do NOT attribute a cause here. All the server observes is the absence of
+      // structuredOutput; it has no visibility into whether the runner requested
+      // outputFormat, and the earlier text asserting it hadn't was probably
+      // wrong — the claim route hands the runner the full task row, so
+      // resolveOutputFormat() does receive mode:'planning' and does request the
+      // schema. Other live candidates: the SDK returned no validated JSON, or
+      // the task reached the runner through a path that bypasses claim.
       const planningContractViolation = (
         status === 'completed' &&
         !shouldAutoRetry &&
@@ -1333,12 +1340,14 @@ export async function PATCH(
       if (planningContractViolation) {
         console.error(
           `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
-          `overriding completed→failed: planning task returned no structuredOutput. ` +
-          `Runner must request outputFormat for planning tasks (see @buildd/shared resolveOutputFormat).`
+          `overriding completed→failed: planning task returned no structuredOutput, ` +
+          `so the plan could not be materialized into child tasks. Cause is not ` +
+          `determined server-side — check whether the SDK returned validated JSON for ` +
+          `this session (see @buildd/shared resolveOutputFormat for the request side).`
         );
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
-        updates.error = 'Planning task completed without structuredOutput: runner did not request outputFormat';
+        updates.error = 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -1407,7 +1416,7 @@ export async function PATCH(
           ...(infraRetryStartAt ? { startAt: infraRetryStartAt } : {}),
         } : planningContractViolation ? {
           result: {
-            error: 'Planning task completed without structuredOutput — runner did not request outputFormat. Mission will retry.',
+            error: 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created. Mission will retry.',
             errorType: 'planning_contract_violation',
           },
         } : reviewContractViolation ? {
