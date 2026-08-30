@@ -36,6 +36,7 @@ import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -542,6 +543,22 @@ async function handlePullRequestEvent(event: {
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
+
+      // Follow-up push on a PR buildd is already working (CI fix or review fix).
+      // onlyIfPresent: no sticky comment yet means we haven't claimed this PR,
+      // so a bare "fixes pushed" note would be noise.
+      if (event.installation && action === 'synchronize') {
+        await appendPrActivity({
+          installationId: event.installation.id,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          entry: {
+            kind: 'changes_pushed',
+            detail: `\`${pr.head.sha.slice(0, 7)}\` on \`${pr.head.ref}\``,
+          },
+          onlyIfPresent: true,
+        });
+      }
     }
 
     // On PR open (not synchronize/reopen), check merge policy and possibly dispatch reviewer
@@ -998,6 +1015,12 @@ async function handleCheckSuiteFailure(
             message: missionMessage,
           });
         }
+        await appendPrActivity({
+          installationId,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          entry: { kind: 'ci_exhausted', detail: exhaustionDetail, url: ciLogs.runUrl },
+        });
         continue;
       }
 
@@ -1053,6 +1076,16 @@ async function handleCheckSuiteFailure(
         }
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+        await appendPrActivity({
+          installationId,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          entry: {
+            kind: 'ci_fixing',
+            detail: `attempt ${retryTask.context.iteration} of ${retryTask.context.maxIterations}`,
+            url: ciLogs.runUrl,
+          },
+        });
       } else {
         console.log(`Skipping duplicate CI retry for ${task.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
       }
@@ -1281,6 +1314,12 @@ async function maybeDispatchReviewer(
         url: pr.html_url,
         urlTitle: 'View PR',
       });
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber: pr.number,
+        entry: { kind: 'human_review_required', detail: reason },
+      });
       return true; // handled — skip auto-merge
     }
 
@@ -1325,6 +1364,16 @@ async function maybeDispatchReviewer(
       };
       await dispatchNewTask(reviewerTaskFull, workspace);
       console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
+      // Tell the PR (not just the dashboard) that an agent has this.
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber: pr.number,
+        entry: {
+          kind: 'reviewing',
+          detail: `reviewer role \`${policy.agentReview!.reviewerRole}\``,
+        },
+      });
     }
 
     return true; // handled — skip auto-merge

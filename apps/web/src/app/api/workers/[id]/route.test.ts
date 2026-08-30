@@ -3307,6 +3307,38 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
 
+    it('approve: posts the verdict to the PR as a buildd activity comment', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockGithubApi.mockClear();
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      const commentCall = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/org/repo/issues/42/comments' && c[2]?.method === 'POST',
+      );
+      expect(commentCall).toBeDefined();
+      const body = JSON.parse(commentCall[2].body).body as string;
+      expect(body).toContain('<!-- buildd-activity -->');
+      expect(body).toContain('Review passed');
+      expect(body).toContain('confidence 0.90');
+    });
+
+    it('request-changes: tells the PR that buildd is applying the feedback', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      mockGithubApi.mockClear();
+
+      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      const commentCall = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/org/repo/issues/42/comments' && c[2]?.method === 'POST',
+      );
+      expect(commentCall).toBeDefined();
+      const body = JSON.parse(commentCall[2].body).body as string;
+      expect(body).toContain('Applying review feedback');
+      expect(body).toContain('iteration 1 of 3');
+      expect(body).toContain('Fix the missing handler');
+    });
+
     it('approve with gateCondition approve-only: posts note and does NOT auto-merge', async () => {
       setupReviewerTaskCompletion('approve');
       // Workspace has approve-only gateCondition
