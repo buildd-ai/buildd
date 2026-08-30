@@ -32,6 +32,7 @@ import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
+import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -1667,6 +1668,10 @@ async function advanceReleaseStateFromWorkflowRun(run: {
     releaseId: matchingRelease.id,
     state: newState,
   });
+
+  if (newState === 'deploying') {
+    setTimeout(() => verifyReleaseDeployment(matchingRelease.id, db).catch(console.error), 0);
+  }
 }
 
 // Work-tracker helper: if the PR belongs to a task with externalIssueId set and the
