@@ -5,13 +5,13 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import type { Memory } from '@buildd/core/memory-client';
-import { getMemoryClientForTeam } from '@/lib/memory-helper';
+import type { Memory } from '@buildd/core/memory-store';
+import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import ObservationList from './ObservationList';
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
   try {
-    const client = await getMemoryClientForTeam(workspaceId);
+    const client = await getMemoryStoreForTeam(workspaceId);
     if (!client) return { memories: [], total: 0 };
 
     // Resolve workspace project scope

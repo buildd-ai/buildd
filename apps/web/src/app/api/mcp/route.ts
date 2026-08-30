@@ -48,7 +48,7 @@ import {
   type ActionContext,
 } from "@buildd/core/mcp-tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
-import { getMemoryClientForTeam } from "@/lib/memory-helper";
+import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -99,8 +99,7 @@ async function getAccountLevel(api: ApiFn): Promise<'trigger' | 'worker' | 'admi
 
 /**
  * Resolve the team that owns a workspace's memories. Memories are team-scoped,
- * so the `memory` KnowledgeStore namespace keys on this id. Mirrors the same
- * workspace→team→fallback resolution as getMemoryClientForTeam.
+ * so the `memory` KnowledgeStore namespace keys on this id.
  */
 async function resolveTeamId(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<string | null> {
   if (workspaceId) {
@@ -488,7 +487,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
           if (!memClient && action === 'memory_delete') {
             return {
-              content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+              content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
               isError: true,
             };
           }
@@ -770,7 +769,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {
-            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
             isError: true,
           };
         }
@@ -807,7 +806,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {
-            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
             isError: true,
           };
         }
@@ -1257,7 +1256,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           // Fall through to default message
         }
         return {
-          contents: [{ uri, mimeType: "text/plain", text: "Memory service not configured." }],
+          contents: [{ uri, mimeType: "text/plain", text: "No memories found." }],
         };
       }
 

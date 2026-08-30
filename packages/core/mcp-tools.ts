@@ -98,9 +98,9 @@ export interface ActionContext {
   // never block or fail the underlying action.
   knowledgeStore?: KnowledgeStore;
   embedder?: Embedder | null;
-  // Resolve a MemoryClient for this context (team-keyed, auto-provisioning).
-  // Injected by the MCP route so packages/core stays DB-free.
-  getMemoryClient?: () => Promise<MemoryClient | null>;
+  // Resolve a MemoryStore for this context (team-keyed, in-process).
+  // Injected by the MCP route so the callback type stays decoupled from the route layer.
+  getMemoryClient?: () => Promise<MemoryStore | null>;
 }
 
 export type ToolResult = {
@@ -4084,7 +4084,7 @@ export async function handleBuilddAction(
 
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
-import { MemoryClient } from './memory-client';
+import { MemoryStore } from './memory-store';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
@@ -4304,7 +4304,7 @@ function chooseModeForQuery(query: string): 'lexical' | 'hybrid' {
  * error message.
  */
 export async function handleRecallAction(
-  memoryClient: MemoryClient,
+  memoryClient: MemoryStore,
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
@@ -4377,7 +4377,7 @@ export async function handleRecallAction(
  * to know. Near-duplicates are merged automatically.
  */
 export async function handleLearnAction(
-  memoryClient: MemoryClient,
+  memoryClient: MemoryStore,
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
@@ -4464,7 +4464,7 @@ export async function handleLearnAction(
 }
 
 export async function handleMemoryAction(
-  memoryClient: MemoryClient | null,
+  memoryClient: MemoryStore | null,
   action: string,
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
@@ -4473,10 +4473,10 @@ export async function handleMemoryAction(
   // and do not call memoryClient — null is acceptable for those ops.
   const clientRequired = ['context', 'search', 'save', 'get', 'update', 'delete'];
   if (clientRequired.includes(action) && !memoryClient) {
-    return errorResult('Memory service not configured — ensure MEMORY_API_URL is set');
+    return errorResult('Memory store not available — teamId could not be resolved');
   }
   // Safe non-null ref for client-requiring cases (guarded above).
-  const mc = memoryClient as MemoryClient;
+  const mc = memoryClient as MemoryStore;
 
   switch (action) {
     case 'context': {
