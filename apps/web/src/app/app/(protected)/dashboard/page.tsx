@@ -170,7 +170,7 @@ export default async function DashboardPage() {
           where: inArray(missions.teamId, teamIds),
           columns: { id: true, title: true, status: true, priority: true },
           orderBy: [desc(missions.priority), desc(missions.createdAt)],
-          with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true } } },
+          with: { tasks: { columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, taskClass: true } } },
         });
 
         dashboardMissions = activeMissns

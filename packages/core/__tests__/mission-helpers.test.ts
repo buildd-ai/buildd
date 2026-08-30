@@ -438,6 +438,51 @@ describe('computeMissionProgress', () => {
     expect(result.totalTasks).toBe(0);
     expect(result.progress).toBe(0);
   });
+
+  // ── call-site consistency ─────────────────────────────────────────────────────
+  // Every surface (list route, detail route, RSC page, initiative rollup) must
+  // pass taskClass to computeMissionProgress so the fast path runs. These tests
+  // verify that the fast path and fallback heuristics agree on the canonical cases.
+
+  it('taskClass fast-path agrees with fallback for work tasks', () => {
+    // Same tasks: once with taskClass set (fast path), once without (fallback).
+    const tasksWithClass: Task[] = [
+      { id: 't1', status: 'completed', taskClass: 'work' },
+      { id: 't2', status: 'pending',   taskClass: 'work' },
+    ];
+    const tasksWithoutClass: Task[] = [
+      { id: 't1', status: 'completed' },
+      { id: 't2', status: 'pending' },
+    ];
+    const withClass    = computeMissionProgress(tasksWithClass);
+    const withoutClass = computeMissionProgress(tasksWithoutClass);
+    expect(withClass.totalTasks).toBe(withoutClass.totalTasks);
+    expect(withClass.completedTasks).toBe(withoutClass.completedTasks);
+    expect(withClass.progress).toBe(withoutClass.progress);
+  });
+
+  it('taskClass fast-path excludes bookkeeping that fallback would miss without kind/title markers', () => {
+    // A bookkeeping task with no kind/title/mode signal — only taskClass distinguishes it.
+    const tasksWithClass: Task[] = [
+      { id: 'w1', status: 'completed', taskClass: 'work' },
+      { id: 'bk', status: 'completed', taskClass: 'bookkeeping' }, // excluded via fast path
+    ];
+    const result = computeMissionProgress(tasksWithClass);
+    expect(result.totalTasks).toBe(1);   // only w1 counts
+    expect(result.completedTasks).toBe(1);
+    expect(result.progress).toBe(100);
+  });
+
+  it('taskClass fast-path excludes attempt tasks that fallback would miss without prefix/parentTaskId', () => {
+    const tasksWithClass: Task[] = [
+      { id: 'w1', status: 'failed',   taskClass: 'work' },
+      { id: 'at', status: 'completed', taskClass: 'attempt', parentTaskId: 'w1' }, // collapses into w1
+    ];
+    const result = computeMissionProgress(tasksWithClass);
+    // w1 is root; at collapses under it — effective status is 'completed' (best of failed/completed)
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(1);
+  });
 });
 
 // ── computeMissionProgress — segments ────────────────────────────────────────

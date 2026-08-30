@@ -101,7 +101,7 @@ export async function loadInitiativeList(opts: {
         columns: { id: true, title: true, status: true, updatedAt: true, isHeld: true },
         with: {
           tasks: {
-            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true },
+            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, taskClass: true },
             ...(pendingSignals
               ? {
                   with: {
