@@ -54,6 +54,13 @@ export const teams = pgTable('teams', {
   // Team-wide default for which evaluator runs mission criteria. Overridden per
   // workspace by workspaces.criteriaEvaluationStrategy; code default is 'inline'.
   criteriaEvaluationStrategy: text('criteria_evaluation_strategy').$type<'inline' | 'worker' | null>(),
+
+  // Which actions may spend a metered inference call instead of dispatching an
+  // agent run. NULL (or empty) = none, which is today's behaviour — so storing an
+  // inference key changes nothing until the operator opts a capability in.
+  // Same shape as enabledBackends: a reversible mask above the resolution chain,
+  // not another default inside it. See packages/core/inference-policy.ts.
+  enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -1479,7 +1486,7 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).

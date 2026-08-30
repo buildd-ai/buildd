@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import SettingsSection from './SettingsSection';
+import {
+  INFERENCE_CAPABILITIES,
+  ALL_INFERENCE_CAPABILITIES,
+  type InferenceCapability,
+} from '@buildd/core/inference-policy';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -219,6 +224,10 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} onRoutingChange={refreshStrand} />
         <div className="border-t border-border-default" />
 
+        {/* Per-action opt-in for metered inference (separate from holding a key) */}
+        <InferenceCapabilitiesToggle teamId={teamId} />
+        <div className="border-t border-border-default" />
+
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
         <ScopeSelector
           scope={scope}
@@ -266,6 +275,123 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
  * in one switch, instead of editing every workspace/role.
  */
+/**
+ * Per-action opt-in for metered inference calls.
+ *
+ * Holding an inference key and spending it are separate decisions. An inference
+ * call is seconds and cents; the agent path is slower and runs on the
+ * subscription seat already being paid for. Which is right differs per action and
+ * per team, so this is an allowlist rather than one master switch — and it starts
+ * empty, so storing a key changes nothing until an action is opted in.
+ */
+function InferenceCapabilitiesToggle({ teamId }: { teamId: string }) {
+  const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!teamId) return;
+    try {
+      const res = await fetch(`/api/teams/${teamId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = data.team?.enabledInferenceCapabilities as string[] | null | undefined;
+        setEnabled(ALL_INFERENCE_CAPABILITIES.filter((c) => (list ?? []).includes(c)));
+      }
+    } catch {
+      /* non-fatal */
+    } finally {
+      setLoaded(true);
+    }
+  }, [teamId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const isOn = (c: InferenceCapability) => enabled.includes(c);
+
+  async function toggle(c: InferenceCapability) {
+    const next = isOn(c) ? enabled.filter((x) => x !== c) : [...enabled, c];
+    const ordered = ALL_INFERENCE_CAPABILITIES.filter((x) => next.includes(x));
+    const prev = enabled;
+    setEnabled(ordered); // optimistic
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledInferenceCapabilities: ordered }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
+      const d = INFERENCE_CAPABILITIES[c];
+      setMsg({
+        type: 'success',
+        text: isOn(c)
+          ? `${d.label} now uses an inference call (${d.costHint}).`
+          : d.fallback === 'agent'
+            ? `${d.label} is back on the agent path — slower, no metered spend.`
+            : `${d.label} is off. There is no agent fallback for it, so the feature is disabled.`,
+      });
+    } catch (e) {
+      setEnabled(prev); // rollback
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <h3 className="text-sm font-medium text-text-primary">Inference spending</h3>
+        <p className="text-xs text-text-secondary mt-0.5">
+          Which actions may spend a metered inference call instead of dispatching an agent run.
+          Off by default — storing an inference key doesn&apos;t start any spend on its own.
+          Inference is faster; an agent run is slower but uses the subscription seat you already pay for.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {ALL_INFERENCE_CAPABILITIES.map((c) => {
+          const d = INFERENCE_CAPABILITIES[c];
+          const on = isOn(c);
+          return (
+            <div key={c} className="flex items-start justify-between gap-3 inset-panel">
+              <span className="flex flex-col gap-0.5 text-sm text-text-primary">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className={`w-2 h-2 shrink-0 ${on ? 'bg-status-success' : 'bg-text-muted'}`} />
+                  {d.label}
+                  <span className="text-xs text-text-muted">
+                    {on ? `inference · ${d.costHint}` : d.fallback === 'agent' ? 'agent run' : 'disabled'}
+                  </span>
+                </span>
+                <span className="text-xs text-text-secondary">{d.description}</span>
+                {/* The distinction that must not be flattened: for these, off is
+                    not "slower", it is "gone". */}
+                {d.fallback === 'none' && !on && (
+                  <span className="text-xs text-status-warning">
+                    No agent fallback — this feature stays off until you enable it.
+                  </span>
+                )}
+              </span>
+              <button
+                onClick={() => toggle(c)}
+                disabled={busy || !loaded}
+                className={`btn shrink-0 ${on ? '' : 'btn-accent'}`}
+              >
+                {on ? 'Use agent' : 'Use inference'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {msg && (
+        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
+      )}
+    </div>
+  );
+}
+
 function ProviderRoutingToggle({
   teamId,
   workspaceId,

@@ -3,7 +3,7 @@ import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/
 import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
-import { resolveTierEntrySync } from '@buildd/core/model-tier-registry';
+import { inferenceCall, describeInferenceError, type InferenceError } from '@buildd/core/inference-client';
 import { resolveCommandCriterion } from './mission-criteria-verify';
 import { resolveProseCriteria } from './mission-criteria-prose';
 import { resolveEvaluationStrategy } from './mission-criteria-strategy';
@@ -74,14 +74,24 @@ export function criterionText(criterion: GoalCriterion): string {
   return criterion.label ?? criterion.type;
 }
 
+/**
+ * Grade prose criteria in one batched inference call.
+ *
+ * Batched on purpose: the judge sees task summaries and artifact snippets with no
+ * repo access, so a second call would see the same evidence and buy nothing but
+ * N× cost and latency. The provider, model and credential all come from the
+ * team's tier registry via `inferenceCall` — this function no longer knows what
+ * an API key is, which is what lets a team route judgments through OpenRouter by
+ * editing a tier row.
+ */
 async function judgeWithLLM(
   inputs: LLMCriterionInput[],
   missionTitle: string,
   missionDescription: string | null,
   completedTasks: EvidenceTask[],
   evidenceArtifacts: EvidenceArtifact[],
-  anthropicApiKey: string,
-): Promise<LLMCriterionVerdict[]> {
+  scope: { teamId: string; workspaceId?: string | null },
+): Promise<{ verdicts: LLMCriterionVerdict[]; error?: InferenceError }> {
   const taskEvidence = completedTasks.map(t =>
     `[task:${t.id.slice(0, 8)}] "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
   ).join('\n\n');
@@ -130,57 +140,32 @@ Respond with exactly this JSON shape:
   ]
 }`;
 
-  let resp: Response;
-  try {
-    resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicApiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: resolveTierEntrySync('budget').model,
-        max_tokens: LLM_MAX_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-      // This call sits inside the worker-completion request and the cron tick. An
-      // unbounded fetch to a degraded provider would hang both.
-      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-    });
-  } catch (err) {
-    console.error('[criteria-eval/llm] fetch error:', err);
-    return [];
-  }
+  const result = await inferenceCall<LLMCriterionVerdict[]>({
+    capability: 'criteria_grading',
+    tier: 'budget',
+    teamId: scope.teamId,
+    workspaceId: scope.workspaceId,
+    system: systemPrompt,
+    user: userPrompt,
+    maxTokens: LLM_MAX_TOKENS,
+    timeoutMs: LLM_TIMEOUT_MS,
+    validate: (parsed: unknown) => {
+      const verdicts = (parsed as { verdicts?: unknown }).verdicts;
+      if (!Array.isArray(verdicts)) return null;
+      return verdicts.map((v: any) => ({
+        index: v.index as number,
+        // An unrecognised verdict string is not a pass.
+        verdict: (['pass', 'fail', 'UNVERIFIED'].includes(v.verdict) ? v.verdict : 'UNVERIFIED') as CriterionVerdict,
+        evidence: typeof v.evidence === 'string' ? v.evidence : '',
+        ...(v.evidenceRef && typeof v.evidenceRef === 'object'
+          ? { evidenceRef: v.evidenceRef as GoalCriteriaEvidenceRef }
+          : {}),
+      }));
+    },
+  });
 
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    console.error(`[criteria-eval/llm] API error ${resp.status}: ${bodyText.substring(0, 200)}`);
-    return [];
-  }
-
-  const data = await resp.json() as { content?: Array<{ type: string; text?: string }> };
-  const text = data.content?.find(b => b.type === 'text')?.text ?? '';
-
-  try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch?.[0]) throw new Error('no JSON found');
-    const parsed = JSON.parse(jsonMatch[0]) as { verdicts?: unknown[] };
-    if (!Array.isArray(parsed.verdicts)) throw new Error('missing verdicts array');
-
-    return (parsed.verdicts as any[]).map(v => ({
-      index: v.index as number,
-      verdict: (['pass', 'fail', 'UNVERIFIED'].includes(v.verdict) ? v.verdict : 'UNVERIFIED') as CriterionVerdict,
-      evidence: typeof v.evidence === 'string' ? v.evidence : '',
-      ...(v.evidenceRef && typeof v.evidenceRef === 'object' && v.evidenceRef !== null
-        ? { evidenceRef: v.evidenceRef as GoalCriteriaEvidenceRef }
-        : {}),
-    }));
-  } catch (parseErr) {
-    console.error('[criteria-eval/llm] parse error:', parseErr, '| raw:', text.substring(0, 200));
-    return [];
-  }
+  if (!result.ok) return { verdicts: [], error: result.error };
+  return { verdicts: result.data };
 }
 
 /**
@@ -218,12 +203,14 @@ export async function evaluateCriteriaNow(
       id: true,
       title: true,
       description: true,
+      // teamId/workspaceId scope the inference call: they select the tier registry
+      // row (provider + model) and the credential.
+      teamId: true,
+      workspaceId: true,
       goalCriteria: true,
       goalCriteriaState: true,
       workingBranch: true,
       status: true,
-      workspaceId: true,
-      teamId: true,
     },
   });
   if (!mission) return null;
@@ -382,7 +369,6 @@ export async function evaluateCriteriaNow(
     }
 
     const toJudge = inlineLlmEligible.filter(c => !carried.has(c.index));
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
     const completedTasks: EvidenceTask[] = missionTasks
       .filter(t => t.status === 'completed')
@@ -399,17 +385,30 @@ export async function evaluateCriteriaNow(
       contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
     }));
 
-    if (toJudge.length > 0 && anthropicApiKey) {
-      const llmVerdicts = await judgeWithLLM(
+    // Two ways to grade prose, tried in this order.
+    //
+    // 1. An inference call, when the team has an inference key. Seconds, cents,
+    //    and the provider/model come from their tier registry — so pointing the
+    //    budget tier at OpenRouter routes judgments there with no change here.
+    // 2. A dispatched agent run, when there is no key. Slower, but it uses the
+    //    OAuth subscription the team already pays for, which is the only credential
+    //    most teams have. An inference call structurally cannot use a subscription
+    //    seat (see inference-client's docstring), so this is not a fallback for a
+    //    flaky key — it is the path for teams that never had one.
+    let inferenceError: InferenceError | undefined;
+
+    if (toJudge.length > 0) {
+      const judged = await judgeWithLLM(
         toJudge.map(c => ({ index: c.index, text: criterionText(criteria[c.index]) })),
         mission.title,
         mission.description ?? null,
         completedTasks,
         evidenceArtifacts,
-        anthropicApiKey,
+        { teamId: mission.teamId, workspaceId: mission.workspaceId },
       );
+      inferenceError = judged.error;
 
-      for (const lv of llmVerdicts) {
+      for (const lv of judged.verdicts) {
         const criterionState = state.criteria.find(c => c.index === lv.index);
         if (!criterionState) continue;
         criterionState.verdict = lv.verdict;
@@ -417,19 +416,36 @@ export async function evaluateCriteriaNow(
         if (lv.evidenceRef) criterionState.evidenceRefs = [lv.evidenceRef];
       }
 
-      for (const c of toJudge) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs && cs.verdict === 'NOT_EVALUATED') {
-          cs.evidence = 'LLM returned no verdict for this criterion';
+      if (!inferenceError) {
+        for (const c of toJudge) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (cs && cs.verdict === 'NOT_EVALUATED') {
+            cs.evidence = 'The evaluator returned no verdict for this criterion';
+          }
         }
       }
-    } else if (toJudge.length > 0) {
-      // No API key in this process — which is the normal case in production, and
-      // permanently the case for a team whose Claude access is an OAuth
-      // subscription rather than a metered API key. Grade by dispatching a task
-      // instead: a runner claims it with whatever backend credential the team has
-      // connected. Prefer a `command` criterion regardless — its verdict is an
-      // exit code rather than a model's judgment.
+    }
+
+    // Three errors mean "this team has no inference path for grading", not "a call
+    // failed": no key, a provider that cannot serve single-shot calls, and the
+    // operator having switched this capability off on purpose. All three fall
+    // through to a dispatched agent run, which is the point of that path —
+    // grading still happens, on the subscription seat, just slower.
+    //
+    // Every other error is a real call that went wrong. Report it and let the next
+    // evaluation round retry rather than spending an agent run on a blip.
+    const NO_INFERENCE_PATH = ['missing_key', 'unsupported_provider', 'capability_disabled'];
+    const needsDispatch = toJudge.length > 0 && !!inferenceError && NO_INFERENCE_PATH.includes(inferenceError.kind);
+
+    if (toJudge.length > 0 && inferenceError && !needsDispatch) {
+      for (const c of toJudge) {
+        const cs = state.criteria.find(s => s.index === c.index);
+        if (cs) {
+          cs.verdict = 'NOT_EVALUATED';
+          cs.evidence = `Not graded: ${describeInferenceError(inferenceError)}`;
+        }
+      }
+    } else if (needsDispatch) {
       const proseInputs = toJudge.map(c => ({
         index: c.index,
         text: criterionText(criteria[c.index]),
