@@ -3,6 +3,11 @@ title: Work Tracker Integration
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.
+domain: integrations
+surfaces: [apps/web/src/lib/work-tracker.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/app/api/workspaces/[id]/settings/route.ts]
+related: [webhook-dataflow, mcp-connectors-and-roles, mission-task-lifecycle]
+keywords: [worktrackerconfig, externalissueid, externalissueurl, postlinearcompletioncomment, github_app_not_installed, inbound issue webhook]
 supersedes: []
 ---
 # Work-tracker integration

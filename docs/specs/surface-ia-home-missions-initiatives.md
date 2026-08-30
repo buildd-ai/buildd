@@ -2,7 +2,12 @@
 title: Surface IA — Home, Missions, Initiatives
 status: draft
 owner: max
-last_verified: 2026-08-16
+last_verified: 2026-08-29
+summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
+domain: surfaces
+surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
+related: [mission-task-lifecycle, timeline-dependency-geometry]
+keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence]
 supersedes: [missions-tab-triage]
 ---
 
@@ -464,6 +469,7 @@ Inputs, per initiative, all already available:
 | `attempts7d` | tasks created in 7d where `deriveTaskType(task) !== null` |
 | `tokens7d` | sum of the last 7 entries of `effortDays` |
 | `criteriaFail` | child missions whose `goalCriteriaState.overall === 'fail'`, plus the initiative's own `kpiState.overall === 'fail'` |
+| | Counts `fail` only, never `UNVERIFIED`. As of PR #1901 an `all_prs_merged` criterion on a mission with no PRs yields `UNVERIFIED` rather than `fail` (absence of evidence is not a contradiction), so a PR-less mission no longer pushes an arc to `losing`. Such a mission still cannot complete — it surfaces through `awaitingVerification`, which is the correct signal for "nobody has answered this" — and `confidence` stays `unverified`. |
 | `held`, `blocked`, `awaitingVerification` | §6.1 |
 | `allTerminal` | every child mission is in a terminal status |
 

@@ -77,7 +77,22 @@ archived` (lifecycle is stored; *health* is derived from task state via
 `deriveMissionHealth`, not stored). Notable fields:
 - **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — all mission tasks push to one
   shared branch tracked by a single PR.
-- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. When the mission status transitions to `completed` or `archived`, its linked schedule is automatically deleted. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. This ensures heartbeat schedules cannot outlive the mission that owns them.
+- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. An *explicit* status write to `completed` or `archived` (dashboard / MCP) **deletes** the linked schedule; an *automated* completion through `completeMissionIfVerified` **disables** it (`enabled = false`) instead, so a mission that later reopens — or one refused by the goal-criteria gate — keeps its heartbeat. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. Either way a heartbeat schedule cannot outlive the mission that owns it.
+- **`goalCriteria`** (jsonb) + **`goalCriteriaState`** (jsonb) + `autoVerify` — the
+  completion gate. `goalCriteria` is a list of outcome criteria
+  (`command | all_prs_merged | no_open_tasks | artifact_exists | description`);
+  `goalCriteriaState` stores the last verdict per criterion plus a folded
+  `overall`. **A mission MUST NOT be closed by any automated path unless
+  `overall = 'pass'`** — completion requests a verdict, the verdict gates
+  completion, and the absence of a verdict (`NOT_EVALUATED`, `PENDING`,
+  `UNVERIFIED`) is never a pass. A mission whose work is finished but whose
+  criteria have not passed stays `active` and renders as *awaiting verification*:
+  it keeps its heartbeat and is exempt from auto-archive. `command` criteria are
+  verified by RUNNING the command (a dispatched verification task whose exit code
+  is the verdict), never by asking a model. `autoVerify = false` suppresses
+  automatic evaluation only — on-demand evaluation still works, and the mission
+  stays gated until someone asks. See `docs/specs/mission-task-lifecycle.md`
+  § Mission Completion Gate.
 - `parentMissionId` — sub-missions.
 - `requiresReview` — human review gate before merge.
 - `defaultOutputRequirement`, `maxConcurrentTasks`, `contextArtifactIds`.
@@ -296,6 +311,10 @@ brutalist UI.
 
 **Removed concepts (do not reintroduce in docs):**
 - **Objectives** — never existed as a table; superseded by **Missions**.
+- **"The heartbeat is the evaluation authority"** — retired. The heartbeat is an
+  LLM reading a checklist; its `missionComplete = true` is a proposal, and one
+  predicate (`canCompleteMission`) decides. Goal criteria are a gate, not
+  advisory metadata: an unevaluated criterion blocks completion.
 - **Recipes** — removed (~Apr 2026).
 - **Heartbeat as a feature** — folded into missions/health; `worker_heartbeats` is
   infra liveness, not a user feature.

@@ -3,6 +3,11 @@ title: Runner Liveness
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
+domain: runners
+surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, packages/shared/src/runner-liveness.ts, packages/core/runner-health.ts]
+related: [provider-failover, mission-task-lifecycle]
+keywords: [worker_heartbeats, heartbeat_stale_ms, cleanupstaleworkers, waiting_input timeout, buildd_runner_poll_min, viewertoken]
 supersedes: []
 ---
 # Runner Liveness

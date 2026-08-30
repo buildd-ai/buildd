@@ -3,6 +3,11 @@ title: MCP Connectors & Roles
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
+domain: mcp
+surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/connectors/route.ts, apps/web/src/lib/connector-status.ts, apps/web/src/lib/mcp-connector-refresh.ts]
+related: [credential-isolation, mcp-action-contracts, external-cron-triggers]
+keywords: [connectorrefs, mcp_connector_credential, connector_shares, needsreconnect, mcpservers, requiredenvvars]
 supersedes: []
 ---
 # MCP Connectors & Roles (unified model)

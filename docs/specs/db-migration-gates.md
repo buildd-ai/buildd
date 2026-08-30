@@ -3,6 +3,11 @@ title: DB Migration Operation-Class Gate
 status: active
 owner: builder
 last_verified: 2026-08-25
+summary: Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
+domain: releases
+surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts]
+related: [release-flow, scheduled-task-merge-policy]
+keywords: [expand, contract, classifymigrationsql, schema drift, drizzle, escalatetopaths]
 ---
 
 ## DB Migration Operation-Class Gate

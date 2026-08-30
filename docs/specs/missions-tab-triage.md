@@ -3,6 +3,11 @@ title: Missions Tab — Initiative Triage Surface
 status: superseded
 owner: builder
 last_verified: 2026-08-13
+summary: The initiative triage surface MUST rank initiatives by pending-action counts with 14-day effort sparklines and a task-weighted progress percentage computed over all of an initiative's tasks, uncapped.
+domain: surfaces
+surfaces: [apps/web/src/app/api/initiatives/effort/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/components/SparklineBar.tsx]
+related: [surface-ia-home-missions-initiatives, mission-task-lifecycle]
+keywords: [effortday, initiativetriagerow, sparklinebar, awaitingverification, __unassigned__, computeinitiativeprogress]
 superseded_by: surface-ia-home-missions-initiatives
 ---
 
