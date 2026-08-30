@@ -5,7 +5,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import type { LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
@@ -283,14 +283,21 @@ async function resolveStaleTask(
  */
 export async function cleanupStaleWorkers(accountId: string) {
   // 1. Auto-expire stale workers:
-  //    - 'running'/'starting': no update in 15+ minutes
+  //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
+  //      timeout + grace). This must NOT be tightened independently: the runner
+  //      keeps a worker alive through long silent tool calls, and `updatedAt`
+  //      only advances when the runner syncs a state change, so reaping before
+  //      the runner's own backstop kills healthy sessions mid-tool-call.
+  //      A dead *runner* is caught by the heartbeat rule in section 2 instead.
   //    - 'idle': no update in 5+ minutes (should transition almost immediately; lingering idle = runner crashed before starting)
-  const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+  const STALE_THRESHOLD_MS = WORKER_STALE_REAP_MS;
   const IDLE_STALE_THRESHOLD_MS = 5 * 60 * 1000;
   //    - silent start: started, but ≤2 turns and $0 spend with no sync in 10+ min.
   //      A live session syncs on a 30s cycle, so 10 minutes of silence with zero
   //      output means the SDK stream died — surface it well before the generic
-  //      15-minute rule (and 30-minute recovery window) would notice.
+  //      stale rule above would notice. A worker with zero completed turns and
+  //      $0 spend is not in a legitimate long tool call, so the toolInFlight
+  //      reasoning behind the longer threshold does not apply here.
   const SILENT_START_THRESHOLD_MS = 10 * 60 * 1000;
   const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
   const idleStaleThreshold = new Date(Date.now() - IDLE_STALE_THRESHOLD_MS);
@@ -303,7 +310,7 @@ export async function cleanupStaleWorkers(accountId: string) {
         and(inArray(workers.status, ['running', 'starting']), lt(workers.updatedAt, staleThreshold)),
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
         // Silent-start rule, expressed in SQL so the shorter clock is applied by
-        // the DB rather than by post-filtering the 15-minute window.
+        // the DB rather than by post-filtering the generic stale window.
         sql`${workers.status} IN ('running', 'starting')
             AND ${workers.startedAt} IS NOT NULL
             AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}

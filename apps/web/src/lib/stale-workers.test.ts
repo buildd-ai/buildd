@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { WORKER_STALE_REAP_MS } from '@buildd/shared';
 
 // --- Mocks ---
 const mockWorkersFindMany = mock(() => [] as any[]);
@@ -1774,7 +1775,7 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     expect(taskUpdateSet.result.error).toContain('silent-start');
   });
 
-  it('looks for silent-start workers on a shorter clock than the 15-minute stale rule', async () => {
+  it('looks for silent-start workers on a shorter clock than the generic stale rule', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 
     await cleanupStaleWorkers('account-1');
@@ -1790,10 +1791,15 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     walk(mockWorkersFindMany.mock.calls[0][0]);
 
     const agesMin = dates.map(d => Math.round((Date.now() - d.getTime()) / 60000));
-    // 15-min stale rule + 5-min idle rule already existed; the silent-start rule
-    // must fire well before the generic 15-minute expiry.
-    expect(agesMin).toContain(15);
-    const silentWindow = agesMin.find(m => m > 5 && m < 15);
+    // Derived from the shared constant rather than hardcoded: the generic rule
+    // is deliberately pinned to the runner's own backstop (+grace) so the server
+    // cannot reap a worker the runner is still protecting through a long silent
+    // tool call. Hardcoding a number here is what let the two drift apart.
+    const reapMin = Math.round(WORKER_STALE_REAP_MS / 60000);
+    expect(agesMin).toContain(reapMin);
+    // The silent-start rule must still fire well before the generic expiry, and
+    // after the 5-minute idle rule.
+    const silentWindow = agesMin.find(m => m > 5 && m < reapMin);
     expect(silentWindow).toBeDefined();
   });
 });

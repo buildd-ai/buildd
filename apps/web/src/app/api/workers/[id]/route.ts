@@ -252,12 +252,30 @@ export async function PATCH(
   // the lost-update tolerance below must not apply to a resurrection.
   let reactivatingTerminalWorker = false;
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
+    // Reactivation must be requested EXPLICITLY. The runner's deliberate resume
+    // (sendMessage follow-up) sets `reactivate: true`; its periodic 10s keepalive
+    // sync does not, and the two payloads are otherwise identical.
+    //
+    // Inferring intent from `worker.error` instead — as this did — silently
+    // resurrected cleanly completed workers: a successful completion has
+    // `error: null`, so every string check below was undefined, the guard fell
+    // open, and a keepalive tick landing after the agent's complete_task wiped
+    // both the worker's completion and the task's completed status. The row then
+    // sat at 'running' with a frozen updatedAt (nothing re-syncs a locally-done
+    // worker) until the reaper killed it — a task that finished healthy, killed.
+    //
+    // The window is wide because the runner's local status stays 'working' until
+    // the SDK session ends, which is after complete_task AND after any
+    // verificationCommand run, so verified/looped tasks were hit hardest.
+    const reactivateRequested = body.reactivate === true;
+    // Even an explicit request must not revive a worker the server itself
+    // expired — the runner is gone or was killed, so there is nothing to resume.
     const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
       worker.error?.includes('expired') ||
       worker.error?.includes('timed out') ||
       worker.error?.includes('went offline') ||
       worker.error?.includes('runner restarted');
-    if (body.status !== 'running' || isNonReactivatableTermination) {
+    if (body.status !== 'running' || !reactivateRequested || isNonReactivatableTermination) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
       const artifactCount = await getWorkerArtifactCount(id);

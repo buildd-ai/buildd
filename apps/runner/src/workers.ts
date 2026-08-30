@@ -4467,8 +4467,15 @@ If something is missing or incomplete, describe what and fix it now.`;
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);
 
-      // Update server
-      await this.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Processing follow-up...' });
+      // Update server. `reactivate` marks this as a DELIBERATE resume of a
+      // possibly-terminal worker, as opposed to the periodic keepalive sync
+      // (which sends the same status:'running' and must never resurrect a
+      // completed worker — see the reactivation guard in the worker PATCH route).
+      await this.buildd.updateWorker(worker.id, {
+        status: 'running',
+        currentAction: 'Processing follow-up...',
+        reactivate: true,
+      });
 
       // Get workspace path
       const workspacePath = this.resolver.resolve({

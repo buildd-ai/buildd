@@ -171,7 +171,13 @@ export class RecoveryManager {
     this.deps.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
 
-    await this.deps.buildd.updateWorker(worker.id, { status: 'running', currentAction: 'Retrying...' });
+    // `reactivate` — this deliberately resumes a worker that reached a terminal
+    // state, which the server only permits when asked explicitly.
+    await this.deps.buildd.updateWorker(worker.id, {
+      status: 'running',
+      currentAction: 'Retrying...',
+      reactivate: true,
+    });
 
     // Resolve workspace
     const workspacePath = this.deps.resolver.resolve({
@@ -360,9 +366,12 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     this.deps.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
 
+    // `reactivate` — a recovery session deliberately resumes a worker that
+    // reached a terminal state, so the server needs the explicit signal.
     await this.deps.buildd.updateWorker(worker.id, {
       status: 'running',
       currentAction: `Recovery: ${goal}`,
+      reactivate: true,
     });
 
     // Build task-like object for startSession
