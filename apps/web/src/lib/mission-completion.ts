@@ -3,6 +3,7 @@ import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/c
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
+import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
@@ -87,8 +88,12 @@ export interface MissionCompletionDecision {
   /** Terminal deliverables by status, for the completion note. */
   deliverableStatusCounts: Record<string, number>;
   criteriaCount: number;
-  /** `'none'` when the mission states no criteria — not the same as a pass. */
-  criteriaVerdict: CriterionVerdict | 'none';
+  /**
+   * The mission's criteria verdict as a DerivedMetric. `unavailable/not_evaluated`
+   * when no criteria exist or no verdict has been produced — structurally distinct
+   * from `value/'pass'` (evaluated and passed).
+   */
+  criteriaVerdict: DerivedMetric<CriterionVerdict>;
   criteriaEvaluatedAt: string | null;
   /** Deliverables that failed on infrastructure, not on their own merits. */
   infraStalledTitles: string[];
@@ -179,7 +184,7 @@ export async function canCompleteMission(
     pendingAllTasks: 0,
     deliverableStatusCounts: {} as Record<string, number>,
     criteriaCount: 0,
-    criteriaVerdict: 'none' as CriterionVerdict | 'none',
+    criteriaVerdict: derivedUnavailable<CriterionVerdict>('not_evaluated'),
     criteriaEvaluatedAt: null as string | null,
     infraStalledTitles: [] as string[],
   };
@@ -209,9 +214,13 @@ export async function canCompleteMission(
   const storedState = (mission.goalCriteriaState ?? null) as GoalCriteriaState | null;
   base.criteriaCount = criteria.length;
   // Report the stored verdict from here on, so an early refusal does not tell a
-  // reader the mission had no criteria. `'none'` means "states no criteria" and
-  // must never stand in for "has criteria, verdict unknown".
-  if (criteria.length > 0) base.criteriaVerdict = storedState?.overall ?? 'NOT_EVALUATED';
+  // reader the mission had no criteria. When criteria exist but no verdict has been
+  // produced yet, unavailable/not_evaluated is structurally distinct from a pass.
+  if (criteria.length > 0) {
+    base.criteriaVerdict = storedState
+      ? derivedValue<CriterionVerdict>(storedState.overall)
+      : derivedUnavailable<CriterionVerdict>('not_evaluated');
+  }
   base.criteriaEvaluatedAt = storedState?.evaluatedAt ?? null;
 
   const allTasks = await db.query.tasks.findMany({
@@ -298,7 +307,9 @@ export async function canCompleteMission(
     state = await ensureCriteriaVerdict(missionId, { trigger: opts.path ?? 'dormancy' });
   }
 
-  base.criteriaVerdict = state?.overall ?? 'NOT_EVALUATED';
+  base.criteriaVerdict = state
+    ? derivedValue<CriterionVerdict>(state.overall)
+    : derivedUnavailable<CriterionVerdict>('not_evaluated');
   base.criteriaEvaluatedAt = state?.evaluatedAt ?? null;
 
   if (state?.overall === 'pass') {
@@ -393,7 +404,7 @@ export async function completeMissionIfVerified(
   console.log(
     `[mission-completion] ${missionId} via ${opts.path}: ${decision.ok ? 'COMPLETE' : `BLOCKED (${decision.code})`}` +
     ` — pendingDeliverables=${decision.pendingDeliverables} pendingAll=${decision.pendingAllTasks}` +
-    ` criteria=${decision.criteriaVerdict} :: ${decision.reason}`
+    ` criteria=${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : decision.criteriaVerdict.reason} :: ${decision.reason}`
   );
 
   if (!decision.ok) {
@@ -442,7 +453,7 @@ export async function completeMissionIfVerified(
       `Completed via ${opts.path}.\n\n` +
       `Predicate: ${decision.reason}\n` +
       `Deliverables: ${statusSummary || 'none'}\n` +
-      `Goal criteria: ${decision.criteriaVerdict}` +
+      `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +
       (decision.criteriaEvaluatedAt ? ` (evaluated ${decision.criteriaEvaluatedAt})` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
     status: 'open',

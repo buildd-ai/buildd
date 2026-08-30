@@ -409,10 +409,10 @@ describe('measuredDistribution', () => {
     expect(dist(m).mean).toBe(2000);
   });
 
-  test('is unavailable, with the reason, when nothing recorded the metric', () => {
+  test('is unavailable, with the detail, when nothing recorded the metric', () => {
     const m = measuredDistribution([0, 0, 0], 'seat auth reports no cost');
     expect(m.kind).toBe('unavailable');
-    expect(m.kind === 'unavailable' && m.reason).toBe('seat auth reports no cost');
+    expect(m.kind === 'unavailable' && m.detail).toBe('seat auth reports no cost');
   });
 
   test('is unavailable on an empty input rather than a zeroed distribution', () => {
@@ -449,7 +449,7 @@ describe('zero-value tasks', () => {
       row({ taskId: 'b', inputTokens: 700_000, costUsd: '0' }),
     ]);
     expect(stats.perTask.costUsd.kind).toBe('unavailable');
-    expect(stats.perTask.costUsd.kind === 'unavailable' && stats.perTask.costUsd.reason)
+    expect(stats.perTask.costUsd.kind === 'unavailable' && stats.perTask.costUsd.detail)
       .toMatch(/seat-based/);
     // Tokens are still measured — one metric being absent doesn't sink the rest.
     expect(dist(stats.perTask.inputTokens).median).toBe(500_000);
