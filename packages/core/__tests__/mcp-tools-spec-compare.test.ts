@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { handleBuilddAction, handleMemoryAction, type ApiFn, type ActionContext } from '../mcp-tools';
-import { MemoryClient } from '../memory-client';
+import { MemoryStore } from '../memory-store';
 import type { KnowledgeStore, QueryResult, QueryParams } from '../knowledge-store/types';
 
 const WS_ID = 'ws-1';
@@ -292,7 +292,7 @@ describe('spec_compare — two-hop vocabulary bridge', () => {
 describe('query_knowledge — worker token access', () => {
   it('worker token can call query_knowledge with corpus=code without auth error', async () => {
     const ks = mockStore();
-    const memClient = { getContext: async () => ({ markdown: '' }), search: async () => ({ memories: [] }) } as unknown as MemoryClient;
+    const memClient = { getContext: async () => ({ markdown: '' }), search: async () => ({ results: [] }) } as unknown as MemoryStore;
     const res = await handleMemoryAction(memClient, 'query_knowledge', { query: 'schema', corpus: 'code' }, {
       workspaceId: WS_ID,
       teamId: 'team-1',

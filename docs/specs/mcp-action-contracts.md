@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-07-18
 summary: The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
 domain: mcp
-surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/api-auth.ts, packages/core/memory-client.ts]
+surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/api-auth.ts, packages/core/memory-store.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405]
 supersedes: []
@@ -128,12 +128,11 @@ resolved team and workspace.
 
 **Code surface**:
 - Handler: `packages/core/mcp-tools.ts` — `handleMemoryAction()`
-- Memory client: `packages/core/memory-client.ts`
+- Memory store: `packages/core/memory-store.ts` — `MemoryStore` (in-process Drizzle queries)
 - Knowledge store: `packages/core/knowledge-store/pg-vector-store.ts`
 - Memory provisioning: `apps/web/src/app/api/mcp/route.ts` —
-  `getMemoryClientForTeam()`
+  `getMemoryStoreForTeam()`
 
-**Out of scope**: The internal memory service API at `memory.buildd.dev`
-(separate repo `buildd-ai/memory`). MCP Resources (`buildd://tasks/pending`,
+**Out of scope**: MCP Resources (`buildd://tasks/pending`,
 `buildd://workspace/memory`, `buildd://workspace/skills`) — read-only, no auth
 differences.

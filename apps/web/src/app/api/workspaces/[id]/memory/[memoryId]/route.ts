@@ -13,7 +13,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryClientForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -59,9 +59,9 @@ export async function PATCH(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = await getMemoryClientForTeam(id);
+  const memClient = await getMemoryStoreForTeam(id);
   if (!memClient) {
-    return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
+    return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
   const body = await req.json();
@@ -78,7 +78,7 @@ export async function PATCH(
     return NextResponse.json({ memory: data.memory, observation: data.memory });
   } catch (err) {
     console.error('Memory service error:', err);
-    return NextResponse.json({ error: 'Failed to update memory' }, { status: 502 });
+    return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
   }
 }
 
@@ -96,9 +96,9 @@ export async function DELETE(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const memClient = await getMemoryClientForTeam(id);
+  const memClient = await getMemoryStoreForTeam(id);
   if (!memClient) {
-    return NextResponse.json({ error: 'Memory service not configured' }, { status: 503 });
+    return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
   try {
@@ -106,6 +106,6 @@ export async function DELETE(
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error('Memory service error:', err);
-    return NextResponse.json({ error: 'Failed to delete memory' }, { status: 502 });
+    return NextResponse.json({ error: 'Failed to delete memory' }, { status: 500 });
   }
 }

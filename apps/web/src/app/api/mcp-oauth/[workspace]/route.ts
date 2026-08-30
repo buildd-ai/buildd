@@ -40,7 +40,7 @@ import {
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { getIssuer } from '@/lib/oauth/config';
-import { getMemoryClientForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 
 function extractBearer(req: Request): string | null {
   const auth = req.headers.get('authorization');
@@ -178,7 +178,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         if (action === 'consolidate_knowledge' || action === 'memory_delete') {
           const memClient = await getMemoryClientForTeam(workspaceId, accountTeamId);
           if (!memClient && action === 'memory_delete') {
-            return { content: [{ type: 'text' as const, text: 'Memory service not configured on this server.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
           }
           const embedder = getVoyageEmbedder();
           const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker());
@@ -203,7 +203,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
 
         const memClient = await getMemoryClientForTeam(workspaceId, accountTeamId);
         if (!memClient) {
-          return { content: [{ type: 'text' as const, text: 'Memory service not configured on this server.' }], isError: true };
+          return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
         }
         return await handleMemoryAction(memClient, action, params, { ...ctx, isSensitive });
       }

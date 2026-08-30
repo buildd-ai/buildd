@@ -1,7 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions } from '@buildd/core/db/schema';
+import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions, memories } from '@buildd/core/db/schema';
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
-import { getMemoryClientForTeam } from '@/lib/memory-helper';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
@@ -69,18 +68,11 @@ export default async function WorkspaceDetailPage({
 
   const taskCountMap = Object.fromEntries(taskCounts.map((t) => [t.status, Number(t.count)]));
 
-  // Fetch memory count from memory service
-  let memoryCount = 0;
-  try {
-    const memClient = await getMemoryClientForTeam(id);
-    if (memClient) {
-      const project = workspace.repo || workspace.name;
-      const data = await memClient.search({ project, limit: 1 });
-      memoryCount = data.total;
-    }
-  } catch {
-    // Non-fatal
-  }
+  const [memCountRes] = await db
+    .select({ total: count() })
+    .from(memories)
+    .where(eq(memories.teamId, workspace.teamId));
+  const memoryCount = Number(memCountRes?.total || 0);
 
   const [schedCount] = await db
     .select({ count: count() })

@@ -1,20 +1,22 @@
 /**
  * Backfill existing buildd memories into knowledge_chunks.
  *
- * Memories are a TEAM-level resource (the memory service is team-scoped), so the
- * `memory` corpus is namespaced by teamId — one pass per team, not per
- * workspace. Passing a workspaceId backfills that workspace's team.
+ * Memories are a TEAM-level resource (team-scoped), so the `memory` corpus is
+ * namespaced by teamId — one pass per team, not per workspace.
+ *
+ * After the service absorption, this script reads from the `memories` table
+ * directly (no external service required).
  *
  * Usage:
- *   MEMORY_API_URL=... VOYAGE_API_KEY=... DATABASE_URL=... \
+ *   VOYAGE_API_KEY=... DATABASE_URL=... \
  *   bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId|teamId]
  *
- * With no id, backfills every team that has a memoryApiKey configured.
+ * With no id, backfills every team that has memories.
  */
 import { db } from '../db/index';
-import { teams, workspaces } from '../db/schema';
-import { eq, isNotNull } from 'drizzle-orm';
-import { MemoryClient } from '../memory-client';
+import { teams, workspaces, memories } from '../db/schema';
+import { eq, inArray } from 'drizzle-orm';
+import { MemoryStore } from '../memory-store';
 import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 
@@ -22,25 +24,24 @@ const BATCH_SIZE = 20;
 
 async function backfillTeam(
   teamId: string,
-  memoryClient: MemoryClient,
   store: PgVectorStore,
 ) {
+  const memStore = new MemoryStore(teamId);
   console.log(`[backfill] team ${teamId} — fetching memories...`);
   const ns = buildNamespace(teamId, 'memory');
   let offset = 0;
   let total = 0;
 
   while (true) {
-    const { results, total: t } = await memoryClient.search({ limit: BATCH_SIZE, offset });
+    const { results, total: t } = await memStore.search({ limit: BATCH_SIZE, offset });
     total = t;
 
     if (results.length === 0) break;
 
-    // Fetch full content
     const ids = results.map(r => r.id);
-    const { memories } = await memoryClient.batch(ids);
+    const { memories: mems } = await memStore.batch(ids);
 
-    const chunks = memories.map(m => ({
+    const chunks = mems.map(m => ({
       id: m.id,
       content: m.content,
       lexicalText: `${m.title}\n\n${m.content}`,
@@ -87,40 +88,19 @@ async function main() {
 
   const store = new PgVectorStore(embedder);
   const targetArg = process.argv[2];
-  const memoryApiUrl = process.env.MEMORY_API_URL;
-
-  if (!memoryApiUrl) {
-    console.error('[backfill] MEMORY_API_URL is required');
-    process.exit(1);
-  }
 
   if (targetArg) {
-    // Single team (resolved from a workspaceId or teamId)
     const teamId = await resolveTeamId(targetArg);
     if (!teamId) {
       console.error(`[backfill] Could not resolve a team from: ${targetArg}`);
       process.exit(1);
     }
-    const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
-      columns: { memoryApiKey: true },
-    });
-    if (!team?.memoryApiKey) {
-      console.error('[backfill] No memoryApiKey configured for this team');
-      process.exit(1);
-    }
-    const client = new MemoryClient(memoryApiUrl, team.memoryApiKey);
-    await backfillTeam(teamId, client, store);
+    await backfillTeam(teamId, store);
   } else {
-    // All teams with a memory key — one pass each
-    const teamsWithKey = await db.query.teams.findMany({
-      where: isNotNull(teams.memoryApiKey),
-      columns: { id: true, memoryApiKey: true },
-    });
-
-    for (const team of teamsWithKey) {
-      const client = new MemoryClient(memoryApiUrl, team.memoryApiKey!);
-      await backfillTeam(team.id, client, store);
+    // All teams that have memories
+    const rows = await db.selectDistinct({ teamId: memories.teamId }).from(memories);
+    for (const row of rows) {
+      await backfillTeam(row.teamId, store);
     }
   }
 

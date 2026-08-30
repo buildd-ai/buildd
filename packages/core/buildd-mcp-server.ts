@@ -21,7 +21,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from './mcp-tools';
-import { MemoryClient } from './memory-client';
+import { MemoryStore } from './memory-store';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from './knowledge-store/index';
 
 export interface BuilddMcpServerOptions {
@@ -33,10 +33,6 @@ export interface BuilddMcpServerOptions {
   workerId?: string;
   /** Workspace ID override */
   workspaceId?: string;
-  /** Memory service URL */
-  memoryApiUrl?: string;
-  /** Memory service API key */
-  memoryApiKey?: string;
   /** Project identifier for memory scoping */
   memoryProject?: string;
   /** Task mode — planning workers get a restricted toolset */
@@ -77,15 +73,10 @@ async function getAccountLevel(serverUrl: string, apiKey: string): Promise<'trig
  * Returns a config object that can be passed to query() options.mcpServers.
  */
 export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
-  const { serverUrl, apiKey, workerId, workspaceId, memoryApiUrl, memoryApiKey, memoryProject } = opts;
+  const { serverUrl, apiKey, workerId, workspaceId, memoryProject } = opts;
 
   const api: ApiFn = (endpoint, options?) =>
     apiCall(serverUrl, apiKey, endpoint, options);
-
-  // Memory client (optional — gracefully degrades if not configured)
-  const memUrl = memoryApiUrl || process.env.MEMORY_API_URL;
-  const memKey = memoryApiKey || process.env.MEMORY_API_KEY;
-  const memClient = memUrl && memKey ? new MemoryClient(memUrl, memKey) : null;
 
   // Determine account level once at creation for dynamic toolset
   const level = await getAccountLevel(serverUrl, apiKey);
@@ -97,6 +88,11 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
     const me = await apiCall(serverUrl, apiKey, '/api/accounts/me');
     resolvedTeamId = me?.teamId;
   } catch { /* best-effort */ }
+
+  // In-process memory store — reads/writes go directly to the memories table.
+  // Null when teamId could not be resolved (best-effort; tools degrade gracefully).
+  const memClient = resolvedTeamId ? new MemoryStore(resolvedTeamId) : null;
+
   let filteredActions = level === 'admin'
     ? [...allActionsList]
     : level === 'trigger'
@@ -148,7 +144,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
             // Admin-only knowledge management ops (moved from buildd_memory)
             if (args.action === 'consolidate_knowledge' || args.action === 'memory_delete') {
               if (!memClient && args.action === 'memory_delete') {
-                return { content: [{ type: 'text' as const, text: 'Memory service not configured.' }], isError: true };
+                return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team ID could not be resolved from the API key.' }], isError: true };
               }
               const embedder = getVoyageEmbedder();
               const ks = workspaceId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
@@ -191,7 +187,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
           try {
             if (!memClient) {
               return {
-                content: [{ type: 'text' as const, text: 'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY.' }],
+                content: [{ type: 'text' as const, text: 'Memory store unavailable — team ID could not be resolved from the API key.' }],
                 isError: true,
               };
             }
@@ -238,7 +234,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
           try {
             if (!memClient) {
               return {
-                content: [{ type: 'text' as const, text: 'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY.' }],
+                content: [{ type: 'text' as const, text: 'Memory store unavailable — team ID could not be resolved from the API key.' }],
                 isError: true,
               };
             }
@@ -285,7 +281,7 @@ export async function createBuilddMcpServer(opts: BuilddMcpServerOptions) {
           try {
             if (!memClient) {
               return {
-                content: [{ type: 'text' as const, text: 'Memory service not configured. Set MEMORY_API_URL and MEMORY_API_KEY.' }],
+                content: [{ type: 'text' as const, text: 'Memory store unavailable — team ID could not be resolved from the API key.' }],
                 isError: true,
               };
             }

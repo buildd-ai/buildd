@@ -193,7 +193,6 @@ See `docs/testing.md` for details.
 
 | Repo | Purpose | Domain |
 |------|---------|--------|
-| [buildd-ai/memory](https://github.com/buildd-ai/memory) | Shared memory service (standalone) | `memory.buildd.dev` |
 | [buildd-ai/buildd-docs](https://github.com/buildd-ai/buildd-docs) | Product documentation (Fumadocs) | `docs.buildd.dev` |
 
 This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
