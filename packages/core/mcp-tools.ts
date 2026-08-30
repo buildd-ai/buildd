@@ -275,7 +275,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. BEFORE starting work, query TWO corpora: (1) corpus=memory for prior lessons (gotchas, patterns, decisions) and (2) corpus=task for recent task outcomes — task is now the system of record for all work done in the last 60+ days. Memory-only lookup misses recent outcomes. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (string or string[] — memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Pass corpus as an array to query multiple corpora in one call and get a single rank-fused result set — e.g. corpus=["memory","task"] covers prior lessons AND recent outcomes without two round trips. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -1093,7 +1093,7 @@ export async function handleBuilddAction(
                 const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
                 return `- **[${m.type}] ${m.title}**: ${truncContent}`;
               });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall for more context (memory corpus). Also call recall with scope=task to find recent task outcomes — the task corpus is the system of record for all work done in the last 60+ days.`;
+              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
             }
           }
         }
@@ -4326,14 +4326,54 @@ export async function handleRecallAction(
     return errorResult('query is required (or pass id for a direct fetch)');
   }
 
+  const limit = Math.min((params.limit as number) || 10, 50);
+  const query = params.query as string;
+
+  // Multi-scope: fan out concurrently, fuse results with Reciprocal Rank Fusion.
+  // Uses k=60 — the same constant as reciprocalRankFusion() in pg-vector-store.ts.
+  // Scores are not comparable across namespaces; rank position is the invariant.
+  if (Array.isArray(params.scope)) {
+    const scopes = (params.scope as string[]).map(s => s as Corpus);
+    const mode = chooseModeForQuery(query);
+    const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+
+    const perCorpus = await Promise.all(
+      scopes.map(async (s) => {
+        // Sensitive workspaces: silently skip team-scoped corpora.
+        if (ctx.isSensitive && (s === 'memory' || s === 'initiative')) return [] as QueryResult[];
+        const ns = knowledgeNamespace(ctx, s);
+        if (!ns) return [] as QueryResult[];
+        const raw = await ks.query(ns, { text: query, mode, topK: limit }).catch(() => [] as QueryResult[]);
+        return raw.filter(r => r.isCurrent !== false);
+      }),
+    );
+
+    const k = 60;
+    const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
+    perCorpus.forEach((results, listIdx) => {
+      results.forEach((r, rank) => {
+        const key = `${scopes[listIdx]}:${r.id}`;
+        const prev = fusionScores.get(key);
+        fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
+      });
+    });
+
+    const fused = Array.from(fusionScores.values())
+      .sort((a, b) => b.rrf - a.rrf)
+      .slice(0, limit)
+      .map(v => v.result);
+
+    if (fused.length === 0) return text(`No knowledge found for: "${query}"`);
+    const formatted = fused.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
+    return text(`Found ${fused.length} result(s):\n\n${formatted}`);
+  }
+
+  // Single scope — original path (unchanged).
   const scope = ((params.scope as string) || 'memory') as Corpus;
 
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
   }
-
-  const limit = Math.min((params.limit as number) || 10, 50);
-  const query = params.query as string;
 
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
@@ -4680,14 +4720,68 @@ export async function handleMemoryAction(
     case 'query_knowledge': {
       if (!params.query) throw new Error('query is required');
 
+      const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
+      const topK = Math.min((params.topK as number) || 10, 50);
+      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+
+      // Multi-corpus: fan out concurrently, fuse with RRF (k=60, same as pg-vector-store).
+      if (Array.isArray(params.corpus)) {
+        const corpora = (params.corpus as string[]).map(c => c as Corpus);
+
+        const perCorpus = await Promise.all(
+          corpora.map(async (c) => {
+            if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [] as QueryResult[];
+            const ns = knowledgeNamespace(ctx, c);
+            if (!ns) return [] as QueryResult[];
+            return ks.query(ns, { text: params.query as string, mode, topK }).catch(() => [] as QueryResult[]);
+          }),
+        );
+
+        const k = 60;
+        const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
+        perCorpus.forEach((results, listIdx) => {
+          results.forEach((r, rank) => {
+            const key = `${corpora[listIdx]}:${r.id}`;
+            const prev = fusionScores.get(key);
+            fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
+          });
+        });
+
+        const fused = Array.from(fusionScores.values())
+          .sort((a, b) => b.rrf - a.rrf)
+          .slice(0, topK)
+          .map(v => v.result);
+
+        // Telemetry: emit one milestone labelled with the joined corpus list.
+        if (ctx.api && ctx.workerId) {
+          const workerId = ctx.workerId;
+          const apiCall = ctx.api;
+          Promise.resolve(apiCall(`/api/workers/${workerId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              appendMilestones: [{
+                type: 'knowledge_query',
+                label: corpora.join(','),
+                ts: Date.now(),
+                metadata: { query: (params.query as string)?.slice(0, 100), topK, hitCount: fused.length },
+              }],
+            }),
+          })).catch(() => {});
+        }
+
+        if (fused.length === 0) {
+          return text(`No knowledge chunks found for query: "${params.query}" (corpora: ${corpora.join(', ')}, mode: ${mode})`);
+        }
+        const formatted = fused.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
+        return text(`Found ${fused.length} chunk(s) (mode: ${mode}, corpora: ${corpora.join(', ')}):\n\n${formatted}`);
+      }
+
+      // Single corpus — original path (unchanged).
       const corpus = ((params.corpus as string) || 'memory') as Corpus;
 
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
       }
-
-      const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
-      const topK = Math.min((params.topK as number) || 10, 50);
 
       const ns = knowledgeNamespace(ctx, corpus);
 
@@ -4700,8 +4794,6 @@ export async function handleMemoryAction(
       // Reranker passed here too: without it this fallback ranked by age decay
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
-      const ks =
-        ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
       const results = await ks.query(ns, {
         text: params.query as string,
         mode,

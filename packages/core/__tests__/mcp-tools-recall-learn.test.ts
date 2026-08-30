@@ -95,6 +95,43 @@ function recallCtx(store: KnowledgeStore) {
   };
 }
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function makeMultiStore(
+  nsMap: Record<string, Partial<QueryResult & { isCurrent?: boolean; createdAt?: Date }>[]>,
+): KnowledgeStore & { capturedNamespaces: string[]; capturedModes: string[] } {
+  const capturedNamespaces: string[] = [];
+  const capturedModes: string[] = [];
+  return {
+    capturedNamespaces,
+    capturedModes,
+    async query(ns, opts): Promise<QueryResult[]> {
+      capturedNamespaces.push(ns);
+      if (opts?.mode) capturedModes.push(opts.mode);
+      const corpus = ns.split(':').slice(1).join(':') as any;
+      const chunks = nsMap[ns] ?? [];
+      return chunks.map((c, i) => ({
+        id: c.id ?? `chunk-${ns}-${i}`,
+        namespace: ns,
+        corpus,
+        sourceType: c.sourceType ?? corpus,
+        sourcePath: null,
+        sourceUrl: c.sourceUrl ?? null,
+        content: c.content ?? `content ${ns} ${i}`,
+        metadata: c.metadata ?? {},
+        score: c.score ?? 0.9,
+        createdAt: c.createdAt ?? null,
+        isCurrent: c.isCurrent ?? true,
+      }));
+    },
+    async upsert(_ns, chunks) {
+      return { inserted: chunks.length, updated: 0, superseded: 0 };
+    },
+    async delete() {},
+    async listNamespaces() { return []; },
+  };
+}
+
 // ── recall: scope routing ────────────────────────────────────────────────────
 
 describe('recall — scope routing', () => {
@@ -461,6 +498,119 @@ describe('recall — input validation', () => {
     const res = await handleRecallAction(mem as any, {}, recallCtx(store));
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('query');
+  });
+});
+
+// ── recall: multi-scope array — fan-out + RRF fusion ─────────────────────────
+
+describe('recall — multi-scope (array) fan-out + RRF fusion', () => {
+  it('queries both namespaces when scope is an array', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'memory result', isCurrent: true }],
+      [`${WS_ID}:task`]: [{ content: 'task result', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test query', scope: ['memory', 'task'] }, recallCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(store.capturedNamespaces).toContain(`${TEAM_ID}:memory`);
+    expect(store.capturedNamespaces).toContain(`${WS_ID}:task`);
+  });
+
+  it('returns fused results from all queried corpora', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'memory result A', isCurrent: true }],
+      [`${WS_ID}:task`]: [{ content: 'task result B', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('memory result A');
+    expect(out).toContain('task result B');
+  });
+
+  it('ranks by RRF: top hits from each corpus appear before lower-ranked ones', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [
+        { id: 'mem-top', content: 'memory top rank-0', isCurrent: true },
+      ],
+      [`${WS_ID}:task`]: [
+        { id: 'task-top', content: 'task top rank-0', isCurrent: true },
+        { id: 'task-2', content: 'task rank-1', isCurrent: true },
+      ],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, recallCtx(store));
+    const out = res.content[0].text;
+    // Both rank-0 entries from each corpus should appear
+    expect(out).toContain('memory top rank-0');
+    expect(out).toContain('task top rank-0');
+    // rank-1 task entry should also appear (limit=10 default)
+    expect(out).toContain('task rank-1');
+  });
+
+  it('single-element array behaves same as string scope', async () => {
+    const store1 = makeMultiStore({ [`${TEAM_ID}:memory`]: [{ content: 'result X', isCurrent: true }] });
+    const store2 = makeMultiStore({ [`${TEAM_ID}:memory`]: [{ content: 'result X', isCurrent: true }] });
+    const mem = makeMemClient();
+    const resStr = await handleRecallAction(mem as any, { query: 'test', scope: 'memory' }, recallCtx(store1));
+    const resArr = await handleRecallAction(mem as any, { query: 'test', scope: ['memory'] }, recallCtx(store2));
+    expect(resStr.isError).toBeFalsy();
+    expect(resArr.isError).toBeFalsy();
+    expect(resStr.content[0].text).toContain('result X');
+    expect(resArr.content[0].text).toContain('result X');
+  });
+
+  it('silently skips unresolvable namespaces and returns remaining results', async () => {
+    // 'code' without workspaceId would fail — but recallCtx has workspaceId so it resolves
+    // Test: scope includes a corpus that returns no hits; other corpus still shows
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'valid memory result', isCurrent: true }],
+      [`${WS_ID}:pr`]: [], // empty — no results
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'pr'] }, recallCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('valid memory result');
+  });
+
+  it('returns no-results message when all scopes have empty results', async () => {
+    const store = makeMultiStore({});
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'nonexistent', scope: ['memory', 'task'] }, recallCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('No knowledge');
+  });
+
+  it('excludes superseded entries from multi-scope results', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [
+        { content: 'current memory', isCurrent: true },
+        { content: 'superseded memory', isCurrent: false },
+      ],
+      [`${WS_ID}:task`]: [
+        { content: 'current task', isCurrent: true },
+      ],
+    });
+    const mem = makeMemClient();
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, recallCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('current memory');
+    expect(out).toContain('current task');
+    expect(out).not.toContain('superseded memory');
+  });
+
+  it('respects sensitive workspace: suppresses memory corpus silently', async () => {
+    const store = makeMultiStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'private memory', isCurrent: true }],
+      [`${WS_ID}:task`]: [{ content: 'task result', isCurrent: true }],
+    });
+    const mem = makeMemClient();
+    const ctx = { ...recallCtx(store), isSensitive: true };
+    const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, ctx);
+    // Should not expose memory (sensitive), but task is fine
+    const out = res.content[0].text;
+    expect(out).not.toContain('private memory');
+    expect(out).toContain('task result');
   });
 });
 

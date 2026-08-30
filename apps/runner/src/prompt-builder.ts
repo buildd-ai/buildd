@@ -257,7 +257,7 @@ export function buildPrompt(ctx: PromptContext): string {
       }
     }
 
-    memoryContext.push('\nUse `recall` (memory corpus) + `recall scope=task` (recent outcomes) for full context. Use `learn` to record gotchas/patterns/decisions — NOT summaries.');
+    memoryContext.push('\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.');
     promptParts.push(memoryContext.join('\n'));
   }
 

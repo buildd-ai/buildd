@@ -353,7 +353,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         },
         {
           name: "recall",
-          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.",
+          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks. Pass the task title and any error message. Use scope=[\"memory\",\"task\"] to cover prior lessons AND recent outcomes in one call.",
           annotations: {
             readOnlyHint: true,
             destructiveHint: false,
@@ -367,9 +367,20 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
                 description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
               },
               scope: {
-                type: "string" as const,
-                description: "Corpus to search. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
-                enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+                oneOf: [
+                  {
+                    type: "string" as const,
+                    enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                  },
+                  {
+                    type: "array" as const,
+                    items: {
+                      type: "string" as const,
+                      enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                    },
+                  },
+                ],
               },
               type: {
                 type: "string" as const,
