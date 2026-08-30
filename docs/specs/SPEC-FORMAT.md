@@ -7,6 +7,53 @@ pass/fail checks against a live deployment.
 
 ---
 
+## Frontmatter
+
+Every spec opens with a flat YAML block. The parser in `scripts/check-specs.ts`
+supports **string scalars and one-line arrays only** — no nesting, no multi-line
+values. `bun run specs:check` enforces the required fields and regenerates
+`INDEX.md`; `specs:lint` runs the same checks in CI.
+
+```yaml
+---
+title: Release Flow                    # human name; must be unique among active specs
+status: active                         # active | draft | superseded
+owner: max                             # who answers questions about it
+last_verified: 2026-08-29              # ISO date; warns past 90d
+summary: The release system MUST resolve a workspace's configured strategy and fire exactly one release per mission.
+domain: releases                       # exactly one of the vocabulary below
+surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts]
+related: [db-migration-gates, mission-task-lifecycle]
+keywords: [deploy, workflow_dispatch, prod branch, tag]
+supersedes: []                         # slugs this spec replaces
+---
+```
+
+| Field | Required | Rules |
+|---|---|---|
+| `title` | yes | Unique across active specs (duplicate = error). |
+| `status` | yes | `active` \| `draft` \| `superseded`. `superseded` requires `superseded_by`. |
+| `owner` | yes | GitHub handle, no `@`. |
+| `last_verified` | warn | ISO date. Missing or >90d old warns; an unparseable date is an error. Bump it in the same PR that changes behaviour. |
+| `summary` | **yes** | ONE sentence, present tense, states what MUST hold. This is what a reader sees in the index and what a retrieval agent matches on — write the capability, not the topic. Missing is an error; over 220 chars warns. Must not begin with `[` — that parses as a list and is rejected. |
+| `domain` | **yes** | Exactly one value from the vocabulary. A spec spanning two domains is usually two specs. |
+| `surfaces` | no | 2–4 paths, most important first. Every path is existence-checked (dead path = error); more than 4 warns. Distinct from the in-body **Code surface** section, which is exhaustive; this is the shortlist. |
+| `related` | no | Sibling spec **slugs** (filename without `.md`). Existence-checked; self-reference is an error. These are the graph edges an ingesting agent follows. |
+| `keywords` | no | Retrieval aliases a reader would search that the title omits — old feature names, error strings, column names. |
+
+**Domain vocabulary** (extend `DOMAINS` in `scripts/check-specs.ts` in the same
+PR if you genuinely need a new one):
+
+`missions` · `tasks` · `runners` · `releases` · `knowledge` · `auth` · `mcp` ·
+`surfaces` · `integrations`
+
+Why these fields exist: twenty specs with only a title are a directory listing,
+not a map. `summary` + `domain` make `INDEX.md` answer "which spec covers this?"
+without opening any file, and give an agent a filter and a one-line abstract per
+spec instead of twenty full documents.
+
+---
+
 ## `<Capability Name>`
 
 **Capability statement**: One sentence, behaviour-focused. What the system MUST
@@ -47,3 +94,6 @@ and documents intentional omissions.
    committing.
 5. **Specs are living documents.** When an implementation changes an observable
    behaviour, update the spec in the same PR.
+6. **Frontmatter is part of the contract.** A new spec without `summary` and
+   `domain` fails CI. When behaviour changes, re-read the `summary` — a stale
+   one-liner is worse than none, because the index is where people stop reading.

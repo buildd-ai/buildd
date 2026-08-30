@@ -3,6 +3,11 @@ title: Mission & Task Lifecycle
 status: active
 owner: max
 last_verified: 2026-08-29
+summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+domain: missions
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
+related: [subject-anchor-liveness, external-cron-triggers, release-flow]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours]
 supersedes: []
 ---
 # Mission and Task Lifecycle

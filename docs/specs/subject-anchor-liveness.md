@@ -3,6 +3,11 @@ title: Subject Anchor Liveness
 status: active
 owner: max
 last_verified: 2026-08-29
+summary: A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
+domain: tasks
+surfaces: [apps/web/src/lib/subject-gate-contract.ts, apps/web/src/app/api/workers/claim/subject-gate.ts, apps/web/src/lib/subject-sweep.ts]
+related: [mission-task-lifecycle, timeline-dependency-geometry]
+keywords: [subjectAnchor, subjectPrNumber, reconciled, fail open, derived confidence, BYPASS_SUBJECT_GATE_KEY]
 supersedes: []
 ---
 

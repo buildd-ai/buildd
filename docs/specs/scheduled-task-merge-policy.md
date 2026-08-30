@@ -3,6 +3,11 @@ title: Scheduled-task merge policy override
 status: active
 owner: max
 last_verified: 2026-08-27
+summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
+domain: tasks
+surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
+related: [db-migration-gates, external-cron-triggers, mission-task-lifecycle]
+keywords: [merge_policy, auto-threshold, resolvepolicy, taskscheduletemplate, maxlines, changelog schedule]
 supersedes: []
 ---
 
@@ -229,7 +234,7 @@ The schedule update is applied via `manage_workspaces`-equivalent API or direct
 | `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts:58` | New step 2 in precedence chain |
 | Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:634` | Propagate `template.mergePolicy` |
 | `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts:211` | Unchanged — still fires post-resolvePolicy; only upgrades tier |
-| Schedule save validation | `apps/web/src/app/api/schedules/route.ts` | Validate `taskTemplate.mergePolicy` with `parseMergePolicy()` on write |
+| Schedule save validation | `apps/web/src/app/api/workspaces/[id]/schedules/route.ts` | **DRIFT (found 2026-08-29): not implemented.** The route it named did not exist; schedule CRUD lives at the path shown, and it does not call `parseMergePolicy()` on `taskTemplate.mergePolicy`. An invalid policy on a schedule template is therefore accepted on write and only rejected (or silently ignored) at task-creation time. `parseMergePolicy()` is wired into `apps/web/src/app/api/missions/route.ts` and `apps/web/src/app/api/workspaces/[id]/config/route.ts` only. |
 
 ---
 

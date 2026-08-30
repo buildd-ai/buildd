@@ -3,6 +3,11 @@ title: Team Namespace Scoping
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: Home MUST aggregate across every team the user belongs to, while the missions and workspaces views MUST show only the single active team resolved server-side from the buildd-team cookie.
+domain: surfaces
+surfaces: [apps/web/src/lib/team-access.ts, apps/web/src/app/app/(protected)/layout.tsx, apps/web/src/components/TeamSwitcher.tsx, apps/web/src/app/api/missions/route.ts]
+related: [team-workspace-mission-onboarding, surface-ia-home-missions-initiatives]
+keywords: [buildd-team cookie, active team, getuserteamids, teamid filter, teamswitcher]
 supersedes: []
 ---
 # Team Namespace Scoping

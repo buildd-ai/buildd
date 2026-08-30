@@ -3,6 +3,11 @@ title: Codex Backend Behavioral Spec
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
+domain: runners
+surfaces: [apps/runner/src/backends/codex-backend.ts, apps/runner/src/backends/codex-events.ts, apps/runner/src/workers.ts, apps/runner/src/codex-auth.ts]
+related: [provider-failover, credential-isolation, runner-liveness]
+keywords: [mapcodexeventtosdkmessages, agents.md, codex_home, resumethreadid, model_reasoning_effort, sandboxmode]
 supersedes: []
 ---
 
