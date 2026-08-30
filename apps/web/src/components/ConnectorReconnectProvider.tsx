@@ -47,15 +47,17 @@ export function ConnectorReconnectProvider({ workspaceIds, children }: Props) {
       }
     };
 
-    for (const channelName of channelNames) {
+    const bound = channelNames.map((channelName) => {
       const channel = subscribeToChannel(channelName);
-      if (channel) {
-        channel.bind('worker:connector-auth-expired', handleEvent);
-      }
-    }
+      channel?.bind('worker:connector-auth-expired', handleEvent);
+      return { channelName, channel };
+    });
 
+    // Channels are shared with the other layout providers, so this handler must
+    // be unbound explicitly — releasing the subscription no longer drops it.
     return () => {
-      for (const channelName of channelNames) {
+      for (const { channelName, channel } of bound) {
+        channel?.unbind('worker:connector-auth-expired', handleEvent);
         unsubscribeFromChannel(channelName);
       }
     };
