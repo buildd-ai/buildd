@@ -4,31 +4,79 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (18)
+## Active (19)
+
+### auth (2)
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
-- [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-07-18
+  The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-07-21
-- [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
+  The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
+
+### integrations (3)
+
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
-- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
-- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
-- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-07-18
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-08-29
-- [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
-- [Release Flow](./release-flow.md) · @max — verified 2026-07-18
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-07-18
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-08-27
-- [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
-- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
-- [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-29
+  Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
 - [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-07-18
+  The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
+  A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.
+
+### knowledge (1)
+
+- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
+  The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
+
+### mcp (2)
+
+- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
+  The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
+- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-07-18
+  Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
+
+### missions (1)
+
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-08-29
+  The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+
+### releases (2)
+
+- [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
+  Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
+- [Release Flow](./release-flow.md) · @max — verified 2026-07-18
+  The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
+
+### runners (3)
+
+- [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-07-18
+  The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
+- [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
+  When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-07-18
+  The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
+
+### surfaces (3)
+
+- [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
+  Home MUST aggregate across every team the user belongs to, while the missions and workspaces views MUST show only the single active team resolved server-side from the buildd-team cookie.
+- [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
+  The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
+- [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-29
+  The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
+
+### tasks (2)
+
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-08-27
+  A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
+- [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
+  A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
 ## Draft (1)
 
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-08-16
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-08-29
+  Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 
 ## Superseded (1)
 
-- [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13 → replaced by `surface-ia-home-missions-initiatives`
+- [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
+  The initiative triage surface MUST rank initiatives by pending-action counts with 14-day effort sparklines and a task-weighted progress percentage computed over all of an initiative's tasks, uncapped. → replaced by `surface-ia-home-missions-initiatives`

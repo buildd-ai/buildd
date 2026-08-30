@@ -17,7 +17,7 @@ import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
-import { detectCbmFleetDisabled } from '@buildd/core/cbm-health';
+import { detectCbmFleetDisabled, detectCbmEnforcedUnused } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
@@ -25,6 +25,7 @@ import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
+import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -43,10 +44,64 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry } from '@buildd/shared';
-import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+
+/**
+ * Worker statuses from which no further live update is legal. Every optimistic
+ * write in this handler is guarded against these — resurrecting a terminated
+ * worker would let a stale in-flight PATCH overwrite a real outcome.
+ */
+const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error'];
+
+function isTerminalWorkerStatus(status: string | null | undefined): boolean {
+  return !!status && TERMINAL_WORKER_STATUSES.includes(status);
+}
+
+/**
+ * Build the 409 body for a compare-and-swap miss on the worker row.
+ *
+ * Two very different things can make a guarded UPDATE match 0 rows:
+ *
+ *  1. The worker was genuinely terminated (interrupt, reassignment, stale
+ *     cleanup) after this handler read it. That IS an abort — and the response
+ *     must name the cause (`reason` + `actualStatus`) so the runner can act on
+ *     it and so the DB stops recording the runner's `Terminated by server`
+ *     fallback string in place of the real cause.
+ *
+ *  2. A benign lost update: another in-flight PATCH for the SAME live worker
+ *     committed first. The runner fires several non-awaited PATCHes during
+ *     startup, so this happened routinely — and replying `abort: true` made the
+ *     runner hard-kill healthy sessions ~1s after they started. A live row is
+ *     never an abort: report a retryable conflict and let the runner re-sync.
+ *
+ * The current row is re-read to tell the two apart.
+ */
+async function workerConflictResponse(id: string) {
+  const current = await db.query.workers.findFirst({ where: eq(workers.id, id) });
+  const actualStatus = current?.status ?? null;
+
+  if (!isTerminalWorkerStatus(actualStatus)) {
+    return NextResponse.json({
+      error: 'Worker state changed concurrently',
+      conflict: true,
+      retryable: true,
+      actualStatus,
+    }, { status: 409 });
+  }
+
+  const artifactCount = await getWorkerArtifactCount(id);
+  const deliverables = checkWorkerDeliverables(current as any, { artifactCount });
+  return NextResponse.json({
+    error: 'Worker was terminated - task may have been reassigned',
+    abort: true,
+    reason: current?.error || `worker already ${actualStatus}`,
+    actualStatus,
+    hasDeliverables: deliverables.hasAny,
+  }, { status: 409 });
+}
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -190,6 +245,10 @@ export async function PATCH(
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,
   // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
+  // True when this request is deliberately writing over a terminal row it read
+  // (a follow-up 'running' update). Such a write keeps the strict equality CAS —
+  // the lost-update tolerance below must not apply to a resurrection.
+  let reactivatingTerminalWorker = false;
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
       worker.error?.includes('expired') ||
@@ -212,6 +271,7 @@ export async function PATCH(
       }, { status: 409 });
     }
     // Reactivation: clear completion timestamp so worker can run again
+    reactivatingTerminalWorker = true;
   }
 
   // connector_auth_expired: mark the MCP connector secret as expired and broadcast to the workspace.
@@ -449,7 +509,7 @@ export async function PATCH(
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -535,19 +595,23 @@ export async function PATCH(
   // Reserve terminal ownership before mutating the task or running completion
   // hooks. Human interrupt uses the same status CAS, so exactly one path can
   // terminate the lease and produce reviewer outcome side effects.
+  //
+  // The guard is "the row is still live", not "the row still holds the exact
+  // status I read at handler entry". Both express the same exactly-once
+  // property — the first terminal write moves the row out of the live set and
+  // every later one misses — but the equality form also lost to benign,
+  // non-terminal status changes (the runner's own concurrent startup PATCHes),
+  // turning a real failure report into a bare `abort` that killed the session.
   let terminalTransitionReserved = false;
   if (isTerminalStatus && worker.status !== status) {
     const [reserved] = await db
       .update(workers)
       .set({ status, updatedAt: new Date() })
-      .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+      .where(and(eq(workers.id, id), not(inArray(workers.status, TERMINAL_WORKER_STATUSES))))
       .returning({ id: workers.id });
 
     if (!reserved) {
-      return NextResponse.json(
-        { error: 'Worker state changed concurrently', abort: true },
-        { status: 409 },
-      );
+      return workerConflictResponse(id);
     }
     terminalTransitionReserved = true;
   }
@@ -561,15 +625,19 @@ export async function PATCH(
   // Classify exit cause for taxonomy — written to the worker record on terminal update.
   // budget_limited:    task auto-resumes; not a real failure; excluded from retry caps.
   // sandbox_mount_gap: bwrap path missing; task requeued; excluded from retry caps.
-  // infra_failure:     set by stale-worker cleanup OR when steeringDelivery=true.
+  // infra_failure:     set by stale-worker cleanup, steeringDelivery=true, OR a
+  //                    server-side concurrency conflict (the session was killed
+  //                    by coordination bookkeeping, not by the work).
   // code_failure:      default for any other terminal failure.
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
+  const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
+      concurrencyConflict: isConcurrencyConflict,
     });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
@@ -1253,8 +1321,63 @@ export async function PATCH(
         updates.error = 'Planning task completed without structuredOutput: runner did not request outputFormat';
       }
 
+      // Review contract guard: a reviewer verdict only reaches
+      // handleReviewerOutcomeIfNeeded through structuredOutput.verdict. When the
+      // agent writes the verdict as prose instead, the verdict is dropped — no
+      // mission note, no auto-merge, no request-changes retry — and the task is
+      // recorded as a clean completion, so nothing ever revisits the PR. An
+      // unparsed verdict is not a verdict, so fail the task and let the reviewer
+      // loop redo it rather than leaving an approved PR open forever.
+      const reviewTaskRow = terminalTaskRow[0];
+      const reviewTaskCtx = (reviewTaskRow?.context ?? {}) as Record<string, unknown>;
+      const reviewContractViolation = (
+        status === 'completed' &&
+        !shouldAutoRetry &&
+        reviewTaskRow?.category === 'review' &&
+        Boolean(reviewTaskCtx.reviewerFor) &&
+        !(body.structuredOutput as { verdict?: unknown } | undefined)?.verdict
+      );
+      // A reviewer task is dispatched only on pull_request action='opened', so
+      // nothing re-reviews a PR whose review ended without a verdict. Requeue the
+      // same task once — it re-reads the PR from scratch, so a second attempt is
+      // idempotent — and only fail if the retry also returns prose.
+      const MAX_REVIEW_CONTRACT_RETRIES = 1;
+      const reviewContractRetryCount =
+        typeof reviewTaskCtx.reviewContractRetryCount === 'number'
+          ? reviewTaskCtx.reviewContractRetryCount
+          : 0;
+      if (reviewContractViolation) {
+        const willRequeue = reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        console.error(
+          `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
+          `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
+          `returned no structuredOutput.verdict. The verdict was dropped, so ` +
+          `PR #${reviewTaskCtx.prNumber ?? '?'} would sit unmerged.`
+        );
+        // This worker's review is discarded either way.
+        updates.status = 'failed';
+        updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        if (willRequeue) {
+          // Piggyback on the shouldAutoRetry machinery to reset the task to pending
+          // (same pattern as the loop requeue above).
+          shouldAutoRetry = true;
+          taskCtxForRetry = {
+            ...reviewTaskCtx,
+            reviewContractRetryCount: reviewContractRetryCount + 1,
+            failureContext:
+              'Your previous attempt wrote the verdict as prose, so it was discarded. ' +
+              'The verdict only counts when it is returned as structuredOutput matching ' +
+              'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
+              'and return the verdict as structuredOutput.',
+          };
+        }
+      }
+
+      // Both guards fail the task the same way; only the recorded reason differs.
+      const contractViolation = planningContractViolation || reviewContractViolation;
+
       const taskUpdate: Record<string, unknown> = {
-        status: shouldAutoRetry ? 'pending' : (planningContractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
+        status: shouldAutoRetry ? 'pending' : (contractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
         updatedAt: new Date(),
         ...(shouldAutoRetry ? {
           claimedBy: null,
@@ -1266,6 +1389,11 @@ export async function PATCH(
           result: {
             error: 'Planning task completed without structuredOutput — runner did not request outputFormat. Mission will retry.',
             errorType: 'planning_contract_violation',
+          },
+        } : reviewContractViolation ? {
+          result: {
+            error: 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
+            errorType: 'review_contract_violation',
           },
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
@@ -1282,8 +1410,8 @@ export async function PATCH(
 
       // Snapshot worker stats into task.result on completion.
       // Skip for loop requeue: the task continues, so no terminal result snapshot yet.
-      // Skip for planning contract violations: already set error result above.
-      if (status === 'completed' && !planningContractViolation && loopDispatchResult?.kind !== 'requeue') {
+      // Skip for contract violations (planning/review): error result set above.
+      if (status === 'completed' && !contractViolation && loopDispatchResult?.kind !== 'requeue') {
         // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
         let summary = body.summary || undefined;
         if (typeof summary === 'string') {
@@ -1470,7 +1598,7 @@ export async function PATCH(
           : null;
         const retryCount =
           ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
-        const effectiveOutcome = planningContractViolation ? 'failed' : status;
+        const effectiveOutcome = contractViolation ? 'failed' : status;
         recordTaskOutcome({
           taskId: worker.taskId,
           accountId: worker.accountId,
@@ -1491,6 +1619,8 @@ export async function PATCH(
         if (status === 'completed') {
           const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
           detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
+          // Same shape, opposite condition: mounted-and-ignored rather than absent.
+          detectCbmEnforcedUnused(worker.workspaceId, currentCbm).catch(() => {});
         }
       }
 
@@ -1589,6 +1719,19 @@ export async function PATCH(
           .limit(1);
         if (!isCriteriaVerificationTask(taskForCriteria?.context)) return;
         await handleCriteriaVerificationOutcome(taskId, verificationEvidence);
+      });
+
+      // A finished prose grading task owns the verdicts for the criteria it was
+      // asked about. Same ordering rationale: apply before the completion attempt
+      // below so criteria turning green complete the mission in this request.
+      await runStep('criteria-prose-outcome', async () => {
+        const [taskForProse] = await db
+          .select({ context: tasks.context })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (!isProseEvalTask(taskForProse?.context)) return;
+        await handleProseEvalOutcome(taskId, body.structuredOutput);
       });
 
       // Attempt mission completion. The predicate pulls a goal-criteria verdict
@@ -1855,20 +1998,29 @@ export async function PATCH(
     }
   }
 
+  // Guard for the final write:
+  //  - terminal transition: we already reserved the lease above, so only the row
+  //    we reserved may be written (nobody else may steal a terminal outcome).
+  //  - reactivation: deliberately writing over the terminal row we read.
+  //  - everything else (the hot path): tolerate a concurrent NON-terminal status
+  //    change. The runner fires several non-awaited startup PATCHes, so a
+  //    branch-only update routinely reads `idle` and writes after a sibling
+  //    committed `running`. Gating that on the stale value made the update lose
+  //    a race it never conflicted with. Terminated workers are still protected.
+  const finalWriteGuard = terminalTransitionReserved
+    ? eq(workers.status, status)
+    : reactivatingTerminalWorker
+      ? eq(workers.status, worker.status)
+      : not(inArray(workers.status, TERMINAL_WORKER_STATUSES));
+
   const [updated] = await db
     .update(workers)
     .set(updates)
-    .where(and(
-      eq(workers.id, id),
-      eq(workers.status, terminalTransitionReserved ? status : worker.status),
-    ))
+    .where(and(eq(workers.id, id), finalWriteGuard))
     .returning();
 
   if (!updated) {
-    return NextResponse.json(
-      { error: 'Worker state changed concurrently', abort: true },
-      { status: 409 },
-    );
+    return workerConflictResponse(id);
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.

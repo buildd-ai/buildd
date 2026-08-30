@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, computeMissionSkyline, deriveTaskType, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, computeMissionSkyline, deriveTaskType, type MissionSegmentState } from '../mission-helpers';
 
 // ── deriveTaskType ─────────────────────────────────────────────────────────────
 
@@ -567,6 +567,47 @@ describe('computeMissionProgress — segments', () => {
 });
 
 // ── computeMissionSkyline ─────────────────────────────────────────────────────
+
+describe('deriveMissionProgressMetric', () => {
+  const work = (status: string) => ({ taskClass: 'work' as const, status });
+
+  it('returns unavailable with reason no_scope when no countable tasks', () => {
+    const result = deriveMissionProgressMetric([]);
+    expect(result.kind).toBe('unavailable');
+    if (result.kind === 'unavailable') expect(result.reason).toBe('no_scope');
+  });
+
+  it('returns unavailable when all tasks are cancelled', () => {
+    const result = deriveMissionProgressMetric([work('cancelled')]);
+    expect(result.kind).toBe('unavailable');
+  });
+
+  it('returns value 0 when tasks exist but none completed', () => {
+    const result = deriveMissionProgressMetric([work('pending'), work('pending')]);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value).toBe(0);
+  });
+
+  it('returns value 100 when all tasks completed', () => {
+    const result = deriveMissionProgressMetric([work('completed'), work('completed')]);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value).toBe(100);
+  });
+
+  it('returns actual ratio — does not force 100 for a completed mission', () => {
+    // Simulate: mission marked completed but 1 of 2 tasks finished
+    const result = deriveMissionProgressMetric([work('completed'), work('pending')]);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value).toBe(50);
+  });
+
+  it('rounds to nearest integer', () => {
+    // 1 of 3 completed = 33.33...%
+    const result = deriveMissionProgressMetric([work('completed'), work('pending'), work('pending')]);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value).toBe(33);
+  });
+});
 
 describe('computeMissionSkyline', () => {
   const T0 = new Date('2025-01-01T10:00:00Z').getTime();

@@ -10,6 +10,12 @@ import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { parseMergePolicy } from '@buildd/shared';
+import type {
+  FailureAnalytics,
+  FailureSignatureLookup,
+  FailureSignatureRow,
+  FailureWindow,
+} from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -134,6 +140,11 @@ export const triggerActions = [
 ] as const;
 
 export const workerActions = [
+  // spec_compare is read-only retrieval over {ws}:spec and {ws}:code. It grants no
+  // data access a worker lacks — query_knowledge/recall already reach both corpora —
+  // so gating it to admin only meant the spec-validator role could never run its own
+  // documented workflow (default-roles.ts instructs it to call spec_compare).
+  'spec_compare',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -148,6 +159,9 @@ export const workerActions = [
   'list_connectors',
   'list_releases',
   'get_release',
+  // Read-only and team-scoped. Worker level, not trigger: the caller who needs
+  // to know "is my failure already known?" is the one that just failed.
+  'get_failure_analytics',
 ] as const;
 
 // list_schedules and trace_schedule live in worker/trigger sets above;
@@ -167,7 +181,6 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
-  'spec_compare',
   'consolidate_knowledge',
   'memory_delete',
 ] as const;
@@ -201,7 +214,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
-    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -231,6 +244,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus release_tasks with task title, status, and prNumber.',
@@ -240,7 +254,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -293,6 +307,105 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+// ── Failure analytics formatting ─────────────────────────────────────────────
+
+/**
+ * `satisfies Record<FailureWindow, 1>` makes this exhaustive at compile time —
+ * adding a window to the shared union without adding it here fails tsc.
+ */
+const FAILURE_WINDOW_VALUES = Object.keys(
+  { '24h': 1, '7d': 1, '30d': 1 } satisfies Record<FailureWindow, 1>,
+) as FailureWindow[];
+
+// Agent context is finite. A small default, a hard ceiling, short lines.
+const FAILURE_SIGNATURES_DEFAULT = 5;
+const FAILURE_SIGNATURES_MAX = 15;
+const FAILURE_SIGNATURE_LINE_MAX = 120;
+/** Only the first line of an error is ever normalized, so this is generous. */
+const FAILURE_LOOKUP_INPUT_MAX = 1000;
+
+function truncateTo(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * "Is this error known?" in six lines or fewer.
+ *
+ * The frictionSignature is the payload that matters: handing it back turns a
+ * duplicate friction task into an append onto the existing report.
+ */
+function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWindow, failedInWindow: number): string {
+  const lines: string[] = [];
+  const nextCall = `context: { frictionSignature: "${lookup.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
+
+  if (lookup.known) {
+    lines.push(`Known failure pattern — ${lookup.count} occurrence(s) in the last ${window}.`);
+    lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+    const detail = [
+      `first seen ${lookup.firstSeen}`,
+      `last seen ${lookup.lastSeen}`,
+      `died early ${lookup.diedEarlyCount}/${lookup.count}`,
+    ];
+    if (lookup.exitCauses.length > 0) detail.push(`exit causes: ${lookup.exitCauses.join(', ')}`);
+    lines.push(detail.join(' · '));
+    if (lookup.exampleTaskId) lines.push(`example task: ${lookup.exampleTaskId}`);
+    lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
+    return lines.join('\n');
+  }
+
+  const caveat = lookup.exhaustive
+    ? ''
+    : ' The signature ranking was capped for this window, so a rare match may have been missed.';
+  lines.push(`New failure — no match for this signature in the last ${window} (${failedInWindow} failure(s) in the window).${caveat}`);
+  lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+  lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+  return lines.join('\n');
+}
+
+/**
+ * Overview: totals, exit causes, and the top-N signature ranking.
+ *
+ * Deliberately omits byRole / byWorkspace / repeatFailureTasks / example worker
+ * IDs — the dashboard renders those, an agent triaging one failure does not
+ * need them, and every omitted table is context an agent gets to keep.
+ */
+function formatFailureOverview(analytics: FailureAnalytics, limit: number): string {
+  const { totals, signatures, window } = analytics;
+
+  if (totals.failed === 0) {
+    return `No worker failures in the last ${window} (${totals.started} worker(s) started).`;
+  }
+
+  const lines: string[] = [
+    `Worker failures — last ${window} (since ${analytics.windowStart})`,
+    `${totals.failed} of ${totals.started} workers failed (${totals.failureRatePct}%) · died early: ${totals.diedEarly} (${totals.diedEarlySharePct}% of failures)`,
+  ];
+
+  if (analytics.byExitCause.length > 0) {
+    const causes = analytics.byExitCause
+      .slice(0, 4)
+      .map(c => `${c.exitCause} ${c.count} (${c.sharePct}%)`)
+      .join(', ');
+    lines.push(`Exit causes: ${causes}`);
+  }
+
+  const shown = signatures.slice(0, limit);
+  if (shown.length > 0) {
+    lines.push(`Top ${shown.length} of ${signatures.length} signatures:`);
+    shown.forEach((s: FailureSignatureRow, i: number) => {
+      const tail = [`last seen ${s.lastSeen}`, `died early ${s.diedEarlyCount}`];
+      if (s.exitCauses.length > 0) tail.push(s.exitCauses.join('/'));
+      lines.push(`  ${i + 1}. ${s.count}× ${truncateTo(s.signature, FAILURE_SIGNATURE_LINE_MAX)} — ${tail.join(' · ')}`);
+    });
+    const omitted = signatures.length - shown.length;
+    if (omitted > 0) {
+      lines.push(`  … ${omitted} more (raise limit, max ${FAILURE_SIGNATURES_MAX}, or pass error=<text> to look one up)`);
+    }
+  }
+
+  return lines.join('\n');
+}
 
 /**
  * Heuristic hint for what a scheduled task actually *does* (where its output lands).
@@ -2788,6 +2901,49 @@ export async function handleBuilddAction(
       return text(lines.join('\n'));
     }
 
+    case 'get_failure_analytics': {
+      // Read-only. Scoping is not re-implemented here: GET /api/health/failures
+      // derives the team from the caller's bearer token and 404s a workspaceId
+      // outside it, so this handler cannot widen its own visibility.
+      const rawWindow = params.window === undefined || params.window === null ? '7d' : String(params.window);
+      if (!FAILURE_WINDOW_VALUES.includes(rawWindow as FailureWindow)) {
+        return errorResult(`Invalid window "${rawWindow}". Expected one of ${FAILURE_WINDOW_VALUES.join(', ')}.`);
+      }
+      const window = rawWindow as FailureWindow;
+
+      const limit = typeof params.limit === 'number'
+        ? Math.min(Math.max(Math.round(params.limit), 1), FAILURE_SIGNATURES_MAX)
+        : FAILURE_SIGNATURES_DEFAULT;
+
+      const rawWsId = typeof params.workspaceId === 'string' && params.workspaceId.trim()
+        ? params.workspaceId.trim()
+        : null;
+      let wsId: string | null = null;
+      if (rawWsId) {
+        wsId = await resolveWorkspaceId(api, rawWsId, ctx);
+        if (!wsId) {
+          return errorResult(`Could not resolve workspace "${rawWsId}". Pass a workspace UUID, or omit workspaceId for a team-wide report.`);
+        }
+      }
+
+      // The route only ever normalizes the first line, so a long trace adds URL
+      // length and nothing else.
+      const rawError = typeof params.error === 'string' && params.error.trim() ? params.error : null;
+
+      const qs = [`window=${window}`];
+      if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
+      if (rawError) qs.push(`error=${encodeURIComponent(rawError.slice(0, FAILURE_LOOKUP_INPUT_MAX))}`);
+
+      const data = await api(`/api/health/failures?${qs.join('&')}`);
+      const analytics = data?.analytics as FailureAnalytics | undefined;
+      if (!analytics) return text('No failure analytics available.');
+
+      const lookup = data?.lookup as FailureSignatureLookup | undefined;
+      if (lookup) return text(formatFailureLookup(lookup, window, analytics.totals.failed));
+
+      return text(formatFailureOverview(analytics, limit));
+    }
+
     case 'suggest_schedule_update': {
       if (!params.reason) throw new Error('reason is required');
       if (params.cronExpression === undefined && params.enabled === undefined) {
@@ -3980,6 +4136,76 @@ function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean
   return `\n[savedAt: ${age} · superseded: ${superseded}]`;
 }
 
+/** Render a Date as a compact relative age string. */
+function relativeAge(date: Date): string {
+  const ms = Date.now() - date.getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1d ago' : `${days}d ago`;
+}
+
+/**
+ * Parse the source path from a chunk ID (which for file corpora is "path#startLine").
+ * Returns null when the ID does not have this structure.
+ */
+function parseSourcePath(id: string): string | null {
+  const hashIdx = id.lastIndexOf('#');
+  if (hashIdx <= 0) return null;
+  const path = id.slice(0, hashIdx);
+  const line = id.slice(hashIdx + 1);
+  if (!path || !/^\d+$/.test(line)) return null;
+  return `${path}#L${line}`;
+}
+
+/**
+ * Format a single QueryResult into a human-readable block showing corpus, path,
+ * timestamps, score breakdown, and lifecycle state.
+ * Memory corpus keeps the legacy savedAt/superseded format for backward compat.
+ */
+function formatKnowledgeResult(
+  r: import('./knowledge-store/types').QueryResult,
+  index: number,
+): string {
+  const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
+
+  if (r.corpus === 'memory') {
+    // Memory corpus: no file path, use existing savedAt/superseded format
+    const freshness = formatMemoryFreshness(r);
+    const linkOrType = r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType;
+    return `### ${index + 1}. ${typeTag}${linkOrType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+  }
+
+  // Non-memory: show corpus · path · timestamps · score breakdown
+  const path = r.sourcePath ?? parseSourcePath(r.id);
+  const pathStr = path ? `\`${path}\`` : r.sourceType;
+  const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
+  const header = `### ${index + 1}. ${typeTag}${r.corpus} · ${pathStr}${urlSuffix}`;
+
+  const sb = r.scoreBreakdown;
+  let scoreStr = `**Score:** ${r.score.toFixed(4)}`;
+  if (sb) {
+    const parts: string[] = [];
+    if (sb.dense !== undefined) parts.push(`dense: ${sb.dense.toFixed(3)}`);
+    if (sb.lexical !== undefined) parts.push(`lex: ${sb.lexical.toFixed(3)}`);
+    if (sb.rrf !== undefined) parts.push(`rrf: ${sb.rrf.toFixed(4)}`);
+    if (sb.rerank !== undefined) parts.push(`rerank: ${sb.rerank.toFixed(3)}`);
+    if (parts.length) scoreStr += ` (${parts.join(' · ')})`;
+  }
+
+  const metaParts: string[] = [scoreStr];
+  if (r.sourceTs) metaParts.push(`committed ${relativeAge(r.sourceTs)}`);
+  if (r.updatedAt) metaParts.push(`ingested ${relativeAge(r.updatedAt)}`);
+  if (r.isCurrent === false) {
+    metaParts.push(r.supersededBy ? `⚠ superseded by \`${r.supersededBy}\`` : '⚠ superseded');
+  }
+
+  return `${header}\n${metaParts.join(' · ')}\n\n${r.content}`;
+}
+
 // ── Shared memory action context type ────────────────────────────────────────
 
 type MemoryActionCtx = {
@@ -4001,31 +4227,60 @@ type MemoryActionCtx = {
  * bridge the prose→identifier vocabulary gap when querying the :code namespace
  * with lexical search.
  */
+type AnchorKind = 'symbol' | 'path' | 'route';
+
+/**
+ * Max anchors sent to the second-hop lexical query. Raised from 20: at 20 the cap
+ * was binding on ~80% of candidates (see the ranking note below), so the limit
+ * itself was suppressing recall rather than controlling query cost.
+ */
+const ANCHOR_LIMIT = 40;
+
 function extractImplementationAnchors(chunks: QueryResult[]): string[] {
   const combined = chunks.map(r => r.content).join('\n');
   const anchors = new Set<string>();
+  const kind = new Map<string, AnchorKind>();
 
   // File paths: apps/* and packages/*
   for (const m of combined.matchAll(/\b(?:apps|packages)\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|sql|md|mdx)\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'path');
   }
 
   // Route paths: /api/...
   for (const m of combined.matchAll(/\/api\/[a-zA-Z0-9/[\]_-]+/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'route');
   }
 
   // camelCase symbols (function/variable names): lowercase start, uppercase within, ≥6 chars
   for (const m of combined.matchAll(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g)) {
-    if (m[0].length >= 6) anchors.add(m[0]);
+    if (m[0].length >= 6) { anchors.add(m[0]); kind.set(m[0], 'symbol'); }
   }
 
   // PascalCase types/classes/interfaces: uppercase start, ≥6 chars
   for (const m of combined.matchAll(/\b[A-Z][a-z][a-zA-Z0-9]{4,}\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'symbol');
   }
 
-  return [...anchors].slice(0, 20);
+  // Rank before truncating. Previously this returned insertion order, which is
+  // pass order: every file path, then every /api/ route, then camelCase, then
+  // PascalCase. Measured over this repo's own design docs there are ~97 candidates
+  // per call against a 20-slot cap, so paths and route strings routinely consumed
+  // the whole budget and PascalCase types were dropped structurally — even though
+  // the second hop is a lexical identifier query where symbols are the high-signal
+  // terms. Symbols now rank ahead of paths, and paths ahead of bare route strings.
+  const RANK: Record<AnchorKind, number> = { symbol: 0, path: 1, route: 2 };
+  const ranked = [...anchors].sort((a, b) => {
+    const byKind = RANK[kind.get(a) ?? 'route'] - RANK[kind.get(b) ?? 'route'];
+    if (byKind !== 0) return byKind;
+    // Within a kind, prefer more specific (longer) anchors.
+    if (b.length !== a.length) return b.length - a.length;
+    return a.localeCompare(b);
+  });
+
+  return ranked.slice(0, ANCHOR_LIMIT);
 }
 
 /**
@@ -4107,12 +4362,7 @@ export async function handleRecallAction(
     return text(`No knowledge found for: "${query}"`);
   }
 
-  const formatted = results.map((r, i) => {
-    const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
-    const sourceLink = r.sourceUrl ? ` ([source](${r.sourceUrl}))` : '';
-    const freshness = scope === 'memory' ? formatMemoryFreshness(r) : '';
-    return `### ${i + 1}. ${typeTag}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}${sourceLink}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-  }).join('\n\n---\n\n');
+  const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
   return text(`Found ${results.length} result(s):\n\n${formatted}`);
 }
@@ -4484,10 +4734,7 @@ export async function handleMemoryAction(
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
-      const formatted = results.map((r, i) => {
-        const freshness = corpus === 'memory' ? formatMemoryFreshness(r) : '';
-        return `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-      }).join('\n\n---\n\n');
+      const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }

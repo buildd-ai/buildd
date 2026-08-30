@@ -9,6 +9,13 @@ import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
 import { sessionLog } from './session-logger';
 
 /**
+ * Server-side worker statuses that genuinely end a lease. A 409 that names one
+ * of these is a real termination; anything else is coordination noise and must
+ * not kill a live SDK session.
+ */
+const SERVER_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled']);
+
+/**
  * Resolve the main-repo path that owns a worktree by trimming at the
  * `.buildd-worktrees/` marker. Worktrees live at
  * `<repoPath>/.buildd-worktrees/<safeBranch>`.
@@ -182,14 +189,23 @@ export class WorkerSync {
           ...(t.parentAgentId ? { parentAgentId: t.parentAgentId } : {}),
         }));
 
+      // Drain the append-only buffers BEFORE awaiting the PATCH, not after. Two
+      // overlapping syncs both used to read the same populated buffer and clear it
+      // once, so every buffered MCP call / error trace was filed twice server-side.
+      // Restored below if the PATCH throws, so nothing is lost.
+      const drainedMcpCalls = worker.pendingMcpCalls?.length ? worker.pendingMcpCalls : null;
+      const drainedErrorTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
+      if (drainedMcpCalls) worker.pendingMcpCalls = [];
+      if (drainedErrorTraces) worker.pendingErrorTraces = [];
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
         milestones,
         localUiUrl: this.ctx.config.localUiUrl,
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
-        ...(worker.pendingMcpCalls?.length ? { appendMcpCalls: worker.pendingMcpCalls } : {}),
-        ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
+        ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
+        ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
       };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
@@ -198,15 +214,15 @@ export class WorkerSync {
           options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
         };
       }
-      const response = await this.ctx.buildd.updateWorker(worker.id, update);
-
-      // Clear MCP call buffer after successful sync
-      if (worker.pendingMcpCalls?.length) {
-        worker.pendingMcpCalls = [];
-      }
-      // Clear error trace buffer after successful sync
-      if (worker.pendingErrorTraces?.length) {
-        worker.pendingErrorTraces = [];
+      let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;
+      try {
+        response = await this.ctx.buildd.updateWorker(worker.id, update);
+      } catch (err) {
+        // Sync failed — put the drained entries back at the front so the next
+        // sync ships them. (The outbox handles retry for the rest of the payload.)
+        if (drainedMcpCalls) worker.pendingMcpCalls = [...drainedMcpCalls, ...(worker.pendingMcpCalls ?? [])];
+        if (drainedErrorTraces) worker.pendingErrorTraces = [...drainedErrorTraces, ...(worker.pendingErrorTraces ?? [])];
+        throw err;
       }
 
       // Server says worker was already terminated
@@ -219,6 +235,27 @@ export class WorkerSync {
           worker.status = 'done';
           worker.completedAt = worker.completedAt || Date.now();
           this.ctx.emit({ type: 'worker_update', worker });
+          return;
+        }
+
+        // A conflict the server did not explain is NOT a termination. It used to
+        // be a lost update on the server's worker-row compare-and-swap (two
+        // in-flight PATCHes for the same live worker), and treating it as an
+        // abort hard-killed healthy sessions ~1s after they started, with 0
+        // turns of real work. Only hard-abort when the server names a terminal
+        // cause; otherwise re-sync and let the next cycle settle it.
+        const statedTerminal = typeof response.actualStatus === 'string'
+          && SERVER_TERMINAL_STATUSES.has(response.actualStatus);
+        const hasStatedCause = statedTerminal
+          || (typeof response.reason === 'string' && response.reason.length > 0);
+        if (response.retryable === true || !hasStatedCause) {
+          console.warn(
+            `[Worker ${worker.id}] Server reported a conflict with no terminal cause ` +
+            `(actualStatus=${response.actualStatus ?? 'unknown'}) — re-syncing instead of aborting`,
+          );
+          sessionLog(worker.id, 'warn', 'sync_conflict_retry',
+            `Unexplained server conflict (actualStatus=${response.actualStatus ?? 'unknown'}) — keeping session alive and re-syncing`);
+          this.markDirty(worker.id);
           return;
         }
 

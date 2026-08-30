@@ -34,6 +34,11 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import {
+  SessionStderrCollector,
+  flushStderrTrace,
+  uploadSessionDiagnostics,
+} from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import type { WorkerEnvironment } from '@buildd/shared';
@@ -920,60 +925,25 @@ export class WorkerManager {
 
       const started: LocalWorker[] = [];
       for (const claimedWorker of claimed) {
-        const task = claimedWorker.task;
-        if (!task) continue;
-
-        const workspacePath = this.resolver.resolve({
-          id: task.workspaceId,
-          name: task.workspace?.name || 'unknown',
-          repo: task.workspace?.repo,
-        });
-
-        if (!workspacePath) {
-          console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
-          // Fail the worker on server so it doesn't stay "running" forever
+        // Per-worker isolation. Anything that throws while preparing one claimed
+        // worker (path resolution, role sync, worktree setup) used to escape this
+        // loop into the outer catch, so every worker row behind it in the batch
+        // was never started AND never reported: the server kept them 'idle' with
+        // started_at NULL until the reaper killed them ~12 min later and booked
+        // them as infra failures (2026-08-28: 3 rows minted in 53ms, 1 started).
+        try {
+          const worker = await this.startClaimedWorker(claimedWorker);
+          if (worker) started.push(worker);
+        } catch (err: any) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[WorkerManager] Failed to start claimed worker ${claimedWorker.id}:`, err);
+          // Hand the row back to the server immediately so the task re-queues now
+          // instead of after the staleness window.
           this.buildd.updateWorker(claimedWorker.id, {
             status: 'failed',
-            error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+            error: `Runner failed to start session: ${message}`,
           }).catch(() => {});
-          continue;
         }
-
-        let resolvedPath = workspacePath;
-        if ((claimedWorker as any).roleConfig) {
-          const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
-          if (roleConfig.type === 'service') {
-            const { cwd } = await syncRoleToLocal(roleConfig);
-            resolvedPath = cwd;
-          } else {
-            // Builder role: sync config, then overlay files into repo
-            const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
-            await overlayRoleFiles(roleDir, workspacePath);
-          }
-        } else if (task.roleSlug && !task.workspace?.repo) {
-          // No roleConfig from claim (role registered via MCP but not uploaded to R2
-          // storage — configStorageKey/configHash absent). Fall back to the locally-
-          // synced role directory so service-role workers load the correct .mcp.json,
-          // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
-          const localRoleDir = getRoleDir(task.roleSlug as string);
-          if (existsSync(localRoleDir)) {
-            resolvedPath = localRoleDir;
-            console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
-          }
-        }
-        this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
-
-        // Notify the credential broker about credentials seen in this claim response.
-        // The broker acquires leases and schedules proactive refreshes; workers fetch
-        // their token from the broker socket at spawn (Phase 2 live path).
-        const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
-          Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
-        if (pendingRefreshes && pendingRefreshes.length > 0) {
-          notifyBrokerCredentials(pendingRefreshes);
-        }
-
-        const worker = await this.startFromClaim(claimedWorker, task, resolvedPath);
-        if (worker) started.push(worker);
       }
       return started;
     } catch (err: any) {
@@ -991,6 +961,66 @@ export class WorkerManager {
       }
       return [];
     }
+  }
+
+  /**
+   * Prepare and start a single claimed worker (cwd resolution + role sync).
+   * Extracted from the claim loop so a failure here is contained to one worker.
+   */
+  private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
+    const task = claimedWorker.task;
+    if (!task) return null;
+
+    const workspacePath = this.resolver.resolve({
+      id: task.workspaceId,
+      name: task.workspace?.name || 'unknown',
+      repo: task.workspace?.repo,
+    });
+
+    if (!workspacePath) {
+      console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+      // Fail the worker on server so it doesn't stay "running" forever
+      this.buildd.updateWorker(claimedWorker.id, {
+        status: 'failed',
+        error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+      }).catch(() => {});
+      return null;
+    }
+
+    let resolvedPath = workspacePath;
+    if ((claimedWorker as any).roleConfig) {
+      const roleConfig = (claimedWorker as any).roleConfig as RoleConfig;
+      if (roleConfig.type === 'service') {
+        const { cwd } = await syncRoleToLocal(roleConfig);
+        resolvedPath = cwd;
+      } else {
+        // Builder role: sync config, then overlay files into repo
+        const { cwd: roleDir } = await syncRoleToLocal(roleConfig);
+        await overlayRoleFiles(roleDir, workspacePath);
+      }
+    } else if (task.roleSlug && !task.workspace?.repo) {
+      // No roleConfig from claim (role registered via MCP but not uploaded to R2
+      // storage — configStorageKey/configHash absent). Fall back to the locally-
+      // synced role directory so service-role workers load the correct .mcp.json,
+      // CLAUDE.md, and env-mapping.json instead of the empty workspace directory.
+      const localRoleDir = getRoleDir(task.roleSlug as string);
+      if (existsSync(localRoleDir)) {
+        resolvedPath = localRoleDir;
+        console.log(`[Worker ${claimedWorker.id}] Using local role dir as cwd (no roleConfig from claim): ${localRoleDir}`);
+      }
+    }
+    this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
+
+    // Notify the credential broker about credentials seen in this claim response.
+    // The broker acquires leases and schedules proactive refreshes; workers fetch
+    // their token from the broker socket at spawn (Phase 2 live path).
+    const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
+      Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
+    if (pendingRefreshes && pendingRefreshes.length > 0) {
+      notifyBrokerCredentials(pendingRefreshes);
+    }
+
+    return this.startFromClaim(claimedWorker, task, resolvedPath);
   }
 
   /**
@@ -1333,12 +1363,20 @@ export class WorkerManager {
     // Subscribe to Pusher for commands
     this.pusherManager.subscribeToWorker(worker.id);
 
-    // Register localUiUrl with server
+    // Register localUiUrl with server. AWAITED on purpose: this is the PATCH
+    // that moves the row idle -> running. Firing it non-awaited let it overlap
+    // the other startup PATCHes below (resume branch, error traces), whose own
+    // writes then raced this one on the server's worker-row compare-and-swap.
+    // Settling it first keeps the startup writes serialized.
     if (this.config.localUiUrl) {
-      this.buildd.updateWorker(worker.id, {
-        localUiUrl: this.config.localUiUrl,
-        status: 'running',
-      }).catch(err => console.error('Failed to register localUiUrl:', err));
+      try {
+        await this.buildd.updateWorker(worker.id, {
+          localUiUrl: this.config.localUiUrl,
+          status: 'running',
+        });
+      } catch (err) {
+        console.error('Failed to register localUiUrl:', err);
+      }
     }
 
     // Set up git worktree for isolation (if branching strategy is not 'none')
@@ -1569,9 +1607,14 @@ export class WorkerManager {
     // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
     // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
     let cbmCacheDir: string | undefined;
-    // Buffer CLI stderr lines so they surface in get_error_traces on process failure.
-    // The normal logging path (console.log) keeps them in server logs only.
-    const cliStderrBuffer: string[] = [];
+    // Capture CLI stderr durably. Every chunk is filed into the per-worker session
+    // log the instant it arrives (previously stderr only reached console.log, i.e.
+    // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
+    // held a single stderr line). Bounded so a chatty session can't exhaust
+    // memory or disk. The buffered text also becomes a worker_error_traces row on
+    // EVERY session end via flushStderrTrace, and mid-flight via worker-sync's
+    // pendingErrorTraces drain — which is the only channel a hung session has.
+    const stderrCollector = new SessionStderrCollector(worker.id, task.id);
 
     try {
       // Fetch workspace git config from server
@@ -2408,8 +2451,13 @@ export class WorkerManager {
         ...(outputFormat ? { outputFormat } : {}),
         stderr: (data: string) => {
           console.log(`[Worker ${worker.id}] stderr: ${data}`);
-          const trimmed = data.trim();
-          if (trimmed) cliStderrBuffer.push(trimmed);
+          // Durable: files the chunk into ~/.buildd/logs/<workerId>.log immediately.
+          stderrCollector.push(data);
+          // Eagerly stage the first trace so a session that HANGS (and therefore
+          // never reaches the catch/finally below) still ships its stderr on the
+          // next periodic worker-sync PATCH. flushStderrTrace is idempotent, so the
+          // terminal flush only re-emits if new stderr arrived after this point.
+          flushStderrTrace(worker, stderrCollector);
         },
         // Resume previous session if provided (loads full conversation history from disk).
         // Claude-only: the Codex backend resumes via runStreamed's resumeThreadId
@@ -3260,17 +3308,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Steering-delivery crash: the CLI rejected a malformed spawn invocation
         // (e.g. --session-id + --resume without --fork-session). This is an infra
         // failure — must not consume a task retry attempt.
-        const stderrJoined = cliStderrBuffer.join('\n');
-        const isSteeringDeliveryCrash = stderrJoined.includes('--session-id can only be used with');
-        // Flush buffered CLI stderr into error traces so get_error_traces surfaces them.
-        if (cliStderrBuffer.length > 0) {
-          worker.pendingErrorTraces ??= [];
-          worker.pendingErrorTraces.push({
-            pattern: 'cli_spawn_error',
-            excerpt: stderrJoined.slice(0, 500),
-            source: 'stderr',
-          });
-        }
+        const isSteeringDeliveryCrash = stderrCollector.isSteeringDeliveryCrash;
+        // Flush buffered CLI stderr into error traces so get_error_traces surfaces
+        // them. Idempotent — a no-op when the eager stderr-callback flush already
+        // staged this text and nothing new arrived since.
+        flushStderrTrace(worker, stderrCollector);
         // A provision-gate block carries a stable failure classification — surface
         // it as structured resultMeta so the server/organizer can act on the code
         // (escalate a missing secret vs. retry a flaky readiness) rather than
@@ -3279,12 +3321,17 @@ If something is missing or incomplete, describe what and fix it now.`;
         // MCP pre-flight failures carry structured failure info for each failed
         // server — surface so the organizer can escalate a missing connector credential.
         const mcpPreflightFailures = (error as { mcpPreflightFailures?: McpPreflightFailure[] })?.mcpPreflightFailures;
+        // Drain rather than read: worker-sync's periodic PATCH also ships
+        // pendingErrorTraces, so leaving the buffer populated files the same
+        // stderr twice in worker_error_traces.
+        const terminalTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
+        if (terminalTraces) worker.pendingErrorTraces = [];
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
           ...(isBudgetError && { budgetExhausted: true }),
           ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
-          ...(worker.pendingErrorTraces?.length ? { appendErrorTraces: worker.pendingErrorTraces } : {}),
+          ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
           ...spanPayload,
@@ -3381,6 +3428,45 @@ If something is missing or incomplete, describe what and fix it now.`;
         }
         try { archiveSession(worker); } catch {}
       }
+
+      // ── Durable session diagnostics ──────────────────────────────────────────
+      // Runs on EVERY session end — normal completion, failure, abort, waiting,
+      // superseded — not just the failure branch above. A session that produced
+      // zero turns still reports whatever stderr it produced.
+      //
+      // Strictly best-effort: never throws, never touches worker.status. This is
+      // diagnostics, not a task-failure path.
+      if (!bwrapRetryAfterCleanup) {
+        try {
+          // 1. Any stderr the terminal branches didn't already stage.
+          if (flushStderrTrace(worker, stderrCollector) && worker.pendingErrorTraces?.length) {
+            const traces = worker.pendingErrorTraces;
+            worker.pendingErrorTraces = [];
+            await this.buildd
+              .updateWorker(worker.id, { appendErrorTraces: traces })
+              .catch(err => console.warn(`[Worker ${worker.id}] stderr trace flush failed (non-fatal): ${err instanceof Error ? err.message : err}`));
+          }
+
+          // 2. Ship the transcript + session log to object storage. The server
+          // derives the key, authorizes ownership, refuses sensitive workspaces and
+          // re-uploads, and caps the size inside the signature — this side only
+          // redacts (redactSecretsInBody, inside buildSessionTranscript) and PUTs.
+          if (worker.status === 'done' || worker.status === 'error') {
+            await uploadSessionDiagnostics(
+              worker,
+              secretValues,
+              {
+                requestUploadUrl: (workerId, kind, sizeBytes) =>
+                  this.buildd.requestSessionUploadUrl(workerId, kind, sizeBytes),
+              },
+              stderrCollector.text(),
+            );
+          }
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] session diagnostics failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
 

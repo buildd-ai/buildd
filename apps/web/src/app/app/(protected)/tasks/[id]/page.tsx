@@ -35,6 +35,10 @@ import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 
+// Exit causes that get their own badge instead of a bare "Failed" — each one
+// tells the operator where to look (budget, infra, over-claim, dead session).
+const BADGED_EXIT_CAUSES = new Set(['budget_limited', 'infra_failure', 'never_started', 'silent_start']);
+
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
   feature: 'bg-cat-feature/15 text-cat-feature',
@@ -1180,7 +1184,11 @@ export default async function TaskDetailPage({
                         </div>
                       )}
                     </div>
-                    <StatusBadge status={worker.exitCause === 'budget_limited' && worker.status === 'failed' ? 'budget_limited' : worker.exitCause === 'infra_failure' && worker.status === 'failed' ? 'infra_failure' : worker.status} />
+                    <StatusBadge status={
+                      worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
+                        ? worker.exitCause
+                        : worker.status
+                    } />
                     <div className="flex items-center gap-2">
                       {worker.prUrl && (
                         <a

@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { OutputFormat } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 
 export interface ClaudeBackendConfig {
@@ -18,13 +19,30 @@ export class ClaudeBackend implements AgentBackend {
 
   async *runStreamed(opts: RunStreamedOpts): AsyncIterable<BackendEvent> {
     const isResume = Boolean(this.config.options.resume);
+
+    // 'json_schema' is the SDK's only OutputFormatType. Its transport does
+    // `type === 'json_schema' ? schema : undefined`, so any other type string
+    // drops the schema silently: no structured output is requested and
+    // result.structured_output is never populated. Nothing fails loudly — the
+    // agent just answers in prose, and a reviewer verdict returned as prose is
+    // discarded by handleReviewerOutcomeIfNeeded, leaving the PR unmerged.
+    // Typed as OutputFormat (not inlined into the Record<string, unknown>
+    // literal below) so a wrong type string is a compile error, not a silent
+    // behaviour change.
+    const outputFormat: OutputFormat | undefined = opts.outputSchema
+      ? { type: 'json_schema', schema: opts.outputSchema }
+      : undefined;
+
     const queryOptions: Record<string, unknown> = {
       ...this.config.options,
       cwd: opts.cwd,
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.maxTurns ? { maxTurns: opts.maxTurns } : {}),
       ...(opts.env ? { env: opts.env } : {}),
-      ...(opts.outputSchema ? { outputFormat: { type: 'json', schema: opts.outputSchema } } : {}),
+      // Only override when this run carries an explicit schema — workers.ts
+      // already put resolveOutputFormat(task) in config.options, which is how
+      // planning tasks get the implicit planning schema.
+      ...(outputFormat ? { outputFormat } : {}),
     };
 
     // The CLI rejects --session-id alongside --resume unless --fork-session is also set.

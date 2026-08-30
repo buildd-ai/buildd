@@ -34,6 +34,13 @@ export interface BackendScope {
   workspaceId?: string | null;
   /** Dispatch multi-tenant mode: budget is tracked per tenant, not per account. */
   tenantId?: string | null;
+  /**
+   * Ignore account scoping when checking credentials: "could ANY runner in this
+   * team authenticate?" rather than "can this one account". Set by read-only
+   * reporting (backend readiness, the queue-stall watchdog), which has no
+   * claiming account and must not call an account-scoped credential absent.
+   */
+  anyAccount?: boolean;
 }
 
 /** How long an expired pause row is kept before the next write prunes it. */
@@ -166,7 +173,7 @@ export async function isBackendConfigured(backend: BackendId, scope: BackendScop
     try {
       return await hasCodexCredential({
         teamId: scope.teamId,
-        accountId: scope.accountId ?? null,
+        accountId: scope.anyAccount ? 'any' : (scope.accountId ?? null),
         workspaceId: scope.workspaceId ?? null,
       });
     } catch (err) {

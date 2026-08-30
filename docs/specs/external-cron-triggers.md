@@ -3,6 +3,11 @@ title: External Cron Triggers
 status: active
 owner: max
 last_verified: 2026-08-28
+summary: Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
+domain: integrations
+surfaces: [cron-manifest.json, scripts/sync-crons.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/cron-cadence.ts]
+related: [mission-task-lifecycle, scheduled-task-merge-policy, runner-liveness]
+keywords: [cron-job.org, cron_secret, cronjob_api_key, vercel crons, nextrunat, cron:sync]
 supersedes: []
 ---
 # External Cron Triggers

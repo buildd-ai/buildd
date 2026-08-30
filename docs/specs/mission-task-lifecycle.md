@@ -3,6 +3,11 @@ title: Mission & Task Lifecycle
 status: active
 owner: max
 last_verified: 2026-08-29
+summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+domain: missions
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
+related: [subject-anchor-liveness, external-cron-triggers, release-flow]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours]
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -126,17 +131,44 @@ stalled a whole workspace.
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
-| `subject_dead` | never (terminal) | policy, forceable |
+| `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |
 | `connector_routing_mismatch` | fixing the connector | capability |
+
+¹ `subject_dead` has its own capability spec — see
+`docs/specs/subject-anchor-liveness.md` for binding classification, fail-open
+semantics, terminal cancellation and the override. This table records only its
+place in the gate ladder.
 
 `StartTaskButton` also renders a `capability_mismatch` branch that no route
 emits. That is deliberate, not an oversight: the capability abstraction whose
 only real check was "does this backend have a credential" was removed in PR
 #1864 and replaced by the onboarding/workspace-configuration path (see
-`docs/SPEC.md` → Removed concepts). A task whose backend has no credential is
-therefore still stranded without a task-level gateReason — a known gap that must
-be closed through onboarding surfacing, NOT by reviving the gate.
+`docs/SPEC.md` → Removed concepts). A task whose backend has no credential
+therefore has no task-level `gateReason`, and must not be given one.
+
+That gap is now closed at configuration time instead, by
+`apps/web/src/lib/backend-strand.ts` — one module, three read-only surfaces, no
+gate:
+- **Settings → Agent backends** (`AgentBackendsSection.tsx`, fed by
+  `GET /api/teams/[id]/backend-readiness`): each backend card states how many
+  **pending** tasks are routed to it with no credential, and links to them. The
+  count is the consequence a bare "not configured" chip failed to convey.
+- **Health → Problems** (`HealthClient.tsx`): one row per backend that is
+  stranding work, with the existing "Fix in Settings" affordance. Without it the
+  page asserts "All systems healthy" while a queue can never drain.
+- **`/api/cron/queue-stall`**: the `backend_credential_missing` stall reason
+  (below), which names the condition in the ops alert instead of reporting the
+  most permanent block it can see as `no_gate_identified`.
+
+"Routed to" is `resolveEffectiveBackend()` in `packages/core/backend-policy.ts`:
+`tasks.backend` (the mission → role → workspace chain, resolved and persisted at
+creation) with the team's enabled-provider mask applied on top, exactly as the
+claim route applies it at dispatch. Consequences the surfaces MUST model: a task
+nominally on a **disabled** backend is not stranded (the mask reroutes it), a
+task can be stranded by the mask alone (Claude disabled + Codex unconfigured
+strands the whole queue), and Claude is `implicitlyConfigured`, so the common
+case reports nothing.
 
 Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
 self-clear: `path_overlap`, `advisory_manifest`, `mission_concurrent`,
@@ -149,6 +181,14 @@ task has been held by one for longer than the stall threshold, since "transient"
 stops being an excuse at that point. `advisory_manifest` is the case that
 matters — its blocking peer may be parked in `waiting_input`, holding the slot
 until a human answers, which never self-clears in practice.
+
+The watchdog reports two reasons that are NOT `gateReason` values and never will
+be, ordered below every gate `/start` can name (so `/start`'s 422 ordering is
+reproduced verbatim) and among themselves by permanence:
+`backend_credential_missing` (permanent until an operator adds a credential),
+then `advisory_manifest` (self-clearing). Reporting is not gating: the watchdog
+withholds nothing from the claim query, which is why naming the missing
+credential here does not reintroduce the removed capability gate.
 
 Two entries appear in the hard-gate table above rather than here, because the
 claim loop counts them but `/start` also rejects on them: `subject_dead`
@@ -169,6 +209,10 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
 - AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
   reconciliation sweep runs THEN the task becomes `cancelled` AND its dependents
   become claimable.
+- AC-CG-6: GIVEN a pending task whose effective backend has no credential THEN
+  `/api/cron/queue-stall` reports `backend_credential_missing` (not
+  `no_gate_identified`) AND Settings → Agent backends counts it against that
+  backend AND `/start` still returns no `gateReason` for it.
 
 **Code surface**:
 - Per-gate modules: `apps/web/src/app/api/workers/claim/` —
@@ -185,6 +229,9 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
 - Display: `apps/web/src/lib/task-presentation.ts` — `deriveTaskPhase()`,
   `apps/web/src/components/StageChip.tsx` — `deriveStage()`
 - Watchdog: `apps/web/src/app/api/cron/queue-stall/route.ts`
+- Configuration-time surfacing (no gate): `apps/web/src/lib/backend-strand.ts`,
+  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`,
+  `apps/web/src/app/api/teams/[id]/backend-readiness/route.ts`
 
 ---
 
@@ -339,6 +386,27 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `loopConfig.exitCondition = { type: 'command', command }`, and the runner's
   evidence — not an agent's summary — decides. A `command` criterion MUST NOT be
   graded by the LLM evaluator.
+- `description` (prose) criteria MUST NOT depend on `ANTHROPIC_API_KEY` being
+  present in the web app's environment. That variable is unset in production and
+  is unsettable for a team whose Claude access is an OAuth subscription, so a
+  grader keyed on it reported `NOT_EVALUATED` forever and named a fix no operator
+  could apply. When the key is absent the evaluator MUST dispatch a
+  `taskClass = 'bookkeeping'` grading task instead, which a runner claims with
+  whatever backend credential the team has connected, and mark the criteria
+  `PENDING`. When the key IS present the inline call is used and no task is
+  dispatched — never both.
+- A prose grading task is deduplicated on its `context.criteriaProseEval` marker,
+  matched in SQL. Mechanical evaluation re-runs on every completion attempt, so an
+  undeduplicated dispatch would create one grading task per round.
+- A prose verdict MUST be written back only onto the criterion it graded, matched
+  on `criterionFingerprint`, and only for indices named in the dispatching
+  marker: an agent MUST NOT be able to overwrite a mechanically-derived verdict
+  with prose. Every criterion in the marker leaves the write-back non-`PENDING`,
+  including ones the evaluator ignored — a criterion left `PENDING` with no task
+  in flight holds the mission open with nothing that could resolve it.
+- No prose criterion is dispatched while another criterion already reads `fail`,
+  and a finished grading run that returned no verdicts is not retried until it
+  ages past `PROSE_VERDICT_TTL_MS` — the same economics as the command path.
 - The release trigger keeps one additional bar above the predicate: no task of
   the mission in `pending`, `assigned`, or `in_progress`, housekeeping rows
   included (`countPendingTasksForMission`). It MUST NOT be loosened to match a
@@ -368,6 +436,15 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   completion is attempted THEN `missions.status` becomes `completed`, the linked
   schedule is disabled, and the `on_mission_complete` release trigger also
   passes its own check.
+- AC-11d: GIVEN a mission with a `description` criterion, no `ANTHROPIC_API_KEY`
+  in the environment, and a connected agent backend credential WHEN criteria are
+  evaluated THEN one `bookkeeping` grading task is dispatched, the criterion reads
+  `PENDING` with that task id, and `overall` is `UNVERIFIED` — and WHEN that task
+  completes with `criteriaVerdicts` THEN the verdicts land on the criteria,
+  `overall` is re-folded, and completion is re-attempted in the same request.
+- AC-11e: GIVEN the same mission with NO agent backend credential connected WHEN
+  criteria are evaluated THEN no task is dispatched and the criterion reads
+  `NOT_EVALUATED` with evidence naming Settings → Agent Backends.
 - AC-11d: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
   task is dispatched, the criterion reads `PENDING` with its `workerTaskId`, and
   the mission does NOT complete until that task's evidence resolves it.
@@ -396,6 +473,8 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `ensureCriteriaVerdict()`, `evaluateCriteriaNow()`
 - Command criteria: `apps/web/src/lib/mission-criteria-verify.ts` —
   `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
+- Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
+  `resolveProseCriteria()`, `handleProseEvalOutcome()`
 - Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
   `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`
 - Callers: `apps/web/src/lib/mission-loop.ts`,

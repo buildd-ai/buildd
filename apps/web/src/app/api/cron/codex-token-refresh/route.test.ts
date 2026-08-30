@@ -324,3 +324,30 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(typeof body.claudeVerify.checked).toBe('number');
   });
 });
+
+// Regression (2026-08-28): the nudge dedupe only looked for a *pending* task
+// with the same title, so every cron pass filed a fresh nudge while the previous
+// one was still assigned/in_progress. Each doomed copy burned worker slots
+// (4 silent-start workers in 4 hours for one credential).
+describe('nudge dedupe covers in-flight tasks, not just pending', () => {
+  it('matches an existing nudge task in pending, assigned or in_progress', async () => {
+    process.env.CRON_SECRET = 'test-secret';
+    delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
+    tasksInsertValues = [];
+    mockSecretsFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockSecretsFindMany.mockReturnValueOnce([
+      { id: 'sec-inflight', teamId: 'team-1', workspaceId: 'ws-1' },
+    ]).mockReturnValue([]);
+    mockTasksFindFirst.mockReturnValue(null);
+
+    await GET(makeRequest('test-secret'));
+
+    const dedupeCall = mockTasksFindFirst.mock.calls[0]?.[0] as any;
+    expect(dedupeCall).toBeDefined();
+    const statusFilter = JSON.stringify(dedupeCall.where);
+    expect(statusFilter).toContain('pending');
+    expect(statusFilter).toContain('assigned');
+    expect(statusFilter).toContain('in_progress');
+  });
+});

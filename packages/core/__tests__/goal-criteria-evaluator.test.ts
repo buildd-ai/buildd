@@ -330,51 +330,51 @@ describe('evaluateGoalCriteria — evaluatedBy attribution', () => {
 // ─── evaluateInitiativeKPIs ────────────────────────────────────────────────────
 
 describe('evaluateInitiativeKPIs', () => {
-  it('returns empty kpis array and pass overall when no KPIs set', () => {
-    const state = evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'manual', now: NOW });
+  it('returns empty kpis array and pass overall when no KPIs set', async () => {
+    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'manual', now: NOW });
     expect(state.kpis).toHaveLength(0);
     expect(state.overall).toBe('pass');
   });
 
-  it('all KPIs return UNVERIFIED (metric query not implemented)', () => {
+  it('all KPIs return UNVERIFIED when no resolver provided', async () => {
     const kpis = [
       { name: 'Latency p95 under 200ms', metric: 'latency_p95', operator: 'lt' as const, threshold: 200 },
       { name: 'Error rate under 1%', metric: 'error_rate', operator: 'lt' as const, threshold: 0.01 },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
     expect(state.kpis).toHaveLength(2);
     expect(state.kpis[0].verdict).toBe('UNVERIFIED');
     expect(state.kpis[1].verdict).toBe('UNVERIFIED');
   });
 
-  it('overall=UNVERIFIED when blocking KPIs are UNVERIFIED', () => {
+  it('overall=UNVERIFIED when blocking KPIs are UNVERIFIED', async () => {
     const kpis = [
       { name: 'Latency', metric: 'latency', operator: 'lt' as const, threshold: 200, blocking: true },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
     expect(state.overall).toBe('UNVERIFIED');
   });
 
-  it('overall=pass when all KPIs are non-blocking (no blocking KPIs)', () => {
+  it('overall=pass when all KPIs are non-blocking (no blocking KPIs)', async () => {
     const kpis = [
       { name: 'Revenue metric', metric: 'revenue', operator: 'gt' as const, threshold: 1000, blocking: false },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'manual', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'manual', now: NOW });
     // Non-blocking only → no blocker → overall pass
     expect(state.overall).toBe('pass');
   });
 
-  it('records kpi names in output', () => {
+  it('records kpi names in output', async () => {
     const kpis = [
       { name: 'P95 latency', metric: 'latency', operator: 'lt' as const, threshold: 200 },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'mcp', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'mcp', now: NOW });
     expect(state.kpis[0].name).toBe('P95 latency');
     expect(state.kpis[0].index).toBe(0);
   });
 
-  it('records evaluatedAt and evaluatedBy', () => {
-    const state = evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'mcp', now: NOW });
+  it('records evaluatedAt and evaluatedBy', async () => {
+    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'mcp', now: NOW });
     expect(state.evaluatedAt).toBe(NOW);
     expect(state.evaluatedBy).toBe('mcp');
   });

@@ -3,6 +3,11 @@ title: MCP Action Contracts
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
+domain: mcp
+surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/api-auth.ts, packages/core/memory-client.ts]
+related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
+keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405]
 supersedes: []
 ---
 # MCP Action Contracts

@@ -25,12 +25,21 @@ export function normalizeAlias(value: string): string {
 
 /**
  * Returns true if the value is an exact model ID pin that is NOT found in the
- * live model list. Returns false for tier values, aliases, or when the list is
- * empty (not yet fetched).
+ * live model list. Returns false for tier values and aliases.
+ *
+ * `catalogComplete` is load-bearing: /api/models returns the team's tier models
+ * even with no credential, so a non-empty list is no longer evidence that the list
+ * is exhaustive. Warning off a partial list would flag every legitimately pinned
+ * release as retired.
  */
-export function detectStalePin(value: string, liveModelIds: string[]): boolean {
+export function detectStalePin(
+  value: string,
+  liveModelIds: string[],
+  catalogComplete = true,
+): boolean {
   const normalized = normalizeAlias(value);
   if (KNOWN_TIERS.has(normalized)) return false;
+  if (!catalogComplete) return false;
   if (liveModelIds.length === 0) return false;
   return !liveModelIds.includes(normalized);
 }
@@ -69,6 +78,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const [catalogComplete, setCatalogComplete] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsFetched, setModelsFetched] = useState(false);
 
@@ -76,9 +86,12 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
     if (!showAdvanced || modelsFetched) return;
     setModelsLoading(true);
     fetch('/api/models')
-      .then(r => r.ok ? r.json() as Promise<{ models: ModelEntry[] }> : Promise.resolve({ models: [] }))
+      .then(r => r.ok
+        ? r.json() as Promise<{ models: ModelEntry[]; catalogComplete?: boolean }>
+        : Promise.resolve({ models: [], catalogComplete: false }))
       .then(data => {
         setModels(data.models ?? []);
+        setCatalogComplete(data.catalogComplete === true);
         setModelsFetched(true);
       })
       .catch(() => {})
@@ -86,7 +99,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
   }, [showAdvanced, modelsFetched]);
 
   const isExactPin = !KNOWN_TIERS.has(normalized);
-  const isStalePin = modelsFetched && detectStalePin(value, models.map(m => m.id));
+  const isStalePin = modelsFetched && detectStalePin(value, models.map(m => m.id), catalogComplete);
 
   return (
     <div className="space-y-1.5">
@@ -163,7 +176,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length === 0 && (
             <p className="text-[11px] text-text-muted">
-              No models available — check your Anthropic API key in Settings.
+              No models available yet — set this workspace&apos;s model tiers in Settings.
             </p>
           )}
           {models.length > 0 && (
@@ -185,6 +198,12 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
                 </button>
               ))}
             </div>
+          )}
+          {!modelsLoading && modelsFetched && models.length > 0 && !catalogComplete && (
+            <p className="text-[11px] text-text-muted" data-testid="tier-only-hint">
+              Showing your configured tiers. Connect an agent backend in Settings →
+              Agent Backends to browse every model release.
+            </p>
           )}
           <p className="text-[10px] text-text-muted">
             Pin to a specific model release. Falls back to tier if unavailable.

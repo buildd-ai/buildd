@@ -32,6 +32,14 @@ export interface CIRetryParams {
   ciRunUrl?: string | null;
   /** Workspace-level max CI retries (from gitConfig.maxCiRetries). Overrides task-level maxIterations. 0 disables. */
   workspaceMaxCiRetries?: number;
+  /**
+   * True when the failing head SHA was pushed by someone other than the buildd worker
+   * (a human, a GitHub Action, etc.). The retry task is still created so the PR gets
+   * fixed, but the attempt counter is NOT incremented — the agent's budget is preserved.
+   */
+  foreignHeadSha?: boolean;
+  /** Login/name of the non-worker commit author, recorded for forensics. */
+  foreignCommitAuthor?: string;
 }
 
 export interface CIRetryTask {
@@ -52,7 +60,7 @@ export interface CIRetryTask {
  * which prevents infinite retry loops.
  */
 export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
-  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, workspaceMaxCiRetries } = params;
+  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, workspaceMaxCiRetries, foreignHeadSha, foreignCommitAuthor } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
@@ -60,12 +68,23 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
   // maxCiRetries === 0 explicitly disables CI retries for the workspace.
   const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_ITERATIONS);
 
-  // Guard against infinite retry loops (and honor the disable switch).
-  if (maxIterations <= 0 || currentIteration >= maxIterations) {
+  // Honor the "retries disabled" switch regardless of commit authorship.
+  if (maxIterations <= 0) {
     return null;
   }
 
-  const nextIteration = currentIteration + 1;
+  // Foreign commits (non-worker pushes) do NOT consume a retry attempt.
+  // Worker commits do consume one and must respect the exhaustion cap.
+  if (!foreignHeadSha && currentIteration >= maxIterations) {
+    return null;
+  }
+
+  // Foreign commits keep the same iteration so the agent's budget is preserved.
+  const nextIteration = foreignHeadSha ? currentIteration : currentIteration + 1;
+
+  // Display number always advances for readability (title and description).
+  // context.iteration tracks actual agent-authored attempts.
+  const displayIteration = currentIteration + 1;
 
   // Strip any existing retry prefix so the title doesn't accumulate them.
   const cleanTitle = originalTask.title
@@ -73,8 +92,8 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
     .replace(/^retry:\s*/i, '');
 
   return {
-    title: `[CI Retry #${nextIteration}] ${cleanTitle}`,
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, nextIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null),
+    title: `[CI Retry #${displayIteration}] ${cleanTitle}`,
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -107,6 +126,13 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
       ...(worker.prNumber ? { prNumber: worker.prNumber } : {}),
       // Skill slugs (preserve from original)
       ...(ctx.skillSlugs ? { skillSlugs: ctx.skillSlugs } : {}),
+      // Provenance — records that this retry was triggered by a non-worker commit.
+      // Lets mission timeline / forensics distinguish 'agent attempt N of M' from
+      // 'someone else pushed; no attempt consumed'.
+      ...(foreignHeadSha ? {
+        foreign_head_sha: true,
+        ...(foreignCommitAuthor ? { foreignCommitAuthor } : {}),
+      } : {}),
     },
   };
 }
@@ -119,6 +145,8 @@ function buildRetryDescription(
   maxIterations: number,
   ciRunId: number | null,
   ciRunUrl: string | null,
+  foreignHeadSha?: boolean,
+  foreignCommitAuthor?: string,
 ): string {
   // Don't ship the full (verbose) log — point the agent at `gh run view`, which
   // returns only the failed steps' output, so it pulls just what it needs.
@@ -132,11 +160,15 @@ Grep or tail if the output is large — don't dump the whole thing.${ciRunUrl ? 
 `
     : '';
 
+  const foreignNote = foreignHeadSha
+    ? `> **Note:** This CI failure was triggered by a commit from ${foreignCommitAuthor ? `@${foreignCommitAuthor}` : 'an external contributor'}, not the buildd agent. Your retry budget is **not consumed** by this attempt.\n\n`
+    : '';
+
   return `CI checks failed on the PR for "${task.title}" (${repoFullName}).
 
 **Attempt ${iteration} of ${maxIterations}.**
 
-## What failed
+${foreignNote}## What failed
 
 \`\`\`
 ${failureContext}

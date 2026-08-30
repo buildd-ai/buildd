@@ -3,6 +3,11 @@ title: Release Flow
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
+domain: releases
+surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
+related: [db-migration-gates, webhook-dataflow]
+keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
 supersedes: []
 ---
 # Release Flow

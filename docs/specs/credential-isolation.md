@@ -3,6 +3,11 @@ title: Credential Isolation & MCP Injection Security Model
 status: active
 owner: builder
 last_verified: 2026-07-21
+summary: The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
+domain: auth
+surfaces: [apps/runner/src/workers.ts, apps/runner/src/mcp-preflight.ts, apps/runner/src/hook-factory.ts, packages/core/redaction.ts]
+related: [mcp-connectors-and-roles, auth-oauth-boundaries, codex-backend-spec]
+keywords: [cleanenv, mcp_bearer_conn, buildd_api_key, sensitive_read_paths, mcp_preflight_failed, dataclass sensitive]
 ---
 # Credential Isolation & MCP Injection Security Model
 

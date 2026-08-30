@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { secrets, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, eq, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
 import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
@@ -56,8 +56,15 @@ async function nudgeCredentialRefresh(
   if (!wsId) return 'no_workspace';
 
   const title = `[sys] refresh credential ${credId}`;
+  // Dedupe against in-flight nudges too, not just pending ones. Matching only
+  // 'pending' meant a nudge that had been claimed (assigned/in_progress) no
+  // longer counted, so every sweep filed another copy of a task that was
+  // already being worked — each copy burning a worker slot (2026-08-28).
   const existing = await db.query.tasks.findFirst({
-    where: and(eq(tasks.title, title), eq(tasks.status, 'pending')),
+    where: and(
+      eq(tasks.title, title),
+      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+    ),
     columns: { id: true },
   });
   if (existing) return 'deduped';

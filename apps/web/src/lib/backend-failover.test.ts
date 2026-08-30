@@ -112,6 +112,22 @@ describe('isBackendConfigured', () => {
   it('refuses a backend the runner cannot execute yet', async () => {
     expect(await isBackendConfigured('openrouter', scope)).toBe(false);
   });
+
+  it('passes the claiming account through by default', async () => {
+    await isBackendConfigured('codex', scope);
+    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+      teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1',
+    });
+  });
+
+  it("anyAccount asks whether ANY runner in the team could run it", async () => {
+    // Read-only reporting has no claiming account; an account-scoped credential
+    // still means the backend works for someone, so it must not read as absent.
+    await isBackendConfigured('codex', { teamId: 'team-1', workspaceId: 'ws-1', anyAccount: true });
+    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+      teamId: 'team-1', accountId: 'any', workspaceId: 'ws-1',
+    });
+  });
 });
 
 describe('resolveFailoverBackend', () => {

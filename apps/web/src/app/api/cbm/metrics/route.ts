@@ -122,9 +122,34 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Aggregate CBM-disabled stats (comparison baseline).
+  // Mechanism check. A worker can have CBM mounted and never query it — which is
+  // what actually happened on first rollout: 5 active workers, zero graph calls,
+  // while the deltas below showed -80% input tokens. Those deltas had no mechanism
+  // behind them. Surface the mechanism explicitly so efficacy is never inferred
+  // from a cohort difference alone.
+  const activeWithZeroToolCalls = active.filter(
+    r => Object.values(r.cbm.toolCalls).reduce((a, b) => a + b, 0) === 0
+  ).length;
+  const mechanismObserved = active.length > 0 && activeWithZeroToolCalls < active.length;
+
+  // Comparison baseline. binary_absent is EXCLUDED: it means the binary was missing
+  // from the image, so those workers come from a different infrastructure regime,
+  // not from a control group that could have used CBM and didn't. Including them
+  // made post-fix actives look ~80% better than a population that never had the
+  // capability at all.
+  const comparable = disabled.filter(r => r.cbm.disableReason !== 'binary_absent');
+  const comparableInputTokens = comparable.map(r => r.inputTokens);
+  const comparableFileAccess = comparable.map(r => r.cbm.readCount + r.cbm.grepCount + r.cbm.globCount);
+
+  // Reported as-is over ALL disabled tasks: this is the health view, and narrowing
+  // it would silently change the meaning of an existing field. Only the deltas use
+  // the comparable subset.
   const disabledInputTokens = disabled.map(r => r.inputTokens);
   const disabledFileAccess = disabled.map(r => r.cbm.readCount + r.cbm.grepCount + r.cbm.globCount);
+
+  /** Minimum cohort size on BOTH sides before a delta is reported at all. */
+  const MIN_COHORT = 5;
+  const cohortsSufficient = active.length >= MIN_COHORT && comparable.length >= MIN_COHORT;
 
   // Disable-reason breakdown.
   const disableReasons: Record<string, number> = {};
@@ -151,10 +176,19 @@ export async function GET(req: NextRequest) {
       avgToolCalls: Object.fromEntries(
         Object.entries(activeToolBreakdown).map(([tool, counts]) => [tool, avg(counts)])
       ),
+      /** Active tasks that never called a single CBM tool. */
+      activeWithZeroToolCalls,
+      /**
+       * False when every active task made zero graph calls. While false, the
+       * deltas in specTargets are NOT attributable to CBM — there is no mechanism.
+       */
+      mechanismObserved,
     },
     /** Tasks where CBM was not active — serves as the comparison baseline. */
     cbmDisabled: {
       count: disabled.length,
+      /** Disabled tasks usable as a control (binary_absent excluded — see above). */
+      comparableCount: comparable.length,
       avgInputTokens: avg(disabledInputTokens),
       avgFileAccessCalls: avg(disabledFileAccess),
       disableReasons,
@@ -166,8 +200,24 @@ export async function GET(req: NextRequest) {
      *   fallbackRate:   <5%
      */
     specTargets: {
-      inputTokenDeltaPct: computeDeltaPct(avg(activeInputTokens), avg(disabledInputTokens)),
-      fileAccessDeltaPct: computeDeltaPct(avg(activeFileAccess), avg(disabledFileAccess)),
+      /**
+       * Deltas are null unless BOTH cohorts clear MIN_COHORT and at least one
+       * active task actually called a graph tool. Without the mechanism, a delta
+       * is a cohort artifact, and reporting it as efficacy is worse than
+       * reporting nothing.
+       */
+      inputTokenDeltaPct: cohortsSufficient && mechanismObserved
+        ? computeDeltaPct(avg(activeInputTokens), avg(comparableInputTokens))
+        : null,
+      fileAccessDeltaPct: cohortsSufficient && mechanismObserved
+        ? computeDeltaPct(avg(activeFileAccess), avg(comparableFileAccess))
+        : null,
+      /** Why deltas are suppressed, when they are. */
+      deltasSuppressedBecause: cohortsSufficient && mechanismObserved
+        ? null
+        : !mechanismObserved
+          ? 'no_graph_tool_calls_observed'
+          : 'insufficient_cohort',
       fallbackRateTarget: 0.05,
       fallbackRateMet: fallbackRate !== null ? fallbackRate < 0.05 : null,
     },
@@ -185,11 +235,12 @@ function emptyResponse(window: string, windowStart: Date) {
     windowStart: windowStart.toISOString(),
     totalTracked: 0,
     fallbackRate: null,
-    cbmActive: { count: 0, avgInputTokens: null, avgFileAccessCalls: null, avgToolCalls: {} },
-    cbmDisabled: { count: 0, avgInputTokens: null, avgFileAccessCalls: null, disableReasons: {} },
+    cbmActive: { count: 0, avgInputTokens: null, avgFileAccessCalls: null, avgToolCalls: {}, activeWithZeroToolCalls: 0, mechanismObserved: false },
+    cbmDisabled: { count: 0, comparableCount: 0, avgInputTokens: null, avgFileAccessCalls: null, disableReasons: {} },
     specTargets: {
       inputTokenDeltaPct: null,
       fileAccessDeltaPct: null,
+      deltasSuppressedBecause: 'insufficient_cohort' as const,
       fallbackRateTarget: 0.05,
       fallbackRateMet: null,
     },

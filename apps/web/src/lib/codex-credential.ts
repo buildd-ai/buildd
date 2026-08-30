@@ -271,14 +271,24 @@ export async function resolveCodexCredential(opts: {
 /** True when a live (non-revoked) Codex credential exists for this task scope. Does not decrypt token values. */
 export async function hasCodexCredential(opts: {
   teamId: string;
-  accountId?: string | null;
+  /**
+   * The account that would use the credential, or `'any'` to ignore account
+   * scoping entirely — "could ANY runner in this team run Codex?". Read-only
+   * reporting (backend readiness, the queue-stall watchdog) asks the `'any'`
+   * form: it has no claiming account in hand, and treating an account-scoped
+   * credential as absent would report a working team as stranded.
+   */
+  accountId?: string | null | 'any';
   workspaceId?: string | null;
 }): Promise<boolean> {
+  const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
     where: and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
-      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
+      ...(anyAccount
+        ? []
+        : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     ),
     columns: { tokenExpiresAt: true, healthStatus: true },

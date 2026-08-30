@@ -3,6 +3,11 @@ title: Auth & OAuth Boundaries
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
+domain: auth
+surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/mcp/route.ts, packages/core/db/schema.ts]
+related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
+keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
 supersedes: []
 ---
 # Auth & OAuth Boundaries

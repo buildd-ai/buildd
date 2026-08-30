@@ -75,6 +75,7 @@ mock.module('@buildd/shared', () => ({
     DATA: 'data',
     LINK: 'link',
     SUMMARY: 'summary',
+    FILE: 'file',
   },
 }));
 
@@ -424,5 +425,109 @@ describe('POST /api/workers/[id]/artifacts', () => {
 
     expect(res.status).toBe(200);
     expect(insertedValues?.missionId).toBeNull();
+  });
+  it('accepts a storage key the worker workspace owns', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+
+    let insertedValues: any = null;
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertedValues = vals;
+        return { returning: mock(() => [{ id: 'artifact-1', ...vals }]) };
+      }),
+    });
+
+    const key = 'artifacts/ws-1/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/report.pdf';
+    const req = createMockPostRequest(
+      { type: 'file', title: 'Report', storageKey: key },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(insertedValues?.storageKey).toBe(key);
+  });
+
+  it('rejects a storage key outside the worker workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+
+    const foreign = [
+      'artifacts/ws-2/upload-1/report.pdf',
+      'attachments/ws-2/upload-1/shot.png',
+      'roles/builder/deadbeef.json',
+      'artifacts/ws-1/../ws-2/upload-1/report.pdf',
+      'artifacts/ws-1',
+    ];
+
+    for (const storageKey of foreign) {
+      const req = createMockPostRequest(
+        { type: 'file', title: 'Report', storageKey },
+        'bld_test',
+      );
+      const res = await POST(req, { params: mockParams });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('rejects a storage key when the worker has no workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: null,
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+
+    const req = createMockPostRequest(
+      { type: 'file', title: 'Report', storageKey: 'artifacts/ws-1/u1/report.pdf' },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a foreign storage key on the upsert-by-key path too', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-existing',
+      shareToken: 'tok',
+      storageKey: 'artifacts/ws-1/u0/old.pdf',
+    });
+
+    const req = createMockPostRequest(
+      {
+        type: 'file',
+        title: 'Report',
+        key: 'weekly-report',
+        storageKey: 'artifacts/ws-2/u1/report.pdf',
+      },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(400);
   });
 });

@@ -66,6 +66,7 @@ import {
   deleteClaudeCredential,
   refreshClaudeCredential,
   verifyClaudeCredential,
+  resolveAnthropicAuth,
 } from './claude-credential';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -527,5 +528,119 @@ describe('verifyClaudeCredential', () => {
     const result = await verifyClaudeCredential('secret-1');
     expect(result.verified).toBe(false);
     expect(result.error).toContain('401');
+  });
+});
+
+// ── resolveAnthropicAuth ──────────────────────────────────────────────────────
+
+/**
+ * Server-side Anthropic calls (the model catalog, prose grading fallbacks) used
+ * to read `process.env.ANTHROPIC_API_KEY`, which is unset in production. This
+ * resolves the team's stored credential instead, mirroring the precedence the
+ * claim route already applies when handing credentials to a runner.
+ */
+describe('resolveAnthropicAuth', () => {
+  beforeEach(() => {
+    mockFindMany.mockReset();
+    mockFindMany.mockReturnValue(Promise.resolve([]));
+  });
+
+  function row(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'secret-1',
+      purpose: 'oauth_token',
+      encryptedValue: 'enc:tok-oauth',
+      workspaceId: null,
+      healthStatus: 'healthy',
+      updatedAt: new Date('2026-08-01'),
+      ...overrides,
+    };
+  }
+
+  it('returns null when the team has no Anthropic credential', async () => {
+    expect(await resolveAnthropicAuth({ teamId: 'team-1' })).toBeNull();
+  });
+
+  it('uses Bearer for an oauth_token', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([row()]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.purpose).toBe('oauth_token');
+    expect(auth!.headers['Authorization']).toBe('Bearer tok-oauth');
+    expect(auth!.headers['x-api-key']).toBeUndefined();
+    expect(auth!.headers['anthropic-version']).toBe('2023-06-01');
+  });
+
+  it('uses x-api-key for an anthropic_api_key', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-key', purpose: 'anthropic_api_key', encryptedValue: 'enc:sk-ant-123' }),
+    ]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.purpose).toBe('anthropic_api_key');
+    expect(auth!.headers['x-api-key']).toBe('sk-ant-123');
+    expect(auth!.headers['Authorization']).toBeUndefined();
+  });
+
+  it('reads the access_token out of a claude_credential JSON blob', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-blob', purpose: 'claude_credential', encryptedValue: makeBlob('at-blob', 'rt') }),
+    ]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.headers['Authorization']).toBe('Bearer at-blob');
+  });
+
+  it('prefers an API key over an OAuth token', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-oauth', purpose: 'oauth_token', encryptedValue: 'enc:tok-oauth' }),
+      row({ id: 's-key', purpose: 'anthropic_api_key', encryptedValue: 'enc:sk-ant-123' }),
+    ]));
+    // An API key is metered and has no session-revocation semantics; an OAuth
+    // token can read 200 here while being dead for real runs.
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.purpose).toBe('anthropic_api_key');
+  });
+
+  it('prefers a workspace-scoped row over the team-wide one', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-team', workspaceId: null, encryptedValue: 'enc:tok-team' }),
+      row({ id: 's-ws', workspaceId: 'ws-1', encryptedValue: 'enc:tok-ws' }),
+    ]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1', workspaceId: 'ws-1' });
+    expect(auth!.headers['Authorization']).toBe('Bearer tok-ws');
+  });
+
+  it('never lets a revoked row shadow a healthy one of the same purpose', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      // Revoked but newer — the bug this ordering exists to prevent.
+      row({ id: 's-dead', healthStatus: 'revoked', encryptedValue: 'enc:tok-dead', updatedAt: new Date('2026-08-20') }),
+      row({ id: 's-live', healthStatus: 'healthy', encryptedValue: 'enc:tok-live', updatedAt: new Date('2026-08-01') }),
+    ]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.headers['Authorization']).toBe('Bearer tok-live');
+  });
+
+  it('falls back to a revoked row only when it is the only one', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-dead', healthStatus: 'revoked', encryptedValue: 'enc:tok-dead' }),
+    ]));
+    // Listing models is a read: a token that may be dead is still worth trying,
+    // and the caller degrades gracefully on a non-200.
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.headers['Authorization']).toBe('Bearer tok-dead');
+  });
+
+  it('prefers the most recently updated row within a purpose', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ id: 's-old', encryptedValue: 'enc:tok-old', updatedAt: new Date('2026-01-01') }),
+      row({ id: 's-new', encryptedValue: 'enc:tok-new', updatedAt: new Date('2026-08-28') }),
+    ]));
+    const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+    expect(auth!.headers['Authorization']).toBe('Bearer tok-new');
+  });
+
+  it('returns null rather than throwing when a row cannot be decoded', async () => {
+    mockFindMany.mockReturnValue(Promise.resolve([
+      row({ purpose: 'claude_credential', encryptedValue: 'enc:not-json' }),
+    ]));
+    expect(await resolveAnthropicAuth({ teamId: 'team-1' })).toBeNull();
   });
 });
