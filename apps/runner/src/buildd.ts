@@ -558,7 +558,7 @@ export class BuilddClient {
     try {
       // Search for memories created by the feedback-digest pipeline
       const data = await this.fetch(
-        `/api/workspaces/${workspaceId}/memory?search=${encodeURIComponent('user feedback preference')}&type=decision&limit=10`
+        `/api/workspaces/${workspaceId}/memory?search=${encodeURIComponent('user feedback preference')}&type=pattern&limit=10`
       );
       const memories = (data.memories || []) as Array<{ id: string; title: string; content: string; tags?: string[] }>;
       // Filter to only feedback-digest tagged memories
