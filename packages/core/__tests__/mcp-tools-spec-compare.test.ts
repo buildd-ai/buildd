@@ -74,14 +74,31 @@ function adminCtx(overrides: Partial<ActionContext> = {}): ActionContext {
 }
 
 describe('spec_compare', () => {
-  it('rejects non-admin tokens', async () => {
+  // spec_compare moved from adminActions to workerActions: it is read-only
+  // retrieval over {ws}:spec and {ws}:code, both of which a worker already reaches
+  // via query_knowledge/recall, so admin-gating granted no protection and left the
+  // spec-validator role unable to run the workflow default-roles.ts tells it to run.
+  it('allows worker tokens (read-only retrieval, no new data access)', async () => {
     const result = await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, {
-      workspaceId: WS_ID, getWorkspaceId: async () => WS_ID, getLevel: async () => 'worker',
-    });
+      workspaceId: WS_ID,
+      getWorkspaceId: async () => WS_ID,
+      getLevel: async () => 'worker',
+      knowledgeStore: mockStore(),
+    } as unknown as ActionContext);
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('spec_compare');
+  });
+
+  it('still rejects trigger tokens', async () => {
+    const result = await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, {
+      workspaceId: WS_ID,
+      getWorkspaceId: async () => WS_ID,
+      getLevel: async () => 'trigger',
+      knowledgeStore: mockStore(),
+    } as unknown as ActionContext);
     expect(result.isError).toBe(true);
-    const body = JSON.parse(result.content[0].text);
-    expect(body.error).toBe('forbidden');
-    expect(body.requiredLevel).toBe('admin');
+    // Trigger-level rejection is plain text, not the JSON forbidden envelope.
+    expect(result.content[0].text).toMatch(/worker|forbidden|level/i);
   });
 
   it('requires a feature/query', async () => {
@@ -282,5 +299,48 @@ describe('query_knowledge — worker token access', () => {
       knowledgeStore: ks,
     });
     expect(res.isError).toBeFalsy();
+  });
+
+  // Regression for the anchor bottleneck. Anchors were returned in Set insertion
+  // order, i.e. pass order: every file path, then every /api/ route, then
+  // camelCase, then PascalCase — truncated at 20. On anchor-dense specs the paths
+  // and route strings consumed the whole budget and symbol names were dropped
+  // before the lexical hop ever saw them, even though identifiers are the
+  // high-signal terms for that query.
+  it('ranks symbols ahead of paths and routes, and does not truncate at 20', async () => {
+    let lexicalText = '';
+    // 12 routes + 12 paths would have filled the old 20-slot budget outright.
+    const routes = Array.from({ length: 12 }, (_, i) => `/api/things/route${i}`).join(' ');
+    const paths = Array.from({ length: 12 }, (_, i) => `apps/web/src/lib/mod${i}.ts`).join(' ');
+    const symbols = 'resolveMergePolicy tryAutoMergeWorkerPr createReviewerTask MergePolicyTier';
+
+    const store = {
+      async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
+        const isCode = namespace.endsWith(':code');
+        const base = { namespace, corpus: (isCode ? 'code' : 'spec') as any, sourceUrl: null, metadata: {} };
+        if (!isCode) {
+          return [{
+            ...base, id: 's1', sourceType: 'spec', sourcePath: 'docs/design/x.md',
+            content: `${routes} ${paths} ${symbols}`, score: 0.8,
+          }];
+        }
+        if (params.mode === 'lexical') lexicalText = params.text ?? '';
+        return [{ ...base, id: 'c1', sourceType: 'code', sourcePath: 'apps/web/src/lib/mod0.ts', content: '...', score: 0.5 }];
+      },
+      async upsert() {}, async delete() {}, async deleteBySource() {}, async listNamespaces() { return []; },
+    } as unknown as KnowledgeStore;
+
+    await handleBuilddAction(noopApi, 'spec_compare', { feature: 'merge policy' }, adminCtx({ knowledgeStore: store }));
+
+    const terms = lexicalText.split(/\s+/).filter(Boolean);
+    expect(terms.length).toBeGreaterThan(20); // old cap no longer binding
+
+    // Every symbol survives, and all of them precede the first bare route string.
+    const firstRouteIdx = terms.findIndex(t => t.startsWith('/api/'));
+    for (const sym of symbols.split(' ')) {
+      const idx = terms.indexOf(sym);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      if (firstRouteIdx >= 0) expect(idx).toBeLessThan(firstRouteIdx);
+    }
   });
 });

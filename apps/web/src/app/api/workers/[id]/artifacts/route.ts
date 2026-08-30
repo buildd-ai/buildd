@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { isOwnedStorageKey } from '@/lib/storage-keys';
 
 const DELIVERABLE_TYPES = new Set([
   ArtifactType.CONTENT,
@@ -77,6 +78,17 @@ export async function POST(
   // For LINK type, require url
   if (type === ArtifactType.LINK && !url) {
     return NextResponse.json({ error: 'url is required for link artifacts' }, { status: 400 });
+  }
+
+  // A stored key is later turned into a signed download URL, so a key named by
+  // the caller must resolve inside the worker's own workspace prefix.
+  if (storageKey !== undefined && storageKey !== null && !isSensitive) {
+    if (!isOwnedStorageKey(storageKey, worker.workspaceId)) {
+      return NextResponse.json(
+        { error: 'storageKey does not belong to this workspace' },
+        { status: 400 }
+      );
+    }
   }
 
   // Merge url into metadata for LINK type

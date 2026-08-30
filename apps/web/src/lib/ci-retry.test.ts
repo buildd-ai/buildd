@@ -126,4 +126,90 @@ describe('buildCIRetryTask', () => {
     const t = buildCIRetryTask(baseParams);
     expect(t!.context.lastCommitSha).toBeUndefined();
   });
+
+  // ── Foreign-commit / non-worker-authored SHA ─────────────────────────────
+
+  it('foreign commit: creates retry task without incrementing iteration', () => {
+    const t = buildCIRetryTask({ ...baseParams, foreignHeadSha: true, foreignCommitAuthor: 'maxjacu' });
+    expect(t).not.toBeNull();
+    // iteration must NOT advance — the agent's budget is preserved
+    expect(t!.context.iteration).toBe(0);
+    expect(t!.context.foreign_head_sha).toBe(true);
+    expect(t!.context.foreignCommitAuthor).toBe('maxjacu');
+  });
+
+  it('foreign commit: display title still uses currentIteration + 1 for readability', () => {
+    const t = buildCIRetryTask({ ...baseParams, foreignHeadSha: true });
+    expect(t!.title).toBe('[CI Retry #1] Fix the parser');
+  });
+
+  it('foreign commit: description notes the non-worker push and budget preservation', () => {
+    const t = buildCIRetryTask({ ...baseParams, foreignHeadSha: true, foreignCommitAuthor: 'maxjacu' });
+    expect(t!.description).toContain('not consumed');
+    expect(t!.description).toContain('@maxjacu');
+  });
+
+  it('three consecutive foreign pushes do not exhaust the retry budget', () => {
+    // Each foreign push keeps iteration at its current value; agent always retains full quota.
+    let ctx: Record<string, unknown> = {};
+    for (let i = 0; i < 3; i++) {
+      const t = buildCIRetryTask({
+        ...baseParams,
+        originalTask: { ...baseParams.originalTask, context: ctx },
+        foreignHeadSha: true,
+        foreignCommitAuthor: 'maxjacu',
+      });
+      expect(t).not.toBeNull();
+      // iteration must stay at 0 after every foreign push
+      expect(t!.context.iteration).toBe(0);
+      ctx = t!.context; // carry forward for next iteration
+    }
+  });
+
+  it('mixed chain (worker, outsider, worker): exactly 2 agent attempts counted', () => {
+    // Attempt 1: worker fails → iteration 0 → 1
+    const t1 = buildCIRetryTask({ ...baseParams, foreignHeadSha: false });
+    expect(t1!.context.iteration).toBe(1);
+
+    // Outsider push at iteration 1 → iteration stays 1
+    const t2 = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, context: t1!.context },
+      foreignHeadSha: true,
+    });
+    expect(t2!.context.iteration).toBe(1);
+
+    // Attempt 2: worker fails → iteration 1 → 2
+    const t3 = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, context: t2!.context },
+      foreignHeadSha: false,
+    });
+    expect(t3!.context.iteration).toBe(2);
+  });
+
+  it('foreign commit at max iterations: still creates a retry task (budget not consumed)', () => {
+    // Iteration is already at max due to genuine agent failures, but this SHA is foreign.
+    // Foreign commits bypass the exhaustion cap — the PR needs to get fixed regardless.
+    const t = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, context: { iteration: 3 } },
+      workspaceMaxCiRetries: 3,
+      foreignHeadSha: true,
+    });
+    expect(t).not.toBeNull();
+    expect(t!.context.iteration).toBe(3); // still 3, not 4
+    expect(t!.context.foreign_head_sha).toBe(true);
+  });
+
+  it('foreign commit when retries disabled (maxCiRetries=0): returns null — retries off globally', () => {
+    const t = buildCIRetryTask({ ...baseParams, workspaceMaxCiRetries: 0, foreignHeadSha: true });
+    expect(t).toBeNull();
+  });
+
+  it('foreign commit with no author: omits foreignCommitAuthor from context', () => {
+    const t = buildCIRetryTask({ ...baseParams, foreignHeadSha: true });
+    expect(t!.context.foreign_head_sha).toBe(true);
+    expect(t!.context.foreignCommitAuthor).toBeUndefined();
+  });
 });

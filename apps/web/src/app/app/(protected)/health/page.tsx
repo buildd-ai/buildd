@@ -15,6 +15,7 @@ import {
   type UsageStats as UsageRollup,
 } from '@/lib/usage-stats';
 import { fetchUsageRows } from '@/lib/usage-stats-query';
+import { getBackendStrandSummary } from '@/lib/backend-strand';
 import { HealthClient } from './HealthClient';
 
 export type { BudgetForecast };
@@ -69,6 +70,20 @@ export interface RecentFailure {
   workspaceName: string;
   error: string | null;
   completedAt: string;
+}
+
+/**
+ * A backend that is stranding pending work: its effective backend has no
+ * credential, so no runner can claim those tasks. Shaped here (rather than
+ * re-exporting the lib type) so the client component imports nothing that
+ * touches the DB.
+ */
+export interface StrandedBackendRow {
+  backend: string;
+  label: string;
+  strandedPending: number;
+  enabledForTeam: boolean;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null }>;
 }
 
 export interface CredentialHealthItem {
@@ -128,7 +143,7 @@ export default async function HealthPage({
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
   // Parallel fetches: runners, usage, schedules, recent failures, credential health, budget forecast
-  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast, consumption] = await Promise.all([
+  const [runners, usageStats, scheduleRows, recentFailureRows, credentialHealthRows, budgetForecast, consumption, strandSummary] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
@@ -330,7 +345,23 @@ export default async function HealthPage({
         })),
       };
     })().catch(() => null),
+
+    // Backends stranding pending work: a credential nobody configured means
+    // those tasks can never be claimed, and the Problems list would otherwise
+    // read "All systems healthy" while the queue can never drain.
+    getBackendStrandSummary({ teamId: activeTeamId, workspaceIds: scopedWsIds })
+      .catch(() => null),
   ]);
+
+  const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
+    .filter((b) => b.strandedPending > 0)
+    .map((b) => ({
+      backend: b.backend,
+      label: b.label,
+      strandedPending: b.strandedPending,
+      enabledForTeam: b.enabledForTeam,
+      sampleTasks: b.sampleTasks,
+    }));
 
   const serializedSchedules: ScheduleRow[] = (scheduleRows as any[])
     .map((s: any) => ({
@@ -363,6 +394,7 @@ export default async function HealthPage({
       schedules={serializedSchedules}
       recentFailures={recentFailureRows ?? []}
       credentialHealth={credentialHealthRows ?? []}
+      strandedBackends={strandedBackends}
       teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
       budgetForecast={budgetForecast ?? null}

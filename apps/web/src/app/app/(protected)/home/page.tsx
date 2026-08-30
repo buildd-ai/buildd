@@ -51,7 +51,8 @@ import {
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { StageChip, deriveStage } from '@/components/StageChip';
+import { StageChip } from '@/components/StageChip';
+import { deriveStage } from '@/lib/stage';
 
 // --- Helpers ---
 
@@ -746,6 +747,19 @@ export default async function HomePage({
               gatedWsIds.map(async (wsId) => {
                 const ws = wsRows.find((w) => w.id === wsId)!;
 
+                const [latestRelease] = await db
+                  .select({ id: releases.id, ciStateAtDispatch: releases.ciStateAtDispatch })
+                  .from(releases)
+                  .where(eq(releases.workspaceId, wsId))
+                  .orderBy(desc(releases.createdAt))
+                  .limit(1);
+
+                const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
+
+                // Without a healthy baseline row the COALESCE fallback would silently
+                // count every worker ever merged (epoch baseline). Instead: no baseline
+                // → no count. The comparison `mergedAt > NULL` evaluates to NULL in
+                // PostgreSQL, so the WHERE clause matches nothing and count() returns 0.
                 const [queueRow] = await db
                   .select({
                     queueDepth: sql<number>`count(*)::int`,
@@ -757,21 +771,9 @@ export default async function HomePage({
                     and(
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
-                      sql`${workers.mergedAt} > COALESCE(
-                        (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy'),
-                        '1970-01-01'::timestamptz
-                      )`,
+                      sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
                     ),
                   );
-
-                const [latestRelease] = await db
-                  .select({ ciStateAtDispatch: releases.ciStateAtDispatch })
-                  .from(releases)
-                  .where(eq(releases.workspaceId, wsId))
-                  .orderBy(desc(releases.createdAt))
-                  .limit(1);
-
-                const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
 
                 return {
                   workspaceId: wsId,
@@ -779,6 +781,7 @@ export default async function HomePage({
                   queueDepth: queueRow?.queueDepth ?? 0,
                   oldestMergedAt: queueRow?.oldestMergedAt ?? null,
                   ciState,
+                  latestReleaseId: latestRelease?.id ?? null,
                 };
               }),
             );

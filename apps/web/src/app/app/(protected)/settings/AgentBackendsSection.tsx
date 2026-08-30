@@ -24,6 +24,74 @@ function CredAction({
   );
 }
 
+/**
+ * Per-backend readiness from `GET /api/teams/[id]/backend-readiness`.
+ * `strandedPending` is the whole point: pending tasks whose EFFECTIVE backend
+ * (stored backend + the team's provider mask, resolved by the same function the
+ * claim route uses) has no credential, so no runner can ever claim them.
+ */
+interface BackendStrandStat {
+  backend: string;
+  label: string;
+  configured: boolean;
+  enabledForTeam: boolean;
+  receivesMaskedWork: boolean;
+  strandedPending: number;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null }>;
+}
+
+/**
+ * The consequence of a missing credential, in tasks.
+ *
+ * A "not configured" chip is a shrug — it reads as an option the operator has
+ * not taken up. The same fact with a count of work that can never be claimed is
+ * a bug report, so this renders only when the backend is actually stranding
+ * something. Claude is implicitly configured (it runs on the caller's own auth),
+ * so a healthy fleet never sees this.
+ */
+function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
+  if (!stat || stat.strandedPending <= 0) return null;
+  const n = stat.strandedPending;
+  const plural = n === 1 ? '' : 's';
+  const them = n === 1 ? 'it' : 'them';
+  const shown = stat.sampleTasks.length;
+
+  return (
+    <div className="inset-panel border border-status-error/30 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="status-pill status-pill-err">
+          Stranding {n} pending task{plural}
+        </span>
+        <span className="text-xs text-text-muted">no runner can claim {them}</span>
+      </div>
+      <p className="text-xs text-text-secondary">
+        {n === 1 ? 'This task is' : 'These tasks are'} routed to{' '}
+        <strong className="text-text-primary">{stat.label}</strong>, which has no credential for this
+        team. Connect it below
+        {stat.enabledForTeam ? ', or disable it under Provider routing to reroute the work' : ''}.
+        {stat.receivesMaskedWork ? ' Provider routing is also sending another backend\u2019s work here.' : ''}
+      </p>
+      {shown > 0 && (
+        <ul className="space-y-0.5">
+          {stat.sampleTasks.map((t) => (
+            <li key={t.id} className="text-xs truncate">
+              <a href={`/app/tasks/${t.id}`} className="text-text-secondary hover:text-primary">
+                {t.title}
+              </a>
+              {t.workspaceName && <span className="text-text-muted"> · {t.workspaceName}</span>}
+            </li>
+          ))}
+          {n > shown && (
+            <li className="text-xs text-text-muted">
+              +{n - shown} more
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 interface Workspace {
   id: string;
   name: string;
@@ -93,6 +161,11 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   // primary Claude card can show "connected via …" instead of a misleading "Connect"
   // when Claude is actually working through the (collapsed) fallback path.
   const [claudeFallbackConnected, setClaudeFallbackConnected] = useState(false);
+  // Per-backend stranding, refetched whenever a credential/routing change could
+  // have cleared it (`reloadKey`).
+  const [strand, setStrand] = useState<BackendStrandStat[] | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const refreshStrand = useCallback(() => setReloadKey((k) => k + 1), []);
 
   // The Codex API is nested under a workspace; for team scope we still need a
   // workspace in the team to authorize + resolve the team id.
@@ -113,6 +186,24 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
     return () => { cancelled = true; };
   }, [teamId, showClaudeAlt]);
 
+  useEffect(() => {
+    if (!teamId) return;
+    let cancelled = false;
+    fetch(`/api/teams/${teamId}/backend-readiness`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d?.backends) return;
+        setStrand(d.backends as BackendStrandStat[]);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [teamId, reloadKey]);
+
+  const strandFor = useCallback(
+    (backend: string) => strand?.find((b) => b.backend === backend) ?? null,
+    [strand],
+  );
+
   if (teamWorkspaces.length === 0) return null;
 
   return (
@@ -125,7 +216,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}
-        <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} />
+        <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} onRoutingChange={refreshStrand} />
         <div className="border-t border-border-default" />
 
         {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
@@ -141,7 +232,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
         {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
             key is a collapsed fallback so there's a single Claude section by default. */}
-        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} fallbackConnected={claudeFallbackConnected} />
+        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} fallbackConnected={claudeFallbackConnected} strand={strandFor('claude')} />
         <div>
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
@@ -156,7 +247,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
           )}
         </div>
         <div className="border-t border-border-default" />
-        <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} />
+        <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} strand={strandFor('codex')} onCredentialChange={refreshStrand} />
       </div>
     </SettingsSection>
   );
@@ -175,7 +266,15 @@ const backendLabel = (b: RoutingBackend) => (b === 'claude' ? 'Claude' : 'Codex'
  * them automatically. Use it to cut over everything (e.g. after cancelling a sub)
  * in one switch, instead of editing every workspace/role.
  */
-function ProviderRoutingToggle({ teamId, workspaceId }: { teamId: string; workspaceId: string }) {
+function ProviderRoutingToggle({
+  teamId,
+  workspaceId,
+  onRoutingChange,
+}: {
+  teamId: string;
+  workspaceId: string;
+  onRoutingChange?: () => void;
+}) {
   const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
   // Track which backends have credentials configured so we can block stranding toggles.
   // claude is always available (implicitly configured via account auth).
@@ -246,6 +345,9 @@ function ProviderRoutingToggle({ teamId, workspaceId }: { teamId: string; worksp
         body: JSON.stringify({ enabledBackends: next }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
+      // The mask decides which backend each task effectively runs on, so a
+      // toggle can create or clear stranded work. Recount.
+      onRoutingChange?.();
       const off = ALL_BACKENDS.filter((x) => !next.includes(x));
       setMsg({
         type: 'success',
@@ -585,7 +687,12 @@ interface ClaudeCredentialStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean }) {
+// `strand` is rendered for symmetry with every other backend, and is registry-
+// driven rather than hardcoded: Claude is `implicitlyConfigured` today (it runs
+// on the caller's own auth), so its count is structurally 0 and the notice stays
+// invisible — which is the point. No onCredentialChange: adding or revoking a
+// Claude credential cannot change whether Claude can run work.
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null }) {
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -766,6 +873,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         </p>
       </div>
 
+      <StrandedWorkNotice stat={strand} />
+
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : status?.connected ? (
@@ -926,7 +1035,7 @@ interface CodexStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[] }) {
+function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void }) {
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -985,6 +1094,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
           setDevice(null);
           setStatus(data);
           setMsg({ type: 'success', text: 'Codex connected via device login. buildd now owns this session.' });
+          onCredentialChange?.();
           return;
         }
         if (data.status === 'error') {
@@ -1061,6 +1171,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
           type: ok > 0 ? 'success' : 'error',
           text: `Codex connected for ${ok} of ${teamTargets.length} teams.`,
         });
+        if (ok > 0) onCredentialChange?.();
         return;
       }
       const res = await fetch(base, {
@@ -1074,6 +1185,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
       setPasteValue('');
       setPasteOpen(false);
       setMsg({ type: 'success', text: 'Codex credential connected.' });
+      onCredentialChange?.();
     } catch (e) {
       setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
@@ -1124,6 +1236,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
       if (!res.ok && res.status !== 204) throw new Error('Delete failed');
       setStatus({ connected: false, expired: false, accountId: null, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
+      // Revoking can strand work that was fine a second ago — recount.
+      onCredentialChange?.();
     } catch {
       setMsg({ type: 'error', text: 'Failed to remove credential' });
     } finally {
@@ -1140,6 +1254,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets }: { accessWorkspaceI
           where you&apos;ve authenticated with Codex.
         </p>
       </div>
+
+      <StrandedWorkNotice stat={strand} />
 
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>

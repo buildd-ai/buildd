@@ -31,6 +31,13 @@
  *   - a dependency that is still in flight — the upstream task is the one that
  *     gets reported if IT stalls; flagging the whole funnel would be noise.
  *
+ * ── Reporting is not gating ─────────────────────────────────────────────────
+ * `backend_credential_missing` names a task whose effective agent backend has no
+ * usable credential. That condition deliberately has no `/start` gateReason: the
+ * capability gate was removed in PR #1864 in favour of configuration-time
+ * surfacing (Settings → Agent backends counts the same stranded work from the
+ * same module). The watchdog reports it; it withholds nothing.
+ *
  * ── Dedupe ──────────────────────────────────────────────────────────────────
  * Context-key dedupe, matching /api/cron/connector-block-notify: the first
  * alert stamps `context.queueStallNotifiedAt` + `queueStallGate` +
@@ -63,6 +70,11 @@ import { isSubjectDead } from '@/lib/subject-gate-contract';
 // job whose purpose is to catch gate logic drifting.
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY } from '@/lib/bypass-flags';
 import { declaresNoScope } from '@buildd/core/path-overlap';
+// Reporting only. The credential state this reads has deliberately NO
+// task-level gate (`capability_mismatch` / `checkCapabilityMatch` were removed
+// in PR #1864 and replaced by configuration-time surfacing); the watchdog names
+// the condition, it never withholds a task from anything.
+import { createBackendStrandProbe } from '@/lib/backend-strand';
 import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -125,6 +137,7 @@ export type StallGate =
   | 'mission_budget_exhausted'
   | 'subject_dead'
   | 'workspace_cap_reached'
+  | 'backend_credential_missing'
   | 'advisory_manifest'
   | 'no_gate_identified';
 
@@ -140,6 +153,7 @@ interface Candidate {
   id: string;
   title: string;
   workspaceId: string;
+  backend: string | null;
   roleSlug: string | null;
   missionId: string | null;
   dependsOn: string[] | null;
@@ -168,6 +182,8 @@ interface DepIndex {
   openPrByTaskId: Map<string, { prNumber: number | null; prUrl: string | null }>;
 }
 
+type BackendStrandProbe = ReturnType<typeof createBackendStrandProbe>;
+
 interface GateVerdict {
   gate: StallGate;
   detail: string;
@@ -182,14 +198,17 @@ interface GateVerdict {
  * watchdog named. Notably the connector gate stays AHEAD of the concurrency cap
  * so a permanent capability block is never masked by a transient queue wait.
  *
- * `advisory_manifest` is the one gate with no /start counterpart, so it sits at
- * the very END of the ladder: every gate /start can name is reported in /start's
- * own order, and this only speaks when /start would have returned 200.
+ * Two gates have no /start counterpart and therefore sit BELOW every gate that
+ * does, in permanence order: `backend_credential_missing` (permanent until an
+ * operator adds a credential) then `advisory_manifest` (self-clearing). Both
+ * only speak when /start would have returned 200, so /start's own 422 ordering
+ * is reproduced verbatim.
  */
 async function resolveStallGate(
   task: Candidate,
   deps: DepIndex,
   advisoryPeers: AdvisoryPeerIndex,
+  strandProbe: BackendStrandProbe,
   now: Date,
 ): Promise<GateVerdict | null> {
   const ctx = task.context ?? {};
@@ -328,6 +347,35 @@ async function resolveStallGate(
     }
   }
 
+  // ── Missing backend credential ────────────────────────────────────────────
+  // The effective backend (stored backend + the team's provider mask, resolved
+  // by the one shared `resolveEffectiveBackend`) has no usable credential, so
+  // the claim route either drops the task from the candidate set (the Codex
+  // capability filter) or defers it as `provider_unavailable` on every poll —
+  // forever, with no worker ever attempting it.
+  //
+  // This is the most permanent block the watchdog can see and it used to report
+  // as `no_gate_identified` ("no runner is polling this workspace"), which sends
+  // the operator to look at runners when the fix is one credential in Settings.
+  // There is intentionally no /start gateReason for it, so it ranks below every
+  // gate /start does name, and above the self-clearing `advisory_manifest`.
+  {
+    const stranded = await strandProbe.check({
+      backend: task.backend,
+      workspaceId: task.workspaceId,
+      teamId,
+    });
+    if (stranded) {
+      return {
+        gate: 'backend_credential_missing',
+        detail:
+          `routed to ${stranded.label}, which has no credential for this team — ` +
+          `no runner can claim it. Add one in Settings → Agent backends, or ` +
+          `disable ${stranded.label} team-wide to reroute this work`,
+      };
+    }
+  }
+
   // ── Advisory-manifest mission serialization ───────────────────────────────
   // The claim loop allows at most ONE scope-undeclared task per mission in
   // flight (declaresNoScope: null / [] / ['**']). Unlike every gate above this
@@ -383,6 +431,10 @@ export async function POST(req: NextRequest) {
       id: true,
       title: true,
       workspaceId: true,
+      // The effective-backend probe reads this. Unselected it would read as
+      // undefined → resolved as the schema default ('claude'), which is
+      // implicitly configured — i.e. the gate would silently never fire.
+      backend: true,
       roleSlug: true,
       missionId: true,
       dependsOn: true,
@@ -539,6 +591,9 @@ export async function POST(req: NextRequest) {
 
   const stalled: StalledReport[] = [];
   const gateStart = Date.now();
+  // One probe per run: the provider mask is read once per team and each
+  // credential lookup once per (backend, workspace), however long the queue is.
+  const strandProbe = createBackendStrandProbe();
 
   for (let i = 0; i < examinedSet.length; i++) {
     if (Date.now() - gateStart > GATE_BUDGET_MS) {
@@ -548,7 +603,7 @@ export async function POST(req: NextRequest) {
     const task = examinedSet[i];
     let verdict: GateVerdict | null = null;
     try {
-      verdict = await resolveStallGate(task, deps, advisoryPeers, now);
+      verdict = await resolveStallGate(task, deps, advisoryPeers, strandProbe, now);
     } catch (err) {
       // A gate helper throwing must not blind the whole run — report it as its
       // own finding rather than losing the task.

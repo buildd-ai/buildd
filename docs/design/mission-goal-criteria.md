@@ -1,5 +1,8 @@
 ---
-status: implemented
+status: superseded
+superseded_by: docs/specs/mission-task-lifecycle.md#mission-completion-gate
+superseded_on: 2026-08-29
+superseded_reason: Described criteria as advisory metadata evaluated as a side effect of completion. The shipped contract inverts that — completion requests a verdict and the verdict gates completion (PR #1901).
 assertions:
   - type: symbol
     name: goalCriteria
@@ -27,7 +30,17 @@ assertions:
 
 # Mission Goal Criteria & Initiative KPIs
 
-**Status:** Proposed
+> **SUPERSEDED (2026-08-29).** This is the original design proposal, kept for
+> the reasoning trail. The shipped behaviour differs in the part that matters:
+> this document treats goal validation as something that happens *alongside*
+> completion, and describes an evaluator that skips while tasks are pending.
+> That combination is exactly what let a mission close with pending deliverables
+> and four never-evaluated criteria. The live contract —
+> completion REQUESTS a verdict, the verdict GATES completion, no verdict is not
+> a pass — is `docs/specs/mission-task-lifecycle.md` § Mission Completion Gate.
+> Read that for current behaviour; read this only for why the fields exist.
+
+**Status:** Superseded (was: Proposed)
 **Related:**
 `packages/core/db/schema.ts` (missions, initiatives tables),
 `packages/core/mission-helpers.ts` (computeMissionProgress, computeInitiativeProgress),
@@ -307,7 +320,10 @@ with goalCriteria and `autoVerify` unset behaves as if `autoVerify: true`.
 Add `autoVerify?: boolean` (default: true) to the missions and initiatives
 update schema. When `autoVerify: false`:
 - The organizer **never** runs `evaluateGoalCriteria` automatically.
-- The mission can still complete via task progress alone (same as no criteria).
+- ~~The mission can still complete via task progress alone (same as no
+  criteria).~~ **NO LONGER TRUE (PR #1901).** `autoVerify: false` suppresses
+  *automatic* evaluation only; the mission stays gated and cannot complete until
+  a verdict is produced on demand. Criteria are never advisory.
 - On-demand evaluation via the UI button or MCP action still works.
 - This toggle is the escape hatch for missions where orchestration is manual
   and the operator wants full control of completion timing.

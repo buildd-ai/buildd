@@ -47,9 +47,40 @@ interface Frontmatter {
   status?: string;
   owner?: string;
   last_verified?: string;
+  /** One-sentence capability statement — what MUST hold. Required. */
+  summary?: string;
+  /** Controlled vocabulary, see DOMAINS. Required. */
+  domain?: string;
+  /** Primary implementation paths — the 2-4 files to open first. */
+  surfaces?: string[];
+  /** Sibling spec slugs. Validated: a dead reference is an error. */
+  related?: string[];
+  /** Retrieval aliases — terms a reader would search that the title omits. */
+  keywords?: string[];
   supersedes?: string[];
   superseded_by?: string;
 }
+
+/**
+ * Domain vocabulary. Deliberately small and flat: a spec belongs to exactly one
+ * domain, so the index groups cleanly and a retrieval filter is a single
+ * equality check. Adding a value is a deliberate act — extend this list in the
+ * same PR as the spec that needs it.
+ */
+const DOMAINS = new Set([
+  'missions',
+  'tasks',
+  'runners',
+  'releases',
+  'knowledge',
+  'auth',
+  'mcp',
+  'surfaces',
+  'integrations',
+]);
+
+/** Longer than this and it is not a summary; it is the spec. */
+const SUMMARY_MAX = 220;
 
 function parseFrontmatter(raw: string): { fm: Frontmatter | null; body: string } {
   if (!raw.startsWith('---')) return { fm: null, body: raw };
@@ -96,9 +127,14 @@ function daysSince(iso: string): number | null {
 // Pull file paths out of the `Code surface:` section so we can confirm they
 // still exist (SPEC-FORMAT rule #4, previously unenforced).
 function codeSurfacePaths(body: string): string[] {
-  const start = body.search(/\*\*Code surface\*\*|Code surface:/i);
+  // Three spellings occur in the wild: `**Code surface**:`, `Code surface:`, and a
+  // `## Code surface` heading. Missing the heading form meant one spec's dead path
+  // sat unnoticed — the check silently found zero paths and passed.
+  const start = body.search(/\*\*Code surface\*\*|^#{2,4} Code surface|Code surface:/im);
   if (start === -1) return [];
-  const section = body.slice(start).split(/\n\*\*|\n## /)[0];
+  // Stop at the next bold label or heading, but not on the heading we just matched.
+  const rest = body.slice(start);
+  const section = rest.slice(0, 1) + rest.slice(1).split(/\n\*\*|\n#{2,4} /)[0];
   const paths = new Set<string>();
   for (const m of section.matchAll(/`([^`]+)`/g)) {
     const token = m[1].split(/[\s:#]/)[0]; // strip `:symbol` / line refs
@@ -142,6 +178,34 @@ function loadSpecs(): SpecFile[] {
     if (fm.status === 'superseded' && !fm.superseded_by)
       errors.push('status is `superseded` but no `superseded_by` successor named');
 
+    // ── Ingestion fields ──────────────────────────────────────────────────────
+    // A spec that cannot be summarised in one line and filed under one domain is
+    // not readable by a person skimming the index, and not retrievable by an
+    // agent that has to pick one spec out of twenty.
+    if (!fm.summary) {
+      errors.push('frontmatter missing `summary` (one sentence: what MUST hold)');
+    } else if (Array.isArray(fm.summary)) {
+      // The parser coerces any `[...]` value to an array. Without this branch the
+      // presence check passes, the length check silently measures item count, and
+      // INDEX.md renders the comma-joined array as the summary.
+      errors.push('`summary` must be a single sentence, not a list — it must not start with `[`');
+    } else if (fm.summary.length > SUMMARY_MAX) {
+      warnings.push(`summary is ${fm.summary.length} chars (>${SUMMARY_MAX}) — compress it`);
+    }
+
+    if (!fm.domain) {
+      errors.push(`frontmatter missing \`domain\` (one of: ${[...DOMAINS].join(', ')})`);
+    } else if (!DOMAINS.has(fm.domain)) {
+      errors.push(`invalid domain "${fm.domain}" (one of: ${[...DOMAINS].join(', ')})`);
+    }
+
+    if (fm.surfaces && fm.surfaces.length > 4) {
+      warnings.push(`surfaces lists ${fm.surfaces.length} paths (>4) — it is a shortlist, not the full Code surface section`);
+    }
+    for (const p of fm.surfaces ?? []) {
+      if (!existsSync(join(ROOT, p))) errors.push(`surfaces path does not exist: ${p}`);
+    }
+
     for (const p of codeSurfacePaths(body)) {
       // Globs/placeholders (`00XX_*.sql`) can't be existence-checked — warn so the
       // author fills in the real path, but don't hard-fail CI on a template token.
@@ -161,7 +225,7 @@ function loadSpecs(): SpecFile[] {
 function crossChecks(specs: SpecFile[]): string[] {
   const errors: string[] = [];
 
-  // Dup guard: no two ACTIVE specs may share a slug-ish title.
+  // Dup guard: no two ACTIVE specs may share a title (compared lowercased/trimmed).
   const byTitle = new Map<string, string[]>();
   for (const s of specs) {
     if (s.fm.status !== 'active' || !s.fm.title) continue;
@@ -180,6 +244,10 @@ function crossChecks(specs: SpecFile[]): string[] {
       if (!slugs.has(ref)) errors.push(`${s.file}: supersedes unknown spec "${ref}"`);
     if (s.fm.superseded_by && !slugs.has(s.fm.superseded_by))
       errors.push(`${s.file}: superseded_by unknown spec "${s.fm.superseded_by}"`);
+    for (const ref of s.fm.related ?? []) {
+      if (ref === s.slug) errors.push(`${s.file}: related lists itself`);
+      else if (!slugs.has(ref)) errors.push(`${s.file}: related unknown spec "${ref}"`);
+    }
   }
 
   return errors;
@@ -192,9 +260,21 @@ function buildIndex(specs: SpecFile[]): string {
     const title = s.fm.title ?? s.slug;
     const verified = s.fm.last_verified ? ` — verified ${s.fm.last_verified}` : '';
     const owner = s.fm.owner ? ` · @${s.fm.owner}` : '';
-    return `- [${title}](./${s.file})${owner}${verified}`;
+    const summary = s.fm.summary ? `\n  ${s.fm.summary}` : '';
+    return `- [${title}](./${s.file})${owner}${verified}${summary}`;
   };
   const group = (status: string) => specs.filter((s) => s.fm.status === status);
+
+  /** Active specs, grouped by domain, so the index reads as a map of the system. */
+  const byDomain = (items: SpecFile[]): string[] => {
+    const domains = [...new Set(items.map((s) => s.fm.domain ?? 'unfiled'))].sort();
+    const out: string[] = [];
+    for (const d of domains) {
+      const inDomain = items.filter((s) => (s.fm.domain ?? 'unfiled') === d);
+      out.push(`### ${d} (${inDomain.length})`, '', ...inDomain.map(line), '');
+    }
+    return out;
+  };
 
   const active = group('active');
   const draft = group('draft');
@@ -209,8 +289,7 @@ function buildIndex(specs: SpecFile[]): string {
     '',
     `## Active (${active.length})`,
     '',
-    ...(active.length ? active.map(line) : ['_none_']),
-    '',
+    ...(active.length ? byDomain(active) : ['_none_', '']),
     `## Draft (${draft.length})`,
     '',
     ...(draft.length ? draft.map(line) : ['_none_']),

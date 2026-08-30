@@ -84,6 +84,23 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The shared completion predicate (mission-completion.ts). Mocked so these tests
+// stay about the loop's control flow: which path proposes completion, and what
+// the loop does with a refusal. The predicate's own rules — pending deliverables,
+// infra stalls, goal criteria — are covered in mission-completion.test.ts.
+type Decision = { ok: boolean; code: string; reason: string };
+function decision(code: string, ok = false): Decision {
+  return { ok, code, reason: `stub: ${code}` };
+}
+const mockCompleteMissionIfVerified = mock((_id: string, _opts: any) => Promise.resolve({
+  completed: false,
+  decision: decision('no_deliverables'),
+}) as any);
+
+mock.module('@/lib/mission-completion', () => ({
+  completeMissionIfVerified: mockCompleteMissionIfVerified,
+}));
+
 const mockSpawnEvaluationTask = mock(() => Promise.resolve('eval-task-1'));
 
 mock.module('@/lib/pusher', () => ({
@@ -115,6 +132,13 @@ function resetAll() {
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
   mockSpawnEvaluationTask.mockReset();
   mockSpawnEvaluationTask.mockImplementation(() => Promise.resolve('eval-task-1'));
+  mockCompleteMissionIfVerified.mockReset();
+  // Default: the predicate refuses because there is nothing to complete, so the
+  // loop falls through to its retrigger/stall guards.
+  mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+    completed: false,
+    decision: decision('no_deliverables'),
+  }) as any);
 }
 
 /** Helper: call maybeRetriggerMission with injected mocks */
@@ -172,7 +196,7 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
-  it('completes heartbeat mission directly when missionComplete is true (no evaluation)', async () => {
+  it('routes a heartbeat missionComplete through the shared predicate and completes when it agrees', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
       taskTemplate: { context: { heartbeat: true } },
@@ -182,12 +206,60 @@ describe('mission-loop', () => {
       context: { cycleNumber: 5, triggerChainId: 'chain-1' },
       result: { structuredOutput: { missionComplete: true, summary: 'All done' } },
     };
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: true,
+      decision: decision('ok', true),
+    }) as any);
 
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('completed');
+    // The heartbeat exemption is gone: it asks, with proposed=true so a refusal
+    // is surfaced instead of being silent.
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledWith('m1', {
+      path: 'heartbeat',
+      predicate: 'task pt1 result.missionComplete=true',
+      proposed: true,
+    });
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockSpawnEvaluationTask).not.toHaveBeenCalled();
-    expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  // ── M2 (mission 01718005): the exact sequence that closed a mission with two
+  //    pending deliverables and four never-evaluated criteria. ───────────────
+
+  it('M2: heartbeat asserts missionComplete with pending deliverables → does NOT complete', async () => {
+    missionFindFirstResult = { id: 'm2', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
+    scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
+    updateReturningResult = [{ id: 'm2' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 7, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { missionComplete: true, summary: '6 PRs merged' } },
+    };
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'pending_deliverables', reason: '2 deliverable task(s) still open (2 pending)' },
+    }) as any);
+
+    const result = await retrigger('m2', 'pt1');
+    expect(result.action).toBe('completion_blocked');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('M2: heartbeat asserts missionComplete with unevaluated criteria → does NOT complete', async () => {
+    missionFindFirstResult = { id: 'm2', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
+    scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
+    updateReturningResult = [{ id: 'm2' }];
+    taskFindFirstResult = {
+      context: { cycleNumber: 7, triggerChainId: 'chain-1' },
+      result: { structuredOutput: { missionComplete: true, summary: '6 PRs merged' } },
+    };
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'criteria_unverified', reason: 'Goal criteria not verified (overall: UNVERIFIED)' },
+    }) as any);
+
+    const result = await retrigger('m2', 'pt1');
+    expect(result.action).toBe('completion_blocked');
   });
 
   it('does not skip non-heartbeat scheduled missions', async () => {
@@ -202,7 +274,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child1' }],
     ];
@@ -288,7 +359,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 3 }]];
     tasksFindManyResults = [
-      [],                                       // dormancy check: no tasks → no auto-complete
       [{ id: 'pt-prev1' }, { id: 'pt-prev2' }], // stall: 2 recent planning tasks
       [],                                       // stall: no children for pt-prev1
       [],                                       // stall: no children for pt-prev2
@@ -337,7 +407,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }, { id: 'child-2' }],
     ];
@@ -360,7 +429,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }], // has children so stall detection passes
     ];
@@ -386,7 +454,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -423,7 +490,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -443,7 +509,6 @@ describe('mission-loop', () => {
     };
     selectResults = [[{ count: 1 }]];
     tasksFindManyResults = [
-      [],              // dormancy check: no tasks → no auto-complete
       [{ id: 'pt1' }],
       [{ id: 'child-1' }],
     ];
@@ -458,53 +523,14 @@ describe('mission-loop', () => {
     expect((runCall[1] as any).cycleContext.triggerChainId).toBe('chain-1');
   });
 
-  // ── Dormancy auto-complete tests ──────────────────────────────────────────
+  // ── Dormancy: proposes, does not decide ───────────────────────────────────
+  //
+  // The task-shape rules (which rows are deliverables, cancelled-only missions,
+  // pending CI retries, infra stalls, goal criteria) live in the shared predicate
+  // and are tested in mission-completion.test.ts. What matters here is that
+  // dormancy asks it, and honours the answer.
 
-  it('auto-completes mission when all deliverable tasks are completed', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    // dormancy check: all deliverable tasks are completed
-    tasksFindManyResults = [
-      [
-        { title: 'Build the API', mode: 'execution', status: 'completed' },
-        { title: 'Write tests', mode: 'execution', status: 'completed' },
-      ],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'mission-m1',
-      'mission:loop_completed',
-      expect.objectContaining({ missionId: 'm1', reason: 'dormancy_auto_complete' })
-    );
-  });
-
-  it('auto-completes when deliverables are completed and failed (mixed terminal)', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    tasksFindManyResults = [
-      [
-        { title: 'Build the API', mode: 'execution', status: 'completed' },
-        { title: 'Deploy to prod', mode: 'execution', status: 'failed' },
-      ],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('does not auto-complete when some deliverable tasks are still pending', async () => {
+  function dormantMission() {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
@@ -512,298 +538,87 @@ describe('mission-loop', () => {
       result: {},
     };
     selectResults = [[{ count: 1 }]];
-    tasksFindManyResults = [
-      [
-        { title: 'Build the API', mode: 'execution', status: 'completed' },
-        { title: 'Write tests', mode: 'execution', status: 'pending' },
-      ],
-      [{ id: 'pt1' }],
-      [{ id: 'child-1' }],
-    ];
+    tasksFindManyResults = [[{ id: 'pt1' }], [{ id: 'child-1' }]];
+  }
+
+  it('completes when the predicate agrees, with path=dormancy and no completion claim of its own', async () => {
+    dormantMission();
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: true,
+      decision: decision('ok', true),
+    }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completed');
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledWith('m1', { path: 'dormancy' });
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('reports completion_blocked when goal criteria are not verified — and does not retrigger planning', async () => {
+    dormantMission();
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'criteria_unverified', reason: 'Goal criteria not verified (overall: UNVERIFIED)' },
+    }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completion_blocked');
+    // Work is finished; more planning cycles would not help. The mission stays
+    // active (awaiting verification) rather than closing or churning.
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('reports completion_blocked when a criteria verification run is still in flight', async () => {
+    dormantMission();
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'criteria_pending', reason: 'Goal criteria verification in flight' },
+    }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('completion_blocked');
+  });
+
+  it('reports stalled when a deliverable is infra-stalled', async () => {
+    dormantMission();
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'infra_stalled', reason: '1 deliverable task(s) failed on infrastructure' },
+    }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('stalled');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('falls through to retrigger when the predicate refuses for pending deliverables', async () => {
+    dormantMission();
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'pending_deliverables', reason: '1 deliverable task(s) still open (1 in_progress)' },
+    }) as any);
 
     const result = await retrigger('m1', 'pt1');
     expect(result.action).toBe('retriggered');
     expect(mockRunMission).toHaveBeenCalledTimes(1);
   });
 
-  it('does not auto-complete when only housekeeping tasks exist (no deliverables)', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    selectResults = [[{ count: 1 }]];
-    tasksFindManyResults = [
-      [
-        { title: 'Aggregate results: cycle 1', mode: 'planning', status: 'completed' },
-        { title: 'Evaluate mission completion: Build API', mode: 'planning', status: 'completed' },
-      ],
-      [{ id: 'pt1' }],
-      [{ id: 'child-1' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    // deliverableTasks.length === 0 → allDeliverablesDone = false → no auto-complete
-    expect(result.action).toBe('retriggered');
-    expect(mockRunMission).toHaveBeenCalledTimes(1);
-  });
-
-  it('auto-completes when deliverables done even if housekeeping tasks are pending', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 3, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    tasksFindManyResults = [
-      [
-        { title: 'Build the API', mode: 'execution', status: 'completed' },
-        { title: 'Aggregate results: cycle 3', mode: 'planning', status: 'pending' },
-        { title: 'Mission: Organizer', mode: 'planning', status: 'in_progress' },
-      ],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    // Only execution task counts as deliverable; it's completed → auto-complete
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('auto-completes when cancelled deliverables exist alongside completed ones', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    // 4 completed, 5 cancelled (the duplicate-task kill scenario)
-    tasksFindManyResults = [
-      [
-        { title: 'Build feature A', mode: 'execution', status: 'completed' },
-        { title: 'Build feature B', mode: 'execution', status: 'completed' },
-        { title: 'Build feature C', mode: 'execution', status: 'completed' },
-        { title: 'Build feature D', mode: 'execution', status: 'completed' },
-        { title: 'Build feature A (dup)', mode: 'execution', status: 'cancelled' },
-        { title: 'Build feature B (dup)', mode: 'execution', status: 'cancelled' },
-        { title: 'Build feature C (dup)', mode: 'execution', status: 'cancelled' },
-        { title: 'Build feature D (dup)', mode: 'execution', status: 'cancelled' },
-        { title: 'Extra task (dup)', mode: 'execution', status: 'cancelled' },
-      ],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    // All deliverables are terminal (completed or cancelled) → auto-complete
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'mission-m1',
-      'mission:loop_completed',
-      expect.objectContaining({ reason: 'dormancy_auto_complete' })
-    );
-  });
-
-  // ── Goal-criteria guard tests (DEFECTS 1 & 2) ─────────────────────────────
-
-  it('allows dormancy auto-complete when mission has no goalCriteria (regression guard)', async () => {
-    missionFindFirstResult = {
-      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
-      goalCriteria: null, goalCriteriaState: null,
-    };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
-    tasksFindManyResults = [
-      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('allows dormancy auto-complete when goalCriteriaState.overall is pass', async () => {
-    missionFindFirstResult = {
-      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
-      goalCriteria: [{ type: 'all_prs_merged' }],
-      goalCriteriaState: { overall: 'pass', criteria: [{ index: 0, type: 'all_prs_merged', verdict: 'pass' }] },
-    };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
-    tasksFindManyResults = [
-      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('blocks dormancy auto-complete when goalCriteriaState.overall is fail (DEFECT 1)', async () => {
-    // Fixture: 3 description criteria NOT_EVALUATED + 1 all_prs_merged fail — mirrors mission 6dc41ced
-    missionFindFirstResult = {
-      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
-      goalCriteria: [
-        { type: 'description', description: 'All PRs merged and CI green', label: 'CI green' },
-        { type: 'description', description: 'No open issues', label: 'No issues' },
-        { type: 'description', description: 'Docs updated', label: 'Docs' },
-        { type: 'all_prs_merged', label: 'PRs merged' },
-      ],
-      goalCriteriaState: {
-        overall: 'fail',
-        criteria: [
-          { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-          { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-          { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-          { index: 3, type: 'all_prs_merged', verdict: 'fail', evidence: '4 PR(s) not yet merged', label: 'PRs merged' },
-        ],
-      },
-    };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
-    // All tasks cancelled — this is the scenario from the incident
-    tasksFindManyResults = [
-      [
-        { title: 'Build feature A', mode: 'execution', status: 'completed' },
-        { title: 'Build feature B', mode: 'execution', status: 'cancelled' },
-        { title: 'Build feature C', mode: 'execution', status: 'cancelled' },
-      ],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('criteria_blocked');
-    expect(mockRunMission).not.toHaveBeenCalled();
-    // Should have posted a warning note
-    const warningNote = insertedNoteData.find((n: any) => n.type === 'warning');
-    expect(warningNote).toBeDefined();
-    expect(warningNote.title).toBe('Mission completion blocked by goal criteria');
-    expect(warningNote.missionId).toBe('m1');
-  });
-
-  it('blocks dormancy auto-complete when criteria are NOT_EVALUATED (DEFECT 2)', async () => {
-    // 3 description criteria all NOT_EVALUATED, no failing mechanical criteria
-    missionFindFirstResult = {
-      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
-      goalCriteria: [
-        { type: 'description', description: 'All PRs merged and CI green', label: 'CI green' },
-        { type: 'description', description: 'No open issues', label: 'No issues' },
-        { type: 'description', description: 'Docs updated', label: 'Docs' },
-      ],
-      goalCriteriaState: {
-        overall: 'UNVERIFIED',
-        criteria: [
-          { index: 0, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-          { index: 1, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-          { index: 2, type: 'description', verdict: 'NOT_EVALUATED', evidence: 'LLM evaluator not configured' },
-        ],
-      },
-    };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
-    tasksFindManyResults = [
-      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('criteria_blocked');
-    expect(mockRunMission).not.toHaveBeenCalled();
-    const warningNote = insertedNoteData.find((n: any) => n.type === 'warning');
-    expect(warningNote).toBeDefined();
-    expect(warningNote.title).toBe('Mission completion blocked by goal criteria');
-  });
-
-  it('blocks dormancy auto-complete when goalCriteriaState is null (criteria never evaluated)', async () => {
-    missionFindFirstResult = {
-      id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000),
-      goalCriteria: [{ type: 'all_prs_merged' }],
-      goalCriteriaState: null, // never evaluated
-    };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
-    tasksFindManyResults = [
-      [{ title: 'Build the API', mode: 'execution', status: 'completed' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('criteria_blocked');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('does not auto-complete when only cancelled deliverables exist (no successes)', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    selectResults = [[{ count: 1 }]];
-    // All cancelled — no deliverable successes
-    tasksFindManyResults = [
-      [
-        { title: 'Build feature A', mode: 'execution', status: 'cancelled' },
-        { title: 'Build feature B', mode: 'execution', status: 'cancelled' },
-      ],
-      [{ id: 'pt1' }],
-      [{ id: 'child-1' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    // allDeliverablesDone would be true BUT hasDeliverables check prevents it if we add one
-    // (the existing dormancy check at step 5 doesn't gate on "has completed" — only at step 4)
-    // So this will auto-complete at step 5; that's acceptable (all work cancelled = nothing to do)
-    expect(result.action).toBe('completed');
-    expect(mockRunMission).not.toHaveBeenCalled();
-  });
-
-  it('regression: pending CI-retry task blocks dormancy auto-complete', async () => {
-    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
-    updateReturningResult = [{ id: 'm1' }];
-    taskFindFirstResult = {
-      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
-      result: {},
-    };
-    selectResults = [[{ count: 1 }]];
-    // CI-retry task is pending → should NOT auto-complete
-    tasksFindManyResults = [
-      [
-        { title: 'Build the API', mode: 'execution', status: 'completed' },
-        { title: '[CI Retry #1] Build the API', mode: 'execution', status: 'pending' },
-      ],
-      [{ id: 'pt1' }],
-      [{ id: 'child-1' }],
-    ];
-
-    const result = await retrigger('m1', 'pt1');
-    // Pending attempt task blocks auto-complete → mission retriggers instead
-    expect(result.action).toBe('retriggered');
-    expect(mockRunMission).toHaveBeenCalledTimes(1);
-  });
-
-  it('auto-completes heartbeat mission via dormancy when all deliverables done', async () => {
+  it('heartbeat missions do not self-retrigger after a refused dormancy check', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
-    scheduleFindFirstResult = {
-      taskTemplate: { context: { heartbeat: true } },
-    };
+    scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
     updateReturningResult = [{ id: 'm1' }];
     taskFindFirstResult = {
-      context: { cycleNumber: 2, triggerChainId: 'chain-1' },
+      context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: {},
     };
-    // All execution tasks done — missionComplete was NOT signaled
-    tasksFindManyResults = [
-      [
-        { title: 'Implement feature X', mode: 'execution', status: 'completed' },
-        { title: 'Write tests for X', mode: 'execution', status: 'completed' },
-      ],
-    ];
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ok: false, code: 'pending_deliverables', reason: '1 deliverable task(s) still open (1 pending)' },
+    }) as any);
 
     const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('completed');
+    expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'mission-m1',
-      'mission:loop_completed',
-      expect.objectContaining({ reason: 'dormancy_auto_complete' })
-    );
   });
 });
 

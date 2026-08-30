@@ -168,7 +168,8 @@ function injectWorker(manager: any, worker: LocalWorker) {
 describe('reconcileLocalWorkers', () => {
   beforeEach(() => {
     mockUpdateWorker.mockClear();
-    mockGetWorkerRemote.mockClear();
+    mockGetWorkerRemote.mockReset();
+    mockGetWorkerRemote.mockResolvedValue(null); // restore module-level default
   });
 
   test('cleans up local worker when remote worker is 404 (not found)', async () => {

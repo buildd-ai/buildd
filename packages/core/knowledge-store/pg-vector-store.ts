@@ -122,6 +122,7 @@ interface ChunkRow {
   source_ts?: string | null;
   updated_at?: string | null;
   is_current?: boolean;
+  superseded_by?: string | null;
   score?: number;
 }
 
@@ -328,7 +329,8 @@ export class PgVectorStore implements KnowledgeStore {
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
         const scoreMap = new Map(vectorRanked.map(r => [r.id, r.score]));
-        results = this._toResults(rows, scoreMap, ids);
+        const breakdownMap = new Map(vectorRanked.map(r => [r.id, { dense: r.score }]));
+        results = this._toResults(rows, scoreMap, ids, breakdownMap);
       } else {
         const lexicalRes = await db.execute(sql`
           SELECT source_id AS id,
@@ -350,10 +352,16 @@ export class PgVectorStore implements KnowledgeStore {
         const fused = reciprocalRankFusion(vectorRanked, lexicalRanked).slice(0, candidateLimit);
         const rrfScores = new Map(fused.map(r => [r.id, r.score]));
 
+        const denseMap = new Map(vectorRanked.map(r => [r.id, r.score]));
+        const lexMap = new Map(lexicalRanked.map(r => [r.id, r.score]));
+        const breakdownMap = new Map<string, QueryResult['scoreBreakdown']>(
+          fused.map(r => [r.id, { dense: denseMap.get(r.id), lexical: lexMap.get(r.id) }]),
+        );
+
         const ids = fused.map(r => r.id);
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
-        results = this._toResults(rows, rrfScores, ids);
+        results = this._toResults(rows, rrfScores, ids, breakdownMap);
       }
     } else {
       // Lexical-only
@@ -378,7 +386,8 @@ export class PgVectorStore implements KnowledgeStore {
       const ids = lexRanked.map(r => r.id);
       const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
       const scoreMap = new Map(lexRanked.map(r => [r.id, r.score]));
-      results = this._toResults(rows, scoreMap, ids);
+      const breakdownMap = new Map(lexRanked.map(r => [r.id, { lexical: r.score }]));
+      results = this._toResults(rows, scoreMap, ids, breakdownMap);
     }
 
     // Recency x authority is applied in _finalize, *after* rerank, not here.
@@ -683,7 +692,18 @@ export class PgVectorStore implements KnowledgeStore {
     let out = results;
 
     if (this.reranker && results.length > 1) {
+      // Capture RRF scores before reranking overwrites score
+      const rrfScores = new Map(results.map(r => [r.id, r.score]));
       out = await applyRerank(this.reranker, text, results, limit);
+      // Tag per-signal scores: rrf (pre-rerank) and rerank (cross-encoder)
+      out = out.map(r => ({
+        ...r,
+        scoreBreakdown: {
+          ...(r.scoreBreakdown ?? {}),
+          rrf: rrfScores.get(r.id),
+          rerank: r.score,
+        },
+      }));
     }
 
     if (recencyAuthority && out.length > 0) {
@@ -801,7 +821,7 @@ export class PgVectorStore implements KnowledgeStore {
     const inList = sql.join(sourceIds.map(id => sql`${id}`), sql`, `);
     const res = await db.execute(sql`
       SELECT source_id, namespace, corpus, source_type, source_path, source_url, content, metadata,
-             updated_at, is_current
+             source_ts, updated_at, is_current, superseded_by
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND source_id IN (${inList})
@@ -815,6 +835,7 @@ export class PgVectorStore implements KnowledgeStore {
     rows: ChunkRow[],
     scoreMap: Map<string, number>,
     orderedIds: string[],
+    scoreBreakdownMap?: Map<string, QueryResult['scoreBreakdown']>,
   ): QueryResult[] {
     const byId = new Map(rows.map(r => [r.source_id, r]));
     return orderedIds
@@ -833,6 +854,10 @@ export class PgVectorStore implements KnowledgeStore {
           score: scoreMap.get(id) ?? 0,
           createdAt: row.updated_at ? new Date(row.updated_at) : null,
           isCurrent: row.is_current ?? true,
+          sourceTs: row.source_ts ? new Date(row.source_ts) : null,
+          updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+          supersededBy: row.superseded_by ?? null,
+          scoreBreakdown: scoreBreakdownMap?.get(id) ?? undefined,
         };
         return result;
       })

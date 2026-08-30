@@ -84,6 +84,14 @@ mock.module('@/app/api/workers/claim/workspace-cap-gate', () => ({
   checkWorkspaceCap: mockCheckWorkspaceCap,
 }));
 
+// The backend-credential probe (lib/backend-strand.ts) reads secrets + the team
+// provider mask; stub it to the verdict each case is about.
+let strandVerdict: { backend: string; label: string } | null = null;
+const mockStrandCheck = mock((_task: any) => Promise.resolve(strandVerdict));
+mock.module('@/lib/backend-strand', () => ({
+  createBackendStrandProbe: () => ({ check: mockStrandCheck }),
+}));
+
 const mockNotify = mock((_opts: any) => undefined);
 mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
 
@@ -108,6 +116,7 @@ function task(over: Record<string, unknown> = {}) {
     id: 'task-1',
     title: 'Fix the thing',
     workspaceId: 'ws-1',
+    backend: 'claude',
     roleSlug: null,
     missionId: null,
     dependsOn: [],
@@ -148,6 +157,8 @@ beforeEach(() => {
   mockCheckWorkspaceCap.mockResolvedValue(null);
   mockCheckMissionBudgetExhausted.mockClear();
   mockCheckMissionBudgetExhausted.mockResolvedValue(false);
+  strandVerdict = null;
+  mockStrandCheck.mockClear();
   mockNotify.mockClear();
 });
 
@@ -588,5 +599,92 @@ describe('queue-stall cron — notification and dedupe', () => {
     expect(body.ok).toBe(true);
     expect(body.stalled).toHaveLength(0);
     expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+describe('queue-stall cron — missing backend credential', () => {
+  it('names the missing credential instead of falling through to no_gate_identified', async () => {
+    // The population this gate exists for: a Codex task in a team with no Codex
+    // credential. The claim route drops it from the candidate set entirely, so
+    // no runner will ever ask for it — the most permanent block available, and
+    // previously reported as "no runner is polling this workspace".
+    candidateTasks = [task({ backend: 'codex' })];
+    strandVerdict = { backend: 'codex', label: 'Codex' };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled).toHaveLength(1);
+    expect(body.stalled[0].gate).toBe('backend_credential_missing');
+    expect(body.stalled[0].detail).toContain('Codex');
+    expect(mockStrandCheck).toHaveBeenCalledWith({
+      backend: 'codex',
+      workspaceId: 'ws-1',
+      teamId: 'team-1',
+    });
+  });
+
+  it('passes the stored backend through so the probe applies the team mask itself', async () => {
+    // A task nominally on a disabled backend is masked onto an enabled one at
+    // dispatch, so the watchdog must not decide from tasks.backend alone.
+    candidateTasks = [task({ backend: 'codex' })];
+    strandVerdict = null; // probe: masked onto Claude, nothing stranded
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('no_gate_identified');
+  });
+
+  it('stays silent for the common case (Claude runs on the caller\'s own auth)', async () => {
+    candidateTasks = [task()];
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('no_gate_identified');
+  });
+
+  it('keeps /start\'s gate order: a gate /start can name still wins', async () => {
+    // Every reason shared with /api/tasks/[id]/start is reported in /start's
+    // order, so an operator who clicks Start sees the same answer.
+    candidateTasks = [task({ workspace: { ...task().workspace, repo: 'buildd-ai/buildd' } })];
+    mockCheckWorkspaceCap.mockResolvedValue({ active: 3, cap: 3 });
+    strandVerdict = { backend: 'codex', label: 'Codex' };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('workspace_cap_reached');
+  });
+
+  it('outranks advisory_manifest — permanent beats self-clearing', async () => {
+    candidateTasks = [task({ backend: 'codex', missionId: 'mission-1', pathManifest: ['**'] })];
+    missionPeerTasks = [
+      { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: ['**'], workers: [{ status: 'running' }] },
+    ];
+    strandVerdict = { backend: 'codex', label: 'Codex' };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('backend_credential_missing');
+  });
+
+  it('dedupes through the shared context key rather than re-alerting hourly', async () => {
+    candidateTasks = [task({ backend: 'codex' })];
+    strandVerdict = { backend: 'codex', label: 'Codex' };
+
+    const first = await (await POST(makeRequest())).json();
+    expect(first.notified).toBe(1);
+    expect(taskUpdates[0].values.context.queueStallGate).toBe('backend_credential_missing');
+
+    // Second run, with the stamp the first run wrote.
+    candidateTasks = [task({
+      backend: 'codex',
+      context: { queueStallNotifiedAt: new Date().toISOString(), queueStallGate: 'backend_credential_missing' },
+    })];
+    mockStrandCheck.mockClear();
+
+    const second = await (await POST(makeRequest())).json();
+    expect(second.deduped).toBe(1);
+    expect(second.notified).toBe(0);
+    // Dedupe skips gate evaluation entirely — no credential lookups either.
+    expect(mockStrandCheck).not.toHaveBeenCalled();
   });
 });

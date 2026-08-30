@@ -10,6 +10,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -657,11 +658,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Process attachments - R2 storage references only
+    // Process attachments - R2 storage references only.
+    // A stored key is later turned into a signed download URL for the claiming
+    // worker, so each key must resolve inside this workspace's own prefix.
     const processedAttachments: Array<{ filename: string; mimeType: string; storageKey: string }> = [];
     if (attachments && Array.isArray(attachments)) {
       for (const att of attachments) {
         if (att.storageKey && att.mimeType && att.filename) {
+          if (!isOwnedStorageKey(att.storageKey, workspaceId)) {
+            return NextResponse.json(
+              { error: 'attachment storageKey does not belong to this workspace' },
+              { status: 400 }
+            );
+          }
           processedAttachments.push({
             filename: att.filename,
             mimeType: att.mimeType,

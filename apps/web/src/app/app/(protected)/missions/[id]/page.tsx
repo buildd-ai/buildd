@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -293,9 +293,9 @@ export default async function MissionDetailPage({
   const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, completedTasks, progress: progressPct, segments } = computeMissionProgress(mission.tasks || []);
-  // Completed missions always show 100% regardless of individual task outcomes.
-  const progress = mission.status === 'completed' ? 100 : progressPct;
+  const { totalTasks, completedTasks, segments } = computeMissionProgress(mission.tasks || []);
+  const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
+  const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
   // filter is still overcollapsing or the PR counter is double-counting.
   if (process.env.NODE_ENV === 'development' && totalTasks > 0) {
@@ -323,6 +323,12 @@ export default async function MissionDetailPage({
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
   const isHeld = (mission as any).isHeld === true;
 
+  // Goal criteria that have not been verified keep the mission open — the header
+  // must say that rather than "READY FOR REVIEW".
+  const missionCriteria = (mission as any).goalCriteria as unknown[] | null;
+  const missionCriteriaOverall = ((mission as any).goalCriteriaState as { overall?: string } | null)?.overall ?? null;
+  const criteriaUnverified = Array.isArray(missionCriteria) && missionCriteria.length > 0 && missionCriteriaOverall !== 'pass';
+
   // Single derived display state for the header chip and CTA
   const displayState = deriveMissionDisplayState({
     status: mission.status,
@@ -331,6 +337,7 @@ export default async function MissionDetailPage({
     activeAgents,
     health: healthState,
     progress,
+    criteriaUnverified,
   });
   const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
@@ -720,7 +727,7 @@ export default async function MissionDetailPage({
             <div className="flex items-center justify-between mb-2">
               <span className="text-[13px] text-text-secondary">Progress</span>
               <span className="font-display text-lg text-status-success tabular-nums">
-                {progress}%
+                {progress ?? 0}%
               </span>
             </div>
             <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />

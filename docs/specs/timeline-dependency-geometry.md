@@ -3,6 +3,11 @@ title: Timeline Dependency Geometry — DAG Shapes
 status: active
 owner: builder
 last_verified: 2026-08-29
+summary: The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
+domain: surfaces
+surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/components/DependencyRail.tsx, apps/web/src/lib/dep-gate-contract.ts]
+related: [missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives]
+keywords: [dependencyrail, blockedbyfrontier, dependson, phantom blocker, elbow indent, step n/m]
 supersedes: []
 ---
 

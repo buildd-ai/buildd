@@ -6,12 +6,13 @@
  * mission's original goal against actual deliverables.
  */
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { missions, tasks } from '@buildd/core/db/schema';
+import { eq, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { workspaces } from '@buildd/core/db/schema';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { completeMissionIfVerified } from '@/lib/mission-completion';
 
 /** Structured output schema the evaluator must produce */
 export const EVALUATION_OUTPUT_SCHEMA = {
@@ -267,44 +268,38 @@ export async function handleEvaluationResult(
 
   const verdict = structuredOutput;
 
-  // Only auto-complete on high or medium confidence + complete verdict
+  // A 'complete' verdict at sufficient confidence is a PROPOSAL, not a decision.
+  // This evaluator is an LLM comparing prose to task summaries; it does not know
+  // whether the mission's goal criteria hold. Route it through the same predicate
+  // as every other completion path — which also means an incomplete criteria
+  // verdict now keeps the mission open even when the evaluator is confident.
   if (verdict.verdict === 'complete' && (verdict.confidence === 'high' || verdict.confidence === 'medium')) {
     if (verdict.confidence === 'medium') {
       console.warn(`[evaluation] Medium-confidence completion for mission ${missionId}: ${verdict.rationale}`);
     }
 
-    // Complete the mission
-    const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
-      columns: { scheduleId: true },
+    const outcome = await completeMissionIfVerified(missionId, {
+      path: 'evaluation_task',
+      predicate: `evaluation task ${evaluationTaskId} verdict=complete confidence=${verdict.confidence}`,
+      proposed: true,
     });
 
-    await db
-      .update(missions)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(eq(missions.id, missionId));
-
-    // Disable schedule
-    if (mission?.scheduleId) {
-      await db
-        .update(taskSchedules)
-        .set({ enabled: false, updatedAt: new Date() })
-        .where(eq(taskSchedules.id, mission.scheduleId));
-    }
+    if (outcome.completed) return { action: 'completed', verdict };
 
     await triggerEvent(
       channels.mission(missionId),
-      events.MISSION_LOOP_COMPLETED,
+      events.MISSION_CYCLE_STARTED,
       {
         missionId,
-        reason: 'evaluation_complete',
+        reason: 'evaluation_complete_but_unverified',
         verdict: verdict.verdict,
         confidence: verdict.confidence,
-        rationale: verdict.rationale,
+        blockedBy: outcome.decision.code,
+        blockReason: outcome.decision.reason,
       }
     );
 
-    return { action: 'completed', verdict };
+    return { action: 'kept_active', verdict };
   }
 
   // Keep active — verdict is incomplete, blocked, or low confidence

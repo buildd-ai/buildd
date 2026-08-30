@@ -98,6 +98,27 @@ export interface QueryResult {
   createdAt?: Date | null;
   /** False when the chunk has been superseded (is_current=false). True or absent = current. */
   isCurrent?: boolean;
+  /**
+   * Source event time: git commit timestamp for code/docs, task/PR completion time for tasks/PRs.
+   * Distinct from updatedAt (ingest time). Null when not recorded at ingest.
+   */
+  sourceTs?: Date | null;
+  /** When this chunk was last ingested/updated in the knowledge store. */
+  updatedAt?: Date | null;
+  /** source_id of the chunk that superseded this one (present only when isCurrent=false). */
+  supersededBy?: string | null;
+  /**
+   * Per-signal score components for the fused/reranked final score.
+   * Present for hybrid and vector/lexical-only modes; absent for graph-expanded neighbors.
+   */
+  scoreBreakdown?: {
+    dense?: number;
+    lexical?: number;
+    /** RRF score before reranking (hybrid mode only). */
+    rrf?: number;
+    /** Cross-encoder reranker score (set when a reranker is configured). */
+    rerank?: number;
+  };
 }
 
 export interface QueryParams {

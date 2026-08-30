@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.186.2] - 2026-08-29
+
+Version-only release covering the v0.186.1 hotfix, whose own tag job failed:
+`Hotfix v0.186.1` and `Release v0.186.1` were cut a minute apart and both
+claimed the same patch version, so `release-tag.yml` could not create a second
+v0.186.1 tag. The hotfix code shipped to production untagged; this tags it.
+
+### Fixed
+
+- Move `deriveStage` off the client so Home renders in production (#1914)
+
 ## [0.180.0] - 2026-08-27
 
 ### Changed

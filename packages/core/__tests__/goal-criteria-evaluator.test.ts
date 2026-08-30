@@ -105,12 +105,16 @@ describe('evaluateGoalCriteria — artifact_exists', () => {
 });
 
 describe('evaluateGoalCriteria — all_prs_merged', () => {
-  it('fails when no PR workers found', () => {
+  it('is UNVERIFIED (not fail) when the mission has produced no PRs', () => {
+    // "No PRs yet" is an absence of evidence, not a contradiction. A hard fail
+    // made this criterion unsatisfiable for missions that legitimately produce
+    // no PRs; either way it does not pass, so completion is still gated.
     const workers = [{ taskId: 't1', mergedAt: null, prUrl: null, branchName: 'feature/x' }];
     const criterion: GoalCriterion = { type: 'all_prs_merged' };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
-    expect(state.criteria[0].verdict).toBe('fail');
-    expect(state.criteria[0].evidence).toContain('No PR workers found');
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state.overall).not.toBe('pass');
+    expect(state.criteria[0].evidence).toContain('No PRs found');
   });
 
   it('fails when a PR is not merged', () => {
@@ -175,12 +179,15 @@ describe('evaluateGoalCriteria — all_prs_merged', () => {
 });
 
 describe('evaluateGoalCriteria — command criterion', () => {
-  it('always returns UNVERIFIED (requires worker task dispatch)', () => {
+  it('returns NOT_EVALUATED awaiting a verification run (never graded inline)', () => {
     const criterion: GoalCriterion = { type: 'command', command: 'bun test' };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx());
-    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    // NOT_EVALUATED = never checked. The pure evaluator cannot run a command;
+    // the DB layer dispatches a verification task and the exit code decides.
+    expect(state.criteria[0].verdict).toBe('NOT_EVALUATED');
     expect(state.overall).toBe('UNVERIFIED');
-    expect(state.criteria[0].evidence).toContain('worker task dispatch');
+    expect(state.criteria[0].evidence).toContain('Awaiting verification run');
+    expect(state.criteria[0].evidence).toContain('bun test');
   });
 });
 
@@ -253,10 +260,10 @@ describe('evaluateGoalCriteria — overall verdict logic', () => {
     expect(state.overall).toBe('fail');
   });
 
-  it('overall=UNVERIFIED when some pass and some UNVERIFIED (no fail)', () => {
+  it('overall=UNVERIFIED when some pass and some lack a verdict (no fail)', () => {
     const criteria: GoalCriterion[] = [
       { type: 'no_open_tasks' },   // pass (no tasks)
-      { type: 'command', command: 'test' }, // UNVERIFIED
+      { type: 'metric', query: 'error_rate', operator: 'lt', threshold: 1 }, // UNVERIFIED
     ];
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
     expect(state.criteria[0].verdict).toBe('pass');
@@ -289,7 +296,7 @@ describe('evaluateGoalCriteria — overall verdict logic', () => {
 
   it('fail takes precedence over UNVERIFIED in overall verdict', () => {
     const criteria: GoalCriterion[] = [
-      { type: 'command', command: 'test' }, // UNVERIFIED
+      { type: 'command', command: 'test' }, // NOT_EVALUATED (awaiting a run)
       { type: 'artifact_exists', artifactType: 'report' }, // fail (no artifact)
     ];
     const state = evaluateGoalCriteria(MISSION, criteria, makeCtx());
@@ -323,51 +330,51 @@ describe('evaluateGoalCriteria — evaluatedBy attribution', () => {
 // ─── evaluateInitiativeKPIs ────────────────────────────────────────────────────
 
 describe('evaluateInitiativeKPIs', () => {
-  it('returns empty kpis array and pass overall when no KPIs set', () => {
-    const state = evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'manual', now: NOW });
+  it('returns empty kpis array and pass overall when no KPIs set', async () => {
+    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'manual', now: NOW });
     expect(state.kpis).toHaveLength(0);
     expect(state.overall).toBe('pass');
   });
 
-  it('all KPIs return UNVERIFIED (metric query not implemented)', () => {
+  it('all KPIs return UNVERIFIED when no resolver provided', async () => {
     const kpis = [
       { name: 'Latency p95 under 200ms', metric: 'latency_p95', operator: 'lt' as const, threshold: 200 },
       { name: 'Error rate under 1%', metric: 'error_rate', operator: 'lt' as const, threshold: 0.01 },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
     expect(state.kpis).toHaveLength(2);
     expect(state.kpis[0].verdict).toBe('UNVERIFIED');
     expect(state.kpis[1].verdict).toBe('UNVERIFIED');
   });
 
-  it('overall=UNVERIFIED when blocking KPIs are UNVERIFIED', () => {
+  it('overall=UNVERIFIED when blocking KPIs are UNVERIFIED', async () => {
     const kpis = [
       { name: 'Latency', metric: 'latency', operator: 'lt' as const, threshold: 200, blocking: true },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'auto', now: NOW });
     expect(state.overall).toBe('UNVERIFIED');
   });
 
-  it('overall=pass when all KPIs are non-blocking (no blocking KPIs)', () => {
+  it('overall=pass when all KPIs are non-blocking (no blocking KPIs)', async () => {
     const kpis = [
       { name: 'Revenue metric', metric: 'revenue', operator: 'gt' as const, threshold: 1000, blocking: false },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'manual', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'manual', now: NOW });
     // Non-blocking only → no blocker → overall pass
     expect(state.overall).toBe('pass');
   });
 
-  it('records kpi names in output', () => {
+  it('records kpi names in output', async () => {
     const kpis = [
       { name: 'P95 latency', metric: 'latency', operator: 'lt' as const, threshold: 200 },
     ];
-    const state = evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'mcp', now: NOW });
+    const state = await evaluateInitiativeKPIs('init-1', kpis, { evaluatedBy: 'mcp', now: NOW });
     expect(state.kpis[0].name).toBe('P95 latency');
     expect(state.kpis[0].index).toBe(0);
   });
 
-  it('records evaluatedAt and evaluatedBy', () => {
-    const state = evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'mcp', now: NOW });
+  it('records evaluatedAt and evaluatedBy', async () => {
+    const state = await evaluateInitiativeKPIs('init-1', [], { evaluatedBy: 'mcp', now: NOW });
     expect(state.evaluatedAt).toBe(NOW);
     expect(state.evaluatedBy).toBe('mcp');
   });
