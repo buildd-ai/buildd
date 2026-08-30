@@ -26,6 +26,10 @@ const RAW_STRING_PURPOSES = new Set([
   'custom',
   'mcp_credential',
   'vercel_token',
+  // Inference keys are raw strings too, and no prefix rule applies: the provider
+  // comes from `label`, and Anthropic (sk-ant-api…) and OpenRouter (sk-or-v1…)
+  // keys share the purpose.
+  'inference_key',
 ]);
 
 /** Required prefixes for Claude credential purposes. */
@@ -100,7 +104,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token'];
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key'];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
