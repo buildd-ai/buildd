@@ -86,6 +86,13 @@
       "path": "/api/cron/task-archive",
       "schedule": "0 10 * * 1",
       "method": "GET"
+    },
+    {
+      "$comment": "Post-deploy health watch window: probes the verificationUrl of every release that reached `healthy` within the last 30 minutes. On non-2xx or error, transitions the release to `degraded` and auto-files a workspace task. Every 2 minutes keeps the degradation window tight relative to the 30-minute watch window (at most ~2min latency before detection). Sub-hourly by design \u2014 this is time-critical production monitoring, not a housekeeping sweep.",
+      "title": "Buildd: Release Health Check",
+      "path": "/api/cron/release-health-check",
+      "schedule": "*/2 * * * *",
+      "method": "GET"
     }
   ]
 }
