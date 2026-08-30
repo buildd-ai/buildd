@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { uploadBuffer, deleteObject } from './storage';
+import { buildRoleConfigKey } from './storage-keys';
 
 export interface RoleConfigInput {
   slug: string;
@@ -83,7 +84,7 @@ export async function packageRoleConfig(
 export async function uploadRoleConfig(bundle: RoleConfigBundle): Promise<UploadResult> {
   const json = JSON.stringify(bundle);
   const configHash = createHash('sha256').update(json).digest('hex');
-  const configStorageKey = `roles/${bundle.slug}/${configHash}.json`;
+  const configStorageKey = buildRoleConfigKey(bundle.slug, configHash);
 
   await uploadBuffer(configStorageKey, Buffer.from(json, 'utf-8'), 'application/json');
 
