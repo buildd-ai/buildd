@@ -9,12 +9,13 @@
  *   MEMORY_API_URL=... VOYAGE_API_KEY=... DATABASE_URL=... \
  *   bun packages/core/scripts/backfill-knowledge-chunks.ts [workspaceId|teamId]
  *
- * With no id, backfills every team that has a memoryApiKey configured.
+ * With no id, backfills every team that has a memory API key in the secrets table.
  */
 import { db } from '../db/index';
-import { teams, workspaces } from '../db/schema';
-import { eq, isNotNull } from 'drizzle-orm';
+import { teams, workspaces, secrets } from '../db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
 import { MemoryClient } from '../memory-client';
+import { getMemoryApiKeyForTeam } from '../secrets/memory-api-key';
 import { PgVectorStore, buildNamespace } from '../knowledge-store/pg-vector-store';
 import { getVoyageEmbedder } from '../knowledge-store/voyage-embedder';
 
@@ -101,26 +102,29 @@ async function main() {
       console.error(`[backfill] Could not resolve a team from: ${targetArg}`);
       process.exit(1);
     }
-    const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
-      columns: { memoryApiKey: true },
-    });
-    if (!team?.memoryApiKey) {
-      console.error('[backfill] No memoryApiKey configured for this team');
+    const key = await getMemoryApiKeyForTeam(teamId);
+    if (!key) {
+      console.error('[backfill] No memory API key configured for this team');
       process.exit(1);
     }
-    const client = new MemoryClient(memoryApiUrl, team.memoryApiKey);
+    const client = new MemoryClient(memoryApiUrl, key);
     await backfillTeam(teamId, client, store);
   } else {
     // All teams with a memory key — one pass each
-    const teamsWithKey = await db.query.teams.findMany({
-      where: isNotNull(teams.memoryApiKey),
-      columns: { id: true, memoryApiKey: true },
+    const teamSecrets = await db.query.secrets.findMany({
+      where: and(
+        eq(secrets.purpose, 'memory_api_key'),
+        isNull(secrets.accountId),
+        isNull(secrets.workspaceId),
+      ),
+      columns: { teamId: true },
     });
 
-    for (const team of teamsWithKey) {
-      const client = new MemoryClient(memoryApiUrl, team.memoryApiKey!);
-      await backfillTeam(team.id, client, store);
+    for (const { teamId: tid } of teamSecrets) {
+      const key = await getMemoryApiKeyForTeam(tid);
+      if (!key) continue;
+      const client = new MemoryClient(memoryApiUrl, key);
+      await backfillTeam(tid, client, store);
     }
   }
 

@@ -10,6 +10,7 @@ import { db } from '@buildd/core/db';
 import { userFeedback, teams, missionNotes, artifacts } from '@buildd/core/db/schema';
 import { eq, and, gte, inArray, sql } from 'drizzle-orm';
 import { MemoryClient } from '@buildd/core/memory-client';
+import { getMemoryClientForTeam } from '@/lib/memory-helper';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -170,17 +171,8 @@ async function buildMemoryContent(bucket: PatternBucket): Promise<string> {
 
 // ── Memory persistence ────────────────────────────────────────────────────────
 
-async function getMemoryClientForTeam(teamId: string): Promise<MemoryClient | null> {
-  const url = process.env.MEMORY_API_URL;
-  if (!url) return null;
-
-  const team = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
-    columns: { memoryApiKey: true },
-  });
-
-  if (!team?.memoryApiKey) return null;
-  return new MemoryClient(url, team.memoryApiKey);
+function getMemoryClientForTeamById(teamId: string): Promise<MemoryClient | null> {
+  return getMemoryClientForTeam(null, teamId);
 }
 
 async function persistPattern(
@@ -261,7 +253,7 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
   const results: DigestResult[] = [];
 
   for (const [teamId, teamRows] of byTeam) {
-    const memClient = await getMemoryClientForTeam(teamId);
+    const memClient = await getMemoryClientForTeamById(teamId);
     if (!memClient) {
       console.warn(`[feedback-digest] No memory client for team ${teamId}, skipping`);
       continue;

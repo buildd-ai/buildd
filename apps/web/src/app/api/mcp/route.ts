@@ -23,7 +23,7 @@ import {
 import { authenticateApiKey } from "@/lib/api-auth";
 import { resolveWorkspace } from "@/lib/workspace-resolver";
 import { db } from "@buildd/core/db";
-import { workspaces, teams, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets, releases, releaseTasks } from "@buildd/core/db/schema";
+import { workspaces, workers as workersTable, tasks, connectors, connectorWorkspaces, connectorShares, secrets, releases, releaseTasks } from "@buildd/core/db/schema";
 import { and, eq, inArray, isNotNull, sql, desc } from "drizzle-orm";
 import {
   checkPathClaimConflict,
@@ -47,8 +47,8 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
-import { MemoryClient } from "@buildd/core/memory-client";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
+import { getMemoryClientForTeam } from "@/lib/memory-helper";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -127,60 +127,6 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
   } catch {
     return 'sensitive'; // fail-closed
   }
-}
-
-async function getMemoryClientForTeam(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<MemoryClient | null> {
-  const url = process.env.MEMORY_API_URL;
-  if (!url) return null;
-
-  // Resolve teamId from workspace, or use fallback (e.g. from account)
-  let teamId: string | undefined;
-  if (workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
-      columns: { teamId: true },
-    });
-    teamId = ws?.teamId;
-  }
-  if (!teamId && fallbackTeamId) {
-    teamId = fallbackTeamId;
-  }
-  if (!teamId) return null;
-
-  const team = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
-    columns: { id: true, memoryApiKey: true },
-  });
-  if (!team) return null;
-
-  if (team.memoryApiKey) {
-    return new MemoryClient(url, team.memoryApiKey);
-  }
-
-  // Auto-provision: create a memory team + key for this Buildd team
-  const rootKey = process.env.MEMORY_ROOT_KEY;
-  if (rootKey) {
-    try {
-      const res = await fetch(`${url}/api/keys`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${rootKey}`,
-        },
-        body: JSON.stringify({ teamId: team.id, name: 'buildd-auto' }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const newKey = data.key as string;
-        await db.update(teams).set({ memoryApiKey: newKey }).where(eq(teams.id, team.id));
-        return new MemoryClient(url, newKey);
-      }
-    } catch (err) {
-      console.error('Failed to auto-provision memory key:', err);
-    }
-  }
-
-  return null;
 }
 
 // ── Server Factory ───────────────────────────────────────────────────────────

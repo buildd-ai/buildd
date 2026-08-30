@@ -8,31 +8,14 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, workspaces, teams } from '@buildd/core/db/schema';
+import { accounts, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { MemoryClient } from '@buildd/core/memory-client';
+import { getMemoryClientForTeam } from '@/lib/memory-helper';
 
-async function getMemoryClientForWorkspace(workspaceId: string): Promise<MemoryClient | null> {
-  const url = process.env.MEMORY_API_URL;
-  if (!url) return null;
-
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
-    columns: { teamId: true },
-  });
-  if (!ws) return null;
-
-  const team = await db.query.teams.findFirst({
-    where: eq(teams.id, ws.teamId),
-    columns: { memoryApiKey: true },
-  });
-
-  if (!team?.memoryApiKey) return null;
-  return new MemoryClient(url, team.memoryApiKey);
-}
+const getMemoryClientForWorkspace = (workspaceId: string) => getMemoryClientForTeam(workspaceId);
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');

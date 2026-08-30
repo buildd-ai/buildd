@@ -6,9 +6,10 @@
  * a configured MemoryClient, or null when the memory service isn't set up.
  */
 import { db } from '@buildd/core/db';
-import { teams, workspaces } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { MemoryClient } from '@buildd/core/memory-client';
+import { getMemoryApiKeyForTeam, setMemoryApiKeyForTeam } from '@buildd/core/secrets';
 
 export async function getMemoryClientForTeam(
   workspaceId: string | null | undefined,
@@ -30,14 +31,9 @@ export async function getMemoryClientForTeam(
   }
   if (!teamId) return null;
 
-  const team = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
-    columns: { id: true, memoryApiKey: true },
-  });
-  if (!team) return null;
-
-  if (team.memoryApiKey) {
-    return new MemoryClient(url, team.memoryApiKey);
+  const existingKey = await getMemoryApiKeyForTeam(teamId);
+  if (existingKey) {
+    return new MemoryClient(url, existingKey);
   }
 
   // Auto-provision a memory key for this team.
@@ -47,12 +43,12 @@ export async function getMemoryClientForTeam(
     const res = await fetch(`${url}/api/keys`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${rootKey}` },
-      body: JSON.stringify({ teamId: team.id, name: 'buildd-auto' }),
+      body: JSON.stringify({ teamId, name: 'buildd-auto' }),
     });
     if (!res.ok) return null;
     const data = await res.json();
     const newKey = data.key as string;
-    await db.update(teams).set({ memoryApiKey: newKey }).where(eq(teams.id, team.id));
+    await setMemoryApiKeyForTeam(teamId, newKey);
     return new MemoryClient(url, newKey);
   } catch (err) {
     console.error('Failed to auto-provision memory key:', err);
