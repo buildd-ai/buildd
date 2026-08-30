@@ -5,7 +5,31 @@ import {
   isAdvisoryManifest,
   declaresNoScope,
   shouldSerializeByManifest,
+  stripTrailingSep,
 } from '../path-overlap';
+
+describe('stripTrailingSep', () => {
+  it('strips a single trailing slash', () => {
+    expect(stripTrailingSep('packages/core/')).toBe('packages/core');
+  });
+
+  it('strips multiple trailing slashes', () => {
+    expect(stripTrailingSep('packages/core///')).toBe('packages/core');
+  });
+
+  it('leaves paths with no trailing slash unchanged', () => {
+    expect(stripTrailingSep('packages/core')).toBe('packages/core');
+    expect(stripTrailingSep('foo.ts')).toBe('foo.ts');
+  });
+
+  it('returns empty string unchanged', () => {
+    expect(stripTrailingSep('')).toBe('');
+  });
+
+  it('strips trailing slash from a bare slash', () => {
+    expect(stripTrailingSep('/')).toBe('');
+  });
+});
 
 describe('pathsOverlap', () => {
   it('returns false for empty arrays', () => {
