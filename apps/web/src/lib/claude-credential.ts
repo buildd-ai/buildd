@@ -1,8 +1,24 @@
 import { db } from '@buildd/core/db';
-import { secrets } from '@buildd/core/db/schema';
+import { secrets, accounts } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
+
+/**
+ * Decode the `sub` claim from an Anthropic JWT access token without verification.
+ * The sub is the stable Anthropic user ID — the same across all devices and refreshes
+ * for a given Anthropic account, making it the right key for seatId grouping.
+ */
+export function extractJwtSub(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as Record<string, unknown>;
+    return typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
 
 const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const ANTHROPIC_MODELS_URL = 'https://api.anthropic.com/v1/models';
@@ -155,6 +171,16 @@ export async function storeClaudeCredential(
     createdAt: now,
     updatedAt: now,
   });
+
+  // Propagate the Anthropic user ID (JWT sub) to all OAuth accounts in the team so
+  // groupOauthAccountsBySeatId can group them correctly. This is the primary write path.
+  const seatId = extractJwtSub(credential.access_token);
+  if (seatId) {
+    await db
+      .update(accounts)
+      .set({ seatId })
+      .where(and(eq(accounts.teamId, scope.teamId), eq(accounts.authType, 'oauth')));
+  }
 }
 
 // ── Resolution ────────────────────────────────────────────────────────────────

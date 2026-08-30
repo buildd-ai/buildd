@@ -10,6 +10,7 @@ import { db } from '@buildd/core/db';
 import { accounts, workspaces, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,25 +35,43 @@ async function ensureUserAccount(userId: string, workspaceId: string): Promise<v
 
     const existing = await db.query.accounts.findFirst({
       where: and(eq(accounts.teamId, workspace.teamId), eq(accounts.type, 'user')),
-      columns: { id: true },
-    });
-    if (existing) return;
-
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, userId),
-      columns: { name: true, email: true },
+      columns: { id: true, seatId: true },
     });
 
-    const plaintextKey = generateApiKey();
-    await db.insert(accounts).values({
-      name: `${user?.name || user?.email || 'User'}'s Account`,
-      type: 'user',
-      authType: 'oauth',
-      apiKey: hashApiKey(plaintextKey),
-      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-      maxConcurrentWorkers: 10,
-      teamId: workspace.teamId,
-    });
+    let accountId: string;
+    if (existing) {
+      accountId = existing.id;
+      // Return early if seatId already set — nothing more to do.
+      if (existing.seatId) return;
+    } else {
+      const user = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+        columns: { name: true, email: true },
+      });
+
+      const plaintextKey = generateApiKey();
+      const [created] = await db.insert(accounts).values({
+        name: `${user?.name || user?.email || 'User'}'s Account`,
+        type: 'user',
+        authType: 'oauth',
+        apiKey: hashApiKey(plaintextKey),
+        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
+        maxConcurrentWorkers: 10,
+        teamId: workspace.teamId,
+      }).returning({ id: accounts.id });
+      if (!created) return;
+      accountId = created.id;
+    }
+
+    // Set seatId from the team's Claude credential so this account is grouped
+    // correctly with other accounts sharing the same Anthropic subscription.
+    const cred = await resolveClaudeCredential({ teamId: workspace.teamId });
+    if (cred) {
+      const seatId = extractJwtSub(cred.accessToken);
+      if (seatId) {
+        await db.update(accounts).set({ seatId }).where(eq(accounts.id, accountId));
+      }
+    }
   } catch {
     // Non-fatal: the token is valid even if account provisioning fails.
     // The user may 401 on MCP tool calls until the account is created.
