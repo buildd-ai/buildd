@@ -71,7 +71,7 @@ a future iteration but is not this spec.
 Three phases, all pure functions in `apps/web/src/lib/structure-layout.ts`:
 
 1. **Rank assignment** — Kahn's topological sort (same O(N+E) algorithm as
-   `timeline-dependency-geometry.md §3.8`) assigns each node a rank (column). A task's
+   `timeline-dependency-geometry.md §2.1`) assigns each node a rank (column). A task's
    rank is `max(rank of all direct blockers) + 1`. Tasks with no blockers get rank 0.
    Cross-mission deps (blockers not in the task set) are treated as virtual rank-0 sources.
 
@@ -248,6 +248,8 @@ Node background fill is a reinforcement of the chip, not a replacement.
 | `DONE` | `bg-status-success/10` | `border-status-success` 1px | Completed, gate satisfied |
 | `FAILED` | `bg-status-error/15` | `border-status-error` 2px | |
 | `CANCELLED` | transparent | `border-border-default` 1px opacity-50 | |
+| `SUBJECT_DEAD` | `bg-status-error/12` | `border-status-error/40` 1px dashed | Subject PR closed; human must intervene. Matches `StageChip` soft error treatment |
+| `MISSION_BUDGET` | `bg-status-error/12` | `border-status-error/40` 1px dashed | Parent mission budget exhausted. Matches `StageChip` soft error treatment |
 | **STRANDED** | `bg-status-error/8` + notch pattern | `border-status-error/40` 1px dashed | See §5.2 |
 
 ### 5.2 STRANDED condition (new)
@@ -265,8 +267,9 @@ because the graph makes the terminal-parent relationship visible.
 **Rule STF-3**: A task is STRANDED only when ALL of the following hold:
 1. `task.status === 'pending' || task.status === 'assigned'`
 2. At least one dep in `dependsOn` has `status === 'failed' || status === 'cancelled'`
-3. That dep has no PR with `prLifecycleStatus` in `['pr_open', 'ci_running', 'ci_failed', 'conflict']`
-   (i.e., no open PR that could still be reviewed and merged)
+3. That dep has no PR with `prLifecycleStatus` in `['pr_open', 'ci_running', 'ci_failed', 'ci_green', 'conflict']`
+   (i.e., no open PR that could still be reviewed and merged — `ci_green` is included because
+   a dep whose CI has passed is one reviewer-merge away from resolving)
 
 A task with a failed dep that has a still-open PR is NOT stranded — it might still resolve.
 
@@ -383,7 +386,7 @@ component.
 `StructureView` receives:
 ```ts
 type StructureViewProps = {
-  /** Same chain units the Timeline tab already receives — no new server query. */
+  /** Flat chain-unit array for the full mission — see flatten note below. */
   chains: ChainUnit<CondensedTimelineTask>[];
   /** Full task map for gate evaluation (same as Timeline). */
   taskMap: Map<string, CondensedTask>;
@@ -393,8 +396,27 @@ type StructureViewProps = {
 };
 ```
 
-`structure-layout.ts` receives `chains` and `taskMap`, calls `identifyChains()` (already
-called by the Timeline — the chains are already computed), builds the adjacency lists, runs
+**Flatten note**: `page.tsx` calls `groupChainUnits()` which returns a
+`CondensedTimelineGroups`-shaped object with section-keyed buckets
+(`waitingOnYou`, `running`, `nextQueued`, `blocked`, `done`, `failed`).
+The tab entry point MUST flatten this into a single `ChainUnit[]` before passing
+to `StructureView`. Recommended flatten:
+```ts
+const chains = [
+  ...groups.waitingOnYou,
+  ...groups.running,
+  ...groups.nextQueued,
+  ...groups.blocked,
+  ...groups.done,
+  ...groups.failed,
+];
+```
+Do NOT rely on section order as a rank proxy — `structure-layout.ts` derives
+rank purely from `dependsOn` edges. Order within the flattened array is
+irrelevant; any section-induced ordering is discarded by the Sugiyama algorithm.
+If a stable secondary sort is needed within a rank, use `task.createdAt` ascending.
+
+`structure-layout.ts` receives `chains` and `taskMap`, builds the adjacency lists, runs
 the Sugiyama phases, and returns `StructureNode[]` and `StructureEdge[]`.
 
 ---
