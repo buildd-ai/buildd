@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { computeReleaseWidgetDecision } from '@/lib/release-readiness';
+import { DerivedMetricDisplay } from '@/components/DerivedMetricDisplay';
 
 function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
@@ -21,9 +22,6 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
       <div className="space-y-2">
         {visible.map((item) => {
           const decision = computeReleaseWidgetDecision(item.queueDepth, item.ciState);
-          const ageText = item.oldestMergedAt
-            ? ` · oldest ${daysAgo(item.oldestMergedAt)}d ago`
-            : '';
           const releaseHref = item.latestReleaseId ? `/app/releases/${item.latestReleaseId}` : null;
 
           if (decision === 'ci_blocking') {
@@ -40,7 +38,18 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       </span>
                     )}
                     <span className="text-[13px] text-text-secondary">
-                      {item.queueDepth} unshipped{ageText}
+                      <DerivedMetricDisplay
+                        metric={item.queueDepth}
+                        renderValue={(n) => (
+                          <>
+                            {n} unshipped
+                            <DerivedMetricDisplay
+                              metric={item.oldestMergedAt}
+                              renderValue={(d) => ` · oldest ${daysAgo(d)}d ago`}
+                            />
+                          </>
+                        )}
+                      />
                     </span>
                   </div>
                   <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border border-status-warning/30 text-status-warning shrink-0">
@@ -64,7 +73,18 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     </span>
                   )}
                   <span className="text-[13px] font-medium text-text-primary">
-                    {item.queueDepth} unshipped{ageText}
+                    <DerivedMetricDisplay
+                      metric={item.queueDepth}
+                      renderValue={(n) => (
+                        <>
+                          {n} unshipped
+                          <DerivedMetricDisplay
+                            metric={item.oldestMergedAt}
+                            renderValue={(d) => ` · oldest ${daysAgo(d)}d ago`}
+                          />
+                        </>
+                      )}
+                    />
                   </span>
                 </div>
                 {releaseHref && (

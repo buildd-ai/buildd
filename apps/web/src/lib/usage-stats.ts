@@ -193,17 +193,15 @@ export function percentile(values: number[], p: number): number {
  * that never ran, and a task with $0.00 on seat auth is an account that reports
  * no cost. Including them halves the median without telling anyone.
  *
- * `reason` is a descriptive string because that is what the shipped
- * `DerivedMetric` carries and what `DerivedMetricDisplay` puts in its tooltip.
- * When the reason enum in `docs/design/derived-metric-availability.md` lands,
- * these are all the `no_baseline` case.
+ * `detail` is a human-readable description shown as a tooltip. The reason is
+ * always `no_scope` (empty input set — no measured values in this window).
  */
 export function measuredDistribution(
   values: number[],
-  reason: string,
+  detail: string,
 ): DerivedMetric<Distribution> {
   const measured = values.filter(v => v > 0);
-  if (measured.length === 0) return derivedUnavailable<Distribution>(reason);
+  if (measured.length === 0) return derivedUnavailable<Distribution>('no_scope', detail);
   return derivedValue(distribution(measured));
 }
 
@@ -440,7 +438,7 @@ function perTaskBlock(tasks: TaskAgg[]): PerTaskBlock {
     turns: measuredDistribution(turns, 'No task in this window recorded turns'),
     toolCalls: toolCalls.length > 0
       ? derivedValue(distribution(toolCalls))
-      : derivedUnavailable<Distribution>('No task in this window recorded tool calls'),
+      : derivedUnavailable<Distribution>('no_scope', 'No task in this window recorded tool calls'),
   };
 }
 

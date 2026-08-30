@@ -48,7 +48,7 @@ import {
   type ActionContext,
 } from "@buildd/core/mcp-tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
-import { getMemoryClientForTeam } from "@/lib/memory-helper";
+import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -99,8 +99,7 @@ async function getAccountLevel(api: ApiFn): Promise<'trigger' | 'worker' | 'admi
 
 /**
  * Resolve the team that owns a workspace's memories. Memories are team-scoped,
- * so the `memory` KnowledgeStore namespace keys on this id. Mirrors the same
- * workspace→team→fallback resolution as getMemoryClientForTeam.
+ * so the `memory` KnowledgeStore namespace keys on this id.
  */
 async function resolveTeamId(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<string | null> {
   if (workspaceId) {
@@ -354,7 +353,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         },
         {
           name: "recall",
-          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks, and will frequently contain the answer already. Pass the task title and any error message.",
+          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks. Pass the task title and any error message. Use scope=[\"memory\",\"task\"] to cover prior lessons AND recent outcomes in one call.",
           annotations: {
             readOnlyHint: true,
             destructiveHint: false,
@@ -368,9 +367,20 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
                 description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
               },
               scope: {
-                type: "string" as const,
-                description: "Corpus to search. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
-                enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+                oneOf: [
+                  {
+                    type: "string" as const,
+                    enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                  },
+                  {
+                    type: "array" as const,
+                    items: {
+                      type: "string" as const,
+                      enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+                    },
+                  },
+                ],
               },
               type: {
                 type: "string" as const,
@@ -488,7 +498,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
           if (!memClient && action === 'memory_delete') {
             return {
-              content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+              content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
               isError: true,
             };
           }
@@ -770,7 +780,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {
-            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
             isError: true,
           };
         }
@@ -807,7 +817,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
         if (!memClient) {
           return {
-            content: [{ type: "text" as const, text: "Memory service not configured on this server." }],
+            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
             isError: true,
           };
         }
@@ -1257,7 +1267,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           // Fall through to default message
         }
         return {
-          contents: [{ uri, mimeType: "text/plain", text: "Memory service not configured." }],
+          contents: [{ uri, mimeType: "text/plain", text: "No memories found." }],
         };
       }
 

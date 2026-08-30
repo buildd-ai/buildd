@@ -74,9 +74,10 @@ mock.module('@buildd/core/knowledge-store', () => ({
   getVoyageReranker: () => null,
 }));
 
-mock.module('@buildd/core/memory-client', () => ({
-  MemoryClient: class {
-    getContext() { return Promise.resolve({ markdown: '' }); }
+mock.module('@buildd/core/memory-store', () => ({
+  MemoryStore: class {
+    search() { return Promise.resolve({ results: [], total: 0 }); }
+    batch() { return Promise.resolve({ memories: [] }); }
   },
 }));
 

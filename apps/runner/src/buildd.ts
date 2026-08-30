@@ -187,6 +187,11 @@ export class BuilddClient {
     budgetExhausted?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
+    // Deliberate resume of a terminal worker (sendMessage follow-up). The server
+    // reactivates a completed/failed/error worker ONLY when this is true — the
+    // periodic keepalive sync sends an identical status:'running' payload and
+    // must never resurrect a worker that already finished.
+    reactivate?: boolean;
     // Loop verification evidence (spec §2). Included when loopConfig.exitCondition.type='command'.
     // The server (completion route) consumes this to decide the loop state transition.
     verificationEvidence?: Record<string, unknown>;

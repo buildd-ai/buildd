@@ -904,6 +904,13 @@
       "when": 1788060050952,
       "tag": "0129_lame_photon",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1788065113761,
+      "tag": "0130_fantastic_tigra",
+      "breakpoints": true
     }
   ]
 }

@@ -11,12 +11,12 @@
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-// ── MemoryClient mock ─────────────────────────────────────────────────────────
+// ── MemoryStore mock ──────────────────────────────────────────────────────────
 
 const savedMemories: Array<{ type: string; [k: string]: unknown }> = [];
 
 const mockMemClient = {
-  search: mock(() => Promise.resolve({ results: [] })),
+  search: mock(() => Promise.resolve({ results: [], total: 0 })),
   save: mock((input: { type: string; [k: string]: unknown }) => {
     savedMemories.push(input);
     return Promise.resolve({ id: 'mem-1', ...input });
@@ -25,8 +25,9 @@ const mockMemClient = {
   update: mock(() => Promise.resolve({ id: 'mem-1' })),
 };
 
-mock.module('@buildd/core/memory-client', () => ({
-  MemoryClient: mock(() => mockMemClient),
+mock.module('@/lib/memory-helper', () => ({
+  getMemoryStoreForTeam: mock(() => Promise.resolve(mockMemClient)),
+  getMemoryClientForTeam: mock(() => Promise.resolve(mockMemClient)),
 }));
 
 // ── DB mock ───────────────────────────────────────────────────────────────────
@@ -48,9 +49,6 @@ mock.module('@buildd/core/db', () => ({
 // ── Subject ───────────────────────────────────────────────────────────────────
 
 const { runFeedbackDigest } = await import('./feedback-digest');
-
-// Needed for getMemoryClientForTeam to construct a MemoryClient
-process.env.MEMORY_API_URL = 'http://memory-api.test';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,12 +75,11 @@ function makeFeedbackRow(overrides: Partial<{
 describe('runFeedbackDigest — write type', () => {
   beforeEach(() => {
     savedMemories.length = 0;
-    mockMemClient.search.mockResolvedValue({ results: [] });
+    mockMemClient.search.mockResolvedValue({ results: [], total: 0 });
     mockMemClient.save.mockImplementation((input: { type: string; [k: string]: unknown }) => {
       savedMemories.push(input);
       return Promise.resolve({ id: 'mem-1', ...input });
     });
-    mockTeamsFindFirst.mockResolvedValue({ memoryApiKey: 'test-key' });
   });
 
   it('writes memories with type=pattern (not decision)', async () => {

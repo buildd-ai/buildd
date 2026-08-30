@@ -27,6 +27,12 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
+  /**
+   * @deprecated Memory now lives in buildd's own `memories` table (migration 0130).
+   * Nothing reads or writes this column. Values are cleared by 0130; the column is
+   * dropped in a follow-up migration once 0130's code is live in production — see
+   * the expand/contract note in packages/core/drizzle/0130_fantastic_tigra.sql.
+   */
   memoryApiKey: text('memory_api_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1707,6 +1713,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   invitations: many(teamInvitations),
   workspaceSkills: many(workspaceSkills),
   connectors: many(connectors),
+  memories: many(memories),
 }));
 
 export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
@@ -2459,5 +2466,33 @@ export const releaseTasksRelations = relations(releaseTasks, ({ one }) => ({
 
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
 export type NewReleaseTask = typeof releaseTasks.$inferInsert;
+
+// Memories — absorbed from the standalone memory.buildd.dev service.
+// Team-scoped: all workspaces in a team share the same memory pool.
+// IDs are preserved from the service so knowledge_chunks source_ids remain valid.
+export const memories = pgTable('memories', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  type: text('type').notNull().$type<'discovery' | 'decision' | 'gotcha' | 'pattern' | 'architecture' | 'summary'>(),
+  title: text('title').notNull(),
+  content: text('content').notNull(),
+  project: text('project'),
+  tags: text('tags').array().notNull().default([]),
+  files: text('files').array().notNull().default([]),
+  source: text('source'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('memories_team_idx').on(t.teamId),
+  teamUpdatedIdx: index('memories_team_updated_idx').on(t.teamId, t.updatedAt),
+  teamProjectIdx: index('memories_team_project_idx').on(t.teamId, t.project),
+}));
+
+export const memoriesRelations = relations(memories, ({ one }) => ({
+  team: one(teams, { fields: [memories.teamId], references: [teams.id] }),
+}));
+
+export type Memory = typeof memories.$inferSelect;
+export type NewMemory = typeof memories.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725

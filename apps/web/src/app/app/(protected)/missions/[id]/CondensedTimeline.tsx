@@ -84,15 +84,19 @@ export type CondensedTimelineProps = {
   missionCompleted: boolean;
   /** Bookkeeping tasks (retry, review, planning) collapsed to footer (§3.6). */
   bookkeepingTasks: BookkeepingTask[];
-  /** Summary default for missions > N_small (§3.5). */
-  defaultView: 'summary' | 'timeline';
+  /** Which view this instance renders. Controlled by the parent (MissionTabs). */
+  view: 'summary' | 'timeline';
   /** Merged PR count for Summary view roll-up (§3.5). */
   prsMerged: number;
   /** Open (not yet merged) PR count for Summary view roll-up (§3.5). */
   prsOpen: number;
-  /** Non-cancelled deliverable task counts for Summary MissionProgressBar (§3.5). */
   completedTasks: number;
   totalTasks: number;
+  /**
+   * Human-readable blocking reason when goal criteria are not yet passing.
+   * When set, the Summary view replaces "No actions needed" with this message.
+   */
+  criteriaBlockingReason?: string | null;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -515,40 +519,37 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
 
 function SummaryView({
   groups,
-  segments,
   effectivePolicyTier,
   policyLabel,
   prsMerged,
   prsOpen,
-  missionId,
-  completedTasks,
-  totalTasks,
+  criteriaBlockingReason,
 }: {
   groups: CondensedTimelineGroups;
-  segments: MissionSegment[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
   prsMerged: number;
   prsOpen: number;
-  missionId: string;
-  completedTasks: number;
-  totalTasks: number;
+  criteriaBlockingReason?: string | null;
 }) {
-  const { waitingOnYou } = groups;
+  const { waitingOnYou, running, nextQueued, blocked } = groups;
+
+  // Count tasks across all non-terminal groups (head + tail of each chain)
+  const countChains = (chains: ChainUnit<CondensedTimelineTask>[]) =>
+    chains.reduce((n, c) => n + 1 + c.tail.length, 0);
+  const runningCount = countChains(running);
+  const queuedCount = countChains(nextQueued);
+  const blockedOnDepsCount = countChains(blocked);
+
+  // Build "Waiting on" parts for the in-flight status line
+  const statusParts: string[] = [];
+  if (runningCount > 0) statusParts.push(`${runningCount} task${runningCount !== 1 ? 's' : ''} running`);
+  if (queuedCount > 0) statusParts.push(`${queuedCount} queued`);
+  if (blockedOnDepsCount > 0) statusParts.push(`${blockedOnDepsCount} blocked on deps`);
+  const hasTasks = statusParts.length > 0 || waitingOnYou.length > 0;
 
   return (
     <div className="space-y-4">
-      {/* Progress bar — §3.5 spec: MissionProgressBar density="full" with labels */}
-      {totalTasks > 0 && (
-        <MissionProgressBar
-          density="full"
-          missionId={missionId}
-          segments={segments}
-          completedTasks={completedTasks}
-          totalTasks={totalTasks}
-        />
-      )}
-
       {/* PR roll-up */}
       {(prsMerged > 0 || prsOpen > 0) && (
         <div className="text-[12px] text-text-muted font-mono">
@@ -557,6 +558,14 @@ function SummaryView({
             prsOpen > 0 ? `${prsOpen} open` : null,
           ].filter(Boolean).join(' · ')}
         </div>
+      )}
+
+      {/* In-flight status line — what the mission is currently waiting on */}
+      {statusParts.length > 0 && (
+        <p className="text-[12px] text-text-muted">
+          <span className="text-text-secondary">Waiting on:</span>{' '}
+          {statusParts.join(' · ')}
+        </p>
       )}
 
       {/* Waiting-on-you band — always visible in Summary (above fold) */}
@@ -571,9 +580,17 @@ function SummaryView({
         </div>
       )}
 
-      {waitingOnYou.length === 0 && (
+      {/* Idle state — only reachable when criteria are passing AND nothing is in flight */}
+      {!criteriaBlockingReason && !hasTasks && (
         <p className="text-[13px] text-text-muted italic">
           No actions needed — switch to Timeline for full history.
+        </p>
+      )}
+
+      {/* Blocked-but-idle: criteria failing, no tasks running */}
+      {criteriaBlockingReason && !hasTasks && (
+        <p className="text-[13px] text-text-secondary">
+          Completion blocked — {criteriaBlockingReason}.
         </p>
       )}
     </div>
@@ -900,72 +917,36 @@ export default function CondensedTimeline({
   allTasksCount,
   missionCompleted,
   bookkeepingTasks,
-  defaultView,
+  view,
   prsMerged,
   prsOpen,
   completedTasks,
   totalTasks,
+  criteriaBlockingReason,
 }: CondensedTimelineProps) {
-  const [view, setView] = useState<'summary' | 'timeline'>(defaultView);
-
-  const isLarge = defaultView === 'summary';
-
   return (
     <div className="mb-6">
-      {/* Header row: title + optional Summary/Timeline sub-tabs (§3.5) */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1">
-          {isLarge ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setView('summary')}
-                className={`px-2.5 py-1 rounded text-[12px] font-medium transition-colors ${
-                  view === 'summary'
-                    ? 'bg-surface-3 text-text-primary'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                }`}
-              >
-                Summary
-              </button>
-              <button
-                type="button"
-                onClick={() => setView('timeline')}
-                className={`px-2.5 py-1 rounded text-[12px] font-medium transition-colors ${
-                  view === 'timeline'
-                    ? 'bg-surface-3 text-text-primary'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-                }`}
-              >
-                Timeline
-              </button>
-            </>
-          ) : (
-            <h2 className="section-label">Timeline</h2>
-          )}
-        </div>
-        {missionCompleted && allTasksCount > 0 && (
+      {/* Header: "View all tasks" link for completed missions */}
+      {missionCompleted && allTasksCount > 0 && (
+        <div className="flex items-center justify-end mb-3">
           <Link
             href={`/app/tasks?mission=${missionId}`}
             className="text-[12px] text-accent-text hover:underline"
           >
-            View all {allTasksCount} tasks &rarr;
+            View all tasks &rarr;
           </Link>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Content: Summary or Timeline view */}
+      {/* Content */}
       {view === 'summary' ? (
         <SummaryView
           groups={groups}
-          segments={segments}
           effectivePolicyTier={effectivePolicyTier}
           policyLabel={policyLabel}
           prsMerged={prsMerged}
           prsOpen={prsOpen}
-          missionId={missionId}
-          completedTasks={completedTasks}
-          totalTasks={totalTasks}
+          criteriaBlockingReason={criteriaBlockingReason}
         />
       ) : (
         <TimelineView
@@ -980,7 +961,7 @@ export default function CondensedTimeline({
         />
       )}
 
-      {/* View all tasks link for active missions */}
+      {/* View all tasks link for active missions in timeline view */}
       {allTasksCount > 0 && !missionCompleted && view === 'timeline' && (
         <div className="mt-4">
           <Link
@@ -990,7 +971,7 @@ export default function CondensedTimeline({
             <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
             </svg>
-            <span>View all {allTasksCount} tasks</span>
+            <span>View all tasks</span>
             <svg className="w-3.5 h-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>

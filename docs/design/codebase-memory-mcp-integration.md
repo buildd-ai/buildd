@@ -240,9 +240,11 @@ From the codebase-memory-mcp preprint and README:
 
 RAM: in-memory SQLite with LZ4 compression; memory released after indexing. Peak RAM is proportional to repo size.
 
-### 5.2 Measured index performance (Coder worker environment, 2026-08-02)
+### 5.2 Measured index performance (Coder worker environment)
 
-Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache per run. "Source files" counts TS/TSX/JS source files excluding `node_modules` and `.git`. All runs used `CBM_AUTO_WATCH=false`.
+#### 2026-08-02 measurements (historical)
+
+Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache per run.
 
 | Repository | Source files | Wall-clock | Peak RSS | Graph nodes | Graph edges |
 |-----------|-------------|-----------|---------|-------------|-------------|
@@ -252,28 +254,56 @@ Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=512`, cold cache 
 | buildd (repo root) | 6,158 | **6.9s** (avg 2 runs) | **650 MB** (avg) | 44,297 | 66,618 |
 | buildd (git worktree) | 1,042 src + bun node_modules | **9.35s** | **800 MB** | 58,078 | 84,106 |
 
-**Worktree vs repo root:** indexing a git worktree that has its own bun `node_modules/` install produces more graph nodes (58K vs 44K) and higher RSS (800 MB vs 650 MB) than indexing the repo root. CBM excludes the `node_modules/` directory, but bun stores packages under `node_modules/.bun/<pkg>/node_modules/<pkg>/` — a sub-path that evades the top-level exclusion — and the TypeScript LSP resolves types from those packages during analysis. Expect ~800 MB for a buildd-scale worktree.
+#### 2026-08-30 measurements (updated, `CBM_MEM_BUDGET_MB=1024`)
 
-**Budget parameter note:** `CBM_MEM_BUDGET_MB=512` is an internal memory-management hint (acknowledged in CBM logs as `mem.init budget_mb=512 source=CBM_MEM_BUDGET_MB`). It is NOT a hard RSS cap: CBM completed indexing on the buildd repo (650–800 MB) without aborting despite the 512 MB setting. Do not rely on this parameter to prevent OOM; use Coder/bwrap resource limits if a hard ceiling is required.
+Measured with `codebase-memory-mcp v0.9.0`, `CBM_MEM_BUDGET_MB=1024`, cold cache per run. Peak RSS tracked via `/proc/<pid>/status` polling of the index worker subprocess. All runs used `CBM_AUTO_WATCH=false`.
+
+| Repository | Wall-clock | Peak RSS | Graph nodes | Graph edges |
+|-----------|-----------|---------|-------------|-------------|
+| buildd (repo root, `main` branch) | **10.5s** | **~949 MB** | 72,329 | 101,205 |
+| buildd (git worktree, with bun install) | **~13–18s** | **~1,116 MB** | 82,435 | ~114,500 |
+
+**Codebase growth:** the repo root grew from 44K→72K nodes (~63%) and 650 MB→949 MB RSS since the 2026-08-02 measurement. This reflects 3+ weeks of active development (schema migrations, new features).
+
+**Worktree vs repo root (2026-08-30):** the git worktree with a bun install has 10,106 extra nodes (+14%) and ~167 MB extra RSS (+18%) vs the repo root. Investigation shows this is attributable to **extra drizzle migration files from prior tasks** in the worktree, not from `node_modules/.bun/` packages. See §5.4 for details.
+
+**Budget parameter note:** `CBM_MEM_BUDGET_MB` is an internal memory-management hint, not a hard RSS cap. CBM completed indexing on the buildd repo (949–1,116 MB) without aborting despite lower settings. Do not rely on this parameter to prevent OOM; use Coder/bwrap resource limits if a hard ceiling is required.
 
 ### 5.3 Threshold and budget assessment
 
-**30-second abort threshold: CORRECT.** The worst measured case (buildd worktree) is 9.35 seconds — 3× headroom before the 30s cutoff. No adjustment needed.
+**30-second abort threshold: CORRECT.** The worst measured case (buildd worktree, 2026-08-30) is ~18s — still within the 30s cutoff with ~12s headroom. No adjustment needed.
 
-**`CBM_MEM_BUDGET_MB=512`: INSUFFICIENT for buildd-scale repos.** Measured peak RSS is 650–800 MB for the buildd workspace. Recommended values:
+**`CBM_MEM_BUDGET_MB=1024`: CORRECT for buildd-scale repos (as of 2026-08-30).** Peak RSS reached ~1.1 GB on the worktree. If the codebase grows significantly, revisit.
 
 | Workspace tier | Characteristic | Recommended `CBM_MEM_BUDGET_MB` |
 |---------------|---------------|--------------------------------|
 | Small (dispatch, ≤500 src files) | < 200 MB observed | 256 MB |
 | Medium (dispatch-family, ≤1K src files) | < 250 MB observed | 512 MB |
 | Large (sibling-app, ≤4K src files) | ~500 MB observed | 640 MB |
-| XLarge (buildd, ≤7K src files + worktree) | ~800 MB observed | 1024 MB |
+| XLarge (buildd, ≤7K src files + worktree) | ~1,116 MB observed | 1024 MB |
 
-For the initial buildd pilot (§7), **set `CBM_MEM_BUDGET_MB=1024`** in the role's MCP env config. The per-repo budget table above should be revisited if repos grow beyond current scale.
+For the initial buildd pilot (§7), **set `CBM_MEM_BUDGET_MB=1024`** in the role's MCP env config.
 
-**No repo blows the timing budget.** All four repos indexed in under 10 seconds. The 30-second fallback is never triggered in practice at current repo sizes.
+**No repo blows the timing budget.** All repos indexed within 18 seconds. The 30-second fallback is never triggered in practice at current repo sizes.
 
-### 5.4 Fallback behaviour
+### 5.4 `node_modules/.bun/` exclusion investigation (2026-08-30)
+
+**Problem:** bun stores packages in `node_modules/.bun/<pkg>@<ver>/node_modules/<pkg>/`. Symlinks in the top-level `node_modules/` (e.g. `node_modules/next → .bun/next@.../node_modules/next`) point into the `.bun/` store. The memory from the 2026-08-02 measurement attributed the 14K-node worktree inflation to these packages being indexed via LSP type resolution.
+
+**Investigation result:** CBM v0.9.0 already excludes the entire `node_modules/` directory tree. The `excluded.dirs` field in the `index_repository` JSON output confirms `node_modules` is excluded. Querying the CBM SQLite database after indexing a worktree shows no `.bun/` file paths in the `nodes` table. Cross-package import edges (e.g. `@buildd/shared` → `packages/shared/src/index.ts`) are correctly resolved via workspace package links.
+
+**Actual source of worktree inflation:** the extra 10K nodes in the worktree vs. the repo root come from extra drizzle migration SQL files that exist in the worktree but not in the repo root's `dev` branch. These are legitimate source files from prior tasks on the worktree.
+
+**`index_repository` exclusion surface:** CBM v0.9.0 exposes **no `--exclude` flag** on `index_repository`. The available exclusion surfaces are:
+- `.cbmignore` at the repo root (CBM reads it; format is gitignore-style patterns)
+- `.gitignore` at the repo root (CBM respects it; `node_modules/` is already present)
+- No env var for exclusion paths; no CLI flag
+
+**`.cbmignore` test:** a `.cbmignore` with patterns `node_modules/.bun/`, `node_modules/.pnpm/`, and `.bun` was tested on the worktree. Node count remained unchanged at 82,435 — the `.bun/` store is already excluded by the top-level `node_modules` rule.
+
+**`.cbmignore` committed to repo:** `node_modules/.bun/` and `node_modules/.pnpm/` are listed in `.cbmignore` as a defensive measure. This guards against future CBM versions that might change their `node_modules` handling or that follow symlinks differently.
+
+### 5.5 Fallback behaviour
 
 **Fallback trigger:** if `index_repository` does not complete within 30 seconds (runner-side timeout), the runner:
 1. Terminates the CBM process
