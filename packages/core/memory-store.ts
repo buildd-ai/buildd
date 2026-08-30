@@ -94,7 +94,7 @@ export class MemoryStore {
         eq(memories.teamId, this.teamId),
         ...(project ? [ilike(memories.project, project)] : []),
       ),
-      orderBy: desc(memories.updatedAt),
+      orderBy: [desc(memories.updatedAt), desc(memories.id)],
       limit: 20,
     });
 
@@ -142,7 +142,10 @@ export class MemoryStore {
       db.select({ total: dbCount() }).from(memories).where(where),
       db.query.memories.findMany({
         where,
-        orderBy: desc(memories.updatedAt),
+        // id breaks ties: bulk-imported rows share an updatedAt, and without a
+        // stable tiebreaker LIMIT/OFFSET pagination silently skips and repeats
+        // rows -- which made backfill-knowledge-chunks miss ~30% of memories.
+        orderBy: [desc(memories.updatedAt), desc(memories.id)],
         limit,
         offset,
       }),
