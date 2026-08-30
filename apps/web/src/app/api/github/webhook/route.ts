@@ -916,9 +916,33 @@ async function handleCheckSuiteFailure(
         continue;
       }
 
-      const ciLogs = await fetchCIFailureLogs(installationId, repository.full_name, checkSuite.head_sha);
+      // Fetch CI failure logs and commit authorship in parallel to minimise latency.
+      const [ciLogs, commitAuthor] = await Promise.all([
+        fetchCIFailureLogs(installationId, repository.full_name, checkSuite.head_sha),
+        fetchCommitAuthor(installationId, repository.full_name, checkSuite.head_sha),
+      ]);
       const failureContext = ciLogs.summary ||
         `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`;
+
+      // Non-worker commits (human pushes, GitHub Actions, etc.) still need a fix
+      // task — the PR is red — but must NOT consume a retry attempt against
+      // maxCiRetries. Only buildd-agent-authored SHAs burn the budget.
+      const isWorkerCommit = isBuilddWorkerCommit(commitAuthor);
+      const foreignHeadSha = !isWorkerCommit;
+      const foreignCommitAuthor = foreignHeadSha
+        ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')
+        : undefined;
+
+      if (foreignHeadSha) {
+        console.log(
+          `[webhook] PR #${pr.number} on ${repository.full_name}: head SHA ${checkSuite.head_sha} ` +
+          `was NOT committed by the buildd worker (author: ${foreignCommitAuthor}). ` +
+          `Creating retry task without consuming an attempt.`
+        );
+      }
+
+      const taskCtx = (task.context as Record<string, unknown>) || {};
+      const currentIteration = typeof taskCtx.iteration === 'number' ? taskCtx.iteration : 0;
 
       const retryTask = buildCIRetryTask({
         originalTask: {
@@ -926,7 +950,7 @@ async function handleCheckSuiteFailure(
           title: task.title,
           description: task.description,
           workspaceId: task.workspaceId,
-          context: (task.context as Record<string, unknown>) || {},
+          context: taskCtx,
           missionId: task.missionId ?? null,
         },
         worker: { id: worker.id, branch: worker.branch, prNumber: worker.prNumber },
@@ -935,27 +959,42 @@ async function handleCheckSuiteFailure(
         ciRunId: ciLogs.runId,
         ciRunUrl: ciLogs.runUrl,
         workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
+        foreignHeadSha,
+        foreignCommitAuthor,
       });
 
       if (!retryTask) {
-        // Retries exhausted (or disabled) — fail the task and escalate to a human.
-        console.log(`CI retries exhausted/disabled for task ${task.id} on ${repository.full_name}#${pr.number}`);
+        // Retries exhausted or disabled — fail the task and escalate to a human.
+        // Two distinct causes need different human responses:
+        //   • foreignHeadSha: retries disabled (0); a non-worker commit triggered CI failure.
+        //   • !foreignHeadSha: the buildd agent genuinely exhausted its N attempts.
+        const exhaustionDetail = foreignHeadSha
+          ? `CI retries are disabled for this workspace. A non-worker commit by ${foreignCommitAuthor ?? 'an external contributor'} triggered a CI failure on PR #${pr.number}.`
+          : `The buildd agent failed ${currentIteration} time(s) and has exhausted its retry budget on PR #${pr.number}.`;
+        const missionTitle = foreignHeadSha
+          ? 'CI failing — retries disabled (non-worker push)'
+          : 'CI failing — agent retries exhausted';
+        const missionMessage = foreignHeadSha
+          ? `${task.title} — CI failed after a non-worker push by ${foreignCommitAuthor ?? 'external'}. Retries are disabled. Needs a human.`
+          : `${task.title} — CI still failing after ${currentIteration} agent attempt(s). Needs a human.`;
+
+        console.log(`CI retries exhausted/disabled for task ${task.id} on ${repository.full_name}#${pr.number}. ${exhaustionDetail}`);
         await db
           .update(tasks)
           .set({
             status: 'failed',
-            result: { summary: `CI failed after max retries on PR #${pr.number}.\n\n${failureContext}` },
+            result: { summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}` },
             updatedAt: new Date(),
           })
           .where(eq(tasks.id, task.id));
         if (task.missionId) {
           await notifyMissionPrReady(task.missionId, {
-            title: 'CI failing — retries exhausted',
+            title: missionTitle,
             prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
             prNumber: pr.number,
             headSha: checkSuite.head_sha,
             reason: 'ci_failed',
-            message: `${task.title} — CI still failing after max retries. Needs a human.`,
+            message: missionMessage,
           });
         }
         continue;
@@ -1043,6 +1082,53 @@ interface CIFailureInfo {
   /** Actions run ID — lets the fix-task agent pull scoped logs via `gh run view`. */
   runId: number | null;
   runUrl: string | null;
+}
+
+interface CommitAuthorInfo {
+  /** GitHub login of the commit's associated account, or null if unresolvable. */
+  login: string | null;
+  /** Commit author email from the git metadata. */
+  email: string | null;
+  /** Commit author display name. */
+  name: string | null;
+}
+
+// Fetch the commit author/committer identity for the given SHA via the GitHub API.
+// Fails open — returns all-null on any error so the caller can still proceed.
+async function fetchCommitAuthor(
+  installationId: number,
+  repoFullName: string,
+  sha: string,
+): Promise<CommitAuthorInfo> {
+  const empty: CommitAuthorInfo = { login: null, email: null, name: null };
+  try {
+    const data = await githubApi(installationId, `/repos/${repoFullName}/commits/${sha}`);
+    if (!data || typeof data !== 'object') return empty;
+    const d = data as Record<string, unknown>;
+    const login = typeof d.author === 'object' && d.author !== null
+      ? ((d.author as Record<string, unknown>).login as string | null) ?? null
+      : null;
+    const commitMeta = typeof d.commit === 'object' && d.commit !== null
+      ? (d.commit as Record<string, unknown>).author
+      : null;
+    const email = typeof commitMeta === 'object' && commitMeta !== null
+      ? ((commitMeta as Record<string, unknown>).email as string | null) ?? null
+      : null;
+    const name = typeof commitMeta === 'object' && commitMeta !== null
+      ? ((commitMeta as Record<string, unknown>).name as string | null) ?? null
+      : null;
+    return { login, email, name };
+  } catch {
+    return empty;
+  }
+}
+
+// Returns true when the commit was authored by the buildd GitHub App bot.
+// The bot commits as 'buildd-ai[bot]' with a noreply email containing the same string.
+function isBuilddWorkerCommit(author: CommitAuthorInfo): boolean {
+  if (author.login && author.login.includes('buildd-ai')) return true;
+  if (author.email && author.email.includes('buildd-ai[bot]')) return true;
+  return false;
 }
 
 // Fetch failed-job/step names from GitHub Actions for actionable retry context.

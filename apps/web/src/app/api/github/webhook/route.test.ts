@@ -737,7 +737,7 @@ describe('POST /api/github/webhook', () => {
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
     // Helpers for the CI-failure → retry-task path.
-    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string } = {}) {
+    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean } = {}) {
       mockWorkersFindFirst.mockReturnValue({
         id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
         task: {
@@ -748,8 +748,24 @@ describe('POST /api/github/webhook', () => {
         },
       });
       mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: opts.gitConfig ?? {} });
-      // PR-files / runs lookups return a non-array → draft=false, no logs (fallback context)
-      mockGithubApi.mockReturnValue(Promise.resolve({ draft: false }));
+      // Dispatch different responses for different GitHub API endpoints:
+      //   /commits/... → commit authorship (default: buildd worker; foreignCommit=true → human)
+      //   everything else (PR draft check, CI runs) → { draft: false }
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (typeof url === 'string' && url.includes('/commits/')) {
+          if (opts.foreignCommit) {
+            return Promise.resolve({
+              author: { login: 'maxjacu' },
+              commit: { author: { email: 'maxjacu@users.noreply.github.com', name: 'Max Jacubowsky' } },
+            });
+          }
+          return Promise.resolve({
+            author: { login: 'buildd-ai[bot]' },
+            commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
+          });
+        }
+        return Promise.resolve({ draft: false });
+      });
     }
 
     it('skips CI retry when no buildd worker owns the PR', async () => {
@@ -826,6 +842,75 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
       // exhausted/disabled path marks the task failed
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+    });
+
+    // ── Non-worker-authored commits ────────────────────────────────────────
+
+    it('non-worker SHA: creates retry task without incrementing the attempt counter', async () => {
+      withFailedWorkerPr({ foreignCommit: true });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      const inserted = insertCalls[0].values;
+      // Task is still created (PR is red and needs fixing)
+      expect(inserted.parentTaskId).toBe('t1');
+      expect(inserted.ciRetryPrNumber).toBe(42);
+      // iteration must NOT advance — agent budget preserved
+      expect((inserted.context as any).iteration).toBe(0);
+      // Provenance fields recorded
+      expect((inserted.context as any).foreign_head_sha).toBe(true);
+      expect((inserted.context as any).foreignCommitAuthor).toBe('maxjacu');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('worker-authored SHA (regression guard): attempt counter increments normally', async () => {
+      withFailedWorkerPr();
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      expect((insertCalls[0].values.context as any).iteration).toBe(1);
+      expect((insertCalls[0].values.context as any).foreign_head_sha).toBeUndefined();
+    });
+
+    it('three consecutive non-worker pushes do not exhaust the agent budget', async () => {
+      // Simulate: task context starts at iteration:0; three foreign SHAs fire one at a time.
+      // Each must create a retry task and must keep iteration at 0.
+      for (let i = 0; i < 3; i++) {
+        insertCalls = [];
+        updateCalls = [];
+        mockDispatchNewTask.mockReset();
+        mockDispatchNewTask.mockReturnValue(Promise.resolve());
+
+        // Each fire uses a new SHA so dedup doesn't block it
+        const payload = makeCheckSuitePayload({ check_suite: { head_sha: `foreign-sha-${i}` } });
+        withFailedWorkerPr({ foreignCommit: true });
+
+        const res = await POST(createWebhookRequest('check_suite', payload));
+        expect(res.status).toBe(200);
+        expect(insertCalls.length).toBe(1);
+        expect((insertCalls[0].values.context as any).iteration).toBe(0);
+      }
+      // Task must never have been marked failed
+      const allUpdates = updateCalls.flat();
+      expect(allUpdates.some((c: any) => c?.setValues?.status === 'failed')).toBe(false);
+    });
+
+    it('exhaustion message distinguishes agent failures from disabled retries (foreign push + retries off)', async () => {
+      withFailedWorkerPr({ gitConfig: { maxCiRetries: 0 }, foreignCommit: true });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      // Still marks task failed (retries disabled globally)
+      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      expect(failUpdate).toBeDefined();
+      // Summary mentions non-worker push, not generic "max retries"
+      const summary = (failUpdate!.setValues as any).result?.summary ?? '';
+      expect(summary).toContain('non-worker commit');
     });
 
     it('ignores non-completed check_suite actions', async () => {
