@@ -493,6 +493,28 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
   });
 
+  it('falls back to dispatch when the team has inference switched off for grading', async () => {
+    stubLLMError({ kind: 'capability_disabled', capability: 'criteria_grading' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Switching inference off for this action is a cost choice, not a loss of
+    // capability: grading still happens, on the subscription seat, just slower.
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('names the capability it grades so the team toggle applies', async () => {
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'yes' }]);
+    proseAndMechanical();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect((mockInferenceCall.mock.calls[0]![0] as any).capability).toBe('criteria_grading');
+  });
+
   it('falls back to dispatch when the tier points at a provider that cannot serve inference', async () => {
     stubLLMError({ kind: 'unsupported_provider', provider: 'openai-codex' });
     proseAndMechanical();

@@ -24,6 +24,7 @@
     "./oauth-budget": "./oauth-budget.ts",
     "./task-classifier": "./task-classifier.ts",
     "./inference-client": "./inference-client.ts",
+    "./inference-policy": "./inference-policy.ts",
     "./routing-analytics": "./routing-analytics.ts",
     "./report-ops": "./report-ops.ts",
     "./describe-error": "./describe-error.ts",

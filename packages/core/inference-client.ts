@@ -37,11 +37,12 @@
  */
 
 import { db } from './db';
-import { secrets } from './db/schema';
+import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { decrypt } from './secrets';
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
+import { isInferenceEnabled, type InferenceCapability } from './inference-policy';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -78,6 +79,7 @@ export interface TokenUsage {
  */
 export type InferenceError =
   | { kind: 'missing_key'; provider: TierProvider }
+  | { kind: 'capability_disabled'; capability: InferenceCapability }
   | { kind: 'unsupported_provider'; provider: string }
   | { kind: 'transport'; message: string }
   | { kind: 'provider_error'; status: number; body: string }
@@ -93,6 +95,8 @@ export function describeInferenceError(error: InferenceError): string {
   switch (error.kind) {
     case 'missing_key':
       return `no ${error.provider} inference key configured for this team`;
+    case 'capability_disabled':
+      return `inference is not enabled for '${error.capability}' on this team`;
     case 'unsupported_provider':
       return `provider '${error.provider}' cannot serve inference calls`;
     case 'transport':
@@ -187,6 +191,25 @@ export async function resolveInferenceKey(opts: {
 
   const envVar = ENV_FALLBACK[opts.provider];
   return (envVar ? process.env[envVar] : undefined) || null;
+}
+
+/**
+ * Read the team's inference allowlist.
+ *
+ * Fails closed: if the lookup errors we treat inference as disabled rather than
+ * spending money on the strength of a failed query.
+ */
+async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<boolean> {
+  try {
+    const team = await db.query.teams.findFirst({
+      where: eq(teams.id, teamId),
+      columns: { enabledInferenceCapabilities: true },
+    });
+    return isInferenceEnabled(capability, team?.enabledInferenceCapabilities ?? null);
+  } catch (e) {
+    console.warn(`[inference] capability lookup failed for team ${teamId}:`, e);
+    return false;
+  }
 }
 
 // ── JSON extraction ───────────────────────────────────────────────────────────
@@ -367,6 +390,12 @@ function isRetryable(error: InferenceError): boolean {
 // ── The primitive ─────────────────────────────────────────────────────────────
 
 export interface InferenceCallParams<T> {
+  /**
+   * Which call site this is. Checked against the team's allowlist before any
+   * spend — the check lives here rather than at each call site so a new caller
+   * cannot forget it.
+   */
+  capability: InferenceCapability;
   /** Which tier to spend on. The provider and model come from the team's registry. */
   tier: Tier;
   teamId: string;
@@ -402,6 +431,12 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
   const fetcher = params.fetcher ?? fetch;
   const sleep = params.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const maxTokens = params.maxTokens ?? DEFAULT_MAX_TOKENS;
+
+  // Ask permission before doing anything that costs money or time. Checked first,
+  // ahead of tier resolution, so a disabled capability is one cheap query.
+  if (!(await teamAllowsCapability(params.teamId, params.capability))) {
+    return { ok: false, error: { kind: 'capability_disabled', capability: params.capability } };
+  }
 
   const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId);
   const provider = entry.provider;

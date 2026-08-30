@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 let tierEntry: any = { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' };
 let secretRows: any[] = [];
+let teamRow: any = { enabledInferenceCapabilities: ['criteria_grading'] };
 
 const mockResolveTierEntry = mock(() => Promise.resolve(tierEntry));
 
@@ -20,11 +21,13 @@ mock.module('../db', () => ({
   db: {
     query: {
       secrets: { findMany: () => Promise.resolve(secretRows) },
+      teams: { findFirst: () => Promise.resolve(teamRow) },
     },
   },
 }));
 
 mock.module('../db/schema', () => ({
+  teams: { id: 'id', enabledInferenceCapabilities: 'enabled_inference_capabilities' },
   secrets: {
     id: 'id', teamId: 'team_id', purpose: 'purpose', label: 'label',
     encryptedValue: 'encrypted_value', workspaceId: 'workspace_id',
@@ -100,6 +103,7 @@ const noSleep = () => Promise.resolve();
 
 function baseParams(over: Record<string, unknown> = {}) {
   return {
+    capability: 'criteria_grading' as const,
     tier: 'budget' as const,
     teamId: 'team-1',
     system: 'sys',
@@ -113,6 +117,7 @@ function baseParams(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   tierEntry = { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' };
   secretRows = [secretRow()];
+  teamRow = { enabledInferenceCapabilities: ['criteria_grading'] };
   mockResolveTierEntry.mockClear();
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
@@ -525,5 +530,68 @@ describe('inferenceCall — maxTokens', () => {
     const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
     await inferenceCall(baseParams({ fetcher, maxTokens: 4096 }));
     expect(JSON.parse((fetcher.mock.calls[0] as any[])[1].body).max_tokens).toBe(4096);
+  });
+});
+
+// ── Capability policy ─────────────────────────────────────────────────────────
+
+describe('inferenceCall — capability policy', () => {
+  it('refuses before spending when the capability is not enabled', async () => {
+    teamRow = { enabledInferenceCapabilities: ['visual_qa'] };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
+
+    const res = await inferenceCall(baseParams({ fetcher }));
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toEqual({ kind: 'capability_disabled', capability: 'criteria_grading' });
+    // Checked ahead of tier resolution and the provider call: a disabled
+    // capability should cost one cheap query, not a round trip.
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(mockResolveTierEntry).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the team has enabled nothing', async () => {
+    teamRow = { enabledInferenceCapabilities: null };
+    const res = await inferenceCall(baseParams({ fetcher: mock(() => Promise.resolve(anthropicReply('{}'))) as any }));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.kind).toBe('capability_disabled');
+  });
+
+  it('refuses when the team row is missing', async () => {
+    teamRow = undefined;
+    const res = await inferenceCall(baseParams({ fetcher: mock(() => Promise.resolve(anthropicReply('{}'))) as any }));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.kind).toBe('capability_disabled');
+  });
+
+  it('proceeds when the capability is enabled', async () => {
+    teamRow = { enabledInferenceCapabilities: ['criteria_grading', 'visual_qa'] };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[3]}'))) as any;
+
+    const res = await inferenceCall(baseParams({ fetcher }));
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toEqual({ verdicts: [3] });
+  });
+
+  it('checks the capability before the key, so a disabled call site never reports a missing key', async () => {
+    teamRow = { enabledInferenceCapabilities: [] };
+    secretRows = [];
+
+    const res = await inferenceCall(baseParams({ fetcher: mock(() => Promise.resolve(anthropicReply('{}'))) as any }));
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    // 'add a key' would be the wrong instruction for a team that has switched
+    // this capability off on purpose.
+    expect(res.error.kind).toBe('capability_disabled');
+  });
+
+  it('describes the disabled error', () => {
+    expect(describeInferenceError({ kind: 'capability_disabled', capability: 'visual_qa' })).toContain('visual_qa');
   });
 });

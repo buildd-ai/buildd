@@ -50,6 +50,13 @@ export const teams = pgTable('teams', {
   // This is a reversible toggle layered ABOVE the resolution chain, not another
   // default in it. See packages/core/backend-policy.ts.
   enabledBackends: agentBackendEnum('enabled_backends').array(),
+
+  // Which actions may spend a metered inference call instead of dispatching an
+  // agent run. NULL (or empty) = none, which is today's behaviour — so storing an
+  // inference key changes nothing until the operator opts a capability in.
+  // Same shape as enabledBackends: a reversible mask above the resolution chain,
+  // not another default inside it. See packages/core/inference-policy.ts.
+  enabledInferenceCapabilities: text('enabled_inference_capabilities').array(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));

@@ -139,6 +139,7 @@ Respond with exactly this JSON shape:
 }`;
 
   const result = await inferenceCall<LLMCriterionVerdict[]>({
+    capability: 'criteria_grading',
     tier: 'budget',
     teamId: scope.teamId,
     workspaceId: scope.workspaceId,
@@ -375,13 +376,16 @@ export async function evaluateCriteriaNow(
       }
     }
 
-    // `missing_key` / `unsupported_provider` mean this team has no inference path
-    // at all, not that a call failed — fall through to a dispatched agent run.
-    // Every other error is a real call that went wrong; report it and let the next
+    // Three errors mean "this team has no inference path for grading", not "a call
+    // failed": no key, a provider that cannot serve single-shot calls, and the
+    // operator having switched this capability off on purpose. All three fall
+    // through to a dispatched agent run, which is the point of that path —
+    // grading still happens, on the subscription seat, just slower.
+    //
+    // Every other error is a real call that went wrong. Report it and let the next
     // evaluation round retry rather than spending an agent run on a blip.
-    const needsDispatch = toJudge.length > 0 && (
-      inferenceError?.kind === 'missing_key' || inferenceError?.kind === 'unsupported_provider'
-    );
+    const NO_INFERENCE_PATH = ['missing_key', 'unsupported_provider', 'capability_disabled'];
+    const needsDispatch = toJudge.length > 0 && !!inferenceError && NO_INFERENCE_PATH.includes(inferenceError.kind);
 
     if (toJudge.length > 0 && inferenceError && !needsDispatch) {
       for (const c of toJudge) {
