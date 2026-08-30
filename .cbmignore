@@ -1,0 +1,8 @@
+# Bun package store — packages are symlinked from node_modules/ into here.
+# CBM v0.9.0 already excludes node_modules/ entirely, so this is a defensive
+# guard for future CBM versions that might change how they handle symlinks or
+# the node_modules exclusion rule.
+node_modules/.bun/
+
+# pnpm virtual store — same structure as .bun/ for pnpm-based workspaces.
+node_modules/.pnpm/
