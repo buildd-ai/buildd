@@ -36,6 +36,68 @@ export interface HookFactoryContext {
 export class HookFactory {
   constructor(private ctx: HookFactoryContext) {}
 
+  /**
+   * PreToolUse hook that auto-claims file paths at the moment of Edit/Write/MultiEdit.
+   * Calls POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   *
+   * FAIL-OPEN (non-negotiable): on timeout or network error the edit proceeds.
+   * Failed paths queue in worker.pendingPaths and are flushed on the next
+   * successful claim call (batched into that request) or sent via update_progress.
+   *
+   * Advisory only: a 409 conflict response never blocks the edit.
+   */
+  createPathClaimHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      const toolName = (input as any).tool_name as string;
+      if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') return {};
+
+      const toolInput = (input as any).tool_input as Record<string, unknown>;
+
+      // Extract target paths per tool type
+      const newPaths: string[] = [];
+      if (toolName === 'MultiEdit') {
+        const edits = toolInput.edits as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(edits)) {
+          for (const edit of edits) {
+            const p = edit.file_path as string | undefined;
+            if (p) newPaths.push(p);
+          }
+        }
+      } else {
+        const p = toolInput.file_path as string | undefined;
+        if (p) newPaths.push(p);
+      }
+
+      if (newPaths.length === 0) return {};
+
+      // Combine pending paths with new paths for a single flush attempt
+      const pending = worker.pendingPaths ?? [];
+      const allPaths = [...new Set([...pending, ...newPaths])];
+
+      try {
+        const result = await this.ctx.buildd.claimPaths(worker.taskId, allPaths);
+        if (result !== null) {
+          // HTTP call reached the server — flush the pending queue regardless of 200/409
+          worker.pendingPaths = [];
+          if (result.claimed === false) {
+            console.log(`[Worker ${worker.id}] Path-claim advisory 409: ${result.blockingTaskId ?? 'unknown'} holds ${newPaths.join(', ')}`);
+          }
+        } else {
+          // Timeout or network error — fail-open, accumulate for next attempt
+          console.log(`[Worker ${worker.id}] Path-claim unavailable for ${newPaths.join(', ')} — queuing ${allPaths.length} path(s)`);
+          worker.pendingPaths = allPaths;
+        }
+      } catch {
+        // Unexpected error — fail-open
+        worker.pendingPaths = allPaths;
+      }
+
+      // Never block the edit
+      return {};
+    };
+  }
+
   createReadJailHook(
     worker: LocalWorker,
     worktreePath: string,

@@ -2650,6 +2650,11 @@ export class WorkerManager {
             ? [{ hooks: [this.hookFactory.createReadJailHook(worker, cwd, readJailPrefixes)] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+          // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
+          // Advisory + fail-open — never blocks the edit; Codex tasks have no PreToolUse hooks.
+          ...(!isCodexTask
+            ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
+            : []),
         ],
         PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
