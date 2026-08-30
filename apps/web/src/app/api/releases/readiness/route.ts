@@ -7,6 +7,7 @@ import { and, eq, inArray, isNotNull, sql, desc } from 'drizzle-orm';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
+import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 
 /**
  * Release readiness per gated workspace — applies spec §8 exception-rule data.
@@ -80,10 +81,25 @@ export async function GET(req: NextRequest) {
 
       const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
 
-      // Without a healthy baseline row the COALESCE fallback would silently count
-      // every worker ever merged (epoch baseline). Instead: no baseline → no count.
-      // The comparison `mergedAt > NULL` evaluates to NULL in PostgreSQL, so the
-      // WHERE clause matches nothing and count() returns 0 — the widget hides.
+      // Explicit baseline check: if no healthy releases row exists, the queue
+      // depth is structurally unavailable (no_baseline), not zero. A rendered 0
+      // must never be ambiguous with measured-zero.
+      const [baselineRow] = await db
+        .select({ baseline: sql<string | null>`MAX(${releases.healthyAt})::text` })
+        .from(releases)
+        .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
+
+      if (!baselineRow?.baseline) {
+        return {
+          workspaceId: wsId,
+          workspaceName: ws.name,
+          queueDepth: derivedUnavailable<number>('no_baseline'),
+          oldestMergedAt: derivedUnavailable<string>('no_baseline'),
+          ciState,
+          latestReleaseId: latestRelease?.id ?? null,
+        };
+      }
+
       const [queueRow] = await db
         .select({
           queueDepth: sql<number>`count(*)::int`,
@@ -95,15 +111,17 @@ export async function GET(req: NextRequest) {
           and(
             eq(tasks.workspaceId, wsId),
             isNotNull(workers.mergedAt),
-            sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
+            sql`${workers.mergedAt} > ${baselineRow.baseline}::timestamptz`,
           ),
         );
 
       return {
         workspaceId: wsId,
         workspaceName: ws.name,
-        queueDepth: queueRow?.queueDepth ?? 0,
-        oldestMergedAt: queueRow?.oldestMergedAt ?? null,
+        queueDepth: derivedValue(queueRow?.queueDepth ?? 0),
+        oldestMergedAt: queueRow?.oldestMergedAt
+          ? derivedValue(queueRow.oldestMergedAt)
+          : derivedUnavailable<string>('no_scope'),
         ciState,
         latestReleaseId: latestRelease?.id ?? null,
       };
