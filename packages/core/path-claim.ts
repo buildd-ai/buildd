@@ -17,7 +17,7 @@
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes } from './db/schema';
 import { and, eq, isNull, lt, inArray } from 'drizzle-orm';
-import { pathsOverlap } from './path-overlap';
+import { pathsOverlap, stripTrailingSep } from './path-overlap';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,10 +85,9 @@ export async function checkPathClaimConflict(
   for (const [taskId, claimedPaths] of claimsByTask) {
     if (pathsOverlap(paths, claimedPaths)) {
       // Find the first specific overlapping path for the error message
-      const normalize = (p: string) => p.replace(/\/+$/, '');
-      const normPaths = paths.map(normalize);
+      const normPaths = paths.map(stripTrailingSep);
       const firstOverlap = claimedPaths.find(cp => {
-        const ncp = normalize(cp);
+        const ncp = stripTrailingSep(cp);
         return normPaths.some(p => p === ncp || p.startsWith(ncp + '/') || ncp.startsWith(p + '/'));
       }) ?? claimedPaths[0];
       return { blockingTaskId: taskId, blockingPath: firstOverlap };

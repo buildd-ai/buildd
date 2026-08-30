@@ -69,6 +69,14 @@ export function declaresNoScope(manifest: string[] | null | undefined): boolean 
 }
 
 /**
+ * Strip any trailing slash(es) from a path for consistent comparison.
+ * Examples: `'packages/core/'` → `'packages/core'`, `'foo'` → `'foo'`.
+ */
+export function stripTrailingSep(path: string): string {
+  return path.replace(/\/+$/, '');
+}
+
+/**
  * Returns true if the two path manifests share at least one entry.
  *
  * Matching rules (in order):
@@ -93,9 +101,8 @@ export function pathsOverlap(a: string[], b: string[]): boolean {
   // reading and reject/skip '**' themselves — so the sentinel rule stays here.
   if (a.includes(REPO_WIDE_SENTINEL) || b.includes(REPO_WIDE_SENTINEL)) return true;
 
-  const normalize = (p: string) => p.replace(/\/+$/, ''); // strip trailing slashes
-  const na = a.map(normalize);
-  const nb = b.map(normalize);
+  const na = a.map(stripTrailingSep);
+  const nb = b.map(stripTrailingSep);
 
   const setB = new Set(nb);
   for (const pa of na) {
