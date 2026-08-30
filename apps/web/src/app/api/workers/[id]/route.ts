@@ -50,6 +50,7 @@ import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worke
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -372,6 +373,9 @@ export async function PATCH(
     subagentSpans,
     subagentSpansObserved,
     backgroundAgentMs,
+    // Passive observed-touches: incremental list from git diff --name-only on the runner.
+    // Server accumulates into workers.observedTouches for §6d collision detection.
+    touchedPaths,
   } = body;
 
   const updates: Partial<typeof workers.$inferInsert> = {
@@ -527,6 +531,25 @@ export async function PATCH(
   // outputRequirement; failed/error transitions still need missionId so their
   // final recorded cost can enforce the mission budget.
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
+
+  // §6d Passive observed-touches accumulation.
+  // On terminal status: clear. On update_progress with touchedPaths: dedup-append, cap at 500.
+  if (isTerminalStatus) {
+    updates.observedTouches = null;
+  } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
+    const existing = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
+    const merged = [...existing];
+    for (const p of touchedPaths) {
+      if (typeof p === 'string' && !merged.includes(p)) merged.push(p);
+    }
+    if (merged.length > 500) {
+      console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
+      updates.observedTouches = merged.slice(0, 500);
+    } else {
+      updates.observedTouches = merged;
+    }
+  }
+
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
         .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context })
@@ -2105,11 +2128,140 @@ export async function PATCH(
 
   // Drain pending worker-to-worker messages so they can be returned in the response.
   // Messages are stored in tasks.context.pendingWorkerMessages by send_worker_message (MCP).
-  // Clear them atomically before returning so they are delivered exactly once.
   const pendingWorkerMessages = Array.isArray(taskContext?.pendingWorkerMessages)
     ? (taskContext.pendingWorkerMessages as unknown[])
     : [];
-  if (pendingWorkerMessages.length > 0 && worker.taskId) {
+
+  // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
+  // Advisory-only — never rejects the update_progress call.
+  const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
+  if (accumulatedTouches && accumulatedTouches.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+    try {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const siblings = await db.query.workers.findMany({
+        where: and(
+          eq(workers.workspaceId, worker.workspaceId),
+          not(eq(workers.id, id)),
+          not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
+          isNull(workers.mergedAt),
+          gt(workers.updatedAt, twentyFourHoursAgo),
+          not(isNull(workers.observedTouches)),
+        ),
+        columns: {
+          id: true,
+          taskId: true,
+          branch: true,
+          lastCommitSha: true,
+          observedTouches: true,
+        },
+        with: {
+          task: { columns: { pathManifest: true } },
+        },
+      });
+
+      const notifiedOverlaps: Array<{ path: string; siblingTaskId: string }> =
+        Array.isArray(taskContext?.notifiedOverlaps)
+          ? (taskContext.notifiedOverlaps as Array<{ path: string; siblingTaskId: string }>)
+          : [];
+      const newNotifications: Array<{ path: string; siblingTaskId: string }> = [];
+
+      for (const sibling of siblings) {
+        if (!sibling.taskId) continue;
+        const siblingTouches = Array.isArray(sibling.observedTouches) ? sibling.observedTouches as string[] : [];
+        if (siblingTouches.length === 0) continue;
+
+        // Wildcard guard: skip siblings with advisory pathManifest (**).
+        const siblingManifest = (sibling.task as any)?.pathManifest as string[] | null | undefined;
+        if (isAdvisoryManifest(siblingManifest)) continue;
+
+        if (!pathsOverlap(accumulatedTouches, siblingTouches)) continue;
+
+        // Identify overlapping paths for this sibling.
+        const normalizeP = (p: string) => p.replace(/\/+$/, '');
+        const overlappingPaths = accumulatedTouches.filter(p => {
+          const np = normalizeP(p);
+          return siblingTouches.some(sp => {
+            const nsp = normalizeP(sp);
+            return np === nsp || np.startsWith(nsp + '/') || nsp.startsWith(np + '/');
+          });
+        });
+
+        // Dedupe gate: skip pairs already notified this session.
+        const newPaths = overlappingPaths.filter(p =>
+          !notifiedOverlaps.some(n => n.path === p && n.siblingTaskId === sibling.taskId),
+        );
+        if (newPaths.length === 0) continue;
+
+        for (const p of newPaths) {
+          newNotifications.push({ path: p, siblingTaskId: sibling.taskId! });
+        }
+
+        // Emit Pusher event on workspace channel.
+        const overlapEvent = {
+          detectedWorkerId: id,
+          detectedTaskId: worker.taskId,
+          siblingWorkerId: sibling.id,
+          siblingTaskId: sibling.taskId,
+          overlappingPaths: newPaths,
+          detectedByBranch: updated.branch ?? worker.branch,
+          detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+        };
+        await triggerEvent(channels.workspace(worker.workspaceId), 'path_overlap_detected', overlapEvent);
+
+        // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
+        const workerMsg = {
+          id: crypto.randomUUID(),
+          type: 'path_blocked_on_you',
+          fromTaskId: worker.taskId,
+          toTaskId: sibling.taskId,
+          sentAt: new Date().toISOString(),
+          hopCount: 0,
+          body: {
+            overlappingPaths: newPaths,
+            detectedByBranch: updated.branch ?? worker.branch,
+            detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+            funcNames: [] as string[],
+          },
+        };
+        const siblingTaskCtx = ((await db.query.tasks.findFirst({
+          where: eq(tasks.id, sibling.taskId!),
+          columns: { context: true },
+        }))?.context ?? {}) as Record<string, unknown>;
+        const siblingPendingMsgs = Array.isArray(siblingTaskCtx.pendingWorkerMessages)
+          ? [...(siblingTaskCtx.pendingWorkerMessages as unknown[]), workerMsg]
+          : [workerMsg];
+        // Cap at 3 pending messages per spec §4c — oldest dropped.
+        const cappedMsgs = siblingPendingMsgs.length > 3 ? siblingPendingMsgs.slice(-3) : siblingPendingMsgs;
+        await db
+          .update(tasks)
+          .set({ context: { ...siblingTaskCtx, pendingWorkerMessages: cappedMsgs } })
+          .where(eq(tasks.id, sibling.taskId!));
+      }
+
+      // Atomically persist notifiedOverlaps + clear pendingWorkerMessages for this task.
+      const taskContextUpdates: Record<string, unknown> = {};
+      if (pendingWorkerMessages.length > 0) taskContextUpdates.pendingWorkerMessages = [];
+      if (newNotifications.length > 0) {
+        taskContextUpdates.notifiedOverlaps = [...notifiedOverlaps, ...newNotifications];
+      }
+      if (Object.keys(taskContextUpdates).length > 0) {
+        await db
+          .update(tasks)
+          .set({ context: { ...(taskContext ?? {}), ...taskContextUpdates } })
+          .where(eq(tasks.id, worker.taskId));
+      }
+    } catch (err) {
+      console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
+      // Fall through — still drain pendingWorkerMessages on error
+      if (pendingWorkerMessages.length > 0) {
+        await db
+          .update(tasks)
+          .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })
+          .where(eq(tasks.id, worker.taskId));
+      }
+    }
+  } else if (pendingWorkerMessages.length > 0 && worker.taskId) {
+    // No overlap detection this tick — still drain pending messages.
     await db
       .update(tasks)
       .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })

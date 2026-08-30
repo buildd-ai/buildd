@@ -219,6 +219,9 @@ export class BuilddClient {
     backgroundAgentMs?: number;
     // Paths written while path-claim endpoint was unreachable; server registers them retroactively.
     pendingPaths?: string[];
+    // Incremental file paths touched since last check-in (from git diff --name-only).
+    // Server accumulates into workers.observedTouches for passive collision detection (§6d).
+    touchedPaths?: string[];
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
