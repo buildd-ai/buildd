@@ -7,6 +7,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { cleanupWorktree } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
 import { sessionLog } from './session-logger';
+import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 
 /**
  * Server-side worker statuses that genuinely end a lease. A 409 that names one
@@ -381,7 +382,9 @@ export class WorkerSync {
     // The timer resets on ANY SDK message (tool calls, text, MCP calls like update_progress)
     // because handleMessage() updates worker.lastActivity on every message.
     // So an agent actively reporting progress via update_progress will never hit this.
-    const HARD_TIMEOUT_MS = 30 * 60 * 1000;
+    // Shared with the server's reap threshold (WORKER_STALE_REAP_MS is derived
+    // from this) so the two can never drift apart again.
+    const HARD_TIMEOUT_MS = WORKER_HARD_TIMEOUT_MS;
 
     for (const worker of this.ctx.workers.values()) {
       // Skip stale check for workers waiting on user input (plan approval, questions)

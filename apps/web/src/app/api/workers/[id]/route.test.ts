@@ -599,7 +599,7 @@ describe('PATCH /api/workers/[id]', () => {
     expect(data.error).toBe('Worker already completed');
   });
 
-  it('allows reactivation of completed worker with running status', async () => {
+  it('allows reactivation of completed worker when the runner explicitly asks', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
       id: 'worker-1',
@@ -613,11 +613,84 @@ describe('PATCH /api/workers/[id]', () => {
     const req = createMockRequest({
       method: 'PATCH',
       headers: { Authorization: 'Bearer bld_test' },
-      body: { status: 'running', currentAction: 'Processing follow-up...' },
+      // `reactivate` is the runner's deliberate resume signal (sendMessage
+      // follow-up). Without it a 'running' write is indistinguishable from the
+      // 10s keepalive sync — see the resurrection regression below.
+      body: { status: 'running', currentAction: 'Processing follow-up...', reactivate: true },
     });
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(200);
+  });
+
+  /**
+   * Regression: a cleanly completed worker was resurrected by its own keepalive,
+   * then reaped as stale — observed in production as a task that "finished
+   * healthy and closed out" but was killed anyway.
+   *
+   * The runner's local status stays 'working' until the SDK session ends, which
+   * is *after* the agent's complete_task MCP call and after any
+   * verificationCommand run. Any 10s sync tick landing in that window PATCHes
+   * status:'running'. The old guard only inspected `worker.error` to decide
+   * whether a terminal row could be reactivated, and a clean completion has
+   * `error: null` — so every `?.includes()` was undefined, the guard fell open,
+   * and the completion (plus the task's completed status) was wiped.
+   */
+  it('does not resurrect a cleanly completed worker on an unflagged keepalive sync', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'completed',
+      // A successful completion carries no error — the exact case the old
+      // string-matching guard failed to protect.
+      error: null,
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+      taskId: 'task-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      // Byte-identical to the runner's periodic keepalive payload.
+      body: { status: 'running', currentAction: 'Working...' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.abort).toBe(true);
+    // The runner's sync guard reads `actualStatus === 'completed' ||
+    // hasDeliverables` to tell a completion race from a real termination. Both
+    // must reach it: actualStatus is what makes it preserve the completion
+    // instead of hard-aborting a finished session, and hasDeliverables must be
+    // present rather than undefined. (checkWorkerDeliverables is module-mocked
+    // to hasAny:false here, so assert the shape, not the verdict.)
+    expect(data.actualStatus).toBe('completed');
+    expect(typeof data.hasDeliverables).toBe('boolean');
+  });
+
+  it('does not reactivate a completed worker when reactivate is not exactly true', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'completed',
+      error: null,
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+      taskId: 'task-1',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Working...', reactivate: 'yes' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(409);
   });
 
   it('returns 409 when worker has failed and update is not reactivation', async () => {
