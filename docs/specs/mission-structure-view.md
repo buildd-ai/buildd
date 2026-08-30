@@ -1,11 +1,11 @@
 ---
 title: Mission Structure View
-status: draft
+status: active
 owner: builder
 last_verified: 2026-08-30
 summary: The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 domain: surfaces
-surfaces: [apps/web/src/lib/condensed-timeline.ts, apps/web/src/components/StageChip.tsx, apps/web/src/components/SegmentStrip.tsx]
+surfaces: [apps/web/src/lib/structure-layout.ts, apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTabs.tsx, apps/web/src/lib/condensed-timeline.ts]
 related: [timeline-dependency-geometry, missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [dag, graph, structure view, canvas, topology, layout, dependency, blocked, stranded, contention edge]
 supersedes: []
