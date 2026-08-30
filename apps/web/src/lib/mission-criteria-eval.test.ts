@@ -23,6 +23,10 @@ const mockResolveCommandCriterion = mock((_opts: any) => Promise.resolve({
   kind: 'pending', taskId: 'verify-task-1', evidence: 'Verification task verify-t dispatched: bun test',
 }) as any);
 
+const mockResolveProseCriteria = mock((_opts: any) => Promise.resolve({
+  kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
+}) as any);
+
 mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
   inArray: (...args: any[]) => ({ _op: 'inArray', args }),
@@ -64,6 +68,12 @@ mock.module('@buildd/core/model-tier-registry', () => ({
 // tested in mission-criteria-verify.test.ts.
 mock.module('./mission-criteria-verify', () => ({
   resolveCommandCriterion: mockResolveCommandCriterion,
+}));
+
+// Prose criteria are graded by a dispatched agent; that module is tested in
+// mission-criteria-prose.test.ts.
+mock.module('./mission-criteria-prose', () => ({
+  resolveProseCriteria: mockResolveProseCriteria,
 }));
 
 // Real @buildd/core/mission-helpers: the mechanical evaluator and the folding
@@ -113,6 +123,10 @@ function reset() {
   mockResolveCommandCriterion.mockReset();
   mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'verify-task-1', evidence: 'Verification task verify-t dispatched: bun test',
+  }) as any);
+  mockResolveProseCriteria.mockReset();
+  mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
+    kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
   }) as any);
   globalThis.fetch = realFetch;
   delete process.env.ANTHROPIC_API_KEY;
@@ -292,7 +306,7 @@ describe('evaluateCriteriaNow — command criteria are run, not graded', () => {
 describe('evaluateCriteriaNow — prose criteria', () => {
   beforeEach(reset);
 
-  it('regression (DEFECT 2): with no API key, prose criteria are NOT_EVALUATED and block the pass', async () => {
+  function proseAndMechanical() {
     mission({
       goalCriteria: [
         { type: 'description', description: 'Rows exist', notMechanizableReason: 'stated reason' },
@@ -300,14 +314,98 @@ describe('evaluateCriteriaNow — prose criteria', () => {
       ],
     });
     taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
+  }
+
+  it('regression (DEFECT 2): with no API key, prose criteria are graded by dispatch, not abandoned', async () => {
+    // The old behaviour: NOT_EVALUATED, evidence 'no ANTHROPIC_API_KEY', forever.
+    // The env var is absent in production and unsettable for an OAuth-subscription
+    // team, so that message named a fix nobody could apply and every mission with
+    // a prose criterion was permanently unverifiable.
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.criteria[0].evidence).not.toContain('ANTHROPIC_API_KEY');
+    expect(state!.criteria[0].workerTaskId).toBe('prose-task-1');
+    expect(state!.criteria[1].verdict).toBe('pass');
+    // Still the load-bearing half of the original assertion: a verdict in flight
+    // is not a verdict, and the mechanical pass must not carry the prose one.
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('passes the criterion text, index and fingerprint to the evaluator', async () => {
+    proseAndMechanical();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    const opts = mockResolveProseCriteria.mock.calls[0]![0] as any;
+    expect(opts.missionId).toBe('m1');
+    expect(opts.criteria).toHaveLength(1);
+    expect(opts.criteria[0].index).toBe(0);
+    expect(opts.criteria[0].text).toContain('Rows exist');
+    // The fingerprint is what makes the write-back safe against an edited criterion.
+    expect(opts.criteria[0].fingerprint).toBeTruthy();
+    expect(opts.evidence.tasks[0].id).toBe('t1');
+  });
+
+  it('reports the resolver reason when there is nowhere to grade', async () => {
+    proseAndMechanical();
+    mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
+      kind: 'unavailable',
+      evidence: 'Prose criteria cannot be graded: no agent backend credential is connected — connect one in Settings → Agent Backends',
+    }) as any);
 
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
     expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
-    expect(state!.criteria[0].evidence).toContain('no ANTHROPIC_API_KEY');
-    expect(state!.criteria[1].verdict).toBe('pass');
-    // The mechanical criterion passing must not carry the prose one.
+    // The operator gets told where the fix lives, not which env var is missing.
+    expect(state!.criteria[0].evidence).toContain('Agent Backends');
     expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('does not dispatch an evaluator when dispatchCommands=false', async () => {
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'manual', dispatchCommands: false });
+
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('does not dispatch an evaluator while another criterion has already failed', async () => {
+    // Same economics as the command path: the fold is `fail` regardless, so a
+    // grading run per evaluation round buys a verdict that cannot change anything.
+    mission({
+      goalCriteria: [
+        { type: 'artifact_exists', artifactType: 'report' },
+        { type: 'description', description: 'Rows exist', notMechanizableReason: 'stated reason' },
+      ],
+    });
+    artifactRows = [];
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('fail');
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[1].evidence).toContain('another criterion has already failed');
+    expect(state!.overall).toBe('fail');
+  });
+
+  it('grades inline and does not dispatch when an API key is present', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'Rows are there' }]);
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Never both: dispatching alongside a working inline path would spend an
+    // agent run to re-answer a question already answered.
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('pass');
+    expect(state!.overall).toBe('pass');
   });
 
   it('applies an LLM verdict with its evidence reference', async () => {
