@@ -287,6 +287,11 @@ mock.module('./dark-check-detection', () => ({
   detectDarkChecksForClosedPr: mock(() => Promise.resolve()),
 }));
 
+// Release verification is fire-and-forget; no-op in route tests.
+mock.module('@/lib/release-verification', () => ({
+  verifyReleaseDeployment: mock(() => Promise.resolve()),
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
