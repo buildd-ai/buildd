@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { releases, releaseTasks, tasks, missions, workspaces, githubRepos } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
@@ -81,10 +81,21 @@ export async function GET(
           .where(inArray(missions.id, missionIds))
       : [];
 
+  const [degradationTaskRow] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(
+      sql`${tasks.context}->>'releaseId' = ${id}`,
+      sql`${tasks.context}->>'type' = 'degradation'`,
+    ))
+    .limit(1);
+  const degradationTaskId = degradationTaskRow?.id ?? null;
+
   return NextResponse.json({
     ...release,
     workspaceName: ws.name,
     commitRangeUrl,
+    degradationTaskId,
     attributedTasks: edges.map((e) => ({
       taskId: e.taskId,
       prNumber: e.prNumber,
