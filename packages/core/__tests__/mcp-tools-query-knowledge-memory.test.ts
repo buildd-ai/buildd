@@ -155,3 +155,87 @@ describe('query_knowledge — emit_event telemetry', () => {
     expect(event?.label).toBe('code');
   });
 });
+
+// ── query_knowledge: multi-corpus (array) fan-out + RRF fusion ────────────────
+
+describe('query_knowledge — multi-corpus (array) fan-out + RRF fusion', () => {
+  function makeNsStore(
+    nsMap: Record<string, Partial<QueryResult>[]>,
+  ): KnowledgeStore & { capturedNamespaces: string[] } {
+    const capturedNamespaces: string[] = [];
+    return {
+      capturedNamespaces,
+      async query(ns): Promise<QueryResult[]> {
+        capturedNamespaces.push(ns);
+        const corpus = ns.split(':').slice(1).join(':') as any;
+        return (nsMap[ns] ?? []).map((c, i) => ({
+          id: c.id ?? `chunk-${ns}-${i}`,
+          namespace: ns,
+          corpus,
+          sourceType: c.sourceType ?? corpus,
+          sourcePath: null,
+          sourceUrl: null,
+          content: c.content ?? `content-${i}`,
+          metadata: {},
+          score: c.score ?? 0.9,
+          isCurrent: true,
+          ...c,
+        }));
+      },
+      async upsert() {},
+      async delete() {},
+      async listNamespaces() { return []; },
+    } as any;
+  }
+
+  it('queries all provided corpora namespaces', async () => {
+    const store = makeNsStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'memory hit' }],
+      [`${WS_ID}:task`]: [{ content: 'task hit' }],
+    });
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'test', corpus: ['memory', 'task'] }, memCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(store.capturedNamespaces).toContain(`${TEAM_ID}:memory`);
+    expect(store.capturedNamespaces).toContain(`${WS_ID}:task`);
+  });
+
+  it('returns fused results from all corpora', async () => {
+    const store = makeNsStore({
+      [`${TEAM_ID}:memory`]: [{ content: 'memory result' }],
+      [`${WS_ID}:task`]: [{ content: 'task result' }],
+    });
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'test', corpus: ['memory', 'task'] }, memCtx(store));
+    const out = res.content[0].text;
+    expect(out).toContain('memory result');
+    expect(out).toContain('task result');
+  });
+
+  it('single-string corpus is unchanged (backward compat)', async () => {
+    const store = makeNsStore({ [`${TEAM_ID}:memory`]: [{ content: 'single corpus hit' }] });
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'test', corpus: 'memory' }, memCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('single corpus hit');
+    // Only one namespace queried
+    expect(store.capturedNamespaces).toHaveLength(1);
+  });
+
+  it('returns no-results message when all corpora have no hits', async () => {
+    const store = makeNsStore({});
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'missing', corpus: ['memory', 'task'] }, memCtx(store));
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('No knowledge');
+  });
+
+  it('labels each hit by its source corpus in formatted output', async () => {
+    const store = makeNsStore({
+      [`${TEAM_ID}:memory`]: [{ id: 'mem1', content: 'mem content', metadata: { type: 'gotcha' } }],
+      [`${WS_ID}:pr`]: [{ id: 'pr1', content: 'pr content', sourcePath: 'apps/web/src/foo.ts' }],
+    });
+    const res = await handleMemoryAction(nullMemClient, 'query_knowledge', { query: 'test', corpus: ['memory', 'pr'] }, memCtx(store));
+    const out = res.content[0].text;
+    // memory corpus uses legacy format with [source] link
+    expect(out).toContain('mem content');
+    // pr corpus shows corpus label in header
+    expect(out).toContain('pr');
+  });
+});

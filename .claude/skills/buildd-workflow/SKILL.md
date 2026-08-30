@@ -44,7 +44,7 @@ Save the worker ID. You need it for every subsequent call.
 1. Read the task description fully
 2. Search workspace memory for relevant context:
    ```
-   buildd_memory action=search params={ "query": "relevant topic" }
+   recall query="relevant topic" scope=["memory","task"]
    ```
 3. Read every file you plan to modify
 4. Read related tests
@@ -181,13 +181,7 @@ The summary should answer: *What changed? Why this approach? What should the nex
 Save anything you learned that future agents should know — patterns, gotchas, architectural decisions:
 
 ```
-buildd_memory action=save params={
-  "type": "discovery",
-  "title": "How X works in this codebase",
-  "content": "Explanation of the pattern, gotcha, or insight",
-  "files": ["path/to/relevant/file.ts"],
-  "tags": ["relevant", "tags"]
-}
+learn type="discovery" title="How X works in this codebase" content="Explanation of the pattern, gotcha, or insight" files=["path/to/relevant/file.ts"] tags=["relevant","tags"]
 ```
 
 **What to save as memory:**
@@ -267,17 +261,12 @@ Thoughts that indicate you're about to take a shortcut:
 
 ### Search Before You Start
 ```
-buildd_memory action=search params={ "query": "relevant topic" }
+recall query="relevant topic" scope=["memory","task"]
 ```
 
 ### Save What You Learn
 ```
-buildd_memory action=save params={
-  "type": "discovery",
-  "title": "How to handle X in this codebase",
-  "content": "Explanation of the pattern or solution",
-  "concepts": ["relevant", "tags"]
-}
+learn type="discovery" title="How to handle X in this codebase" content="Explanation of the pattern or solution" tags=["relevant","tags"]
 ```
 
 Save: non-obvious patterns, gotchas, architecture decisions. Don't save: task-specific details or things already in docs.
@@ -299,5 +288,5 @@ When claim_task returns Open PRs:
 | `buildd action=create_pr` | After pushing commits |
 | `buildd action=create_artifact` | After PR, before completing — write a summary of what changed and why |
 | `buildd action=complete_task` | After summary artifact is created |
-| `buildd_memory action=search` | Before starting, when stuck |
-| `buildd_memory action=save` | After discovering something useful — patterns, gotchas, decisions |
+| `recall scope=["memory","task"]` | Before starting, when stuck |
+| `learn` | After discovering something useful — patterns, gotchas, decisions |
