@@ -1062,6 +1062,17 @@ export const workers = pgTable('workers', {
   turns: integer('turns').default(0).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Worker liveness lease. Renewed by the owning runner's 60s liveness timer
+  // (deterministic code, NOT the agent loop) so a worker sitting inside one long
+  // silent tool call keeps asserting liveness — the case that made "no update in
+  // N minutes" indistinguishable from a dead process.
+  //
+  // NULL means the owning runner does not renew leases (older build). Such rows
+  // MUST fall back to the legacy updatedAt staleness rule; never treat NULL as
+  // an expired lease, or every worker on an un-upgraded runner is reaped at once.
+  // Because of that, nothing may seed this at claim time: renewal is the only
+  // writer, so NULL unambiguously means "this runner doesn't do leases".
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
   error: text('error'),
   // Runner direct access URL (e.g., https://runner--workspace.coder.dev or http://100.x.x.x:8766)
   localUiUrl: text('local_ui_url'),
