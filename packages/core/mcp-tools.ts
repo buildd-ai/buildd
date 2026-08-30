@@ -98,6 +98,9 @@ export interface ActionContext {
   // never block or fail the underlying action.
   knowledgeStore?: KnowledgeStore;
   embedder?: Embedder | null;
+  // Resolve a MemoryClient for this context (team-keyed, auto-provisioning).
+  // Injected by the MCP route so packages/core stays DB-free.
+  getMemoryClient?: () => Promise<MemoryClient | null>;
 }
 
 export type ToolResult = {
@@ -1075,8 +1078,7 @@ export async function handleBuilddAction(
       // Proactively fetch relevant memory from memory service
       let memorySection = '';
       try {
-        const { getMemoryClient } = await import('./memory-client');
-        const memClient = getMemoryClient();
+        const memClient = ctx.getMemoryClient ? await ctx.getMemoryClient() : null;
         if (memClient && workers[0]?.task?.title) {
           const searchData = await memClient.search({
             query: workers[0].task.title,

@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions } from '@buildd/core/db/schema';
-import { MemoryClient } from '@buildd/core/memory-client';
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
+import { getMemoryClientForTeam } from '@/lib/memory-helper';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
@@ -72,10 +72,8 @@ export default async function WorkspaceDetailPage({
   // Fetch memory count from memory service
   let memoryCount = 0;
   try {
-    const memUrl = process.env.MEMORY_API_URL;
-    const memKey = process.env.MEMORY_API_KEY;
-    if (memUrl && memKey) {
-      const memClient = new MemoryClient(memUrl, memKey);
+    const memClient = await getMemoryClientForTeam(id);
+    if (memClient) {
       const project = workspace.repo || workspace.name;
       const data = await memClient.search({ project, limit: 1 });
       memoryCount = data.total;

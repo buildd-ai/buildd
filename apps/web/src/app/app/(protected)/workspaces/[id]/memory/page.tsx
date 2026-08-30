@@ -5,16 +5,14 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { MemoryClient, type Memory } from '@buildd/core/memory-client';
+import type { Memory } from '@buildd/core/memory-client';
+import { getMemoryClientForTeam } from '@/lib/memory-helper';
 import ObservationList from './ObservationList';
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
-  const url = process.env.MEMORY_API_URL;
-  const key = process.env.MEMORY_API_KEY;
-  if (!url || !key) return { memories: [], total: 0 };
-
   try {
-    const client = new MemoryClient(url, key);
+    const client = await getMemoryClientForTeam(workspaceId);
+    if (!client) return { memories: [], total: 0 };
 
     // Resolve workspace project scope
     const ws = await db.query.workspaces.findFirst({
