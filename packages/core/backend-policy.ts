@@ -114,6 +114,34 @@ export function maskBackend(
   return enabled[0];                                      // disabled → first enabled
 }
 
+/**
+ * The backend a pending task will actually be dispatched on.
+ *
+ * The mission → role → workspace chain is resolved and PERSISTED when the task
+ * is created (`/api/tasks` POST, `mission-run.ts`), so `tasks.backend` is
+ * already the resolved answer — there is no second resolution to redo at read
+ * time. What is *not* persisted is the team mask, which the claim route applies
+ * per dispatch (`maskBackend`, reversible by design). This function is that one
+ * remaining step, so every read-side surface (settings readiness counts, the
+ * queue-stall watchdog) lands on the same backend the claim route will pick
+ * instead of re-deriving a second, disagreeing order.
+ *
+ * Not modelled here: the transient provider-pause rewrite the claim route also
+ * does (a walled Codex task runs on Claude until the wall lifts). That is a
+ * temporary detour — the task returns to its stored backend afterwards — so a
+ * caller asking "where does this task permanently land?" wants the un-paused
+ * answer.
+ */
+export function resolveEffectiveBackend(
+  taskBackend: string | null | undefined,
+  enabled: AgentBackend[] | null | undefined,
+): AgentBackend {
+  // `tasks.backend` is NOT NULL DEFAULT 'claude'; anything else (a loosely
+  // selected column, a non-dispatchable registry id) means "the default".
+  const stored: AgentBackend = isDispatchableBackend(taskBackend) ? taskBackend : 'claude';
+  return maskBackend(stored, enabled);
+}
+
 /** True when the team mask would redirect this backend to a different provider. */
 export function isBackendMasked(
   resolved: AgentBackend,

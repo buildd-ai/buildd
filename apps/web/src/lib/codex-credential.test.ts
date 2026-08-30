@@ -315,6 +315,21 @@ describe('hasCodexCredential', () => {
     mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'degraded' }]);
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
   });
+
+  it("accountId: 'any' drops the account predicate — used by read-only reporting", async () => {
+    // "Can any runner in this team run Codex?" is a different question from
+    // "can THIS account". POST /api/secrets with an API key stores the row
+    // against the caller's account, so a scope-blind check would call a working
+    // team stranded.
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'healthy' }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'any', workspaceId: 'w' })).toBe(true);
+
+    const where = (mockDbFindMany.mock.calls[0][0] as any).where;
+    const predicates = where.conds.filter((c: any) => c.__or);
+    // Only the workspace predicate stays an OR; the account one is gone.
+    expect(predicates).toHaveLength(1);
+    expect(JSON.stringify(predicates[0])).toContain('workspace_id');
+  });
 });
 
 describe('getCodexStatus', () => {

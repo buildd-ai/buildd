@@ -9,6 +9,7 @@ import {
   isDispatchableBackend,
   maskBackend,
   pickFailoverBackend,
+  resolveEffectiveBackend,
 } from '../backend-policy';
 
 const NOW = new Date('2026-08-25T10:00:00Z');
@@ -152,3 +153,36 @@ describe('pickFailoverBackend', () => {
     expect(d).toEqual({ backend: null, blocked: [{ backend: 'claude', reason: 'masked' }] });
   });
 });
+
+describe('resolveEffectiveBackend', () => {
+  it('returns the stored per-task backend when the team mask allows it', () => {
+    expect(resolveEffectiveBackend('codex', null)).toBe('codex');
+    expect(resolveEffectiveBackend('codex', ['claude', 'codex'])).toBe('codex');
+    expect(resolveEffectiveBackend('claude', [])).toBe('claude');
+  });
+
+  it('treats a null/unknown stored backend as the schema default', () => {
+    // tasks.backend is NOT NULL DEFAULT 'claude', but callers that select it
+    // loosely (or a future nullable column) must not resolve to undefined.
+    expect(resolveEffectiveBackend(null, null)).toBe('claude');
+    expect(resolveEffectiveBackend(undefined, null)).toBe('claude');
+    expect(resolveEffectiveBackend('openrouter', null)).toBe('claude');
+    expect(resolveEffectiveBackend('nonsense', null)).toBe('claude');
+  });
+
+  it('applies the team mask, exactly as the claim route does at dispatch time', () => {
+    expect(resolveEffectiveBackend('codex', ['claude'])).toBe('claude');
+    expect(resolveEffectiveBackend('claude', ['codex'])).toBe('codex');
+  });
+
+  it('agrees with maskBackend for every dispatchable backend and mask', () => {
+    const masks: Array<AgentBackendList> = [null, [], ['claude'], ['codex'], ['claude', 'codex']];
+    for (const stored of DISPATCHABLE_BACKENDS) {
+      for (const mask of masks) {
+        expect(resolveEffectiveBackend(stored, mask)).toBe(maskBackend(stored, mask));
+      }
+    }
+  });
+});
+
+type AgentBackendList = Parameters<typeof maskBackend>[1];

@@ -11,6 +11,7 @@ import type {
   ScheduleRow,
   RecentFailure,
   CredentialHealthItem,
+  StrandedBackendRow,
   BudgetForecast,
   FailureAnalytics,
   FailureWindow,
@@ -162,6 +163,7 @@ interface Props {
   schedules: ScheduleRow[];
   recentFailures: RecentFailure[];
   credentialHealth: CredentialHealthItem[];
+  strandedBackends: StrandedBackendRow[];
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
@@ -176,6 +178,7 @@ export function HealthClient({
   schedules,
   recentFailures,
   credentialHealth,
+  strandedBackends,
   teamWorkspaces,
   wsFilter,
   budgetForecast,
@@ -326,6 +329,7 @@ export function HealthClient({
   const failedSchedules = schedules.filter(s => s.enabled && !!s.lastError);
   const hasProblems =
     credentialHealth.length > 0 ||
+    strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     failedSchedules.length > 0 ||
     recentFailures.length > 0;
@@ -411,6 +415,44 @@ export function HealthClient({
                 </div>
               );
             })}
+
+            {/* Backends stranding pending work — a missing credential, counted in
+                tasks. Deliberately NOT a task-level gate (PR #1864): the same
+                module feeds Settings → Agent backends, which is where the fix is. */}
+            {strandedBackends.map((b) => (
+              <div key={`strand-${b.backend}`} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-text-primary">
+                        {b.label} has no credential
+                      </p>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
+                        {b.strandedPending} task{b.strandedPending === 1 ? '' : 's'} unclaimable
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Pending work is routed to {b.label}, so no runner can claim it
+                      {b.enabledForTeam ? ' — connect it, or disable it team-wide to reroute' : ''}.
+                    </p>
+                    {b.sampleTasks.length > 0 && (
+                      <p className="text-xs text-text-muted mt-0.5 truncate">
+                        {b.sampleTasks.map((t) => t.title).join(' · ')}
+                        {b.strandedPending > b.sampleTasks.length
+                          ? ` · +${b.strandedPending - b.sampleTasks.length} more`
+                          : ''}
+                      </p>
+                    )}
+                  </div>
+                  <a
+                    href="/app/settings?section=agent-backends"
+                    className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
+                  >
+                    Fix in Settings
+                  </a>
+                </div>
+              </div>
+            ))}
 
             {/* Offline runners */}
             {offlineRunners.map((hb) => (

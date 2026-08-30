@@ -3,6 +3,11 @@ title: Knowledge Store Retrieval
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
+domain: knowledge
+surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/ingest.ts, packages/core/knowledge-store/chunker.ts, packages/core/mcp-tools.ts]
+related: [mcp-action-contracts, mission-task-lifecycle]
+keywords: [knowledge_chunks, rrf, bm25, voyage-code-3, query_knowledge, spec_compare]
 supersedes: []
 ---
 # Knowledge Store & Retrieval

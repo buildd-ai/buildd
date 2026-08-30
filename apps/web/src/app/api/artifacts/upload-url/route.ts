@@ -4,17 +4,21 @@ import { workers, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomBytes, randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { isStorageConfigured, generateUploadUrl } from '@/lib/storage';
+import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
+import { buildArtifactKey } from '@/lib/storage-keys';
 import { ArtifactType } from '@buildd/shared';
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-
-/** Collapse a client-supplied filename to one traversal-free path segment. */
-function safeObjectFilename(filename: string): string {
-  const base = String(filename).split(/[/\\]/).pop() || '';
-  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
-  return cleaned.slice(0, 200) || 'upload.bin';
-}
+/**
+ * Ceiling for a single artifact upload, enforced in the signature.
+ *
+ * 50MB is the limit this endpoint has always advertised, so nothing that works
+ * today stops working; the change is that the value is now bound into the
+ * presigned PUT instead of only being compared against a self-reported number.
+ * Artifacts are agent deliverables — reports, logs, screenshots, small data
+ * exports — and R2 egress is billed, so the ceiling stays where the product
+ * contract already put it rather than being raised speculatively.
+ */
+export const MAX_ARTIFACT_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
 
 // POST /api/artifacts/upload-url - Get a presigned upload URL and create artifact record
 export async function POST(req: NextRequest) {
@@ -41,15 +45,27 @@ export async function POST(req: NextRequest) {
     metadata?: Record<string, unknown>;
   };
 
-  if (!workerId || !filename || !mimeType || !sizeBytes) {
+  if (!workerId || !filename || !mimeType || sizeBytes === undefined || sizeBytes === null) {
     return NextResponse.json(
       { error: 'workerId, filename, mimeType, and sizeBytes are required' },
       { status: 400 }
     );
   }
 
-  if (sizeBytes > MAX_FILE_SIZE) {
-    return NextResponse.json({ error: 'File exceeds 50MB limit' }, { status: 400 });
+  // The declared size is signed into the upload grant, so it has to be a real
+  // byte count before we can sign anything with it.
+  if (typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    return NextResponse.json(
+      { error: 'sizeBytes must be a positive integer' },
+      { status: 400 }
+    );
+  }
+
+  if (sizeBytes > MAX_ARTIFACT_UPLOAD_BYTES) {
+    return NextResponse.json(
+      { error: `File exceeds ${MAX_ARTIFACT_UPLOAD_BYTES / (1024 * 1024)}MB limit` },
+      { status: 413 }
+    );
   }
 
   const worker = await db.query.workers.findFirst({
@@ -78,13 +94,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // The workspace id is the tenant segment of the key; without one there is no
+  // prefix to scope the upload to.
+  if (!worker.workspaceId) {
+    return NextResponse.json(
+      { error: 'Worker is not associated with a workspace' },
+      { status: 400 }
+    );
+  }
+
   const uuid = randomUUID();
-  // The prefix is server-derived, but `filename` arrives from the client. Left raw,
-  // `../../role-configs/bundle.zip` produces a key whose `..` segments collapse
-  // during URL normalisation on the way to R2 — i.e. a write outside this
-  // workspace's prefix. Reduce it to a single safe basename; the original is still
-  // preserved verbatim in artifact metadata below.
-  const storageKey = `artifacts/${worker.workspaceId}/${uuid}/${safeObjectFilename(filename)}`;
+  let storageKey: string;
+  try {
+    storageKey = buildArtifactKey(worker.workspaceId, uuid, filename);
+  } catch {
+    return NextResponse.json({ error: 'Unable to derive a storage key' }, { status: 400 });
+  }
   const shareToken = randomBytes(24).toString('base64url');
 
   const artifactType = type || ArtifactType.FILE;
@@ -101,6 +126,8 @@ export async function POST(req: NextRequest) {
       shareToken,
       metadata: {
         ...(metadata || {}),
+        // The caller's own name, kept verbatim for display; the object key uses
+        // a reduced form of it.
         filename,
         mimeType,
         sizeBytes,
@@ -108,7 +135,7 @@ export async function POST(req: NextRequest) {
     })
     .returning();
 
-  const uploadUrl = await generateUploadUrl(storageKey, mimeType);
+  const uploadUrl = await generateSizedUploadUrl(storageKey, mimeType, sizeBytes);
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`

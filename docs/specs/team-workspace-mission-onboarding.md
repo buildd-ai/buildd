@@ -3,6 +3,11 @@ title: Team / Workspace / Mission Onboarding
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
+domain: surfaces
+surfaces: [apps/web/src/app/app/(protected)/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx]
+related: [surface-ia-home-missions-initiatives, team-namespace-scoping, mission-task-lifecycle]
+keywords: [create-repo, githubinstallationid, githubrepoid, repo picker, new workspace form, personal team]
 supersedes: []
 ---
 # Team → Workspace → Mission Onboarding

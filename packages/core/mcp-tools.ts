@@ -214,7 +214,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
-    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -4136,6 +4136,76 @@ function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean
   return `\n[savedAt: ${age} · superseded: ${superseded}]`;
 }
 
+/** Render a Date as a compact relative age string. */
+function relativeAge(date: Date): string {
+  const ms = Date.now() - date.getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1d ago' : `${days}d ago`;
+}
+
+/**
+ * Parse the source path from a chunk ID (which for file corpora is "path#startLine").
+ * Returns null when the ID does not have this structure.
+ */
+function parseSourcePath(id: string): string | null {
+  const hashIdx = id.lastIndexOf('#');
+  if (hashIdx <= 0) return null;
+  const path = id.slice(0, hashIdx);
+  const line = id.slice(hashIdx + 1);
+  if (!path || !/^\d+$/.test(line)) return null;
+  return `${path}#L${line}`;
+}
+
+/**
+ * Format a single QueryResult into a human-readable block showing corpus, path,
+ * timestamps, score breakdown, and lifecycle state.
+ * Memory corpus keeps the legacy savedAt/superseded format for backward compat.
+ */
+function formatKnowledgeResult(
+  r: import('./knowledge-store/types').QueryResult,
+  index: number,
+): string {
+  const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
+
+  if (r.corpus === 'memory') {
+    // Memory corpus: no file path, use existing savedAt/superseded format
+    const freshness = formatMemoryFreshness(r);
+    const linkOrType = r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType;
+    return `### ${index + 1}. ${typeTag}${linkOrType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+  }
+
+  // Non-memory: show corpus · path · timestamps · score breakdown
+  const path = r.sourcePath ?? parseSourcePath(r.id);
+  const pathStr = path ? `\`${path}\`` : r.sourceType;
+  const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
+  const header = `### ${index + 1}. ${typeTag}${r.corpus} · ${pathStr}${urlSuffix}`;
+
+  const sb = r.scoreBreakdown;
+  let scoreStr = `**Score:** ${r.score.toFixed(4)}`;
+  if (sb) {
+    const parts: string[] = [];
+    if (sb.dense !== undefined) parts.push(`dense: ${sb.dense.toFixed(3)}`);
+    if (sb.lexical !== undefined) parts.push(`lex: ${sb.lexical.toFixed(3)}`);
+    if (sb.rrf !== undefined) parts.push(`rrf: ${sb.rrf.toFixed(4)}`);
+    if (sb.rerank !== undefined) parts.push(`rerank: ${sb.rerank.toFixed(3)}`);
+    if (parts.length) scoreStr += ` (${parts.join(' · ')})`;
+  }
+
+  const metaParts: string[] = [scoreStr];
+  if (r.sourceTs) metaParts.push(`committed ${relativeAge(r.sourceTs)}`);
+  if (r.updatedAt) metaParts.push(`ingested ${relativeAge(r.updatedAt)}`);
+  if (r.isCurrent === false) {
+    metaParts.push(r.supersededBy ? `⚠ superseded by \`${r.supersededBy}\`` : '⚠ superseded');
+  }
+
+  return `${header}\n${metaParts.join(' · ')}\n\n${r.content}`;
+}
+
 // ── Shared memory action context type ────────────────────────────────────────
 
 type MemoryActionCtx = {
@@ -4292,12 +4362,7 @@ export async function handleRecallAction(
     return text(`No knowledge found for: "${query}"`);
   }
 
-  const formatted = results.map((r, i) => {
-    const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
-    const sourceLink = r.sourceUrl ? ` ([source](${r.sourceUrl}))` : '';
-    const freshness = scope === 'memory' ? formatMemoryFreshness(r) : '';
-    return `### ${i + 1}. ${typeTag}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}${sourceLink}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-  }).join('\n\n---\n\n');
+  const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
   return text(`Found ${results.length} result(s):\n\n${formatted}`);
 }
@@ -4669,10 +4734,7 @@ export async function handleMemoryAction(
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
-      const formatted = results.map((r, i) => {
-        const freshness = corpus === 'memory' ? formatMemoryFreshness(r) : '';
-        return `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-      }).join('\n\n---\n\n');
+      const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }

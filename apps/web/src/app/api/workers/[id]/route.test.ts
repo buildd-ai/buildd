@@ -499,6 +499,9 @@ describe('PATCH /api/workers/[id]', () => {
     mockTeamsFindFirst.mockReset();
     mockWorkerErrorTracesFindMany.mockReset();
     mockWorkerErrorTracesFindMany.mockResolvedValue([]);
+    lastInsertTable = null;
+    lastInsertValues = null;
+    mockGenericInsert.mockClear();
 
     // Defaults
     mockUpsertAutoArtifact.mockResolvedValue(undefined);
@@ -868,9 +871,6 @@ describe('PATCH /api/workers/[id]', () => {
         })),
       })),
     });
-    lastInsertTable = null;
-    lastInsertValues = null;
-
     const req = createMockRequest({
       method: 'PATCH',
       headers: { Authorization: 'Bearer bld_test' },
@@ -3261,11 +3261,7 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock(() => ({ where: mock(() => Promise.resolve()) })),
       });
 
-      // Reset insert tracking
-      lastInsertTable = null;
-      lastInsertValues = null;
       mockInsertConflictDoNothingResult = 'row';
-      mockGenericInsert.mockClear();
       mockTryAutoMergeWorkerPr.mockReset();
       mockTryAutoMergeWorkerPr.mockResolvedValue(undefined);
       mockEscalateReviewerExhaustion.mockReset();
