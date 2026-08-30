@@ -26,6 +26,7 @@ import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
+import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -1732,6 +1733,19 @@ export async function PATCH(
           .limit(1);
         if (!isProseEvalTask(taskForProse?.context)) return;
         await handleProseEvalOutcome(taskId, body.structuredOutput);
+      });
+
+      // A finished worker-eval task owns verdicts for all LLM-eligible + command
+      // criteria it was asked about. Apply before the completion attempt so criteria
+      // turning green complete the mission in this request.
+      await runStep('criteria-worker-eval-outcome', async () => {
+        const [taskForWorkerEval] = await db
+          .select({ context: tasks.context })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (!isCriteriaWorkerEvalTask(taskForWorkerEval?.context)) return;
+        await handleCriteriaWorkerEvalOutcome(taskId, body.structuredOutput);
       });
 
       // Attempt mission completion. The predicate pulls a goal-criteria verdict
