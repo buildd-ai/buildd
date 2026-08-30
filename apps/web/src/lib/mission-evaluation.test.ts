@@ -57,6 +57,17 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The shared completion predicate. An evaluation verdict of 'complete' is a
+// proposal that this predicate may refuse — mocked so both outcomes are testable.
+const mockCompleteMissionIfVerified = mock(() => Promise.resolve({
+  completed: true,
+  decision: { ok: true, code: 'ok', reason: 'All 1 goal criteria pass' },
+}) as any);
+
+mock.module('@/lib/mission-completion', () => ({
+  completeMissionIfVerified: mockCompleteMissionIfVerified,
+}));
+
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
@@ -88,6 +99,11 @@ function resetAll() {
   mockDispatchNewTask.mockImplementation(() => Promise.resolve());
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
+  mockCompleteMissionIfVerified.mockReset();
+  mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+    completed: true,
+    decision: { ok: true, code: 'ok', reason: 'All 1 goal criteria pass' },
+  }) as any);
 }
 
 describe('mission-evaluation', () => {
@@ -212,7 +228,13 @@ describe('mission-evaluation', () => {
       const result = await handleEvaluationResult('m1', 'eval1');
       expect(result.action).toBe('completed');
       expect(result.verdict!.verdict).toBe('complete');
-      expect(mockTriggerEvent).toHaveBeenCalled();
+      // The completion write, schedule disable, note and event all live in the
+      // shared predicate now — this path only proposes.
+      expect(mockCompleteMissionIfVerified).toHaveBeenCalledWith('m1', {
+        path: 'evaluation_task',
+        predicate: 'evaluation task eval1 verdict=complete confidence=high',
+        proposed: true,
+      });
     });
 
     it('completes mission on medium-confidence complete verdict', async () => {
@@ -231,6 +253,30 @@ describe('mission-evaluation', () => {
 
       const result = await handleEvaluationResult('m1', 'eval1');
       expect(result.action).toBe('completed');
+    });
+
+    it('keeps active when the completion predicate refuses a confident complete verdict', async () => {
+      // The evaluator is an LLM comparing prose to task summaries; it cannot see
+      // whether the goal criteria hold. A confident 'complete' is a proposal.
+      taskFindFirstResult = {
+        status: 'completed',
+        result: {
+          structuredOutput: {
+            verdict: 'complete',
+            confidence: 'high',
+            rationale: 'All tasks done',
+            taskDispositions: [],
+          },
+        },
+      };
+      mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+        completed: false,
+        decision: { ok: false, code: 'criteria_unverified', reason: 'Goal criteria not verified (overall: UNVERIFIED)' },
+      }) as any);
+
+      const result = await handleEvaluationResult('m1', 'eval1');
+      expect(result.action).toBe('kept_active');
+      expect(result.verdict!.verdict).toBe('complete');
     });
 
     it('keeps active on incomplete verdict', async () => {

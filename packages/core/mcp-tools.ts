@@ -134,6 +134,11 @@ export const triggerActions = [
 ] as const;
 
 export const workerActions = [
+  // spec_compare is read-only retrieval over {ws}:spec and {ws}:code. It grants no
+  // data access a worker lacks — query_knowledge/recall already reach both corpora —
+  // so gating it to admin only meant the spec-validator role could never run its own
+  // documented workflow (default-roles.ts instructs it to call spec_compare).
+  'spec_compare',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -167,7 +172,6 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
-  'spec_compare',
   'consolidate_knowledge',
   'memory_delete',
 ] as const;
@@ -201,7 +205,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
-    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
@@ -219,7 +223,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates; null clears; each criterion MUST have type (required) — one of: "all_prs_merged" | "command" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string; type-specific required fields: description→description:string, command→command:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string; example: [{type:"description",description:"All PRs merged and CI green",label:"CI green"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -240,7 +244,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side. [admin]',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -2710,11 +2714,40 @@ export async function handleBuilddAction(
 
       const t = data.totals;
       const p = data.perTask;
+      // Per-task metrics are DerivedMetric<Distribution> — absent for seat auth
+      // (no cost) and for workers that died before recording anything. Print the
+      // reason rather than a zero that reads as a measurement.
+      const dist = (m: any) => (m && m.kind === 'value' ? m.value : null);
+      const nOf = (metric: string) => p?.contributing?.[metric] ?? 0;
+      const overN = (metric: string) =>
+        p?.tasks && nOf(metric) < p.tasks ? ` [n=${nOf(metric)}/${p.tasks}]` : '';
+
       const lines: string[] = [
         `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
-        `Totals: ${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out · ${fmtTokens(t.cacheReadTokens)} cache read · $${t.costUsd.toFixed(2)} · ${t.turns} turns · ${t.toolCalls} tool calls`,
-        `Per task: input ${fmtTokens(p.inputTokens.median)} median / ${fmtTokens(p.inputTokens.p90)} p90 / ${fmtTokens(p.inputTokens.max)} max · $${p.costUsd.median.toFixed(2)} median · ${Math.round(p.turns.median)} turns median · ${Math.round(p.toolCalls.median)} tool calls median`,
       ];
+
+      const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
+      if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);
+      if (t.costUsd > 0) totalsParts.push(`$${t.costUsd.toFixed(2)}`);
+      totalsParts.push(`${t.turns} turns`, `${t.toolCalls} tool calls`);
+      lines.push(`Totals: ${totalsParts.join(' · ')}`);
+
+      const perTaskParts: string[] = [];
+      const inputDist = dist(p?.inputTokens);
+      perTaskParts.push(inputDist
+        ? `input ${fmtTokens(inputDist.median)} median / ${fmtTokens(inputDist.p90)} p90 / ${fmtTokens(inputDist.max)} max${overN('inputTokens')}`
+        : `input — (${p?.inputTokens?.reason ?? 'unavailable'})`);
+      const costDist = dist(p?.costUsd);
+      if (costDist) {
+        perTaskParts.push(`$${costDist.median.toFixed(2)} median${overN('costUsd')}`);
+      }
+      const turnsDist = dist(p?.turns);
+      if (turnsDist) perTaskParts.push(`${Math.round(turnsDist.median)} turns median${overN('turns')}`);
+      const toolDist = dist(p?.toolCalls);
+      if (toolDist) perTaskParts.push(`${Math.round(toolDist.median)} tool calls median${overN('toolCalls')}`);
+      lines.push(`Per task: ${perTaskParts.join(' · ')}`);
+
+      if (!costDist && p?.costUsd?.reason) lines.push(`Cost: ${p.costUsd.reason}`);
 
       const cov = data.tools?.coverage;
       if (cov) {
@@ -2738,11 +2771,21 @@ export async function handleBuilddAction(
       const models: string[] = (data.byModel ?? []).slice(0, 5).map((m: any) =>
         `  ${m.model}: ${fmtTokens(m.inputTokens)} in / ${fmtTokens(m.outputTokens)} out (${Math.round(m.share * 100)}%)`
       );
-      if (models.length > 0) lines.push(`By model:\n${models.join('\n')}`);
+      if (models.length > 0) {
+        lines.push(`By model:\n${models.join('\n')}`);
+      } else if (t.inputTokens > 0) {
+        // modelUsage is only populated on API-key auth; seat auth leaves it empty.
+        lines.push('By model: unavailable — the SDK reports no per-model usage on seat-based (OAuth) auth');
+      }
 
       const groups: string[] = (data.groups ?? []).slice(0, 10).map((g: any) => {
         const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
-        return `  ${g.label ?? g.key}: ${g.tasks} task(s) · ${fmtTokens(g.perTask.inputTokens.median)} median in · $${g.perTask.costUsd.median.toFixed(2)} median · ${success} success`;
+        const gIn = dist(g.perTask?.inputTokens);
+        const gCost = dist(g.perTask?.costUsd);
+        const parts = [`${g.tasks} task(s)`, gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded'];
+        if (gCost) parts.push(`$${gCost.median.toFixed(2)} median`);
+        parts.push(`${success} success`);
+        return `  ${g.label ?? g.key}: ${parts.join(' · ')}`;
       });
       if (groups.length > 0) lines.push(`By ${data.groupBy}:\n${groups.join('\n')}`);
 
@@ -2952,6 +2995,11 @@ export async function handleBuilddAction(
               criteriaInfo += '\n' + criteriaArr.map((c: any) =>
                 `  • ${c.label ?? c.description ?? c.type ?? '(malformed criterion — missing type field)'}`
               ).join('\n');
+            }
+            // The gate, stated plainly: anything other than a passing verdict
+            // keeps the mission open, so an agent knows not to declare victory.
+            if (state?.overall !== 'pass') {
+              criteriaInfo += '\n  ⚠ Completion is BLOCKED until every criterion passes. An unevaluated criterion is not a pass.';
             }
           }
 
@@ -3936,6 +3984,76 @@ function formatMemoryFreshness(r: { createdAt?: Date | null; isCurrent?: boolean
   return `\n[savedAt: ${age} · superseded: ${superseded}]`;
 }
 
+/** Render a Date as a compact relative age string. */
+function relativeAge(date: Date): string {
+  const ms = Date.now() - date.getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? '1d ago' : `${days}d ago`;
+}
+
+/**
+ * Parse the source path from a chunk ID (which for file corpora is "path#startLine").
+ * Returns null when the ID does not have this structure.
+ */
+function parseSourcePath(id: string): string | null {
+  const hashIdx = id.lastIndexOf('#');
+  if (hashIdx <= 0) return null;
+  const path = id.slice(0, hashIdx);
+  const line = id.slice(hashIdx + 1);
+  if (!path || !/^\d+$/.test(line)) return null;
+  return `${path}#L${line}`;
+}
+
+/**
+ * Format a single QueryResult into a human-readable block showing corpus, path,
+ * timestamps, score breakdown, and lifecycle state.
+ * Memory corpus keeps the legacy savedAt/superseded format for backward compat.
+ */
+function formatKnowledgeResult(
+  r: import('./knowledge-store/types').QueryResult,
+  index: number,
+): string {
+  const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
+
+  if (r.corpus === 'memory') {
+    // Memory corpus: no file path, use existing savedAt/superseded format
+    const freshness = formatMemoryFreshness(r);
+    const linkOrType = r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType;
+    return `### ${index + 1}. ${typeTag}${linkOrType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
+  }
+
+  // Non-memory: show corpus · path · timestamps · score breakdown
+  const path = r.sourcePath ?? parseSourcePath(r.id);
+  const pathStr = path ? `\`${path}\`` : r.sourceType;
+  const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
+  const header = `### ${index + 1}. ${typeTag}${r.corpus} · ${pathStr}${urlSuffix}`;
+
+  const sb = r.scoreBreakdown;
+  let scoreStr = `**Score:** ${r.score.toFixed(4)}`;
+  if (sb) {
+    const parts: string[] = [];
+    if (sb.dense !== undefined) parts.push(`dense: ${sb.dense.toFixed(3)}`);
+    if (sb.lexical !== undefined) parts.push(`lex: ${sb.lexical.toFixed(3)}`);
+    if (sb.rrf !== undefined) parts.push(`rrf: ${sb.rrf.toFixed(4)}`);
+    if (sb.rerank !== undefined) parts.push(`rerank: ${sb.rerank.toFixed(3)}`);
+    if (parts.length) scoreStr += ` (${parts.join(' · ')})`;
+  }
+
+  const metaParts: string[] = [scoreStr];
+  if (r.sourceTs) metaParts.push(`committed ${relativeAge(r.sourceTs)}`);
+  if (r.updatedAt) metaParts.push(`ingested ${relativeAge(r.updatedAt)}`);
+  if (r.isCurrent === false) {
+    metaParts.push(r.supersededBy ? `⚠ superseded by \`${r.supersededBy}\`` : '⚠ superseded');
+  }
+
+  return `${header}\n${metaParts.join(' · ')}\n\n${r.content}`;
+}
+
 // ── Shared memory action context type ────────────────────────────────────────
 
 type MemoryActionCtx = {
@@ -3957,31 +4075,60 @@ type MemoryActionCtx = {
  * bridge the prose→identifier vocabulary gap when querying the :code namespace
  * with lexical search.
  */
+type AnchorKind = 'symbol' | 'path' | 'route';
+
+/**
+ * Max anchors sent to the second-hop lexical query. Raised from 20: at 20 the cap
+ * was binding on ~80% of candidates (see the ranking note below), so the limit
+ * itself was suppressing recall rather than controlling query cost.
+ */
+const ANCHOR_LIMIT = 40;
+
 function extractImplementationAnchors(chunks: QueryResult[]): string[] {
   const combined = chunks.map(r => r.content).join('\n');
   const anchors = new Set<string>();
+  const kind = new Map<string, AnchorKind>();
 
   // File paths: apps/* and packages/*
   for (const m of combined.matchAll(/\b(?:apps|packages)\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|sql|md|mdx)\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'path');
   }
 
   // Route paths: /api/...
   for (const m of combined.matchAll(/\/api\/[a-zA-Z0-9/[\]_-]+/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'route');
   }
 
   // camelCase symbols (function/variable names): lowercase start, uppercase within, ≥6 chars
   for (const m of combined.matchAll(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g)) {
-    if (m[0].length >= 6) anchors.add(m[0]);
+    if (m[0].length >= 6) { anchors.add(m[0]); kind.set(m[0], 'symbol'); }
   }
 
   // PascalCase types/classes/interfaces: uppercase start, ≥6 chars
   for (const m of combined.matchAll(/\b[A-Z][a-z][a-zA-Z0-9]{4,}\b/g)) {
     anchors.add(m[0]);
+    kind.set(m[0], 'symbol');
   }
 
-  return [...anchors].slice(0, 20);
+  // Rank before truncating. Previously this returned insertion order, which is
+  // pass order: every file path, then every /api/ route, then camelCase, then
+  // PascalCase. Measured over this repo's own design docs there are ~97 candidates
+  // per call against a 20-slot cap, so paths and route strings routinely consumed
+  // the whole budget and PascalCase types were dropped structurally — even though
+  // the second hop is a lexical identifier query where symbols are the high-signal
+  // terms. Symbols now rank ahead of paths, and paths ahead of bare route strings.
+  const RANK: Record<AnchorKind, number> = { symbol: 0, path: 1, route: 2 };
+  const ranked = [...anchors].sort((a, b) => {
+    const byKind = RANK[kind.get(a) ?? 'route'] - RANK[kind.get(b) ?? 'route'];
+    if (byKind !== 0) return byKind;
+    // Within a kind, prefer more specific (longer) anchors.
+    if (b.length !== a.length) return b.length - a.length;
+    return a.localeCompare(b);
+  });
+
+  return ranked.slice(0, ANCHOR_LIMIT);
 }
 
 /**
@@ -4063,12 +4210,7 @@ export async function handleRecallAction(
     return text(`No knowledge found for: "${query}"`);
   }
 
-  const formatted = results.map((r, i) => {
-    const typeTag = r.metadata?.type ? `[${r.metadata.type}] ` : '';
-    const sourceLink = r.sourceUrl ? ` ([source](${r.sourceUrl}))` : '';
-    const freshness = scope === 'memory' ? formatMemoryFreshness(r) : '';
-    return `### ${i + 1}. ${typeTag}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}${sourceLink}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-  }).join('\n\n---\n\n');
+  const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
   return text(`Found ${results.length} result(s):\n\n${formatted}`);
 }
@@ -4440,10 +4582,7 @@ export async function handleMemoryAction(
         return text(`No knowledge chunks found for query: "${params.query}" (namespace: ${ns}, mode: ${mode})`);
       }
 
-      const formatted = results.map((r, i) => {
-        const freshness = corpus === 'memory' ? formatMemoryFreshness(r) : '';
-        return `### ${i + 1}. ${r.metadata.type ? `[${r.metadata.type}] ` : ''}${r.sourceUrl ? `[source](${r.sourceUrl})` : r.sourceType}\n**Score:** ${r.score.toFixed(4)}${freshness}\n\n${r.content}`;
-      }).join('\n\n---\n\n');
+      const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
       return text(`Found ${results.length} chunk(s) (mode: ${mode}, namespace: ${ns}):\n\n${formatted}`);
     }

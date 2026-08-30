@@ -185,6 +185,8 @@ export default async function MissionsPage({
         .orderBy(desc(releases.createdAt))
         .limit(1);
 
+      // No COALESCE epoch fallback: when no healthy baseline row exists the
+      // comparison `mergedAt > NULL` returns NULL (no match) → count = 0.
       const [queueRow] = await db
         .select({
           queueDepth: sql<number>`count(*)::int`,
@@ -195,10 +197,7 @@ export default async function MissionsPage({
         .where(and(
           eq(tasksTable.workspaceId, wsId),
           isNotNull(workers.mergedAt),
-          sql`${workers.mergedAt} > COALESCE(
-            (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy'),
-            '1970-01-01'::timestamptz
-          )`,
+          sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
         ));
 
       releaseFooterMap.set(wsId, {

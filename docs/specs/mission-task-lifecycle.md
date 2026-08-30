@@ -3,6 +3,11 @@ title: Mission & Task Lifecycle
 status: active
 owner: max
 last_verified: 2026-08-29
+summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+domain: missions
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
+related: [subject-anchor-liveness, external-cron-triggers, release-flow]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours]
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -126,17 +131,44 @@ stalled a whole workspace.
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
-| `subject_dead` | never (terminal) | policy, forceable |
+| `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |
 | `connector_routing_mismatch` | fixing the connector | capability |
+
+¹ `subject_dead` has its own capability spec — see
+`docs/specs/subject-anchor-liveness.md` for binding classification, fail-open
+semantics, terminal cancellation and the override. This table records only its
+place in the gate ladder.
 
 `StartTaskButton` also renders a `capability_mismatch` branch that no route
 emits. That is deliberate, not an oversight: the capability abstraction whose
 only real check was "does this backend have a credential" was removed in PR
 #1864 and replaced by the onboarding/workspace-configuration path (see
-`docs/SPEC.md` → Removed concepts). A task whose backend has no credential is
-therefore still stranded without a task-level gateReason — a known gap that must
-be closed through onboarding surfacing, NOT by reviving the gate.
+`docs/SPEC.md` → Removed concepts). A task whose backend has no credential
+therefore has no task-level `gateReason`, and must not be given one.
+
+That gap is now closed at configuration time instead, by
+`apps/web/src/lib/backend-strand.ts` — one module, three read-only surfaces, no
+gate:
+- **Settings → Agent backends** (`AgentBackendsSection.tsx`, fed by
+  `GET /api/teams/[id]/backend-readiness`): each backend card states how many
+  **pending** tasks are routed to it with no credential, and links to them. The
+  count is the consequence a bare "not configured" chip failed to convey.
+- **Health → Problems** (`HealthClient.tsx`): one row per backend that is
+  stranding work, with the existing "Fix in Settings" affordance. Without it the
+  page asserts "All systems healthy" while a queue can never drain.
+- **`/api/cron/queue-stall`**: the `backend_credential_missing` stall reason
+  (below), which names the condition in the ops alert instead of reporting the
+  most permanent block it can see as `no_gate_identified`.
+
+"Routed to" is `resolveEffectiveBackend()` in `packages/core/backend-policy.ts`:
+`tasks.backend` (the mission → role → workspace chain, resolved and persisted at
+creation) with the team's enabled-provider mask applied on top, exactly as the
+claim route applies it at dispatch. Consequences the surfaces MUST model: a task
+nominally on a **disabled** backend is not stranded (the mask reroutes it), a
+task can be stranded by the mask alone (Claude disabled + Codex unconfigured
+strands the whole queue), and Claude is `implicitlyConfigured`, so the common
+case reports nothing.
 
 Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
 self-clear: `path_overlap`, `advisory_manifest`, `mission_concurrent`,
@@ -149,6 +181,14 @@ task has been held by one for longer than the stall threshold, since "transient"
 stops being an excuse at that point. `advisory_manifest` is the case that
 matters — its blocking peer may be parked in `waiting_input`, holding the slot
 until a human answers, which never self-clears in practice.
+
+The watchdog reports two reasons that are NOT `gateReason` values and never will
+be, ordered below every gate `/start` can name (so `/start`'s 422 ordering is
+reproduced verbatim) and among themselves by permanence:
+`backend_credential_missing` (permanent until an operator adds a credential),
+then `advisory_manifest` (self-clearing). Reporting is not gating: the watchdog
+withholds nothing from the claim query, which is why naming the missing
+credential here does not reintroduce the removed capability gate.
 
 Two entries appear in the hard-gate table above rather than here, because the
 claim loop counts them but `/start` also rejects on them: `subject_dead`
@@ -169,6 +209,10 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
 - AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
   reconciliation sweep runs THEN the task becomes `cancelled` AND its dependents
   become claimable.
+- AC-CG-6: GIVEN a pending task whose effective backend has no credential THEN
+  `/api/cron/queue-stall` reports `backend_credential_missing` (not
+  `no_gate_identified`) AND Settings → Agent backends counts it against that
+  backend AND `/start` still returns no `gateReason` for it.
 
 **Code surface**:
 - Per-gate modules: `apps/web/src/app/api/workers/claim/` —
@@ -185,6 +229,9 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
 - Display: `apps/web/src/lib/task-presentation.ts` — `deriveTaskPhase()`,
   `apps/web/src/components/StageChip.tsx` — `deriveStage()`
 - Watchdog: `apps/web/src/app/api/cron/queue-stall/route.ts`
+- Configuration-time surfacing (no gate): `apps/web/src/lib/backend-strand.ts`,
+  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`,
+  `apps/web/src/app/api/teams/[id]/backend-readiness/route.ts`
 
 ---
 
@@ -238,6 +285,11 @@ stored — it is derived on read from the state of associated tasks via
 - Mission status transitions (`active ↔ paused`, `active → completed`,
   `completed → archived`) are driven by human action (dashboard or MCP) or
   mission loop evaluation tasks — not by any automatic side effect.
+- Every automated `active → completed` transition MUST go through
+  `completeMissionIfVerified`, which is the only automated writer of
+  `missions.status = 'completed'`. An agent's `missionComplete = true` — from the
+  heartbeat, a planning task, or the independent evaluation task — is a PROPOSAL
+  that this function may refuse.
 - Health is computed from deliverable tasks only (`isDeliverableTask` filters out
   `kind = 'coordination'`, `mode = 'planning'`, and housekeeping titles).
 - A paused mission MUST NOT spawn new tasks from its schedule while paused.
@@ -271,6 +323,142 @@ stored — it is derived on read from the state of associated tasks via
 - Mission API: `apps/web/src/app/api/missions/route.ts`,
   `apps/web/src/app/api/missions/[id]/route.ts`
 - Schema: `packages/core/db/schema.ts` — `missions` table
+
+---
+
+## Mission Completion Gate
+
+**Capability statement**: A mission MUST NOT reach `completed` without a passing
+goal-criteria verdict; completion REQUESTS a verdict, the verdict GATES
+completion, and the absence of a verdict is never a pass.
+
+One predicate — `canCompleteMission(missionId)` — answers the question for every
+caller: the heartbeat's `missionComplete` signal, the heartbeat prepass, the
+dormancy check, the independent evaluation task, the on-demand criteria route,
+and the `on_mission_complete` release trigger. It returns
+`{ ok, code, reason, pendingDeliverables, pendingByStatus, pendingAllTasks,
+criteriaVerdict, ... }`, and `completeMissionIfVerified` performs the write.
+
+Refusal order (first failure is the reported `code`): `mission_not_found` →
+`mission_not_active` → `pending_deliverables` → `no_deliverables` →
+`infra_stalled` → `criteria_failed` / `criteria_pending` / `criteria_unverified`.
+
+**Invariants**:
+- No completion path is exempt from the predicate. In particular the heartbeat
+  is NOT an evaluation authority: it is an LLM reading a checklist and does not
+  count task rows.
+- A refused completion MUST be diagnosable. `completeMissionIfVerified` emits a
+  `mission:completion_decision` Pusher event carrying the predicate inputs
+  (pending count by status, criteria verdict, deciding path) for every decision
+  it makes, allowed or refused, and logs the same payload. Callers that only READ
+  the predicate (`canCompleteMission` direct, e.g. the release trigger) log but
+  do not emit — they decided nothing.
+- A mission whose work is done but whose criteria do not pass stays `active` and
+  keeps its schedule enabled (awaiting verification). It MUST NOT be
+  auto-archived by `selectMissionsToArchive` while a stated criterion lacks a
+  passing verdict.
+- Any non-terminal task that is not housekeeping blocks completion — `work` AND
+  `attempt`, so a pending CI retry counts. Housekeeping rows (including a
+  criterion's own verification task) MUST NOT block, or a `command` criterion
+  would block on itself and the mission could never close.
+- A mission with no deliverable rows at all MAY be completed only by an explicit
+  proposal (`proposed: true`), never by dormancy: a monitoring mission's output
+  is its heartbeat cycles, which are housekeeping rows.
+- When all deliverables are terminal and criteria are stated, the predicate MUST
+  attempt evaluation rather than reading a possibly-absent stored verdict. The
+  evaluator MUST NOT skip on the grounds that pending work exists — that was the
+  deadlock: the skip condition and the completion condition were the same
+  condition.
+- Verdicts are not one-shot. Mechanical criteria are re-evaluated on every
+  request; a `command` verdict older than `COMMAND_VERDICT_TTL_MS` is re-run; an
+  LLM-graded verdict is reused for at most `LLM_REVERIFY_MS`.
+- Reuse of a stored verdict MUST match on `criterionFingerprint`, never on array
+  index alone: deleting one criterion renumbers the rest, and an index-keyed
+  cache would transplant a verdict onto a criterion nobody evaluated.
+- A task's terminal status is NOT a verdict. A `command` criterion may only be
+  passed on evidence that the command ran (runner `verificationEvidence`, or the
+  `loopHistory` written from it) — a task can reach `completed` without running
+  it, e.g. a stale-worker retry clone that carries no `loopConfig`.
+- No command criterion is dispatched while another criterion already reads
+  `fail`: the fold cannot pass this round, so the run would buy nothing.
+- `command` criteria MUST be verified by execution: buildd dispatches a
+  `taskClass = 'bookkeeping'` verification task carrying
+  `loopConfig.exitCondition = { type: 'command', command }`, and the runner's
+  evidence — not an agent's summary — decides. A `command` criterion MUST NOT be
+  graded by the LLM evaluator.
+- The release trigger keeps one additional bar above the predicate: no task of
+  the mission in `pending`, `assigned`, or `in_progress`, housekeeping rows
+  included (`countPendingTasksForMission`). It MUST NOT be loosened to match a
+  weaker completion predicate. It reads the criteria verdict rather than
+  producing one (`evaluateCriteria: false`), and accepts a mission that is
+  already `completed`/`archived` — that mission passed the gate when it closed.
+- `POST`/`PATCH /api/missions` MUST reject a `description` criterion that omits
+  `notMechanizableReason` (HTTP 400), a `command` criterion with no command, and
+  a `metric` criterion (no evaluator exists, so it would block permanently).
+  A criterion byte-identical to one already stored on the mission is
+  grandfathered, so history cannot block the edit that would fix it.
+- An explicit `PATCH status: 'completed'` bypasses the gate by design (a person
+  may override) but MUST post a `Goal criteria gate overridden` note naming the
+  actor when the stored verdict is not `pass` — the endpoint is also reachable
+  with an admin API key.
+
+**Acceptance criteria**:
+- AC-11a: GIVEN a heartbeat planning task with `result.missionComplete = true`
+  and one deliverable task in `pending` WHEN the mission loop runs THEN the
+  mission status remains `active` and a `Mission awaiting verification` note
+  names the pending count.
+- AC-11b: GIVEN all deliverables terminal and `goalCriteriaState.overall` absent
+  WHEN completion is attempted THEN criteria evaluation is invoked, and if it
+  still yields no passing verdict the mission remains `active` with
+  `code = 'criteria_unverified'`.
+- AC-11c: GIVEN all deliverables terminal and every criterion `pass` WHEN
+  completion is attempted THEN `missions.status` becomes `completed`, the linked
+  schedule is disabled, and the `on_mission_complete` release trigger also
+  passes its own check.
+- AC-11d: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
+  task is dispatched, the criterion reads `PENDING` with its `workerTaskId`, and
+  the mission does NOT complete until that task's evidence resolves it.
+- AC-11e: GIVEN `POST /api/missions` with
+  `goalCriteria: [{ type: 'description', description: '...' }]` and no
+  `notMechanizableReason` THEN the request is rejected with HTTP 400 naming
+  `notMechanizableReason`.
+- AC-11f: GIVEN an `active` mission with all tasks completed, no enabled
+  schedule, 24h of quiet, and a stated criterion whose verdict is not `pass`
+  WHEN the archive sweep runs THEN the mission is NOT archived.
+- AC-11g: GIVEN a mission with one completed deliverable and one `pending` task
+  of `taskClass = 'attempt'` (a CI retry) WHEN completion is attempted THEN it is
+  refused with `pending_deliverables`.
+- AC-11h: GIVEN a mission whose only rows are housekeeping (a monitoring mission)
+  WHEN a heartbeat proposes completion and criteria pass THEN the mission
+  completes; WHEN dormancy checks the same mission THEN it is refused with
+  `no_deliverables`.
+- AC-11i: GIVEN a completed `command` verification task carrying no record that
+  the command ran WHEN its outcome is handed back THEN the criterion is NOT set
+  to `pass`.
+
+**Code surface**:
+- Predicate + writer: `apps/web/src/lib/mission-completion.ts` —
+  `canCompleteMission()`, `completeMissionIfVerified()`
+- Verdict producer: `apps/web/src/lib/mission-criteria-eval.ts` —
+  `ensureCriteriaVerdict()`, `evaluateCriteriaNow()`
+- Command criteria: `apps/web/src/lib/mission-criteria-verify.ts` —
+  `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
+- Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
+  `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`
+- Callers: `apps/web/src/lib/mission-loop.ts`,
+  `apps/web/src/app/api/cron/schedules/route.ts` (heartbeat prepass site),
+  `apps/web/src/lib/mission-evaluation.ts`,
+  `apps/web/src/lib/mission-release.ts`,
+  `apps/web/src/app/api/missions/[id]/evaluate/route.ts`,
+  `apps/web/src/app/api/workers/[id]/route.ts`
+- Archive guard: `apps/web/src/lib/mission-archive.ts` —
+  `selectMissionsToArchive()`
+- Display: `apps/web/src/lib/mission-helpers.ts` —
+  `deriveMissionDisplayState()` (`awaiting_verification`)
+
+**Out of scope**: The `metric` criterion evaluator (no metric-query registry
+exists yet, so `metric` criteria stay `UNVERIFIED` and block completion by
+design) and initiative KPI evaluation, which has no evaluator at all.
 
 ---
 

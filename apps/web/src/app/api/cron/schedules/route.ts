@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { archiveStaleDoneMissions } from '@/lib/mission-archive';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces, missionNotes } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { describeError } from '@buildd/core/describe-error';
@@ -15,7 +15,7 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
-import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
 import { notify } from '@/lib/pushover';
 
@@ -423,8 +423,6 @@ export async function GET(req: NextRequest) {
             gateCondition: true,
             dependencyMetAt: true,
             orchestrationMode: true,
-            goalCriteria: true,
-            goalCriteriaState: true,
           },
         });
 
@@ -548,32 +546,32 @@ export async function GET(req: NextRequest) {
               gateCondition: (linkedMission.gateCondition as 'merged' | 'completed') ?? 'merged',
               dependencyMetAt: linkedMission.dependencyMetAt ?? null,
               lastHeartbeatStateHash: schedule.lastHeartbeatStateHash ?? null,
-              goalCriteria: linkedMission.goalCriteria,
-              goalCriteriaState: linkedMission.goalCriteriaState,
             });
 
             if (prepass.action === 'skip_complete') {
-              await db.update(missions).set({ status: 'completed', updatedAt: now }).where(eq(missions.id, linkedMission.id));
-              await db.update(taskSchedules).set({ enabled: false, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
-              await checkAndUnblockDependentMissions(linkedMission.id, 'completed').catch(e =>
-                console.error(`[heartbeat-prepass] unblock failed for ${linkedMission.id}:`, e)
-              );
-              await triggerEvent(channels.mission(linkedMission.id), events.MISSION_LOOP_COMPLETED, { missionId: linkedMission.id, reason: 'heartbeat_prepass_complete' });
-              deterministicHeartbeatSkips++;
-              skipped++;
-              continue;
-            }
+              // Propose, don't decree. The shared predicate re-checks the task
+              // rows, pulls a goal-criteria verdict if one is owed, and refuses
+              // when it cannot get one — in which case the mission stays active
+              // (awaiting verification) and the heartbeat is deferred rather than
+              // disabled, so orchestration survives the refusal.
+              const outcome = await completeMissionIfVerified(linkedMission.id, {
+                path: 'heartbeat_prepass',
+                predicate: 'all deliverable tasks terminal',
+                proposed: true,
+              });
 
-            if (prepass.action === 'skip_criteria_blocked') {
-              await db.insert(missionNotes).values({
-                missionId: linkedMission.id,
-                authorType: 'system',
-                type: 'warning',
-                title: 'Mission completion blocked by goal criteria',
-                body: `The heartbeat found all deliverable tasks terminal, but goal criteria are not satisfied (${prepass.reason}). The mission will remain active until criteria pass.`,
-                status: 'open',
-              } as any).catch(e => console.error(`[heartbeat-prepass] note insert failed for ${linkedMission.id}:`, e));
-              await db.update(taskSchedules).set({ lastDeferralReason: 'heartbeat_criteria_blocked', lastDeferredAt: now, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              if (!outcome.completed) {
+                // Advance to the schedule's own next slot. Without this the row
+                // stays due and every cron tick re-asks the predicate (which can
+                // re-run a command criterion); the heartbeat's cadence is the
+                // right re-verification interval.
+                await db.update(taskSchedules).set({
+                  nextRunAt: computeNextRunAt(schedule.cronExpression, schedule.timezone),
+                  lastDeferralReason: 'heartbeat_criteria_blocked',
+                  lastDeferredAt: now,
+                  updatedAt: now,
+                }).where(eq(taskSchedules.id, schedule.id));
+              }
               deterministicHeartbeatSkips++;
               skipped++;
               continue;

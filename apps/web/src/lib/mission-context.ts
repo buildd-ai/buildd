@@ -347,6 +347,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       lastEvaluationTaskId: true,
       contextArtifactIds: true,
       initiativeId: true,
+      goalCriteria: true,
+      goalCriteriaState: true,
     },
   });
   if (!mission) return null;
@@ -548,12 +550,39 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
   }
 
+  // Surface the goal-criteria gate. Without this the organizer proposes
+  // completion, gets refused, and has no idea what it is being measured against —
+  // the difference between a gate and an argument.
+  const goalCriteria = Array.isArray(mission.goalCriteria) ? mission.goalCriteria as Array<Record<string, unknown>> : [];
+  if (goalCriteria.length > 0) {
+    const criteriaState = mission.goalCriteriaState as
+      | { overall?: string; criteria?: Array<{ index: number; verdict: string; label?: string; type?: string; evidence?: string }> }
+      | null;
+    const verdictByIndex = new Map((criteriaState?.criteria ?? []).map(c => [c.index, c]));
+    descParts.push(
+      `\n## Goal criteria — the completion gate (${goalCriteria.length})\n` +
+      `This mission CANNOT be completed until every criterion below passes. ` +
+      `Current overall verdict: **${criteriaState?.overall ?? 'not yet evaluated'}**. ` +
+      `An unevaluated criterion is not a pass.`
+    );
+    for (let i = 0; i < goalCriteria.length; i++) {
+      const c = goalCriteria[i];
+      const label = (c.label as string) ?? (c.description as string) ?? (c.command as string) ?? (c.type as string);
+      const st = verdictByIndex.get(i);
+      descParts.push(`- [${st?.verdict ?? 'not evaluated'}] ${label}${st?.evidence ? ` — ${st.evidence}` : ''}`);
+    }
+    descParts.push(
+      `Prefer work that moves these to pass. If a criterion is wrong or unmeasurable, ` +
+      `say so via post_note rather than proposing completion repeatedly.`
+    );
+  }
+
   // Surface cycle info from closed-loop re-triggers
   const cycleNumber = templateContext?.cycleNumber as number | undefined;
   if (cycleNumber && cycleNumber > 1) {
     descParts.push(`\n**Planning cycle ${cycleNumber}** — Review what changed since the last cycle.`);
     if (cycleNumber >= 4) {
-      descParts.push('This mission has been through many cycles. Strongly consider whether objectives are met and the mission can be marked complete.');
+      descParts.push('This mission has been through many cycles. Strongly consider whether objectives are met and completion should be proposed — the goal-criteria gate decides whether it closes.');
     }
   }
 

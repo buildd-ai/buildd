@@ -195,7 +195,8 @@ describe('Integration: skill bundle description propagation', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
     mockSyncSkillToLocal.mockClear();
   });
@@ -273,7 +274,8 @@ describe('Integration: full claim → session flow', () => {
     lastQueryOpts = null;
     mockMessages = [];
     mockUpdateWorker.mockClear();
-    mockClaimTask.mockClear();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockResolvedValue({ workers: [] });
     mockStreamInputFn.mockClear();
     mockSyncSkillToLocal.mockClear();
   });

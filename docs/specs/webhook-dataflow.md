@@ -3,6 +3,11 @@ title: Webhook Dataflow
 status: active
 owner: max
 last_verified: 2026-07-18
+summary: The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
+domain: integrations
+surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts]
+related: [work-tracker-integration, mission-task-lifecycle, runner-liveness]
+keywords: [pusher_channel_prefix, task:unblocked, worker:command, webhookconfig, pushover, notificationpreferences]
 supersedes: []
 ---
 # Webhook & Realtime Dataflow

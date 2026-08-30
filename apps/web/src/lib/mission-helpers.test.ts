@@ -534,7 +534,29 @@ describe('deriveMissionDisplayState', () => {
     expect(deriveMissionDisplayState(base)).toBe<MissionDisplayState>('active');
   });
 
-  it('priority: complete > held > running > failed > review > manual > active', () => {
+  it('awaiting_verification when work is done but the criteria verdict is missing', () => {
+    // "READY FOR REVIEW" would invite a human to close a mission the platform is
+    // refusing to close. Same vocabulary as the initiative rail's awaiting_verification.
+    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true }))
+      .toBe<MissionDisplayState>('awaiting_verification');
+  });
+
+  it('review (not awaiting_verification) when the criteria pass', () => {
+    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: false }))
+      .toBe<MissionDisplayState>('review');
+  });
+
+  it('NOT awaiting_verification below 100% — unverified criteria on unfinished work is just work', () => {
+    expect(deriveMissionDisplayState({ ...base, progress: 60, criteriaUnverified: true }))
+      .toBe<MissionDisplayState>('active');
+  });
+
+  it('running and failed still outrank awaiting_verification', () => {
+    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true, activeAgents: 1 })).toBe('running');
+    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true, health: 'FAILING' as Health })).toBe('failed');
+  });
+
+  it('priority: complete > held > running > failed > awaiting_verification > review > manual > active', () => {
     expect(deriveMissionDisplayState({ ...base, status: 'completed', isHeld: true })).toBe('complete');
     expect(deriveMissionDisplayState({ ...base, isHeld: true, activeAgents: 5 })).toBe('held');
     expect(deriveMissionDisplayState({ ...base, activeAgents: 1, health: 'FAILING' as Health })).toBe('running');
@@ -550,8 +572,14 @@ describe('getMissionStateChip', () => {
     expect(chip.cls).toContain('status-success');
   });
 
+  it('awaiting_verification state reads AWAITING VERIFICATION with a warning colour', () => {
+    const chip = getMissionStateChip('awaiting_verification');
+    expect(chip.label).toBe('AWAITING VERIFICATION');
+    expect(chip.cls).toContain('status-warning');
+  });
+
   it('all states return a non-empty label and cls', () => {
-    const states: MissionDisplayState[] = ['held', 'running', 'failed', 'manual', 'complete', 'active', 'review'];
+    const states: MissionDisplayState[] = ['held', 'running', 'failed', 'manual', 'complete', 'active', 'review', 'awaiting_verification'];
     for (const state of states) {
       const chip = getMissionStateChip(state);
       expect(chip.label.length).toBeGreaterThan(0);

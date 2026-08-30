@@ -1,14 +1,51 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { evaluateGoalCriteria } from '@buildd/core/mission-helpers';
+import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
 import { resolveTierEntry } from '@buildd/core/model-tier-registry';
 import type { TierEntry } from '@buildd/core/model-tier-registry';
-import { countPendingTasksForMission } from './mission-release';
+import { resolveCommandCriterion } from './mission-criteria-verify';
+
+/**
+ * Producer of goal-criteria verdicts.
+ *
+ * This module answers "what is the verdict?" and never "is the mission done?" —
+ * that decision belongs to `mission-completion.ts`, which calls
+ * `ensureCriteriaVerdict` when a verdict is owed. Keeping the producer out of the
+ * completion business is what breaks the old deadlock: the evaluator used to
+ * refuse to run while pending tasks remained, while the completion path was not
+ * required to have a verdict at all, so the one function that could have produced
+ * verdicts only spoke when they no longer mattered.
+ *
+ * Freshness, not one-shot. The previous implementation skipped whenever
+ * `goalCriteriaState` existed, which made every verdict a permanent snapshot: a
+ * mission that passed in June still read `pass` today even if the behaviour had
+ * since regressed. Mechanical criteria are now re-checked on every request (they
+ * are a DB query), command criteria are re-run once their last run ages past
+ * COMMAND_VERDICT_TTL_MS, and only LLM grading is cached — for LLM_REVERIFY_MS,
+ * because it costs tokens.
+ *
+ * LLM grading routes by provider (see `callProvider`) via the model tier
+ * registry (`resolveTierEntry`), rather than hardcoding the Anthropic endpoint —
+ * team/workspace registry overrides for the `budget` tier are honoured.
+ */
+
+/** Re-exported so callers have one import site for the folding rule. */
+export { recalculateOverall } from '@buildd/core/mission-helpers';
 
 const LLM_MAX_TOKENS = 2048;
+const LLM_TIMEOUT_MS = 20_000;
 const ARTIFACT_CONTENT_LIMIT = 3000;
+
+/** How long an LLM-graded verdict is reused before the model is asked again. */
+export const LLM_REVERIFY_MS = 30 * 60 * 1000;
+
+/** Floor between two automatic evaluations of the same mission. */
+export const AUTO_EVAL_DEBOUNCE_MS = 30 * 1000;
+
+export const ON_COMPLETION_NOTE_TITLE = 'Goal criteria evaluated (on-completion)';
+export const ON_DEMAND_NOTE_TITLE = 'Goal criteria evaluated (on-demand)';
 
 type EvidenceTask = { id: string; title: string | null; summary: string | undefined };
 type EvidenceArtifact = { id: string; title: string | null; type: string; contentSnippet: string | null };
@@ -21,23 +58,22 @@ interface LLMCriterionVerdict {
   evidenceRef?: GoalCriteriaEvidenceRef;
 }
 
-function isLlmEligible(type: string): boolean {
-  return !['artifact_exists', 'no_open_tasks', 'all_prs_merged', 'metric'].includes(type);
+/**
+ * Criterion types whose verdict may be produced by an LLM reading evidence.
+ *
+ * `command` is deliberately excluded: a model cannot know whether `bun test`
+ * exits 0, and asking it to guess is how a prose verdict ends up standing in for
+ * a mechanical one. Structural types are decided from DB state, and `metric`
+ * needs the (unimplemented) metric-query registry.
+ */
+export function isLlmEligible(type: string): boolean {
+  return !['artifact_exists', 'no_open_tasks', 'all_prs_merged', 'metric', 'command'].includes(type);
 }
 
-function criterionText(criterion: GoalCriterion): string {
+export function criterionText(criterion: GoalCriterion): string {
   if (criterion.type === 'description') return criterion.description;
   if (criterion.type === 'command') return criterion.label ?? criterion.command;
   return criterion.label ?? criterion.type;
-}
-
-export function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
-  if (criteria.length === 0) return 'pass';
-  if (criteria.some(r => r.verdict === 'fail')) return 'fail';
-  // NOT_EVALUATED means "we could not check this" — that is not a pass
-  if (criteria.some(r => r.verdict === 'NOT_EVALUATED')) return 'UNVERIFIED';
-  if (criteria.every(r => r.verdict === 'pass')) return 'pass';
-  return 'UNVERIFIED';
 }
 
 /** Calls the provider and returns the raw LLM text, or an error reason string on failure. */
@@ -67,6 +103,9 @@ async function callProvider(
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         }),
+        // This call sits inside the worker-completion request and the cron tick. An
+        // unbounded fetch to a degraded provider would hang both.
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       });
       if (!resp.ok) {
         const bodyText = await resp.text().catch(() => '');
@@ -99,6 +138,7 @@ async function callProvider(
             { role: 'user', content: userPrompt },
           ],
         }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       });
       if (!resp.ok) {
         const bodyText = await resp.text().catch(() => '');
@@ -200,19 +240,22 @@ Respond with exactly this JSON shape:
 }
 
 /**
- * Auto-evaluate a mission's goalCriteria when all tasks have reached terminal state.
+ * Evaluate every criterion now and persist the result. One implementation,
+ * shared by the automatic path (`ensureCriteriaVerdict`) and the on-demand
+ * route, so the two can never disagree about what a criterion means.
  *
- * Call this from post-completion hooks after a task finishes. It is idempotent —
- * it skips if there are still pending tasks, no criteria are set, autoVerify=false,
- * or an evaluation already exists.
- *
- * Uses evaluatedBy='auto' and a distinct note title so it is not counted against
- * the on-demand rate limit (which guards manual/MCP calls only).
+ * Never writes `missions.status` — completion is `mission-completion.ts`'s job.
  */
-export async function autoEvaluateMissionOnCompletion(missionId: string): Promise<void> {
-  const pending = await countPendingTasksForMission(missionId);
-  if (pending > 0) return;
-
+export async function evaluateCriteriaNow(
+  missionId: string,
+  opts: {
+    evaluatedBy: 'auto' | 'manual' | 'mcp';
+    /** Title of the summary note; the on-demand route's rate limit counts these. */
+    noteTitle?: string;
+    /** Dispatch verification tasks for `command` criteria (default true). */
+    dispatchCommands?: boolean;
+  },
+): Promise<GoalCriteriaState | null> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
     columns: {
@@ -221,28 +264,27 @@ export async function autoEvaluateMissionOnCompletion(missionId: string): Promis
       description: true,
       goalCriteria: true,
       goalCriteriaState: true,
-      autoVerify: true,
       workingBranch: true,
       status: true,
       teamId: true,
       workspaceId: true,
     },
   });
-
-  if (!mission) return;
+  if (!mission) return null;
 
   const criteria = Array.isArray(mission.goalCriteria) ? (mission.goalCriteria as GoalCriterion[]) : [];
-  if (criteria.length === 0) return;
+  if (criteria.length === 0) return null;
 
-  if (mission.autoVerify === false) return;
+  const priorState = (mission.goalCriteriaState ?? null) as GoalCriteriaState | null;
+  const priorAgeMs = priorState?.evaluatedAt ? Date.now() - Date.parse(priorState.evaluatedAt) : Infinity;
 
-  // Skip if state already exists — prevents double-evaluation on concurrent task completions
-  if (mission.goalCriteriaState) return;
-
-  // Evidence assembly
+  // ── Evidence assembly ──────────────────────────────────────────────────────
   const missionTasks = await db.query.tasks.findMany({
     where: eq(tasks.missionId, missionId),
-    columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, result: true },
+    columns: {
+      id: true, status: true, kind: true, title: true, mode: true,
+      taskClass: true, creationSource: true, category: true, result: true,
+    },
   });
 
   let missionWorkers: Array<{ taskId: string | null; mergedAt: Date | null; prUrl: string | null; branch: string }> = [];
@@ -259,7 +301,7 @@ export async function autoEvaluateMissionOnCompletion(missionId: string): Promis
     columns: { id: true, key: true, type: true, title: true, content: true },
   });
 
-  // Mechanical evaluation
+  // ── Mechanical evaluation (always re-run: it is one query, never a snapshot) ─
   const state = evaluateGoalCriteria(
     { id: mission.id, workingBranch: mission.workingBranch },
     criteria,
@@ -272,97 +314,213 @@ export async function autoEvaluateMissionOnCompletion(missionId: string): Promis
         branchName: w.branch,
       })),
       artifacts: missionArtifacts.map(a => ({ key: a.key, type: a.type })),
-      evaluatedBy: 'auto',
+      evaluatedBy: opts.evaluatedBy,
     }
   );
 
-  // LLM evidence-based evaluation for UNVERIFIED criteria
-  // Include NOT_EVALUATED (description) and UNVERIFIED (command/unknown) criteria for LLM
+  // ── Command criteria: run the command, don't ask a model ────────────────────
+  //
+  // Skipped entirely when a mechanical criterion has already failed: the fold is
+  // `fail` whatever the command returns, so dispatching a worker task per
+  // evaluation round would burn real agent runs to learn nothing. The command is
+  // re-run once the failing criterion clears.
+  const alreadyFailing = state.criteria.some(c => c.verdict === 'fail');
+  if (opts.dispatchCommands !== false && !alreadyFailing) {
+    for (const cs of state.criteria) {
+      if (cs.type !== 'command') continue;
+      const criterion = criteria[cs.index];
+      if (!criterion || criterion.type !== 'command') continue;
+
+      const resolution = await resolveCommandCriterion({
+        missionId,
+        criterionIndex: cs.index,
+        command: criterion.command,
+        label: criterion.label,
+      });
+
+      if (resolution.kind === 'verdict') {
+        cs.verdict = resolution.verdict;
+        cs.evidence = resolution.evidence;
+        cs.workerTaskId = resolution.taskId;
+      } else if (resolution.kind === 'pending') {
+        cs.verdict = 'PENDING';
+        cs.evidence = resolution.evidence;
+        cs.workerTaskId = resolution.taskId;
+      } else {
+        cs.verdict = 'NOT_EVALUATED';
+        cs.evidence = resolution.evidence;
+      }
+    }
+  }
+
+  if (alreadyFailing) {
+    for (const cs of state.criteria) {
+      if (cs.type === 'command' && cs.verdict === 'NOT_EVALUATED') {
+        cs.evidence = 'Not run: another criterion has already failed, so the mission cannot pass this round';
+      }
+    }
+  }
+
+  // ── LLM grading for prose criteria only ────────────────────────────────────
   const llmEligible = state.criteria.filter(
     c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
   );
 
   if (llmEligible.length > 0) {
-    const entry = await resolveTierEntry('budget', mission.teamId, mission.workspaceId);
-
-    const completedTasks: EvidenceTask[] = missionTasks
-      .filter(t => t.status === 'completed')
-      .map(t => ({
-        id: t.id,
-        title: t.title,
-        summary: (t.result as any)?.summary as string | undefined,
-      }));
-
-    const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
-      id: a.id,
-      title: a.title,
-      type: a.type,
-      contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
-    }));
-
-    const llmInputs: LLMCriterionInput[] = llmEligible.map(c => ({
-      index: c.index,
-      text: criterionText(criteria[c.index]),
-    }));
-
-    const { verdicts: llmVerdicts, errorReason } = await judgeWithLLM(
-      llmInputs,
-      mission.title,
-      mission.description ?? null,
-      completedTasks,
-      evidenceArtifacts,
-      entry,
-    );
-
-    if (errorReason) {
+    // Carry forward a recent LLM verdict rather than paying for it again — but
+    // ONLY onto the same criterion. Matching on array index alone would transplant
+    // a verdict: delete criterion 0 and yesterday's `pass` becomes the cached
+    // answer for whatever moved into slot 0, which is a false completion produced
+    // by the cache. Identity is the fingerprint.
+    const carried = new Set<number>();
+    if (priorAgeMs < LLM_REVERIFY_MS) {
       for (const c of llmEligible) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs) {
-          cs.verdict = 'NOT_EVALUATED';
-          cs.evidence = errorReason;
-        }
-      }
-    } else {
-      for (const lv of llmVerdicts) {
-        const criterionState = state.criteria.find(c => c.index === lv.index);
-        if (!criterionState) continue;
-        criterionState.verdict = lv.verdict;
-        if (lv.evidence) criterionState.evidence = lv.evidence;
-        if (lv.evidenceRef) (criterionState as any).evidenceRefs = [lv.evidenceRef];
-      }
-
-      // Any eligible criteria that the LLM didn't return a verdict for stay NOT_EVALUATED
-      for (const c of llmEligible) {
-        const cs = state.criteria.find(s => s.index === c.index);
-        if (cs && cs.verdict === 'NOT_EVALUATED') {
-          cs.evidence = 'LLM returned no verdict for this criterion';
-        }
+        const prior = priorState?.criteria.find(p => p.index === c.index);
+        if (!prior || prior.verdict === 'NOT_EVALUATED' || prior.verdict === 'PENDING') continue;
+        if (!prior.fingerprint || !c.fingerprint || prior.fingerprint !== c.fingerprint) continue;
+        c.verdict = prior.verdict;
+        c.evidence = prior.evidence;
+        if (prior.evidenceRefs) c.evidenceRefs = prior.evidenceRefs;
+        carried.add(c.index);
       }
     }
 
-    (state as any).overall = recalculateOverall(state.criteria);
+    const toJudge = llmEligible.filter(c => !carried.has(c.index));
+
+    if (toJudge.length > 0) {
+      // Resolve via the model tier registry (async — honours team/workspace
+      // overrides for the `budget` tier) and route the call by provider instead
+      // of hardcoding the Anthropic endpoint.
+      const entry = await resolveTierEntry('budget', mission.teamId, mission.workspaceId);
+
+      const completedTasks: EvidenceTask[] = missionTasks
+        .filter(t => t.status === 'completed')
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          summary: (t.result as any)?.summary as string | undefined,
+        }));
+
+      const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
+        id: a.id,
+        title: a.title,
+        type: a.type,
+        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+      }));
+
+      const llmInputs: LLMCriterionInput[] = toJudge.map(c => ({
+        index: c.index,
+        text: criterionText(criteria[c.index]),
+      }));
+
+      const { verdicts: llmVerdicts, errorReason } = await judgeWithLLM(
+        llmInputs,
+        mission.title,
+        mission.description ?? null,
+        completedTasks,
+        evidenceArtifacts,
+        entry,
+      );
+
+      if (errorReason) {
+        // Provider unreachable, misconfigured, or unsupported — an unreachable
+        // evaluator is never a pass. Say exactly why (which key, which provider)
+        // rather than leaving an ambiguous "no verdict" evidence string.
+        for (const c of toJudge) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (cs) {
+            cs.verdict = 'NOT_EVALUATED';
+            cs.evidence = errorReason;
+          }
+        }
+      } else {
+        for (const lv of llmVerdicts) {
+          const criterionState = state.criteria.find(c => c.index === lv.index);
+          if (!criterionState) continue;
+          criterionState.verdict = lv.verdict;
+          if (lv.evidence) criterionState.evidence = lv.evidence;
+          if (lv.evidenceRef) criterionState.evidenceRefs = [lv.evidenceRef];
+        }
+
+        for (const c of toJudge) {
+          const cs = state.criteria.find(s => s.index === c.index);
+          if (cs && cs.verdict === 'NOT_EVALUATED') {
+            cs.evidence = 'LLM returned no verdict for this criterion';
+          }
+        }
+      }
+    }
   }
 
-  // Persist state
-  const updates: Record<string, unknown> = { goalCriteriaState: state, updatedAt: new Date() };
-  if (state.overall === 'pass' && mission.status === 'active') {
-    updates.status = 'completed';
+  state.overall = recalculateOverall(state.criteria);
+
+  await db
+    .update(missions)
+    .set({ goalCriteriaState: state as any, updatedAt: new Date() })
+    .where(eq(missions.id, missionId));
+
+  // Post a note when the verdict changed, or on every explicit (human/MCP) run.
+  // Automatic re-evaluation is frequent; an unchanged verdict is not news.
+  const changed = priorState?.overall !== state.overall;
+  if (changed || opts.evaluatedBy !== 'auto') {
+    const failedCriteria = state.criteria.filter(c => c.verdict !== 'pass');
+    const noteBody = failedCriteria.length > 0
+      ? failedCriteria.map(c => `• [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`).join('\n')
+      : 'All criteria passed.';
+
+    await db.insert(missionNotes).values({
+      missionId,
+      authorType: 'system',
+      type: state.overall === 'pass' ? 'update' : 'warning',
+      title: opts.noteTitle ?? ON_COMPLETION_NOTE_TITLE,
+      body: `Overall: ${state.overall}\n\n${noteBody}`,
+      status: 'open',
+    } as any).catch(e => console.error('[criteria-eval] Failed to post note:', e));
   }
 
-  await db.update(missions).set(updates as any).where(eq(missions.id, missionId));
+  return state;
+}
 
-  // Post note for feed visibility (distinct title from on-demand so it doesn't count against rate limit)
-  const failedCriteria = state.criteria.filter(c => c.verdict !== 'pass');
-  const noteBody = failedCriteria.length > 0
-    ? failedCriteria.map(c => `• [${c.verdict}] ${c.label ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`).join('\n')
-    : 'All criteria passed.';
+/**
+ * Return a verdict for a mission's criteria, producing one if none is current.
+ *
+ * Called by `canCompleteMission` at the moment a verdict is owed — all
+ * deliverables terminal, criteria stated. This is the pull that replaced the old
+ * push: nothing has to remember to evaluate, and nothing can complete a mission
+ * by virtue of the evaluator having stayed silent.
+ *
+ * Returns the stored state (possibly null) without evaluating when:
+ * - another evaluation landed within AUTO_EVAL_DEBOUNCE_MS (concurrent task
+ *   completions all reach here at once), or
+ * - `autoVerify` is false, which is the mission owner asking for on-demand
+ *   verification only. The mission then stays awaiting verification until
+ *   someone runs it — which is the honest outcome of that setting, not a pass.
+ */
+export async function ensureCriteriaVerdict(
+  missionId: string,
+  opts: { trigger?: string; force?: boolean } = {},
+): Promise<GoalCriteriaState | null> {
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { id: true, goalCriteria: true, goalCriteriaState: true, autoVerify: true },
+  });
+  if (!mission) return null;
 
-  await db.insert(missionNotes).values({
-    missionId,
-    authorType: 'system',
-    type: state.overall === 'pass' ? 'update' : 'warning',
-    title: 'Goal criteria evaluated (on-completion)',
-    body: `Overall: ${state.overall}\n\n${noteBody}`,
-    status: 'open',
-  } as any).catch(e => console.error('[criteria-eval] Failed to post note:', e));
+  const criteria = Array.isArray(mission.goalCriteria) ? (mission.goalCriteria as GoalCriterion[]) : [];
+  if (criteria.length === 0) return null;
+
+  const stored = (mission.goalCriteriaState ?? null) as GoalCriteriaState | null;
+
+  if (!opts.force) {
+    if (stored?.evaluatedAt && Date.now() - Date.parse(stored.evaluatedAt) < AUTO_EVAL_DEBOUNCE_MS) {
+      return stored;
+    }
+    if (mission.autoVerify === false) {
+      console.log(`[criteria-eval] mission ${missionId}: autoVerify=false — verdict must be requested on demand`);
+      return stored;
+    }
+  }
+
+  console.log(`[criteria-eval] mission ${missionId}: evaluating ${criteria.length} criteria (trigger: ${opts.trigger ?? 'unknown'})`);
+  return evaluateCriteriaNow(missionId, { evaluatedBy: 'auto', noteTitle: ON_COMPLETION_NOTE_TITLE });
 }
