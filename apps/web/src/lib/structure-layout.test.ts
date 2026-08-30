@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   computeStructureLayout,
   computeEdgeSetFingerprint,
+  applyRankCap,
   type StructureTask,
   type ContentionEdge,
 } from './structure-layout';
@@ -279,6 +280,27 @@ describe('computeStructureLayout — STRANDED detection', () => {
     const node = layout.nodes.find(n => n.id === 'blocked');
     expect(node?.isStranded).toBe(false);
   });
+
+  it('does NOT mark a task as stranded when its dep failed but PR has ci_green (spec §5.2 STF-3)', () => {
+    const failedDep = makeCondensedTask('dep', {
+      status: 'failed',
+      workerStatus: 'completed',
+      prUrl: 'https://github.com/foo/bar/pull/2',
+      prLifecycleStatus: 'ci_green',
+    });
+    const blocked = makeCondensedTask('blocked', {
+      status: 'pending',
+      dependsOn: ['dep'],
+    });
+    const tm = taskMap(failedDep, blocked);
+    const chains: ChainUnit<StructureTask>[] = [
+      chain(makeTask('dep'), [], 'standalone'),
+      chain(makeTask('blocked'), [], 'standalone'),
+    ];
+    const layout = computeStructureLayout(chains, tm, new Set());
+    const node = layout.nodes.find(n => n.id === 'blocked');
+    expect(node?.isStranded).toBe(false);
+  });
 });
 
 // ─── Rank assignment ───────────────────────────────────────────────────────────
@@ -331,5 +353,45 @@ describe('computeStructureLayout — rank assignment', () => {
     expect(nodeB.rank).toBe(1);
     expect(nodeC.rank).toBe(1);
     expect(nodeD.rank).toBe(2);
+  });
+});
+
+// ─── COL-2: rank cap (spec §3.3) ──────────────────────────────────────────────
+
+describe('applyRankCap — COL-2 rank node cap', () => {
+  function make9ParallelNodes() {
+    const ids = ['a','b','c','d','e','f','g','h','i'];
+    const cTasks = ids.map(id => makeCondensedTask(id));
+    const tm = taskMap(...cTasks);
+    const chains: ChainUnit<StructureTask>[] = ids.map(id => chain(makeTask(id), [], 'standalone'));
+    const layout = computeStructureLayout(chains, tm, new Set());
+    return layout.nodes;
+  }
+
+  it('9 parallel nodes → 8 visible + 1 overflow when not expanded', () => {
+    const nodes = make9ParallelNodes();
+    const { visibleNodes, overflows } = applyRankCap(nodes, new Set());
+    expect(visibleNodes).toHaveLength(8);
+    expect(overflows).toHaveLength(1);
+    expect(overflows[0].count).toBe(1);
+    expect(overflows[0].rank).toBe(0);
+  });
+
+  it('9 parallel nodes → all 9 visible when rank 0 is expanded', () => {
+    const nodes = make9ParallelNodes();
+    const { visibleNodes, overflows } = applyRankCap(nodes, new Set([0]));
+    expect(visibleNodes).toHaveLength(9);
+    expect(overflows).toHaveLength(0);
+  });
+
+  it('8 parallel nodes → all 8 visible with no overflow', () => {
+    const ids = ['a','b','c','d','e','f','g','h'];
+    const cTasks = ids.map(id => makeCondensedTask(id));
+    const tm = taskMap(...cTasks);
+    const chains: ChainUnit<StructureTask>[] = ids.map(id => chain(makeTask(id), [], 'standalone'));
+    const layout = computeStructureLayout(chains, tm, new Set());
+    const { visibleNodes, overflows } = applyRankCap(layout.nodes, new Set());
+    expect(visibleNodes).toHaveLength(8);
+    expect(overflows).toHaveLength(0);
   });
 });

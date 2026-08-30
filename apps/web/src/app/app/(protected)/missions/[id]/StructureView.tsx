@@ -7,8 +7,10 @@ import { SegmentStrip } from '@/components/SegmentStrip';
 import {
   computeStructureLayout,
   computeEdgeSetFingerprint,
+  applyRankCap,
   COL_WIDTH,
   ROW_HEIGHT,
+  RANK_NODE_CAP,
   type ContentionEdge,
   type StructureNode,
   type StructureEdge,
@@ -265,6 +267,7 @@ export default function StructureView<T extends StructureTask>({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showRetries, setShowRetries] = useState(true);
   const [showContention, setShowContention] = useState(false);
+  const [expandedRanks, setExpandedRanks] = useState<Set<number>>(new Set());
 
   // Fingerprint of the dependsOn edge-set — stable across status changes.
   // Computed every render (cheap) and used as the memoization key for layout.
@@ -301,9 +304,18 @@ export default function StructureView<T extends StructureTask>({
     });
   }, []);
 
-  // Canvas dimensions
-  const maxRank = layout.nodes.reduce((m, n) => Math.max(m, n.rank), 0);
-  const maxPos = layout.nodes.reduce((m, n) => Math.max(m, n.pos), 0);
+  // COL-2: apply per-rank node cap (spec §3.3)
+  const { visibleNodes, overflows } = useMemo(
+    () => applyRankCap(layout.nodes, expandedRanks),
+    [layout.nodes, expandedRanks],
+  );
+
+  // Canvas dimensions (based on visible nodes + overflow button positions)
+  const maxRank = visibleNodes.reduce((m, n) => Math.max(m, n.rank), 0);
+  const maxPos = Math.max(
+    visibleNodes.reduce((m, n) => Math.max(m, n.pos), 0),
+    overflows.length > 0 ? RANK_NODE_CAP : 0,
+  );
   const canvasWidth = Math.max(800, (maxRank + 1) * COL_WIDTH + NODE_WIDTH_CHAIN + 40);
   const canvasHeight = Math.max(400, (maxPos + 1) * ROW_HEIGHT + NODE_HEIGHT + 40);
 
@@ -398,8 +410,8 @@ export default function StructureView<T extends StructureTask>({
             </defs>
 
             {layout.edges.map(edge => {
-              const srcNode = layout.nodes.find(n => n.id === edge.sourceNodeId);
-              const tgtNode = layout.nodes.find(n => n.id === edge.targetNodeId);
+              const srcNode = visibleNodes.find(n => n.id === edge.sourceNodeId);
+              const tgtNode = visibleNodes.find(n => n.id === edge.targetNodeId);
               if (!srcNode || !tgtNode) return null;
 
               const srcWidth = srcNode.isCollapsed ? NODE_WIDTH_CHAIN : NODE_WIDTH;
@@ -441,7 +453,7 @@ export default function StructureView<T extends StructureTask>({
           </svg>
 
           {/* Nodes */}
-          {layout.nodes.map(node => {
+          {visibleNodes.map(node => {
             let selectionClass: 'selected' | 'upstream' | 'downstream' | 'unrelated' | null = null;
             if (selectedNodeId) {
               if (node.id === selectedNodeId) selectionClass = 'selected';
@@ -461,6 +473,23 @@ export default function StructureView<T extends StructureTask>({
               />
             );
           })}
+
+          {/* COL-2: disclosure buttons for capped ranks (spec §3.3) */}
+          {overflows.map(ov => (
+            <button
+              key={`more-${ov.rank}`}
+              className="absolute font-mono text-[11px] text-text-muted border border-dashed border-border-default px-3 py-1.5 hover:text-text-secondary hover:border-text-muted bg-surface-1"
+              style={{ left: ov.x, top: ov.y, width: NODE_WIDTH }}
+              onClick={() => setExpandedRanks(prev => {
+                const next = new Set(prev);
+                next.add(ov.rank);
+                return next;
+              })}
+              aria-label={`Show ${ov.count} more tasks`}
+            >
+              +{ov.count} more
+            </button>
+          ))}
         </div>
       </div>
 

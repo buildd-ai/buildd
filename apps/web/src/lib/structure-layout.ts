@@ -124,7 +124,8 @@ export function computeEdgeSetFingerprint<T extends StructureTask>(
 
 // ─── Stranded detection ───────────────────────────────────────────────────────
 
-const OPEN_PR_STATUSES = new Set(['pr_open', 'ci_running', 'ci_failed', 'conflict']);
+// ci_green included: a dep whose CI has passed is one reviewer-merge away from resolving (spec §5.2 STF-3)
+const OPEN_PR_STATUSES = new Set(['pr_open', 'ci_running', 'ci_failed', 'ci_green', 'conflict']);
 
 function isStrandedTask(taskId: string, taskMap: Map<string, CondensedTask>): boolean {
   const task = taskMap.get(taskId);
@@ -529,4 +530,56 @@ export function computeStructureLayout<T extends StructureTask>(
   }
 
   return { nodes, edges, fingerprint };
+}
+
+// ─── COL-2: per-rank node cap ─────────────────────────────────────────────────
+
+/** Maximum visible nodes per rank before a "+N more" disclosure button appears (spec §3.3 COL-2). */
+export const RANK_NODE_CAP = 8;
+
+export type RankOverflow = {
+  rank: number;
+  /** x pixel coordinate (same as rank * COL_WIDTH). */
+  x: number;
+  /** y pixel coordinate — placed directly after the last visible node. */
+  y: number;
+  /** Number of nodes hidden behind the disclosure button. */
+  count: number;
+};
+
+/**
+ * Applies the COL-2 per-rank cap to a node list.
+ * Ranks whose id is in `expandedRanks` are shown in full.
+ * Returns visible nodes and one RankOverflow entry per capped rank.
+ */
+export function applyRankCap(
+  nodes: StructureNode[],
+  expandedRanks: Set<number>,
+  maxPerRank = RANK_NODE_CAP,
+): { visibleNodes: StructureNode[]; overflows: RankOverflow[] } {
+  const byRank = new Map<number, StructureNode[]>();
+  for (const node of nodes) {
+    if (!byRank.has(node.rank)) byRank.set(node.rank, []);
+    byRank.get(node.rank)!.push(node);
+  }
+
+  const visibleNodes: StructureNode[] = [];
+  const overflows: RankOverflow[] = [];
+
+  for (const [rank, rankNodes] of byRank) {
+    const sorted = [...rankNodes].sort((a, b) => a.pos - b.pos);
+    if (!expandedRanks.has(rank) && sorted.length > maxPerRank) {
+      visibleNodes.push(...sorted.slice(0, maxPerRank));
+      overflows.push({
+        rank,
+        x: rank * COL_WIDTH,
+        y: maxPerRank * ROW_HEIGHT,
+        count: sorted.length - maxPerRank,
+      });
+    } else {
+      visibleNodes.push(...sorted);
+    }
+  }
+
+  return { visibleNodes, overflows };
 }
