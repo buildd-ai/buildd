@@ -26,6 +26,7 @@ let mockSelectCount = 0;
 // When set, the task insert throws it — lets tests drive the per-schedule
 // failure catch block (transient DB error path).
 let insertError: Error | null = null;
+let insertConflict = false;
 
 const makeUpdateChain = (calls: any[]) => ({
   set: mock((vals: any) => {
@@ -58,8 +59,15 @@ mock.module('@buildd/core/db', () => ({
       values: mock((vals: any) => {
         tasksInsertValues = vals;
         if (insertError) throw insertError;
+        // `insertConflict` models the partial unique index
+        // tasks_active_planning_per_mission swallowing the row: with
+        // onConflictDoNothing the insert succeeds and returns nothing.
+        const rows = insertConflict ? [] : [{ id: 'task-1', ...vals }];
         return {
-          returning: mock(() => [{ id: 'task-1', ...vals }]),
+          returning: mock(() => rows),
+          onConflictDoNothing: mock(() => ({
+            returning: mock(() => rows),
+          })),
         };
       }),
     })),
@@ -195,6 +203,7 @@ describe('GET /api/cron/schedules', () => {
     tasksInsertValues = null;
     mockSelectCount = 0;
     insertError = null;
+    insertConflict = false;
 
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -288,6 +297,65 @@ describe('GET /api/cron/schedules', () => {
     (outer as { cause?: unknown }).cause = cause;
     return outer;
   }
+
+  /**
+   * A mission schedule on a half-hourly cron fires while its previous planning
+   * task is still active. The unique index tasks_active_planning_per_mission exists
+   * precisely to stop a second concurrent planning cycle — so losing that race
+   * is the guard working, not a fault.
+   *
+   * mission-run.ts already treats it that way (onConflictDoNothing + a graceful
+   * `deduped` return). This cron path did a bare insert, so the 23505 escaped to
+   * the per-schedule catch and was booked as a failure: it incremented
+   * consecutiveFailures and wrote a raw Postgres string to lastError, which
+   * marches an otherwise-healthy schedule toward its pauseAfterFailures
+   * threshold on nothing but successful contention.
+   */
+  it('books a lost planning-dedupe race as skipped, not as a failure', async () => {
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      consecutiveFailures: 0,
+      taskTemplate: { title: 'Mission: Something', mode: 'planning', priority: 0 },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertConflict = true;
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.errors).toBe(0);
+    expect(body.created).toBe(0);
+    expect(body.skipped).toBe(1);
+
+    // consecutiveFailures must not advance — otherwise repeated healthy
+    // contention eventually trips pauseAfterFailures and disables the schedule.
+    const failureUpdate = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1);
+    expect(failureUpdate).toBeUndefined();
+  });
+
+  it('does not crash dispatching a conflicted insert (no task row to dispatch)', async () => {
+    // Regression guard: the code after the insert dereferences task.id for
+    // lastTaskId, dispatch, and the Pusher payload. onConflictDoNothing makes
+    // that row absent, so an unguarded path would throw on undefined.
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      taskTemplate: { title: 'Mission: Something', mode: 'planning', priority: 0 },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    insertConflict = true;
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.errors).toBe(0);
+    // The conflicted branch returns before the post-insert bookkeeping, so there
+    // must be no lastTaskId write at all — and above all none carrying an
+    // undefined id, which is what an unguarded `task.id` would have produced.
+    const badLastTaskId = taskSchedulesUpdateCalls.find(
+      c => 'lastTaskId' in (c.set ?? {}) && c.set.lastTaskId === undefined,
+    );
+    expect(badLastTaskId).toBeUndefined();
+  });
 
   it('does NOT page on a single transient failure, but records the diagnosable cause', async () => {
     const schedule = makeSchedule({ workspaceId: 'ws-1', consecutiveFailures: 0 });

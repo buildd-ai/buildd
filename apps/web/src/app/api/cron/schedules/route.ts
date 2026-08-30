@@ -642,7 +642,28 @@ export async function GET(req: NextRequest) {
             ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),
             ...(outputSchema ? { outputSchema } : {}),
           })
+          // A mission schedule can fire while its previous planning task is
+          // still active. The partial unique index
+          // tasks_active_planning_per_mission exists to stop a second
+          // concurrent planning cycle, so losing that race is the guard
+          // working — not a schedule failure. Without onConflictDoNothing the
+          // 23505 escaped to the per-schedule catch below, incremented
+          // consecutiveFailures and wrote a raw Postgres string to lastError,
+          // marching a healthy schedule toward pauseAfterFailures on nothing
+          // but successful contention. mission-run.ts already handles the same
+          // race this way.
+          .onConflictDoNothing()
           .returning();
+
+        if (!task) {
+          console.log(
+            `[cron-schedules] schedule ${schedule.id} (${schedule.name}): task insert hit a ` +
+            `uniqueness guard (most likely an active planning task already exists for this ` +
+            `mission) — counting as skipped, not failed`,
+          );
+          skipped++;
+          continue;
+        }
 
         // Track seat consumption for this cron run
         if (schedule.workspaceId) {
