@@ -131,6 +131,29 @@ export function buildRoleConfigKey(slug: unknown, configHash: unknown): string {
 }
 
 /**
+ * `sessions/<teamId>/<workspaceId>/<workerId>/<filename>`
+ *
+ * Session diagnostics keys (transcripts, session logs) are derived entirely
+ * server-side from the authenticated worker row and are never accepted from a
+ * client, so — like role bundle keys — every segment is validated rather than
+ * sanitised: a value that doesn't already qualify as a safe segment is a
+ * programming error or tampering, and either should fail loudly rather than
+ * silently land in a neighbouring prefix.
+ */
+export function buildSessionArtifactKey(
+  teamId: unknown,
+  workspaceId: unknown,
+  workerId: unknown,
+  filename: unknown,
+): string {
+  const team = assertSafeKeySegment(teamId, 'teamId');
+  const ws = assertSafeKeySegment(workspaceId, 'workspaceId');
+  const worker = assertSafeKeySegment(workerId, 'workerId');
+  const safeFilename = assertSafeKeySegment(filename, 'filename');
+  return assertNormalizedObjectKey(`sessions/${team}/${ws}/${worker}/${safeFilename}`);
+}
+
+/**
  * Whether a key supplied by a caller names an object that `workspaceId` owns.
  *
  * Routes that accept a key from the request body must gate on this: a stored

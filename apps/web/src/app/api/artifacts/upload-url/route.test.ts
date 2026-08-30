@@ -1,3 +1,18 @@
+/**
+ * Includes an audit regression for the pre-existing artifacts presign route.
+ *
+ * The route already derived the key prefix server-side (`artifacts/<workspaceId>/<uuid>/`)
+ * and already refused sensitive workspaces — but it once appended the CLIENT-SUPPLIED
+ * `filename` verbatim. `../../role-configs/bundle.zip` therefore produced a key
+ * containing `..`, which URL path normalisation collapses on the way to R2, letting
+ * a compromised runner or agent target objects outside its own prefix. Key
+ * construction (and the traversal-free basename reduction) now lives in
+ * `@/lib/storage-keys` (`buildArtifactKey` / `safeObjectFilename`); the tests below
+ * exercise that behaviour through this route.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/web/src/app/api/artifacts/upload-url/route.test.ts
+ */
+
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
@@ -113,6 +128,28 @@ describe('POST /api/artifacts/upload-url', () => {
       // The signer must receive the same key that was recorded.
       expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(data.storageKey);
     }
+  });
+
+  it('strips path traversal out of a filename crafted to reach outside the workspace prefix', async () => {
+    // Regression case for the original vulnerability: a raw `../../role-configs/bundle.zip`
+    // filename, appended verbatim, produced a key whose `..` segments collapse on the way
+    // to R2 and land outside this workspace's prefix, in the server-managed role-configs area.
+    const res = await POST(req(validBody({ filename: '../../role-configs/bundle.zip' })));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.storageKey).not.toContain('..');
+    expect(data.storageKey).not.toContain('role-configs');
+    expect(data.storageKey.startsWith(`artifacts/ws-1/${UUID}/`)).toBe(true);
+    expect(mockGenerateSizedUploadUrl.mock.calls[0][0]).toBe(data.storageKey);
+  });
+
+  it('never yields an empty final segment for a traversal-only filename', async () => {
+    const res = await POST(req(validBody({ filename: '../' })));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const segments = data.storageKey.split('/');
+    expect(segments[segments.length - 1].length).toBeGreaterThan(0);
+    expect(data.storageKey).not.toContain('..');
   });
 
   it('records the caller name verbatim in metadata and title', async () => {

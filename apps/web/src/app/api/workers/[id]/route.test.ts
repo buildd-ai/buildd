@@ -668,15 +668,24 @@ describe('PATCH /api/workers/[id]', () => {
 
   it('rejects a write when an interrupt wins after the worker was read', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // Simulate the interrupt changing the worker from running -> failed between
+    // this handler's initial read and its final conditional update: the first
+    // read sees 'running', the post-conflict re-read sees the interrupted row.
     mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'failed',
+      error: 'Interrupted — human takeover',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'worker-1',
       accountId: 'account-1',
       status: 'running',
       workspaceId: 'ws-1',
       pendingInstructions: null,
     });
-    // Simulate the interrupt changing the worker from running -> failed between
-    // this handler's initial read and its final conditional update.
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
         where: mock(() => ({
@@ -694,6 +703,147 @@ describe('PATCH /api/workers/[id]', () => {
     expect(res.status).toBe(409);
     const data = await res.json();
     expect(data.abort).toBe(true);
+    // A genuine abort must always name the cause so the runner can distinguish
+    // it from a lost-update race, and so the DB stops recording the runner's
+    // useless 'Terminated by server' fallback string.
+    expect(data.reason).toBe('Interrupted — human takeover');
+    expect(data.actualStatus).toBe('failed');
+  });
+
+  // ── Lost-update race (#worker-cas-race-false-abort) ────────────────────────
+  // The runner fires several non-awaited startup PATCHes within ~1s. A
+  // branch-only PATCH reads status='idle', does async work, and by write time a
+  // sibling PATCH has committed 'running'. Gating that write on the stale
+  // status value produced `abort: true` and hard-killed a healthy session.
+  describe('concurrent-update handling', () => {
+    const liveWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'idle',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    };
+
+    function captureWhereClauses(returning: any[]) {
+      const clauses: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock((clause: any) => {
+            clauses.push(clause);
+            return { returning: mock(() => returning) };
+          }),
+        })),
+      });
+      return clauses;
+    }
+
+    it('does not gate a non-status update on the status read at handler entry', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...liveWorker });
+      const clauses = captureWhereClauses([{ id: 'worker-1', status: 'running' }]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { branch: 'buildd/resumed-branch' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(clauses.length).toBeGreaterThan(0);
+      expect(JSON.stringify(clauses)).not.toContain('"value":"idle"');
+    });
+
+    it('does not gate a terminal reservation on the status read at handler entry', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...liveWorker, milestones: [] });
+      const clauses = captureWhereClauses([{ id: 'worker-1', status: 'failed' }]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(clauses.length).toBeGreaterThan(0);
+      expect(JSON.stringify(clauses)).not.toContain('"value":"idle"');
+    });
+
+    it('reports a CAS miss on a still-live worker as retryable, never as abort', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      // Re-read shows the row is still live (status advanced idle -> running).
+      mockWorkersFindFirst.mockResolvedValue({ ...liveWorker, status: 'running' });
+      mockWorkersFindFirst.mockResolvedValueOnce({ ...liveWorker });
+      captureWhereClauses([]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { branch: 'buildd/resumed-branch' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.abort).toBeUndefined();
+      expect(data.retryable).toBe(true);
+      expect(data.actualStatus).toBe('running');
+    });
+
+    it('aborts with reason and actualStatus when the terminal reservation loses', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        ...liveWorker,
+        status: 'completed',
+        error: null,
+      });
+      mockWorkersFindFirst.mockResolvedValueOnce({ ...liveWorker, status: 'running', milestones: [] });
+      captureWhereClauses([]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.abort).toBe(true);
+      expect(data.actualStatus).toBe('completed');
+      expect(typeof data.reason).toBe('string');
+      expect(data.reason.length).toBeGreaterThan(0);
+      expect(data.hasDeliverables).toBe(false);
+    });
+
+    it('classifies a concurrency-conflict failure report as infra, not code_failure', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...liveWorker, status: 'running', milestones: [] });
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((values: any) => {
+          sets.push(values);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'failed' }]),
+            })),
+          };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Terminated by server' },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const exitCauses = sets.map(s => s?.exitCause).filter(Boolean);
+      expect(exitCauses.length).toBeGreaterThan(0);
+      expect(exitCauses).not.toContain('code_failure');
+      expect(exitCauses).toContain('infra_failure');
+    });
   });
 
   it('rejects a terminal reviewer completion before any outcome side effects when interrupt wins', async () => {

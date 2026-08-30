@@ -44,10 +44,64 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry } from '@buildd/shared';
-import { classifyReportedFailure } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+
+/**
+ * Worker statuses from which no further live update is legal. Every optimistic
+ * write in this handler is guarded against these — resurrecting a terminated
+ * worker would let a stale in-flight PATCH overwrite a real outcome.
+ */
+const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error'];
+
+function isTerminalWorkerStatus(status: string | null | undefined): boolean {
+  return !!status && TERMINAL_WORKER_STATUSES.includes(status);
+}
+
+/**
+ * Build the 409 body for a compare-and-swap miss on the worker row.
+ *
+ * Two very different things can make a guarded UPDATE match 0 rows:
+ *
+ *  1. The worker was genuinely terminated (interrupt, reassignment, stale
+ *     cleanup) after this handler read it. That IS an abort — and the response
+ *     must name the cause (`reason` + `actualStatus`) so the runner can act on
+ *     it and so the DB stops recording the runner's `Terminated by server`
+ *     fallback string in place of the real cause.
+ *
+ *  2. A benign lost update: another in-flight PATCH for the SAME live worker
+ *     committed first. The runner fires several non-awaited PATCHes during
+ *     startup, so this happened routinely — and replying `abort: true` made the
+ *     runner hard-kill healthy sessions ~1s after they started. A live row is
+ *     never an abort: report a retryable conflict and let the runner re-sync.
+ *
+ * The current row is re-read to tell the two apart.
+ */
+async function workerConflictResponse(id: string) {
+  const current = await db.query.workers.findFirst({ where: eq(workers.id, id) });
+  const actualStatus = current?.status ?? null;
+
+  if (!isTerminalWorkerStatus(actualStatus)) {
+    return NextResponse.json({
+      error: 'Worker state changed concurrently',
+      conflict: true,
+      retryable: true,
+      actualStatus,
+    }, { status: 409 });
+  }
+
+  const artifactCount = await getWorkerArtifactCount(id);
+  const deliverables = checkWorkerDeliverables(current as any, { artifactCount });
+  return NextResponse.json({
+    error: 'Worker was terminated - task may have been reassigned',
+    abort: true,
+    reason: current?.error || `worker already ${actualStatus}`,
+    actualStatus,
+    hasDeliverables: deliverables.hasAny,
+  }, { status: 409 });
+}
 
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
@@ -191,6 +245,10 @@ export async function PATCH(
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,
   // but NOT if the worker was auto-expired by cleanup (stale/timeout/heartbeat).
+  // True when this request is deliberately writing over a terminal row it read
+  // (a follow-up 'running' update). Such a write keeps the strict equality CAS —
+  // the lost-update tolerance below must not apply to a resurrection.
+  let reactivatingTerminalWorker = false;
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
       worker.error?.includes('expired') ||
@@ -213,6 +271,7 @@ export async function PATCH(
       }, { status: 409 });
     }
     // Reactivation: clear completion timestamp so worker can run again
+    reactivatingTerminalWorker = true;
   }
 
   // connector_auth_expired: mark the MCP connector secret as expired and broadcast to the workspace.
@@ -536,19 +595,23 @@ export async function PATCH(
   // Reserve terminal ownership before mutating the task or running completion
   // hooks. Human interrupt uses the same status CAS, so exactly one path can
   // terminate the lease and produce reviewer outcome side effects.
+  //
+  // The guard is "the row is still live", not "the row still holds the exact
+  // status I read at handler entry". Both express the same exactly-once
+  // property — the first terminal write moves the row out of the live set and
+  // every later one misses — but the equality form also lost to benign,
+  // non-terminal status changes (the runner's own concurrent startup PATCHes),
+  // turning a real failure report into a bare `abort` that killed the session.
   let terminalTransitionReserved = false;
   if (isTerminalStatus && worker.status !== status) {
     const [reserved] = await db
       .update(workers)
       .set({ status, updatedAt: new Date() })
-      .where(and(eq(workers.id, id), eq(workers.status, worker.status)))
+      .where(and(eq(workers.id, id), not(inArray(workers.status, TERMINAL_WORKER_STATUSES))))
       .returning({ id: workers.id });
 
     if (!reserved) {
-      return NextResponse.json(
-        { error: 'Worker state changed concurrently', abort: true },
-        { status: 409 },
-      );
+      return workerConflictResponse(id);
     }
     terminalTransitionReserved = true;
   }
@@ -562,15 +625,19 @@ export async function PATCH(
   // Classify exit cause for taxonomy — written to the worker record on terminal update.
   // budget_limited:    task auto-resumes; not a real failure; excluded from retry caps.
   // sandbox_mount_gap: bwrap path missing; task requeued; excluded from retry caps.
-  // infra_failure:     set by stale-worker cleanup OR when steeringDelivery=true.
+  // infra_failure:     set by stale-worker cleanup, steeringDelivery=true, OR a
+  //                    server-side concurrency conflict (the session was killed
+  //                    by coordination bookkeeping, not by the work).
   // code_failure:      default for any other terminal failure.
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
+  const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
+      concurrencyConflict: isConcurrencyConflict,
     });
   }
   // Codex sequential-enforcement deferral: the runner allows only one active
@@ -1931,20 +1998,29 @@ export async function PATCH(
     }
   }
 
+  // Guard for the final write:
+  //  - terminal transition: we already reserved the lease above, so only the row
+  //    we reserved may be written (nobody else may steal a terminal outcome).
+  //  - reactivation: deliberately writing over the terminal row we read.
+  //  - everything else (the hot path): tolerate a concurrent NON-terminal status
+  //    change. The runner fires several non-awaited startup PATCHes, so a
+  //    branch-only update routinely reads `idle` and writes after a sibling
+  //    committed `running`. Gating that on the stale value made the update lose
+  //    a race it never conflicted with. Terminated workers are still protected.
+  const finalWriteGuard = terminalTransitionReserved
+    ? eq(workers.status, status)
+    : reactivatingTerminalWorker
+      ? eq(workers.status, worker.status)
+      : not(inArray(workers.status, TERMINAL_WORKER_STATUSES));
+
   const [updated] = await db
     .update(workers)
     .set(updates)
-    .where(and(
-      eq(workers.id, id),
-      eq(workers.status, terminalTransitionReserved ? status : worker.status),
-    ))
+    .where(and(eq(workers.id, id), finalWriteGuard))
     .returning();
 
   if (!updated) {
-    return NextResponse.json(
-      { error: 'Worker state changed concurrently', abort: true },
-      { status: 409 },
-    );
+    return workerConflictResponse(id);
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.

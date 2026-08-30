@@ -1,5 +1,5 @@
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '@buildd/core/config';
 import { assertNormalizedObjectKey } from './storage-keys';
@@ -58,6 +58,54 @@ export async function generateSizedUploadUrl(
     // which headers to sign.
     signableHeaders: new Set(['content-length']),
   });
+}
+
+/**
+ * Presigned PUT whose maximum body size AND content type are bound into the
+ * signature itself.
+ *
+ * A signer that only covers Bucket/Key/ContentType permits an unbounded body —
+ * the holder can PUT gigabytes. Signing `content-length` (as `generateSizedUploadUrl`
+ * above does) closes that gap; this variant additionally signs `content-type`,
+ * for callers where the content type itself must not be substitutable. A PUT
+ * with any other length or type fails SigV4 verification at R2, before a
+ * single byte is stored. Use this for anything a runner or browser uploads
+ * directly.
+ */
+export async function generateConstrainedUploadUrl(
+  key: string,
+  contentType: string,
+  contentLength: number,
+): Promise<string> {
+  const client = getClient();
+  const command = new PutObjectCommand({
+    Bucket: config.storageBucket,
+    Key: key,
+    ContentType: contentType,
+    ContentLength: contentLength,
+  });
+  return getSignedUrl(client, command, {
+    expiresIn: 600, // 10 min
+    signableHeaders: new Set(['content-length', 'content-type']),
+  });
+}
+
+/**
+ * True when an object already exists at `key`. Used to enforce write-once keys.
+ * Throws on anything other than a definite "not found" so callers can fail
+ * closed rather than hand out a signature that might overwrite history.
+ */
+export async function objectExists(key: string): Promise<boolean> {
+  const client = getClient();
+  try {
+    await client.send(new HeadObjectCommand({ Bucket: config.storageBucket, Key: key }));
+    return true;
+  } catch (err) {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    const name = (err as { name?: string })?.name;
+    if (status === 404 || name === 'NotFound' || name === 'NoSuchKey') return false;
+    throw err;
+  }
 }
 
 export async function generateDownloadUrl(key: string): Promise<string> {

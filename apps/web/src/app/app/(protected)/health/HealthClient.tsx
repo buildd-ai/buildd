@@ -1,11 +1,21 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
-import type { UsageStats, ConsumptionStats, ScheduleRow, RecentFailure, CredentialHealthItem, StrandedBackendRow, BudgetForecast } from './page';
+import type {
+  UsageStats,
+  ConsumptionStats,
+  ScheduleRow,
+  RecentFailure,
+  CredentialHealthItem,
+  StrandedBackendRow,
+  BudgetForecast,
+  FailureAnalytics,
+  FailureWindow,
+} from './page';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
@@ -157,6 +167,8 @@ interface Props {
   teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
+  failureAnalytics: FailureAnalytics | null;
+  failureWindow: FailureWindow;
 }
 
 export function HealthClient({
@@ -170,6 +182,8 @@ export function HealthClient({
   teamWorkspaces,
   wsFilter,
   budgetForecast,
+  failureAnalytics,
+  failureWindow,
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -507,6 +521,11 @@ export function HealthClient({
           </div>
         )}
       </section>
+
+      {/* 1b. Failure analytics — aggregated, so systemic patterns are visible */}
+      {failureAnalytics && (
+        <FailureAnalyticsSection analytics={failureAnalytics} window={failureWindow} />
+      )}
 
       {/* 2. Capacity — runners */}
       <section data-testid="health-section-runners" className="mb-6">
@@ -1287,6 +1306,348 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Failure analytics
+//
+// Aggregated worker failures. The headline pair (failure rate, died-early count)
+// is a stat tile — a bare number is the right form for a single headline value.
+// The exit-cause and signature bars encode magnitude only, so they use one hue
+// at a fixed step (never a categorical ramp); identity lives in the row label
+// and every bar is directly labelled with its count.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FAILURE_WINDOW_OPTIONS: { value: FailureWindow; label: string }[] = [
+  { value: '24h', label: '24h' },
+  { value: '7d', label: '7d' },
+  { value: '30d', label: '30d' },
+];
+
+const EXIT_CAUSE_LABELS: Record<string, string> = {
+  code_failure: 'code failure',
+  budget_limited: 'budget limited',
+  infra_failure: 'infra failure',
+  reassigned: 'reassigned',
+  condition_unmet: 'condition unmet',
+  sandbox_mount_gap: 'sandbox mount gap',
+  unclassified: 'unclassified',
+};
+
+/** Failure rate is a state, so it wears status ink — with the number as the label. */
+function failureRateClass(pct: number): string {
+  if (pct >= 25) return 'text-status-error';
+  if (pct >= 10) return 'text-status-warning';
+  return 'text-text-primary';
+}
+
+function exitCauseLabel(cause: string): string {
+  return EXIT_CAUSE_LABELS[cause] ?? cause;
+}
+
+/** URL-state window picker (?failureWindow=), so the view is shareable. */
+function FailureWindowPicker({ window: current }: { window: FailureWindow }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [pending, startTransition] = useTransition();
+
+  const select = (value: FailureWindow) => {
+    if (value === current) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (value === '7d') params.delete('failureWindow');
+    else params.set('failureWindow', value);
+    const qs = params.toString();
+    startTransition(() => router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false }));
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label="Failure window"
+      data-testid="failure-window-picker"
+      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
+    >
+      {FAILURE_WINDOW_OPTIONS.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => select(o.value)}
+          aria-pressed={current === o.value}
+          className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors ${
+            current === o.value
+              ? 'bg-surface-3 text-text-primary'
+              : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FailureAnalyticsSection({
+  analytics,
+  window: activeWindow,
+}: {
+  analytics: FailureAnalytics;
+  window: FailureWindow;
+}) {
+  const [expandedSignature, setExpandedSignature] = useState<string | null>(null);
+  const [showDetail, setShowDetail] = useState(false);
+
+  const { totals, byExitCause, signatures, byRole, byWorkspace, repeatFailureTasks } = analytics;
+  const topSignatureCount = signatures[0]?.count ?? 0;
+  const topCauseCount = byExitCause[0]?.count ?? 0;
+  const stillRunning = Math.max(0, totals.started - totals.completed - totals.failed);
+
+  return (
+    <section data-testid="health-section-failure-analytics" className="mb-6">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="section-label">Worker failures</h2>
+        <FailureWindowPicker window={activeWindow} />
+      </div>
+
+      {totals.started === 0 ? (
+        <div className="card px-4 py-3">
+          <p className="text-sm text-text-muted">No workers ran in this window.</p>
+        </div>
+      ) : (
+        <div className="card divide-y divide-border-default">
+          {/* Headline stat tiles */}
+          <div className="px-4 py-3 grid grid-cols-3 gap-3" data-testid="failure-headline">
+            <div>
+              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                Failure rate
+              </span>
+              <p
+                data-testid="failure-rate"
+                className={`text-xl font-bold tabular-nums leading-tight ${failureRateClass(totals.failureRatePct)}`}
+              >
+                {totals.failureRatePct}%
+              </p>
+              <p className="text-xs text-text-muted tabular-nums">
+                {totals.failed} of {totals.started} workers
+              </p>
+            </div>
+            <div>
+              <span
+                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                title="Failures that used 2 turns or fewer at $0 cost — they consumed a slot and produced nothing. A high count points at a platform bug, not bad agent work."
+              >
+                Died early
+              </span>
+              <p
+                data-testid="failure-died-early"
+                className={`text-xl font-bold tabular-nums leading-tight ${
+                  totals.diedEarly > 0 ? 'text-status-error' : 'text-text-primary'
+                }`}
+              >
+                {totals.diedEarly}
+              </p>
+              <p className="text-xs text-text-muted tabular-nums">
+                {totals.diedEarlySharePct}% of failures · ≤2 turns, $0
+              </p>
+            </div>
+            <div>
+              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                Completed
+              </span>
+              <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
+                {totals.completed}
+              </p>
+              <p className="text-xs text-text-muted tabular-nums">{stillRunning} still running</p>
+            </div>
+          </div>
+
+          {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
+          {byExitCause.length > 0 && (
+            <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                By exit cause
+              </span>
+              {byExitCause.map((c) => (
+                <div key={c.exitCause}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-text-primary truncate">{exitCauseLabel(c.exitCause)}</span>
+                    <span className="text-xs text-text-secondary tabular-nums shrink-0">
+                      {c.count} · {c.sharePct}%
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 bg-surface-3 overflow-hidden">
+                    <div
+                      className="h-full bg-primary"
+                      style={{ width: `${topCauseCount > 0 ? Math.round((c.count / topCauseCount) * 100) : 0}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Ranked failure signatures — most frequent first */}
+          {signatures.length > 0 && (
+            <div className="py-1" data-testid="failure-signatures">
+              <div className="px-4 pt-2 pb-1">
+                <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                  Failure signatures
+                </span>
+              </div>
+              <div className="divide-y divide-border-default">
+                {signatures.map((s) => {
+                  const open = expandedSignature === s.signature;
+                  return (
+                    <div key={s.signature} className="px-4 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSignature(open ? null : s.signature)}
+                        aria-expanded={open}
+                        className="w-full text-left flex items-start gap-3"
+                      >
+                        <span className="text-xs font-mono font-bold tabular-nums text-text-primary shrink-0 w-8 text-right">
+                          {s.count}×
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-xs font-mono text-text-primary truncate" title={s.signature}>
+                            {s.signature}
+                          </span>
+                          <span className="block text-xs text-text-muted mt-0.5">
+                            last {timeAgo(s.lastSeen)} · first {timeAgo(s.firstSeen)}
+                            {s.diedEarlyCount > 0 && (
+                              <span className="text-status-error"> · {s.diedEarlyCount} died early</span>
+                            )}
+                          </span>
+                        </span>
+                        <svg
+                          className={`w-3 h-3 shrink-0 mt-0.5 text-text-muted transition-transform ${open ? 'rotate-90' : ''}`}
+                          fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"
+                        >
+                          <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+
+                      {/* Magnitude bar, relative to the most frequent signature */}
+                      <div className="mt-1.5 h-1 bg-surface-3 overflow-hidden">
+                        <div
+                          className="h-full bg-primary"
+                          style={{ width: `${topSignatureCount > 0 ? Math.round((s.count / topSignatureCount) * 100) : 0}%` }}
+                        />
+                      </div>
+
+                      {open && (
+                        <div className="mt-2 space-y-1.5">
+                          {s.exampleError && (
+                            <p className="text-xs font-mono text-status-error whitespace-pre-wrap break-words">
+                              {s.exampleError}
+                            </p>
+                          )}
+                          <p className="text-xs text-text-muted">
+                            exit cause: {s.exitCauses.map(exitCauseLabel).join(', ')}
+                          </p>
+                          <div className="flex items-center gap-3">
+                            {s.exampleTaskId && (
+                              <a
+                                href={`/app/tasks/${s.exampleTaskId}`}
+                                className="text-xs text-accent hover:underline"
+                              >
+                                example task →
+                              </a>
+                            )}
+                            {s.exampleWorkerIds.length > 0 && (
+                              <span className="text-xs text-text-muted font-mono truncate">
+                                worker {s.exampleWorkerIds[0].slice(0, 8)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Progressive disclosure: per-role / per-workspace / repeat offenders */}
+          {(byRole.length > 0 || byWorkspace.length > 1 || repeatFailureTasks.length > 0) && (
+            <div className="px-4 py-2.5">
+              <button
+                type="button"
+                onClick={() => setShowDetail((p) => !p)}
+                aria-expanded={showDetail}
+                className="text-xs text-text-muted hover:text-text-secondary transition-colors"
+              >
+                {showDetail ? 'Hide breakdown' : 'Breakdown by role, workspace, repeat tasks'}
+              </button>
+
+              {showDetail && (
+                <div className="mt-3 space-y-4" data-testid="failure-breakdown">
+                  {byRole.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                        By role
+                      </span>
+                      {byRole.slice(0, 6).map((r) => (
+                        <div key={r.roleSlug} className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-text-primary truncate">{r.roleSlug}</span>
+                          <span className="text-xs tabular-nums shrink-0">
+                            <span className={failureRateClass(r.failureRatePct)}>{r.failureRatePct}%</span>
+                            <span className="text-text-muted"> · {r.failed}/{r.started}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {byWorkspace.length > 1 && (
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                        By workspace
+                      </span>
+                      {byWorkspace.slice(0, 6).map((w) => (
+                        <div key={w.workspaceId} className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-text-primary truncate">{w.workspaceName}</span>
+                          <span className="text-xs tabular-nums shrink-0">
+                            <span className={failureRateClass(w.failureRatePct)}>{w.failureRatePct}%</span>
+                            <span className="text-text-muted"> · {w.failed}/{w.started}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {repeatFailureTasks.length > 0 && (
+                    <div className="space-y-1">
+                      <span
+                        className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        title="Tasks that burned more than one worker inside the window"
+                      >
+                        Repeat-failure tasks
+                      </span>
+                      {repeatFailureTasks.slice(0, 6).map((t) => (
+                        <div key={t.taskId} className="flex items-center justify-between gap-2">
+                          <a
+                            href={`/app/tasks/${t.taskId}`}
+                            className="text-xs text-text-primary hover:text-primary truncate"
+                          >
+                            {t.taskTitle ?? t.taskId.slice(0, 8)}
+                          </a>
+                          <span className="text-xs text-status-error tabular-nums shrink-0">
+                            {t.failedWorkers}× failed
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

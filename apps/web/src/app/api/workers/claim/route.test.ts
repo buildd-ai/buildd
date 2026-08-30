@@ -4643,3 +4643,123 @@ describe('claim gate overrides', () => {
     });
   });
 });
+
+// Regression (2026-08-28): a claim burst minted worker rows that no runner ever
+// started; they rotted for ~12 minutes and were then booked as infra failures.
+// The insert had no atomic guard against a task that already owned a live
+// worker, and a no-op insert always rolled the task back to pending — which is
+// what let the next poll mint yet another row for the same task.
+describe('claim insert — atomic duplicate-worker guard', () => {
+  function apiAccount() {
+    return {
+      id: 'account-1',
+      name: 'acct',
+      maxConcurrentWorkers: 5,
+      type: 'user' as const,
+      authType: 'api' as const,
+    };
+  }
+
+  function claimableTask() {
+    return {
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Classify emails',
+      backend: 'claude',
+      dependsOn: [],
+      requiredCapabilities: [],
+      context: {},
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    };
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockDbExecute.mockReset();
+    mockTasksUpdate.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([claimableTask()]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+    });
+  });
+
+  it('requires the task to have no live worker inside the insert statement', async () => {
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    await POST(req);
+
+    expect(mockDbExecute).toHaveBeenCalled();
+    const insertSql = (mockDbExecute.mock.calls[0][0] as any).strings.join('?');
+    expect(insertSql).toContain('INSERT INTO');
+    // The guard must live in the same statement as the insert — a pre-read is
+    // exactly the TOCTOU that produced the duplicate rows.
+    expect(insertSql).toContain('NOT EXISTS');
+    expect(insertSql).toContain('w_dup.task_id');
+  });
+
+  it('does not roll the task back to pending when the dup guard blocks the insert', async () => {
+    // Insert no-ops...
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [] }));
+    // ...because a live worker already owns this task (limit:1 lookup).
+    mockWorkersFindMany.mockImplementation((args: any) =>
+      args?.limit === 1 ? Promise.resolve([{ id: 'live-w' }]) : Promise.resolve([]),
+    );
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdates.push(vals);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.deferrals?.duplicate_worker).toBe(1);
+    // The live worker owns the task — no rollback to pending.
+    expect(taskUpdates.some(u => u.status === 'pending')).toBe(false);
+  });
+
+  it('still rolls the task back to pending when the insert no-ops on the concurrency cap', async () => {
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [] }));
+    // No live worker for the task → the no-op was the concurrency guard.
+    mockWorkersFindMany.mockImplementation(() => Promise.resolve([]));
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdates.push(vals);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(data.workers).toHaveLength(0);
+    expect(taskUpdates.some(u => u.status === 'pending' && u.claimedBy === null)).toBe(true);
+  });
+});

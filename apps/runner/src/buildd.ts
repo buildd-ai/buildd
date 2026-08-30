@@ -301,6 +301,30 @@ export class BuilddClient {
     });
   }
 
+  /**
+   * Ask the coordination API for a presigned PUT so this runner can ship a session
+   * transcript / session log straight to object storage.
+   *
+   * The runner deliberately holds no storage credentials: the server derives the
+   * object key from the authenticated worker row, authorizes ownership, refuses
+   * sensitive workspaces, and binds the byte ceiling into the signature. A refusal
+   * (403 sensitive / 409 already uploaded / 503 storage off / 413 too big) is a
+   * normal outcome, not an error — we return null and the caller skips quietly.
+   */
+  async requestSessionUploadUrl(
+    workerId: string,
+    kind: 'transcript' | 'session-log',
+    sizeBytes: number,
+  ): Promise<{ uploadUrl: string; storageKey: string } | null> {
+    const data = await this.fetch(
+      `/api/workers/${workerId}/session-upload-url`,
+      { method: 'POST', body: JSON.stringify({ kind, sizeBytes }) },
+      [400, 403, 404, 409, 413, 503],
+    );
+    if (!data?.uploadUrl || !data?.storageKey) return null;
+    return { uploadUrl: data.uploadUrl as string, storageKey: data.storageKey as string };
+  }
+
   async createObservation(workspaceId: string, data: {
     type: string;
     title: string;

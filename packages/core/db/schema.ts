@@ -1067,12 +1067,16 @@ export const workers = pgTable('workers', {
   // code_failure:       the agent or task logic failed (default for unknown failures).
   // budget_limited:     session/usage cap hit — not a real failure; task auto-resumes.
   // infra_failure:      runner went offline or worker timed out (heartbeat/stale kill).
+  // never_started:      row was created at claim but no runner ever started it (started_at NULL);
+  //                     a bookkeeping artifact of over-claim — never charged to the task's retries.
+  // silent_start:       session reached started_at but streamed nothing (≤2 turns, $0 spend);
+  //                     points at the runner/SDK stream, not the task. Task requeues.
   // reassigned:         worker was superseded by a newer session.
   // condition_unmet:    loop exit condition evaluated false; task requeues (not a failure).
   // sandbox_mount_gap:  bwrap allowlist missing a path (npm postinstall, config file, tool binary);
   //                     task requeues; fix by adding path to BUILDD_MOUNT_ALLOWLIST_EXTRA.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).

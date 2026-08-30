@@ -103,6 +103,7 @@ If the friction arose from a traced error (one that appears in `get_error_traces
 ```
 context: { frictionSignature: '<slug>', frictionExcerpt: '<first line of excerpt>' }
 ```
+If the friction is a **worker failure** (your worker or a prior one died), call `get_failure_analytics` with `error: '<your error text>'` first. It answers whether the failure is already a known pattern (with count and first/last seen) and returns a ready-to-use `frictionSignature` for the same `context` bag above — so a recurring platform failure appends to one report instead of filing the 30th duplicate. Call it with no `error` for a window overview (`window: 24h|7d|30d`).
 The server deduplicates friction tasks by `(frictionSignature, workspace)` — if an open task already carries the same signature, your report is appended to it and no new task is created. You receive the existing task ID back so your completion flow stays coherent.
 
 **Why:** These reports feed directly into platform improvements (like the `get_task` / `send_agent_message` actions added after observing the create→observe→confirm loop was broken). Friction that goes unreported stays broken.
