@@ -495,3 +495,88 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
 
   return { verified, error };
 }
+
+// ── Server-side Anthropic auth ────────────────────────────────────────────────
+
+/** Purposes that can authenticate a direct call to the Anthropic API. */
+const ANTHROPIC_AUTH_PURPOSES = ['anthropic_api_key', 'oauth_token', 'claude_credential'] as const;
+
+export interface AnthropicAuth {
+  /** Ready-to-spread request headers, including `anthropic-version`. */
+  headers: Record<string, string>;
+  purpose: 'anthropic_api_key' | 'oauth_token' | 'claude_credential';
+  secretId: string;
+}
+
+/**
+ * Resolve headers for a server-side Anthropic API call from the team's stored
+ * credential.
+ *
+ * Exists because `process.env.ANTHROPIC_API_KEY` is not set in production and is
+ * unsettable for a team whose Claude access is an OAuth subscription. Any web-app
+ * code path that wants to call Anthropic directly should ask here first and treat
+ * `null` as "tell the operator to connect a backend", not as "misconfigured server".
+ *
+ * Precedence mirrors the claim route, which is the one place that has always had
+ * to get this right:
+ * - API key over OAuth token. A key is metered and unambiguous; an OAuth token can
+ *   return 200 on a read while being dead for real work (see `verifyClaudeCredential`).
+ * - Workspace-scoped row over team-wide.
+ * - Within a purpose, a non-revoked row over a revoked one, then most recently
+ *   updated — so a stale leftover can never shadow a healthy credential.
+ *
+ * A revoked row is still returned when it is the only one: for a read-only call
+ * like listing models, trying it and degrading on a non-200 beats refusing.
+ */
+export async function resolveAnthropicAuth(opts: {
+  teamId: string;
+  workspaceId?: string | null;
+}): Promise<AnthropicAuth | null> {
+  const rows = await db.query.secrets.findMany({
+    where: and(
+      eq(secrets.teamId, opts.teamId),
+      or(...ANTHROPIC_AUTH_PURPOSES.map(p => eq(secrets.purpose, p))),
+      or(
+        isNull(secrets.workspaceId),
+        opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`,
+      ),
+    ),
+    columns: {
+      id: true, purpose: true, encryptedValue: true,
+      workspaceId: true, healthStatus: true, updatedAt: true,
+    },
+  });
+  if (rows.length === 0) return null;
+
+  const rank = (r: { purpose: string }) => ANTHROPIC_AUTH_PURPOSES.indexOf(r.purpose as never);
+
+  const best = rows
+    .filter(r => rank(r) >= 0)
+    .sort((a, b) =>
+      rank(a) - rank(b) ||
+      // Workspace-specific beats team-wide.
+      (b.workspaceId === opts.workspaceId ? 1 : 0) - (a.workspaceId === opts.workspaceId ? 1 : 0) ||
+      ((a.healthStatus as string) === 'revoked' ? 1 : 0) - ((b.healthStatus as string) === 'revoked' ? 1 : 0) ||
+      (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0)
+    )[0];
+
+  if (!best) return null;
+
+  let value: string;
+  try {
+    // claude_credential stores a JSON blob; the other two store the value directly.
+    value = best.purpose === 'claude_credential'
+      ? decodeBlob(best.encryptedValue).access_token
+      : decrypt(best.encryptedValue);
+  } catch (e) {
+    console.error(`[claude-credential] failed to decode secret ${best.id} for Anthropic auth:`, e);
+    return null;
+  }
+  if (!value) return null;
+
+  const headers: Record<string, string> = { 'anthropic-version': ANTHROPIC_API_VERSION };
+  if (best.purpose === 'anthropic_api_key') headers['x-api-key'] = value;
+  else headers['Authorization'] = `Bearer ${value}`;
+
+  return { headers, purpose: best.purpose as AnthropicAuth['purpose'], secretId: best.id };
+}
