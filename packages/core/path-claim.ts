@@ -48,6 +48,11 @@ export function countPathSegments(path: string): number {
   return path.split('/').filter(s => s.length > 0).length;
 }
 
+/** Strips any trailing slash from a path. Returns path unchanged if no trailing slash. */
+export function normalizeTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, '');
+}
+
 // ── Conflict detection ───────────────────────────────────────────────────────
 
 /**
