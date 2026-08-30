@@ -3207,6 +3207,147 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    // A reviewer task is only dispatched on pull_request action='opened', so a
+    // review that ends without a usable verdict is never redone by the platform.
+    // First offence therefore requeues the same task (it re-reads the PR and
+    // re-reviews); only a repeat offence fails it.
+    it('no structuredOutput: requeues the review instead of silently passing', async () => {
+      setupReviewerTaskCompletion('approve');
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Never merge on an unparsed verdict.
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      // The task must not be recorded as completed — it goes back to pending.
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect((requeue?.context as any)?.reviewContractRetryCount).toBe(1);
+      expect((requeue?.context as any)?.failureContext).toContain('structuredOutput');
+      // Claim fields cleared so a fresh worker can pick it up.
+      expect(requeue?.claimedBy).toBeNull();
+    });
+
+    it('no structuredOutput on the retry: fails the task rather than looping', async () => {
+      setupReviewerTaskCompletion('approve');
+      // Same reviewer task, but it has already burned its contract retry.
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+            reviewContractRetryCount: 1,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        }),
+      );
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      const failing = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failing).toBeDefined();
+      expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+    });
+
+    it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
+      setupReviewerTaskCompletion('approve');
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          structuredOutput: { summary: 'looks fine', confidence: 0.9 },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(true);
+    });
+
+    it('non-review task with no structuredOutput is unaffected', async () => {
+      setupReviewerTaskCompletion('approve');
+      // Same shape, but not a review task — ordinary completions must still pass.
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'ordinary-task-1',
+          category: 'feature',
+          context: {},
+          missionId: 'mission-1',
+          title: 'Ordinary task',
+          outputRequirement: 'none',
+        }),
+      );
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Did the thing' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(true);
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+    });
+
     it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {
       setupReviewerTaskCompletion('request-changes');
       // Also need original task for the retry
