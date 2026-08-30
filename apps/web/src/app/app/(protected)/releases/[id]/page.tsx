@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
 import { releases, releaseTasks, tasks, missions, workspaces, githubRepos } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import ReleaseAutoRefresh from './ReleaseAutoRefresh';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,6 +103,21 @@ export default async function ReleaseDetailPage({
           .from(missions)
           .where(inArray(missions.id, missionIds))
       : [];
+
+  const [degradationTaskRow] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(
+      sql`${tasks.context}->>'releaseId' = ${id}`,
+      sql`${tasks.context}->>'type' = 'degradation'`,
+    ))
+    .limit(1);
+  const degradationTaskId = degradationTaskRow?.id ?? null;
+
+  const WATCH_WINDOW_MS = 30 * 60 * 1000;
+  const watchRemainingMin = release.healthyAt
+    ? Math.max(0, Math.floor((WATCH_WINDOW_MS - (Date.now() - new Date(String(release.healthyAt)).getTime())) / 60000))
+    : 0;
 
   const stateBadge = STATE_BADGE[release.state] ?? { label: release.state, cls: 'text-text-muted border-border-default' };
   const ciBadge = release.ciStateAtDispatch ? CI_BADGE[release.ciStateAtDispatch] : null;
@@ -241,6 +257,60 @@ export default async function ReleaseDetailPage({
         </div>
       )}
 
+      {/* Verification Status */}
+      {release.verificationStrategy === 'http' && (
+        release.state === 'deploying' ||
+        release.state === 'healthy' ||
+        release.state === 'degraded' ||
+        release.state === 'failed'
+      ) && (
+        <div className="card p-4 mb-4">
+          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">Verification</div>
+          {release.state === 'deploying' && (
+            <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-info border-status-info/30 animate-pulse">
+              Verifying…
+            </span>
+          )}
+          {release.state === 'healthy' && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-success border-status-success/30">
+                Healthy
+              </span>
+              {watchRemainingMin > 0 && (
+                <span className="text-[11px] text-text-muted font-mono">
+                  Watching for {watchRemainingMin} more min
+                </span>
+              )}
+            </div>
+          )}
+          {release.state === 'degraded' && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-warning border-status-warning/30 w-fit">
+                Degraded
+              </span>
+              {release.failureReason && (
+                <span className="text-[11px] text-status-warning font-mono">{release.failureReason}</span>
+              )}
+              {degradationTaskId && (
+                <Link href={`/app/tasks/${degradationTaskId}`} className="text-[11px] font-mono text-primary hover:underline">
+                  View auto-filed task →
+                </Link>
+              )}
+            </div>
+          )}
+          {release.state === 'failed' && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-error border-status-error/30 w-fit">
+                Failed
+              </span>
+              {release.failureReason && (
+                <span className="text-[11px] text-status-error font-mono">{release.failureReason}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Attributed tasks */}
       {edges.length > 0 && (
         <div className="card p-4 mb-4">
@@ -300,6 +370,8 @@ export default async function ReleaseDetailPage({
           <p className="text-sm text-text-secondary">No tasks attributed to this release yet.</p>
         </div>
       )}
+
+      <ReleaseAutoRefresh releaseId={id} workspaceId={ws.id} />
     </div>
   );
 }
