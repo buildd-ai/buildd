@@ -46,7 +46,7 @@ export default async function InitiativeDetailPage({
         orderBy: [desc(missions.priority), desc(missions.createdAt)],
         with: {
           tasks: {
-            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true },
+            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, taskClass: true },
             // Latest worker per task drives ghost (in-flight) / half (PR-open) segment states,
             // matching GET /api/initiatives/[id]. Without it segments collapse to status-only.
             with: { workers: { columns: { status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },

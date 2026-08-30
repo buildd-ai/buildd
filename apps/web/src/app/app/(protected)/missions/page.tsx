@@ -119,7 +119,7 @@ export default async function MissionsPage({
       workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true },
+        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
         with: {
           workers: {

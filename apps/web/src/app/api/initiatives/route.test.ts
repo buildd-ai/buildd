@@ -163,7 +163,7 @@ describe('GET /api/initiatives', () => {
     mockLinearLinkRows.mockReturnValue([]);
   });
 
-  it('rolls up child mission progress (task-weighted) into the initiative', async () => {
+  it('rolls up child mission progress (mission-weighted) into the initiative', async () => {
     mockInitiativesFindMany.mockResolvedValue([
       {
         id: 'init-1',
@@ -182,10 +182,11 @@ describe('GET /api/initiatives', () => {
     const body = await res.json();
     expect(body.initiatives).toHaveLength(1);
     const init = body.initiatives[0];
-    // 3 of 4 tasks completed → 75%
+    // Task counts are preserved for display (3/4 tasks done), but progress is mission-weighted.
     expect(init.progress.totalTasks).toBe(4);
     expect(init.progress.completedTasks).toBe(3);
-    expect(init.progress.progress).toBe(75);
+    // 1 of 2 missions completed → 50% (mission-weighted)
+    expect(init.progress.progress).toBe(50);
     expect(init.progress.status).toBe('active');
     // Heavy task arrays stripped; light mission index retained
     expect(init.missions).toHaveLength(2);
