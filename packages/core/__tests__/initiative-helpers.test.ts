@@ -26,31 +26,56 @@ describe('computeInitiativeProgress', () => {
     expect(r.status).toBe('empty');
   });
 
-  it('is task-weighted across child missions', () => {
-    // Mission A: 3/4 done, Mission B: 1/4 done → 4/8 = 50%
-    const r = computeInitiativeProgress([child('active', 4, 3), child('active', 4, 1)]);
+  it('is mission-weighted: 1 of 2 missions completed → 50%', () => {
+    // Mission A: completed, Mission B: active → 1/2 missions done = 50%
+    // Task counts stay in output for display, but do NOT drive the percentage.
+    const r = computeInitiativeProgress([child('completed', 4, 4), child('active', 4, 3)]);
     expect(r.totalTasks).toBe(8);
-    expect(r.completedTasks).toBe(4);
-    expect(r.progress).toBe(50);
+    expect(r.completedTasks).toBe(7);
+    expect(r.progress).toBe(50); // 1 of 2 missions complete
     expect(r.status).toBe('active');
   });
 
-  it('rounds task-weighted progress to the nearest integer', () => {
-    // 2/3 → 67
-    const r = computeInitiativeProgress([child('active', 3, 2)]);
-    expect(r.progress).toBe(67);
+  it('is mission-weighted: 2 of 3 missions completed → 67%', () => {
+    const r = computeInitiativeProgress([child('completed', 3, 3), child('completed', 3, 3), child('active', 3, 1)]);
+    expect(r.progress).toBe(67); // 2/3 rounded
+    expect(r.completedMissions).toBe(2);
+    expect(r.totalMissions).toBe(3);
   });
 
-  it('rolls up to completed when every mission is completed', () => {
+  it('rolls up to completed when every non-archived mission is completed', () => {
     const r = computeInitiativeProgress([child('completed', 2, 2), child('completed', 3, 3)]);
     expect(r.completedMissions).toBe(2);
+    expect(r.totalMissions).toBe(2);
     expect(r.progress).toBe(100);
     expect(r.status).toBe('completed');
   });
 
-  it('treats archived missions as terminal (initiative completed)', () => {
-    const r = computeInitiativeProgress([child('completed', 1, 1), child('archived', 0, 0)]);
+  it('excludes archived missions from denominator: 1 completed + 1 archived → 100%', () => {
+    // M2 is archived — should not appear in totalMissions or pull progress below 100%.
+    const r = computeInitiativeProgress([child('completed', 3, 3), child('archived', 0, 0)]);
+    expect(r.totalMissions).toBe(1); // archived excluded
+    expect(r.completedMissions).toBe(1);
+    expect(r.progress).toBe(100);
     expect(r.status).toBe('completed');
+    // Task counts also exclude the archived mission
+    expect(r.totalTasks).toBe(3);
+    expect(r.completedTasks).toBe(3);
+  });
+
+  it('excludes archived missions from denominator: active + archived → 0%', () => {
+    const r = computeInitiativeProgress([child('active', 4, 2), child('archived', 2, 2)]);
+    expect(r.totalMissions).toBe(1); // archived excluded
+    expect(r.progress).toBe(0); // 0/1 missions complete
+    expect(r.status).toBe('active');
+  });
+
+  it('returns empty when all missions are archived', () => {
+    const r = computeInitiativeProgress([child('archived', 2, 2), child('archived', 3, 3)]);
+    expect(r.totalMissions).toBe(0);
+    expect(r.completedMissions).toBe(0);
+    expect(r.progress).toBe(0);
+    expect(r.status).toBe('empty');
   });
 
   it('reports blocked when any child mission is budget_exhausted', () => {
@@ -73,15 +98,14 @@ describe('computeInitiativeProgress', () => {
     expect(r.status).toBe('active');
   });
 
-  it('falls back to mission-weighted progress when there are no countable tasks', () => {
-    // 2 missions, both completed, zero deliverable tasks → 100% via mission weighting
+  it('mission-weighted: 2 completed missions with no tasks → 100%', () => {
     const r = computeInitiativeProgress([child('completed', 0, 0), child('completed', 0, 0)]);
     expect(r.totalTasks).toBe(0);
     expect(r.progress).toBe(100);
     expect(r.status).toBe('completed');
   });
 
-  it('mission-weighted fallback: 1 of 2 missions complete, no tasks → 50%', () => {
+  it('mission-weighted: 1 of 2 missions complete, no tasks → 50%', () => {
     const r = computeInitiativeProgress([child('completed', 0, 0), child('active', 0, 0)]);
     expect(r.progress).toBe(50);
     expect(r.status).toBe('active');
@@ -91,6 +115,7 @@ describe('computeInitiativeProgress', () => {
     // A mission with all tasks done but status still active is NOT a completed mission
     const r = computeInitiativeProgress([child('active', 2, 2), child('completed', 2, 2)]);
     expect(r.completedMissions).toBe(1);
+    expect(r.progress).toBe(50); // 1 of 2 missions complete
     expect(r.status).toBe('active');
   });
 });

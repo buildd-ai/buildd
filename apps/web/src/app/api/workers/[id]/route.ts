@@ -26,6 +26,7 @@ import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
+import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -36,6 +37,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { reviewerRetryTitle } from '@/lib/task-title';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -1734,6 +1736,19 @@ export async function PATCH(
         await handleProseEvalOutcome(taskId, body.structuredOutput);
       });
 
+      // A finished worker-eval task owns verdicts for all LLM-eligible + command
+      // criteria it was asked about. Apply before the completion attempt so criteria
+      // turning green complete the mission in this request.
+      await runStep('criteria-worker-eval-outcome', async () => {
+        const [taskForWorkerEval] = await db
+          .select({ context: tasks.context })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .limit(1);
+        if (!isCriteriaWorkerEvalTask(taskForWorkerEval?.context)) return;
+        await handleCriteriaWorkerEvalOutcome(taskId, body.structuredOutput);
+      });
+
       // Attempt mission completion. The predicate pulls a goal-criteria verdict
       // when the work is done, refuses when it cannot get one, and is a cheap
       // no-op while deliverables are still open — so this is safe to run on every
@@ -2379,6 +2394,15 @@ async function handleReviewerOutcomeIfNeeded(
             status: 'open',
           });
         }
+        await appendPrActivity({
+          installationId,
+          repoFullName,
+          prNumber,
+          entry: {
+            kind: 'review_approved_awaiting_human',
+            detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
+          },
+        });
         console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
         break;
       }
@@ -2396,6 +2420,16 @@ async function handleReviewerOutcomeIfNeeded(
         console.warn(`[reviewer] Cannot auto-merge PR #${prNumber}: missing workspace or worker`);
         return;
       }
+
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber,
+        entry: {
+          kind: 'review_approved',
+          detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
+        },
+      });
 
       await tryAutoMergeWorkerPr({
         installationId,
@@ -2423,6 +2457,15 @@ async function handleReviewerOutcomeIfNeeded(
           maxIterations,
           output.feedback ?? null,
         );
+        await appendPrActivity({
+          installationId,
+          repoFullName,
+          prNumber,
+          entry: {
+            kind: 'review_escalated',
+            detail: `review loop hit its ${maxIterations}-iteration cap — needs a human`,
+          },
+        });
         return;
       }
 
@@ -2496,6 +2539,15 @@ async function handleReviewerOutcomeIfNeeded(
       if (workspace) {
         await dispatchNewTask(retryTask, workspace);
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
+        await appendPrActivity({
+          installationId,
+          repoFullName,
+          prNumber,
+          entry: {
+            kind: 'review_changes_requested',
+            detail: `iteration ${currentIteration + 1} of ${maxIterations} — ${output.feedback ?? output.summary ?? 'reviewer requested changes'}`,
+          },
+        });
       }
       break;
     }
@@ -2508,6 +2560,15 @@ async function handleReviewerOutcomeIfNeeded(
         message: output.escalationReason ?? output.summary,
         url: prUrl,
         urlTitle: 'View PR',
+      });
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber,
+        entry: {
+          kind: 'review_escalated',
+          detail: output.escalationReason ?? output.summary,
+        },
       });
       console.log(`[reviewer] Escalated PR #${prNumber}: ${output.escalationReason ?? output.summary}`);
       break;

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeInferenceCapabilities } from '@buildd/core/inference-policy';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -106,7 +107,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends } = body;
+    const { name, slug, enabledBackends, enabledInferenceCapabilities } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -128,6 +129,20 @@ export async function PATCH(
         );
       }
       updates.enabledBackends = [...new Set(enabledBackends as string[])];
+    }
+    if (enabledInferenceCapabilities !== undefined) {
+      // Which actions may spend a metered inference call. Unlike enabledBackends,
+      // the empty set is legal and meaningful: it is "hold the key but never use
+      // it", which is the whole point of separating the two decisions. Unknown
+      // names are dropped rather than rejected so a client from a newer deploy
+      // cannot enable spend on a capability this build does not implement.
+      if (enabledInferenceCapabilities !== null && !Array.isArray(enabledInferenceCapabilities)) {
+        return NextResponse.json(
+          { error: 'enabledInferenceCapabilities must be an array of capability names, or null' },
+          { status: 400 },
+        );
+      }
+      updates.enabledInferenceCapabilities = normalizeInferenceCapabilities(enabledInferenceCapabilities);
     }
     if (slug !== undefined) {
       // Validate slug format

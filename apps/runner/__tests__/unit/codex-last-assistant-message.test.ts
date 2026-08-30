@@ -97,6 +97,17 @@ mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: async () => {},
 }));
 
+// Without this, WorkerManager construction shells out to real `bwrap` probes
+// (env-scan.ts checkBwrapSupport) via execSync, which is slow/flaky under CI
+// concurrency and can blow the beforeEach hook timeout.
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
+  checkBwrapSupport: () => true,
+}));
+
 const { WorkerManager } = await import('../../src/workers');
 
 function makeConfig() {

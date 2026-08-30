@@ -17,12 +17,11 @@
       "enabled": false
     },
     {
-      "$comment": "Distills feedback down-votes/dismissals into memories. Route comment recommends every 1-4 hours. Staged dark \u2014 no trigger has ever existed for this route.",
+      "$comment": "Distills feedback down-votes/dismissals into memories. Runs every 4 hours. Enabled once the write-type/read-filter mismatch (type=decision vs type=pattern) was fixed in PR that introduced this.",
       "title": "Buildd: Feedback Digest",
       "path": "/api/cron/feedback-digest",
       "schedule": "0 */4 * * *",
-      "method": "POST",
-      "enabled": false
+      "method": "POST"
     },
     {
       "$comment": "Weekly signing-key rotation (cross-app-assertion-grant spec B.3). Rotates when the Active key is older than 30d, so a weekly tick is sufficient. Staged dark \u2014 no trigger has ever existed, meaning signing keys have never rotated.",

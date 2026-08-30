@@ -27,6 +27,18 @@ const mockResolveProseCriteria = mock((_opts: any) => Promise.resolve({
   kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
 }) as any);
 
+const mockResolveCriteriaWorkerEval = mock((_opts: any) => Promise.resolve({
+  kind: 'pending', taskId: 'worker-eval-task-1', evidence: 'Worker evaluator worker-ev dispatched — evaluating 1 criterion',
+}) as any);
+
+/**
+ * The inference primitive. Default: no key configured, which is production's
+ * normal state and the condition that routes grading to a dispatched agent run.
+ */
+const mockInferenceCall = mock((_p: any) => Promise.resolve({
+  ok: false, error: { kind: 'missing_key', provider: 'anthropic' },
+}) as any);
+
 mock.module('drizzle-orm', () => ({
   eq: (...args: any[]) => ({ _op: 'eq', args }),
   inArray: (...args: any[]) => ({ _op: 'inArray', args }),
@@ -64,6 +76,12 @@ mock.module('@buildd/core/model-tier-registry', () => ({
   resolveTierEntrySync: () => ({ model: 'claude-haiku-4-5-20251001', provider: 'anthropic' }),
 }));
 
+mock.module('@buildd/core/inference-client', () => ({
+  inferenceCall: mockInferenceCall,
+  describeInferenceError: (e: any) =>
+    e.kind === 'missing_key' ? `no ${e.provider} inference key configured for this team` : e.kind,
+}));
+
 // Command criteria are resolved by running the command elsewhere; that module is
 // tested in mission-criteria-verify.test.ts.
 mock.module('./mission-criteria-verify', () => ({
@@ -74,6 +92,17 @@ mock.module('./mission-criteria-verify', () => ({
 // mission-criteria-prose.test.ts.
 mock.module('./mission-criteria-prose', () => ({
   resolveProseCriteria: mockResolveProseCriteria,
+}));
+
+// Strategy resolver defaults to 'inline' unless overridden per-test.
+let mockStrategyResult: 'inline' | 'worker' = 'inline';
+mock.module('./mission-criteria-strategy', () => ({
+  resolveEvaluationStrategy: async () => mockStrategyResult,
+}));
+
+// Worker evaluator is tested in mission-criteria-worker-eval.test.ts.
+mock.module('./mission-criteria-worker-eval', () => ({
+  resolveCriteriaWorkerEval: mockResolveCriteriaWorkerEval,
 }));
 
 // Real @buildd/core/mission-helpers: the mechanical evaluator and the folding
@@ -89,14 +118,30 @@ afterAll(() => {
   else process.env.ANTHROPIC_API_KEY = originalApiKey;
 });
 
-/** Stub the Anthropic call with a canned verdict list. */
+/**
+ * Stub the inference transport with a canned verdict list.
+ *
+ * Deliberately runs the caller's real `validate` callback on the canned payload
+ * rather than handing back pre-built data: the verdict coercion ("an unrecognised
+ * verdict string is not a pass") lives in that callback, so stubbing past it would
+ * leave the coercion untested.
+ */
 function stubLLM(verdicts: Array<Record<string, unknown>>) {
-  const fetchMock = mock(() => Promise.resolve({
-    ok: true,
-    json: () => Promise.resolve({ content: [{ type: 'text', text: JSON.stringify({ verdicts }) }] }),
+  mockInferenceCall.mockImplementation(((p: any) => {
+    const data = p.validate({ verdicts });
+    return Promise.resolve(
+      data === null
+        ? { ok: false, error: { kind: 'parse', raw: JSON.stringify({ verdicts }) } }
+        : { ok: true, data, model: 'claude-haiku-4-5-20251001', provider: 'anthropic', usage: { inputTokens: 0, outputTokens: 0 } }
+    );
   }) as any);
-  globalThis.fetch = fetchMock as any;
-  return fetchMock;
+  return mockInferenceCall;
+}
+
+/** Stub the transport failing in a way that is NOT a missing credential. */
+function stubLLMError(error: Record<string, unknown>) {
+  mockInferenceCall.mockImplementation((() => Promise.resolve({ ok: false, error })) as any);
+  return mockInferenceCall;
 }
 
 function mission(overrides: Record<string, unknown> = {}) {
@@ -109,6 +154,8 @@ function mission(overrides: Record<string, unknown> = {}) {
     autoVerify: null,
     workingBranch: 'mission/m1',
     status: 'active',
+    teamId: 'team-1',
+    workspaceId: 'ws-1',
     ...overrides,
   };
 }
@@ -120,6 +167,7 @@ function reset() {
   artifactRows = [];
   updateCalls.length = 0;
   insertedRows.length = 0;
+  mockStrategyResult = 'inline';
   mockResolveCommandCriterion.mockReset();
   mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'verify-task-1', evidence: 'Verification task verify-t dispatched: bun test',
@@ -127,6 +175,14 @@ function reset() {
   mockResolveProseCriteria.mockReset();
   mockResolveProseCriteria.mockImplementation(() => Promise.resolve({
     kind: 'pending', taskId: 'prose-task-1', evidence: 'Evaluator task prose-ta dispatched — grading 1 criterion',
+  }) as any);
+  mockResolveCriteriaWorkerEval.mockReset();
+  mockResolveCriteriaWorkerEval.mockImplementation(() => Promise.resolve({
+    kind: 'pending', taskId: 'worker-eval-task-1', evidence: 'Worker evaluator worker-ev dispatched — evaluating 1 criterion',
+  }) as any);
+  mockInferenceCall.mockReset();
+  mockInferenceCall.mockImplementation(() => Promise.resolve({
+    ok: false, error: { kind: 'missing_key', provider: 'anthropic' },
   }) as any);
   globalThis.fetch = realFetch;
   delete process.env.ANTHROPIC_API_KEY;
@@ -237,41 +293,46 @@ describe('evaluateCriteriaNow — command criteria are run, not graded', () => {
   it('marks a dispatched command criterion PENDING and records its verification task', async () => {
     mission({ goalCriteria: [{ type: 'command', command: 'bun test apps/web/src/lib/foo.test.ts' }] });
 
-    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
 
-    expect(mockResolveCommandCriterion).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledWith(expect.objectContaining({
       missionId: 'm1',
-      criterionIndex: 0,
-      command: 'bun test apps/web/src/lib/foo.test.ts',
+      criteria: expect.arrayContaining([expect.objectContaining({
+        index: 0,
+        type: 'command',
+        command: 'bun test apps/web/src/lib/foo.test.ts',
+      })]),
     }));
     expect(state!.criteria[0].verdict).toBe('PENDING');
-    expect(state!.criteria[0].workerTaskId).toBe('verify-task-1');
+    expect(state!.criteria[0].workerTaskId).toBe('worker-eval-task-1');
     // In flight is not satisfied.
     expect(state!.overall).toBe('UNVERIFIED');
   });
 
-  it('takes the pass/fail from a completed verification run', async () => {
+  it('command criterion stays UNVERIFIED when allowWorkerDispatch is not set (heartbeat guard)', async () => {
+    // The heartbeat prepass must not dispatch a worker evaluation task — it is
+    // TRIGGER-GATED to mission-complete evaluation (ensureCriteriaVerdict) only.
     mission({ goalCriteria: [{ type: 'command', command: 'bun test' }] });
-    mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
-      kind: 'verdict', verdict: 'fail', taskId: 'verify-2', evidence: '`bun test` did not pass — Command failed (exit code 1)',
-    }) as any);
 
+    // allowWorkerDispatch not set — simulates heartbeat prepass call
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
-    expect(state!.criteria[0].verdict).toBe('fail');
-    expect(state!.criteria[0].evidence).toContain('exit code 1');
-    expect(state!.overall).toBe('fail');
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+    // evaluateGoalCriteria cannot mechanically evaluate commands, so they start
+    // as NOT_EVALUATED. Without dispatch, the criterion stays NOT_EVALUATED.
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.overall).toBe('UNVERIFIED');
   });
 
-  it('leaves a command criterion unevaluated when there is nowhere to run it — and still never asks the LLM', async () => {
+  it('leaves a command criterion NOT_EVALUATED when worker eval is unavailable — and still never asks the LLM', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-test';
     const fetchMock = stubLLM([{ index: 0, verdict: 'pass', evidence: 'looks fine to me' }]);
     mission({ goalCriteria: [{ type: 'command', command: 'bun test' }] });
-    mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
+    mockResolveCriteriaWorkerEval.mockImplementation(() => Promise.resolve({
       kind: 'unavailable', evidence: 'Command criterion cannot run: mission has no workspace',
     }) as any);
 
-    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
 
     expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
     expect(state!.overall).toBe('UNVERIFIED');
@@ -394,18 +455,101 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     expect(state!.overall).toBe('fail');
   });
 
-  it('grades inline and does not dispatch when an API key is present', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-test';
+  it('grades inline and does not dispatch when an inference key is available', async () => {
     stubLLM([{ index: 0, verdict: 'pass', evidence: 'Rows are there' }]);
     proseAndMechanical();
 
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
-    // Never both: dispatching alongside a working inline path would spend an
+    // Never both: dispatching alongside a working inference path would spend an
     // agent run to re-answer a question already answered.
     expect(mockResolveProseCriteria).not.toHaveBeenCalled();
     expect(state!.criteria[0].verdict).toBe('pass');
     expect(state!.overall).toBe('pass');
+  });
+
+  it('spends the budget tier and scopes the call to the mission team', async () => {
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'yes' }]);
+    proseAndMechanical();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    const p = mockInferenceCall.mock.calls[0]![0] as any;
+    // The tier is named; the provider, model and credential are the registry's
+    // business — which is what lets a team route judgments to OpenRouter.
+    expect(p.tier).toBe('budget');
+    expect(p.teamId).toBe('team-1');
+    expect(p.workspaceId).toBe('ws-1');
+    expect(p.system).toContain('evidence-grounded');
+    expect(p.user).toContain('Rows exist');
+  });
+
+  it('coerces an unrecognised verdict string to UNVERIFIED, never pass', async () => {
+    stubLLM([{ index: 0, verdict: 'definitely-yes', evidence: 'trust me' }]);
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(state!.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('reports a provider error without dispatching an agent run', async () => {
+    stubLLMError({ kind: 'provider_error', status: 500, body: 'boom' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // A call that reached the provider and failed is a blip: the next evaluation
+    // round retries. Burning an agent run on it would be the expensive answer to
+    // a transient problem.
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+    expect(state!.criteria[0].evidence).toContain('Not graded');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('reports a parse failure without dispatching an agent run', async () => {
+    stubLLMError({ kind: 'parse', raw: 'I would rather not' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
+  });
+
+  it('falls back to dispatch when the team has inference switched off for grading', async () => {
+    stubLLMError({ kind: 'capability_disabled', capability: 'criteria_grading' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Switching inference off for this action is a cost choice, not a loss of
+    // capability: grading still happens, on the subscription seat, just slower.
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(state!.overall).toBe('UNVERIFIED');
+  });
+
+  it('names the capability it grades so the team toggle applies', async () => {
+    stubLLM([{ index: 0, verdict: 'pass', evidence: 'yes' }]);
+    proseAndMechanical();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect((mockInferenceCall.mock.calls[0]![0] as any).capability).toBe('criteria_grading');
+  });
+
+  it('falls back to dispatch when the tier points at a provider that cannot serve inference', async () => {
+    stubLLMError({ kind: 'unsupported_provider', provider: 'openai-codex' });
+    proseAndMechanical();
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // No inference path exists for this team at all — same situation as no key,
+    // so the dispatched agent run is the right answer rather than an error.
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[0].verdict).toBe('PENDING');
   });
 
   it('applies an LLM verdict with its evidence reference', async () => {
@@ -509,7 +653,7 @@ describe('evaluateCriteriaNow — prose criteria', () => {
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
 
     expect(state!.criteria[0].verdict).toBe('NOT_EVALUATED');
-    expect(state!.criteria[0].evidence).toBe('LLM returned no verdict for this criterion');
+    expect(state!.criteria[0].evidence).toBe('The evaluator returned no verdict for this criterion');
   });
 });
 
@@ -568,5 +712,142 @@ describe('evaluateCriteriaNow — feed notes', () => {
 
     expect(insertedRows).toHaveLength(1);
     expect(insertedRows[0].title).toBe(ON_DEMAND_NOTE_TITLE);
+  });
+});
+
+// ── evaluationStrategy routing ────────────────────────────────────────────────
+
+describe('evaluationStrategy: worker path', () => {
+  beforeEach(reset);
+
+  it('routes all LLM-eligible criteria to worker eval when strategy=worker and allowWorkerDispatch=true', async () => {
+    mockStrategyResult = 'worker';
+    mission({
+      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
+    });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+
+    const saved = updateCalls[updateCalls.length - 1]?.goalCriteriaState;
+    expect(saved.criteria[0].verdict).toBe('PENDING');
+    expect(saved.criteria[0].workerTaskId).toBe('worker-eval-task-1');
+  });
+
+  it('does NOT dispatch worker eval when allowWorkerDispatch is false (heartbeat guard)', async () => {
+    mockStrategyResult = 'worker';
+    mission({
+      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
+    });
+
+    // allowWorkerDispatch defaults to false — simulates heartbeat prepass call
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+  });
+
+  it('does NOT dispatch worker eval when dispatchCommands=false (read-only pass)', async () => {
+    mockStrategyResult = 'worker';
+    mission({
+      goalCriteria: [{ type: 'description', description: 'Tests all pass', notMechanizableReason: 'r' }],
+    });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', dispatchCommands: false, allowWorkerDispatch: true });
+
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+  });
+
+  it('command criteria route to worker eval even when strategy=inline', async () => {
+    mockStrategyResult = 'inline';
+    mission({
+      goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
+    });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    // Under inline strategy, command criteria go to worker eval (not resolveCommandCriterion)
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+    expect(mockResolveCommandCriterion).not.toHaveBeenCalled();
+
+    const saved = updateCalls[updateCalls.length - 1]?.goalCriteriaState;
+    expect(saved.criteria[0].verdict).toBe('PENDING');
+    expect(saved.criteria[0].workerTaskId).toBe('worker-eval-task-1');
+  });
+
+  it('under inline strategy, prose criteria still use prose dispatch (not worker eval)', async () => {
+    mockStrategyResult = 'inline';
+    mission({
+      goalCriteria: [{ type: 'description', description: 'Tests pass', notMechanizableReason: 'r' }],
+    });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    // No ANTHROPIC_API_KEY set → prose dispatch path
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+  });
+
+  it('command criteria are not dispatched when another criterion has already failed', async () => {
+    mockStrategyResult = 'inline';
+    mission({
+      goalCriteria: [
+        { type: 'no_open_tasks' },
+        { type: 'command', command: 'bun test' },
+      ],
+    });
+    // no_open_tasks will fail (there is an active task)
+    taskRows = [{ id: 't1', status: 'in_progress', title: 'Work', taskClass: 'work', mode: 'execution', result: null }];
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    // no_open_tasks fails → overall is fail → command skipped
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+
+    const saved = updateCalls[updateCalls.length - 1]?.goalCriteriaState;
+    const commandCs = saved.criteria.find((c: any) => c.type === 'command');
+    expect(commandCs.verdict).toBe('NOT_EVALUATED');
+    expect(commandCs.evidence).toMatch(/another criterion has already failed/i);
+  });
+
+  it('worker eval batches both command and prose criteria under worker strategy', async () => {
+    mockStrategyResult = 'worker';
+    mission({
+      goalCriteria: [
+        { type: 'description', description: 'Tests pass', notMechanizableReason: 'r' },
+        { type: 'command', command: 'bun test' },
+      ],
+    });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+    // Both criteria should be in a single call (batched)
+    const callArg = mockResolveCriteriaWorkerEval.mock.calls[0][0];
+    expect(callArg.criteria).toHaveLength(2);
+    expect(callArg.criteria.some((c: any) => c.type === 'description')).toBe(true);
+    expect(callArg.criteria.some((c: any) => c.type === 'command')).toBe(true);
+  });
+
+  it('ensureCriteriaVerdict passes allowWorkerDispatch=true to evaluateCriteriaNow', async () => {
+    // When ensureCriteriaVerdict calls evaluateCriteriaNow, the worker strategy
+    // should dispatch — this covers the completion gate path.
+    mockStrategyResult = 'worker';
+    const stale = {
+      evaluatedAt: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+      evaluatedBy: 'auto' as const,
+      overall: 'PENDING' as const,
+      criteria: [{ index: 0, type: 'description', verdict: 'PENDING' as const }],
+    };
+    mission({
+      goalCriteria: [{ type: 'description', description: 'Tests pass', notMechanizableReason: 'r' }],
+      goalCriteriaState: stale,
+    });
+
+    await ensureCriteriaVerdict('m1');
+
+    // Worker dispatch should fire because ensureCriteriaVerdict passes allowWorkerDispatch: true
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
   });
 });

@@ -543,7 +543,7 @@ export default async function HomePage({
             columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
             with: {
               tasks: {
-                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true },
+                columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
                 with: { workers: { columns: { status: true, startedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true }, limit: 5 } },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },

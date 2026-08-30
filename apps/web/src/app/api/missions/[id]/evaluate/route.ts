@@ -103,6 +103,7 @@ export async function POST(
     const state = await evaluateCriteriaNow(id, {
       evaluatedBy: apiAccount ? 'mcp' : 'manual',
       noteTitle: ON_DEMAND_NOTE_TITLE,
+      allowWorkerDispatch: true,
     });
 
     // A fresh pass may be the last thing the mission was waiting for. Reuse the

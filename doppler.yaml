@@ -1,0 +1,9 @@
+# Secrets for this repo live in Doppler, not in a .env file.
+#
+#   doppler setup            # reads this file, no prompts
+#   doppler run -- pnpm dev  # runs with secrets injected
+#
+# See SECRETS.md for how production and CI get their values.
+setup:
+  project: buildd
+  config: dev

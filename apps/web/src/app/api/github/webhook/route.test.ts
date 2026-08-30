@@ -802,6 +802,21 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
 
+    it('posts a sticky buildd activity comment when it picks up the CI failure', async () => {
+      withFailedWorkerPr();
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      const commentCall = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/42/comments' && c[2]?.method === 'POST',
+      );
+      expect(commentCall).toBeDefined();
+      const body = JSON.parse(commentCall[2].body).body as string;
+      expect(body).toContain('<!-- buildd-activity -->');
+      expect(body).toContain('CI failed — fixing');
+      expect(body).toContain('attempt 1 of 3');
+    });
+
     it('dedupes structurally — skips dispatch when this workspace/PR/SHA already has a retry', async () => {
       withFailedWorkerPr();
       jobInsertConflicts = true;
@@ -835,6 +850,18 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('tells the PR a human is needed once CI retries are exhausted', async () => {
+      withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      const commentCall = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/42/comments' && c[2]?.method === 'POST',
+      );
+      expect(commentCall).toBeDefined();
+      expect(JSON.parse(commentCall[2].body).body).toContain('CI still failing — needs a human');
     });
 
     it('does not retry when maxCiRetries is 0 (disabled)', async () => {
@@ -1914,6 +1941,22 @@ describe('POST /api/github/webhook', () => {
       });
       // Auto-merge must NOT be called when reviewer is dispatched
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('announces on the PR that a reviewer agent picked it up', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      const commentCall = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/42/comments' && c[2]?.method === 'POST',
+      );
+      expect(commentCall).toBeDefined();
+      const body = JSON.parse(commentCall[2].body).body as string;
+      expect(body).toContain('<!-- buildd-activity -->');
+      expect(body).toContain('Reviewing changes');
+      expect(body).toContain('reviewer role `reviewer`');
     });
 
     it('skips reviewer task and escalates when pre-flight detects schema file', async () => {
