@@ -54,6 +54,18 @@ describe('detectStalePin', () => {
   it('returns false when live list is empty (models not yet fetched)', () => {
     expect(detectStalePin('claude-old-model', [])).toBe(false);
   });
+
+  it('returns false for any pin when the catalog is incomplete', () => {
+    // /api/models returns the team's tier models even with no credential, so a
+    // non-empty list is no longer proof the list is exhaustive. Warning off a
+    // partial list would flag every legitimately pinned release as retired.
+    expect(detectStalePin('claude-old-model', liveModels, false)).toBe(false);
+    expect(detectStalePin('claude-sonnet-5', liveModels, false)).toBe(false);
+  });
+
+  it('still warns on a genuinely retired pin when the catalog is complete', () => {
+    expect(detectStalePin('claude-old-model', liveModels, true)).toBe(true);
+  });
 });
 
 // --- SSR component tests ---
