@@ -3090,6 +3090,45 @@ describe('PATCH /api/workers/[id]', () => {
       expect(budgetNotifies()).toHaveLength(0); // 15% < 50%
     });
 
+    it('writes effectiveCost back to workers.costUsd for OAuth workers that do not self-report', async () => {
+      // Regression: workers.costUsd was left null for OAuth workers, making
+      // per-worker aggregations (e.g. mission spend) always return $0.
+      setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          costUsd: 0,
+          resultMeta: {
+            modelUsage: {
+              'claude-sonnet-4-6': {
+                inputTokens: 0, outputTokens: 1_000_000,
+                cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0,
+              },
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeDefined();
+      expect(parseFloat(finalSet.costUsd)).toBeCloseTo(15, 1);
+    });
+
     it('aggregates cost from a second account in the same team and crosses threshold once', async () => {
       // Simulates: account-2 (same team) completed a task earlier, now account-1 completes another.
       // The team row already has $45 accumulated (from account-2). account-1 adds $10 → crosses 50%.
