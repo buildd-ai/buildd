@@ -27,6 +27,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
+  /**
+   * @deprecated Memory now lives in buildd's own `memories` table (migration 0130).
+   * Nothing reads or writes this column. Values are cleared by 0130; the column is
+   * dropped in a follow-up migration once 0130's code is live in production — see
+   * the expand/contract note in packages/core/drizzle/0130_fantastic_tigra.sql.
+   */
+  memoryApiKey: text('memory_api_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
