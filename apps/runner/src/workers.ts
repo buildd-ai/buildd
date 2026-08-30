@@ -71,7 +71,7 @@ import {
   isMountAllowlistEnabled,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, ensureCbmRuntimeDir, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2325,6 +2325,8 @@ export class WorkerManager {
         cbmBinaryPath = cbmActivation.cbmBinaryPath;
         cbmCacheDir = cbmActivation.cbmCacheDir;
         mkdirSync(cbmCacheDir!, { recursive: true });
+        // 0700 daemon coordination dir; must exist before the MCP server starts.
+        ensureCbmRuntimeDir(cbmCacheDir!);
         console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
 
         // Pre-index the worktree so the graph is warm on turn one.

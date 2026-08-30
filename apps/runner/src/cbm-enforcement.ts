@@ -13,6 +13,8 @@
  *   - Binary absent from image: skipped silently (existsSync guard)
  */
 
+import { join } from 'path';
+
 import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
 
 /**
@@ -60,6 +62,46 @@ export interface CbmActivation {
   enforced: boolean;
   cbmBinaryPath?: string;
   cbmCacheDir?: string;
+  /** Per-worker daemon runtime dir; see cbmRuntimeDirFor. */
+  cbmRuntimeDir?: string;
+}
+
+/**
+ * Where CBM puts its coordination socket for this worker.
+ *
+ * CBM 0.10.x routes every process (MCP server, CLI, hooks) through a per-user
+ * daemon discovered via this directory, and refuses to start when an active
+ * daemon holds a *different* CBM_CACHE_DIR:
+ *   "CBM could not start because the active account daemon uses a different
+ *    cache directory"
+ * Because each worker gets its own cache dir, two workers running concurrently
+ * on one host would fight over the account and only the first would get CBM.
+ * Verified against 0.10.8 in the worker image: the second concurrent `mcp`
+ * server exits 1 without this, and exits 0 with it.
+ *
+ * Nested inside the cache dir so the sandbox already binds it rw and cleanup
+ * removes it with the cache. Keep it short: the daemon's unix socket lives
+ * under this path and must fit in sun_path (108 bytes on Linux).
+ */
+export function cbmRuntimeDirFor(cbmCacheDir: string): string {
+  return join(cbmCacheDir, 'run');
+}
+
+/**
+ * Create the runtime dir with mode 0700. CBM checks the permissions of this
+ * directory and refuses a looser one with "secure CLI coordination could not be
+ * created (endpoint)" — a group-readable 0755 dir is enough to trip it.
+ */
+export function ensureCbmRuntimeDir(cbmCacheDir: string): string {
+  // Required lazily: 26 runner test files replace 'fs' with a partial mock.module
+  // stub, and a static named import of a function they omit fails the whole file
+  // at parse time ("Export named 'chmodSync' not found in module 'node:fs'").
+  const { chmodSync, mkdirSync } = require('fs') as typeof import('fs');
+  const dir = cbmRuntimeDirFor(cbmCacheDir);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // recursive:true ignores `mode` for a directory that already exists.
+  chmodSync(dir, 0o700);
+  return dir;
 }
 
 /**
@@ -74,10 +116,12 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
   });
   const enforced = !ctx.isCodexTask && !!ctx.worktreePath && !ctx.cbmRoleDisabled && pathExists(CBM_BINARY_PATH);
   if (!enforced) return { enforced: false };
+  const cbmCacheDir = `/tmp/cbm-${ctx.workerId}`;
   return {
     enforced: true,
     cbmBinaryPath: CBM_BINARY_PATH,
-    cbmCacheDir: `/tmp/cbm-${ctx.workerId}`,
+    cbmCacheDir,
+    cbmRuntimeDir: cbmRuntimeDirFor(cbmCacheDir),
   };
 }
 
@@ -92,6 +136,7 @@ export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string) {
     args: ['mcp'],
     env: {
       CBM_CACHE_DIR: cbmCacheDir,
+      CBM_RUNTIME_DIR: cbmRuntimeDirFor(cbmCacheDir),
       CBM_ALLOWED_ROOT: sessionCwd,
       CBM_AUTO_WATCH: 'false',
       // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.
