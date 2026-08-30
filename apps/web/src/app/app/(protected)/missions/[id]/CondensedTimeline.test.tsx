@@ -55,7 +55,7 @@ const baseProps: CondensedTimelineProps = {
   allTasksCount: 0,
   missionCompleted: false,
   bookkeepingTasks: [],
-  defaultView: 'timeline',
+  view: 'timeline',
   prsMerged: 0,
   prsOpen: 0,
   completedTasks: 0,
@@ -161,27 +161,15 @@ describe('CondensedTimeline — I-8: SegmentStrip in collapsed disclosure rows',
 });
 
 // ─── §3.5: Density tiers — Summary vs Timeline ───────────────────────────────
+// Note: Summary/Timeline tab switching is now handled by MissionTabs (the parent).
+// CondensedTimeline renders only the view specified by the `view` prop.
 
 describe('CondensedTimeline — §3.5 density tiers', () => {
-  it('renders Summary and Timeline sub-tabs when defaultView=summary', () => {
-    const html = renderToStaticMarkup(
-      <CondensedTimeline
-        {...baseProps}
-        defaultView="summary"
-        allTasksCount={10}
-        prsMerged={5}
-        prsOpen={2}
-      />,
-    );
-    expect(html).toContain('Summary');
-    expect(html).toContain('Timeline');
-  });
-
   it('renders PR roll-up in Summary view', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="summary"
+        view="summary"
         allTasksCount={10}
         prsMerged={5}
         prsOpen={2}
@@ -196,7 +184,7 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="summary"
+        view="summary"
         allTasksCount={10}
         groups={{ ...emptyGroups, waitingOnYou: [toChain(waitingTask)] }}
       />,
@@ -205,46 +193,73 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
     expect(html).toContain('Task w1');
   });
 
-  it('does NOT render Summary/Timeline sub-tabs when defaultView=timeline', () => {
+  it('shows "Waiting on" status line for running tasks in Summary view', () => {
+    const runningTask = makeTask('r1', { status: 'in_progress' });
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="timeline"
-        allTasksCount={3}
+        view="summary"
+        allTasksCount={5}
+        groups={{ ...emptyGroups, running: [toChain(runningTask)] }}
       />,
     );
-    // Small mission — no sub-tab buttons, just "Timeline" section label
-    expect(html).not.toContain('bg-surface-3 text-text-primary');
+    expect(html).toContain('Waiting on:');
+    expect(html).toContain('1 task running');
   });
 
-  it('renders MissionProgressBar (SegmentStrip) in Summary view when totalTasks > 0', () => {
+  it('renders TimelineView when view=timeline', () => {
+    const runningTask = makeTask('r1', { status: 'in_progress' });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        view="timeline"
+        allTasksCount={1}
+        groups={{ ...emptyGroups, running: [toChain(runningTask)] }}
+      />,
+    );
+    // Running tasks are always visible (not collapsed) in the timeline view
+    expect(html).toContain('Task r1');
+  });
+
+  it('does NOT render MissionProgressBar inside Summary view (progress bar lives in page header)', () => {
     const seg = makeSeg('t1', 'solid');
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="summary"
+        view="summary"
         allTasksCount={5}
         completedTasks={3}
         totalTasks={5}
         segments={[seg]}
       />,
     );
-    // SegmentStrip from MissionProgressBar density="full" renders a height style
-    expect(html).toContain('3/5');
+    // Progress bar with segment strip is NOT inside the SummaryView instance.
+    // It lives in the page header card (page.tsx) to avoid double-rendering.
+    expect(html).not.toContain('height:8px');
   });
 
-  it('does NOT render MissionProgressBar in Summary view when totalTasks=0', () => {
+  it('shows "No actions needed" only when criteria are passing and nothing is in flight', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
-        defaultView="summary"
-        allTasksCount={0}
-        completedTasks={0}
-        totalTasks={0}
+        view="summary"
+        allTasksCount={5}
       />,
     );
-    // Guard: totalTasks=0 → no progress bar, no completed/total count
-    expect(html).not.toContain('0/0');
+    expect(html).toContain('No actions needed');
+  });
+
+  it('does NOT show "No actions needed" when criteriaBlockingReason is set', () => {
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        view="summary"
+        allTasksCount={5}
+        criteriaBlockingReason="criterion failing: all_prs_merged"
+      />,
+    );
+    expect(html).not.toContain('No actions needed');
+    expect(html).toContain('Completion blocked');
   });
 });
 
