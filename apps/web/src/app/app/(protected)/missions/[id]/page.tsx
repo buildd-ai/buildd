@@ -329,6 +329,27 @@ export default async function MissionDetailPage({
   const missionCriteriaOverall = ((mission as any).goalCriteriaState as { overall?: string } | null)?.overall ?? null;
   const criteriaUnverified = Array.isArray(missionCriteria) && missionCriteria.length > 0 && missionCriteriaOverall !== 'pass';
 
+  // Human-readable blocking reason for the above-fold banner and Summary view.
+  // Used when criteriaUnverified is true and the mission is not yet complete.
+  const criteriaStateItems = ((mission as any).goalCriteriaState as { criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null)?.criteria ?? [];
+  let criteriaBlockingReason: string | null = null;
+  if (criteriaUnverified && !['completed', 'cancelled', 'archived'].includes(mission.status)) {
+    const failing = criteriaStateItems.filter(c => c.verdict === 'fail');
+    const notPassed = criteriaStateItems.filter(c => c.verdict !== 'pass');
+    if (failing.length > 0) {
+      const label = failing[0].label ?? failing[0].type ?? 'criterion';
+      criteriaBlockingReason = failing.length === 1
+        ? `criterion failing: ${label}`
+        : `${failing.length} criteria failing`;
+    } else if (notPassed.length > 0) {
+      criteriaBlockingReason = notPassed.length === 1
+        ? '1 criterion unverified — run verification'
+        : `${notPassed.length} criteria unverified — run verification`;
+    } else {
+      criteriaBlockingReason = 'goal criteria not yet verified';
+    }
+  }
+
   // Single derived display state for the header chip and CTA
   const displayState = deriveMissionDisplayState({
     status: mission.status,
@@ -951,23 +972,56 @@ export default async function MissionDetailPage({
         />
       </div>
 
-      {/* ── Timeline / Feed Tabs — PRIMARY CONTENT ── */}
+      {/* ── Criteria blocking banner — visible above the fold on all tab views ── */}
+      {criteriaBlockingReason && (
+        <div className="mb-4 flex items-start gap-2 rounded border border-status-error/30 bg-status-error/5 px-3 py-2.5">
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-error">Blocked</span>
+          <span className="text-[12px] text-text-secondary">
+            {criteriaBlockingReason} — see Goal Criteria below ↓
+          </span>
+        </div>
+      )}
+
+      {/* ── Summary / Timeline / Feed Tabs — PRIMARY CONTENT ── */}
+      {/* Large missions (> N_small deliverable tasks) get a Summary tab as default. */}
       <MissionTabs
-        timelineContent={(<CondensedTimeline
-          groups={timelineGroups}
-          segments={segments}
-          effectivePolicyTier={effectivePolicy.tier}
-          policyLabel={policyLabel}
-          missionId={id}
-          allTasksCount={allTasksCount}
-          missionCompleted={mission.status === 'completed'}
-          bookkeepingTasks={bookkeepingTasks}
-          defaultView={defaultView}
-          prsMerged={prsMerged}
-          prsOpen={prsOpen}
-          completedTasks={completedTasks}
-          totalTasks={totalTasks}
-        />)}
+        defaultTab={defaultView === 'summary' ? 'summary' : 'timeline'}
+        summaryContent={defaultView === 'summary' ? (
+          <CondensedTimeline
+            view="summary"
+            groups={timelineGroups}
+            segments={segments}
+            effectivePolicyTier={effectivePolicy.tier}
+            policyLabel={policyLabel}
+            missionId={id}
+            allTasksCount={allTasksCount}
+            missionCompleted={mission.status === 'completed'}
+            bookkeepingTasks={bookkeepingTasks}
+            prsMerged={prsMerged}
+            prsOpen={prsOpen}
+            completedTasks={completedTasks}
+            totalTasks={totalTasks}
+            criteriaBlockingReason={criteriaBlockingReason}
+          />
+        ) : undefined}
+        timelineContent={(
+          <CondensedTimeline
+            view="timeline"
+            groups={timelineGroups}
+            segments={segments}
+            effectivePolicyTier={effectivePolicy.tier}
+            policyLabel={policyLabel}
+            missionId={id}
+            allTasksCount={allTasksCount}
+            missionCompleted={mission.status === 'completed'}
+            bookkeepingTasks={bookkeepingTasks}
+            prsMerged={prsMerged}
+            prsOpen={prsOpen}
+            completedTasks={completedTasks}
+            totalTasks={totalTasks}
+            criteriaBlockingReason={criteriaBlockingReason}
+          />
+        )}
         feedContent={<MissionFeed missionId={id} />}
       />
 

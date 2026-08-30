@@ -5,38 +5,43 @@ import { useState, type ReactNode } from 'react';
 export default function MissionTabs({
   timelineContent,
   feedContent,
+  summaryContent,
+  defaultTab = 'timeline',
 }: {
   timelineContent: ReactNode;
   feedContent: ReactNode;
+  /** When provided a Summary tab is added as the first tab. */
+  summaryContent?: ReactNode;
+  /** Initial active tab. Defaults to 'timeline'. */
+  defaultTab?: 'summary' | 'timeline' | 'feed';
 }) {
-  const [tab, setTab] = useState<'timeline' | 'feed'>('timeline');
+  const hasSummary = !!summaryContent;
+  const [tab, setTab] = useState<'summary' | 'timeline' | 'feed'>(defaultTab);
+
+  const btnCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
+      active
+        ? 'bg-surface-3 text-text-primary'
+        : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+    }`;
 
   return (
     <div>
       <div className="flex items-center gap-1 mb-4">
-        <button
-          onClick={() => setTab('timeline')}
-          className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
-            tab === 'timeline'
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-          }`}
-        >
+        {hasSummary && (
+          <button onClick={() => setTab('summary')} className={btnCls(tab === 'summary')}>
+            Summary
+          </button>
+        )}
+        <button onClick={() => setTab('timeline')} className={btnCls(tab === 'timeline')}>
           Timeline
         </button>
-        <button
-          onClick={() => setTab('feed')}
-          className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
-            tab === 'feed'
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-          }`}
-        >
+        <button onClick={() => setTab('feed')} className={btnCls(tab === 'feed')}>
           Feed
         </button>
       </div>
 
-      {tab === 'timeline' ? timelineContent : feedContent}
+      {tab === 'summary' ? summaryContent : tab === 'timeline' ? timelineContent : feedContent}
     </div>
   );
 }
