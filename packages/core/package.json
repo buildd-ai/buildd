@@ -58,7 +58,8 @@
     "./prose-gate": "./prose-gate.ts",
     "./release-archetype": "./release-archetype.ts",
     "./release-attribution": "./release-attribution.ts",
-    "./derived-metric": "./derived-metric.ts"
+    "./derived-metric": "./derived-metric.ts",
+    "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.231",

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateInitiativeKPIs } from '@buildd/core/mission-helpers';
+import { buildDefaultResolver } from '@buildd/core/initiative-metric-registry';
 
 const RATE_LIMIT_PER_HOUR = 6;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -111,7 +112,8 @@ export async function POST(
 
     const evaluatedBy: 'auto' | 'manual' | 'mcp' = apiAccount ? 'mcp' : 'manual';
 
-    const state = evaluateInitiativeKPIs(id, kpis as any, { evaluatedBy });
+    const resolver = buildDefaultResolver(db);
+    const state = await evaluateInitiativeKPIs(id, kpis as any, { evaluatedBy, resolver });
 
     // Persist state; if all blocking KPIs pass and initiative is active + all missions done,
     // allow initiative to complete. (Initiative completion from KPI gate is advisory here —
