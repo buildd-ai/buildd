@@ -103,11 +103,18 @@ export class WorkerSync {
         // Workers with active status can't be resumed (no SDK session/inputStream).
         // Exception: 'waiting' workers keep their status so the user can still answer —
         // sendMessage() will detect waiting+no-session and restart via resumeSession().
-        if (worker.status === 'working' || worker.status === 'stale') {
+        // `killedByRestart` covers the common case: loadAllWorkers already
+        // rewrote this worker from 'working' to 'error' (SDK sessions cannot
+        // survive a restart), which used to make the status check below fail and
+        // silently skip the notification — stranding the server row at 'running'
+        // until the reaper expired it. 'stale' still arrives unrewritten, and
+        // 'working' is kept for any caller that hands us a pre-rewrite row.
+        if (worker.killedByRestart || worker.status === 'working' || worker.status === 'stale') {
           worker.status = 'error';
           worker.error = 'Process restarted';
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
+          delete worker.killedByRestart;
 
           // Notify server so it doesn't stay "running" forever
           this.ctx.buildd.updateWorker(worker.id, {
