@@ -50,18 +50,20 @@ export function EscalationProvider({ workspaceIds, children }: Props) {
     const channels = workspaceIds.map(id => `${CHANNEL_PREFIX}workspace-${id}`);
     const handleUpdate = () => fetchCount();
 
-    for (const ch of channels) {
-      const channel = subscribeToChannel(ch);
-      if (channel) {
-        channel.bind('worker:progress', handleUpdate);
-        channel.bind('worker:completed', handleUpdate);
-        channel.bind('mission:note_posted', handleUpdate);
-      }
-    }
+    const events = ['worker:progress', 'worker:completed', 'mission:note_posted'] as const;
 
+    const bound = channels.map((ch) => {
+      const channel = subscribeToChannel(ch);
+      for (const event of events) channel?.bind(event, handleUpdate);
+      return { channelName: ch, channel };
+    });
+
+    // Channels are shared with the other layout providers, so this handler must
+    // be unbound explicitly — releasing the subscription no longer drops it.
     return () => {
-      for (const ch of channels) {
-        unsubscribeFromChannel(ch);
+      for (const { channelName, channel } of bound) {
+        for (const event of events) channel?.unbind(event, handleUpdate);
+        unsubscribeFromChannel(channelName);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

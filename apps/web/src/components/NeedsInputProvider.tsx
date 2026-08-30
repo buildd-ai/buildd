@@ -93,17 +93,19 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
       }
     };
 
-    for (const channelName of channelNames) {
-      const channel = subscribeToChannel(channelName);
-      if (channel) {
-        channel.bind('worker:progress', handleWorkerUpdate);
-        channel.bind('worker:completed', handleWorkerUpdate);
-        channel.bind('worker:failed', handleWorkerUpdate);
-      }
-    }
+    const events = ['worker:progress', 'worker:completed', 'worker:failed'] as const;
 
+    const bound = channelNames.map((channelName) => {
+      const channel = subscribeToChannel(channelName);
+      for (const event of events) channel?.bind(event, handleWorkerUpdate);
+      return { channelName, channel };
+    });
+
+    // Channels are shared with the other layout providers, so this handler must
+    // be unbound explicitly — releasing the subscription no longer drops it.
     return () => {
-      for (const channelName of channelNames) {
+      for (const { channelName, channel } of bound) {
+        for (const event of events) channel?.unbind(event, handleWorkerUpdate);
         unsubscribeFromChannel(channelName);
       }
     };

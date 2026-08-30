@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalUiHealth } from '../useLocalUiHealth';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 
 interface Props {
   taskId: string;
@@ -52,6 +52,20 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const router = useRouter();
 
   const channelRef = useRef<string | null>(null);
+  // The workspace channel is shared with the layout providers, so the handler
+  // has to be unbound by reference — releasing the subscription won't drop it.
+  const claimHandlerRef = useRef<((data: unknown) => void) | null>(null);
+
+  const releaseChannel = useCallback(() => {
+    if (!channelRef.current) return;
+    const channel = getSubscribedChannel(channelRef.current);
+    if (channel && claimHandlerRef.current) {
+      channel.unbind('task:claimed', claimHandlerRef.current);
+    }
+    unsubscribeFromChannel(channelRef.current);
+    channelRef.current = null;
+    claimHandlerRef.current = null;
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -59,12 +73,9 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
-      if (channelRef.current) {
-        unsubscribeFromChannel(channelRef.current);
-        channelRef.current = null;
-      }
+      releaseChannel();
     };
-  }, []);
+  }, [releaseChannel]);
 
   const fetchRunnerFleet = useCallback(async () => {
     try {
@@ -184,6 +195,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
 
       // Subscribe to Pusher for instant claim notification
       const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
+      releaseChannel(); // a second Start must not leave the first hold behind
       channelRef.current = channelName;
       const channel = subscribeToChannel(channelName);
       if (channel) {
@@ -200,6 +212,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             setStatus('accepted');
           }
         };
+        claimHandlerRef.current = handleClaimed as (data: unknown) => void;
         channel.bind('task:claimed', handleClaimed);
       }
 
@@ -221,10 +234,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
     }
-    if (channelRef.current) {
-      unsubscribeFromChannel(channelRef.current);
-      channelRef.current = null;
-    }
+    releaseChannel();
     setShowModal(false);
     setStatus('idle');
     setError('');
