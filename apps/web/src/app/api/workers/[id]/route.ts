@@ -449,7 +449,7 @@ export async function PATCH(
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1253,8 +1253,63 @@ export async function PATCH(
         updates.error = 'Planning task completed without structuredOutput: runner did not request outputFormat';
       }
 
+      // Review contract guard: a reviewer verdict only reaches
+      // handleReviewerOutcomeIfNeeded through structuredOutput.verdict. When the
+      // agent writes the verdict as prose instead, the verdict is dropped — no
+      // mission note, no auto-merge, no request-changes retry — and the task is
+      // recorded as a clean completion, so nothing ever revisits the PR. An
+      // unparsed verdict is not a verdict, so fail the task and let the reviewer
+      // loop redo it rather than leaving an approved PR open forever.
+      const reviewTaskRow = terminalTaskRow[0];
+      const reviewTaskCtx = (reviewTaskRow?.context ?? {}) as Record<string, unknown>;
+      const reviewContractViolation = (
+        status === 'completed' &&
+        !shouldAutoRetry &&
+        reviewTaskRow?.category === 'review' &&
+        Boolean(reviewTaskCtx.reviewerFor) &&
+        !(body.structuredOutput as { verdict?: unknown } | undefined)?.verdict
+      );
+      // A reviewer task is dispatched only on pull_request action='opened', so
+      // nothing re-reviews a PR whose review ended without a verdict. Requeue the
+      // same task once — it re-reads the PR from scratch, so a second attempt is
+      // idempotent — and only fail if the retry also returns prose.
+      const MAX_REVIEW_CONTRACT_RETRIES = 1;
+      const reviewContractRetryCount =
+        typeof reviewTaskCtx.reviewContractRetryCount === 'number'
+          ? reviewTaskCtx.reviewContractRetryCount
+          : 0;
+      if (reviewContractViolation) {
+        const willRequeue = reviewContractRetryCount < MAX_REVIEW_CONTRACT_RETRIES;
+        console.error(
+          `[review-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
+          `overriding completed→${willRequeue ? 'pending (requeue)' : 'failed'}: review task ` +
+          `returned no structuredOutput.verdict. The verdict was dropped, so ` +
+          `PR #${reviewTaskCtx.prNumber ?? '?'} would sit unmerged.`
+        );
+        // This worker's review is discarded either way.
+        updates.status = 'failed';
+        updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        if (willRequeue) {
+          // Piggyback on the shouldAutoRetry machinery to reset the task to pending
+          // (same pattern as the loop requeue above).
+          shouldAutoRetry = true;
+          taskCtxForRetry = {
+            ...reviewTaskCtx,
+            reviewContractRetryCount: reviewContractRetryCount + 1,
+            failureContext:
+              'Your previous attempt wrote the verdict as prose, so it was discarded. ' +
+              'The verdict only counts when it is returned as structuredOutput matching ' +
+              'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
+              'and return the verdict as structuredOutput.',
+          };
+        }
+      }
+
+      // Both guards fail the task the same way; only the recorded reason differs.
+      const contractViolation = planningContractViolation || reviewContractViolation;
+
       const taskUpdate: Record<string, unknown> = {
-        status: shouldAutoRetry ? 'pending' : (planningContractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
+        status: shouldAutoRetry ? 'pending' : (contractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
         updatedAt: new Date(),
         ...(shouldAutoRetry ? {
           claimedBy: null,
@@ -1266,6 +1321,11 @@ export async function PATCH(
           result: {
             error: 'Planning task completed without structuredOutput — runner did not request outputFormat. Mission will retry.',
             errorType: 'planning_contract_violation',
+          },
+        } : reviewContractViolation ? {
+          result: {
+            error: 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
+            errorType: 'review_contract_violation',
           },
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
@@ -1282,8 +1342,8 @@ export async function PATCH(
 
       // Snapshot worker stats into task.result on completion.
       // Skip for loop requeue: the task continues, so no terminal result snapshot yet.
-      // Skip for planning contract violations: already set error result above.
-      if (status === 'completed' && !planningContractViolation && loopDispatchResult?.kind !== 'requeue') {
+      // Skip for contract violations (planning/review): error result set above.
+      if (status === 'completed' && !contractViolation && loopDispatchResult?.kind !== 'requeue') {
         // Clean summary: strip shell artifacts like HEREDOC syntax from commit commands
         let summary = body.summary || undefined;
         if (typeof summary === 'string') {
@@ -1470,7 +1530,7 @@ export async function PATCH(
           : null;
         const retryCount =
           ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
-        const effectiveOutcome = planningContractViolation ? 'failed' : status;
+        const effectiveOutcome = contractViolation ? 'failed' : status;
         recordTaskOutcome({
           taskId: worker.taskId,
           accountId: worker.accountId,

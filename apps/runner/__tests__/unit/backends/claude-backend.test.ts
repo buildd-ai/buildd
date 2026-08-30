@@ -281,6 +281,52 @@ describe('ClaudeBackend.runStreamed', () => {
       expect((progressRaw[1] as any).type).toBe('result');
     });
 
+    describe('structured output (outputFormat)', () => {
+      // The SDK accepts exactly one OutputFormatType: 'json_schema'. Its transport
+      // does `type === 'json_schema' ? schema : undefined`, so any other type
+      // string silently drops the schema — no structured output is requested and
+      // result.structured_output is never populated. That is invisible at runtime:
+      // the agent just answers in prose. A reviewer verdict returned as prose is
+      // dropped by handleReviewerOutcomeIfNeeded and the PR never merges.
+      test('opts.outputSchema becomes outputFormat with type json_schema', async () => {
+        mockMessages = [{ type: 'result', subtype: 'success' }];
+        const schema = {
+          type: 'object',
+          required: ['verdict'],
+          properties: { verdict: { type: 'string', enum: ['approve'] } },
+        };
+        const backend = new ClaudeBackend({ options: {}, inputStream: emptyStream() });
+        for await (const _ of backend.runStreamed({
+          prompt: 'test',
+          sessionId: 'sess-1',
+          cwd: '/tmp',
+          outputSchema: schema,
+        })) {}
+        expect(lastCapturedQueryOpts?.options?.outputFormat).toEqual({
+          type: 'json_schema',
+          schema,
+        });
+      });
+
+      test('no outputSchema leaves the outputFormat from config.options intact', async () => {
+        // workers.ts already computes outputFormat via resolveOutputFormat() and
+        // puts it in config.options (this is how planning tasks get the implicit
+        // planning schema). runStreamed must not clobber it with undefined.
+        mockMessages = [{ type: 'result', subtype: 'success' }];
+        const planningFormat = { type: 'json_schema', schema: { type: 'object' } };
+        const backend = new ClaudeBackend({
+          options: { outputFormat: planningFormat },
+          inputStream: emptyStream(),
+        });
+        for await (const _ of backend.runStreamed({
+          prompt: 'test',
+          sessionId: 'sess-1',
+          cwd: '/tmp',
+        })) {}
+        expect(lastCapturedQueryOpts?.options?.outputFormat).toEqual(planningFormat);
+      });
+    });
+
     describe('sessionId / resume interaction', () => {
       test('fresh session: sessionId is set from opts.sessionId', async () => {
         mockMessages = [{ type: 'result', subtype: 'success' }];
