@@ -152,10 +152,11 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
     const res = await POST(post(), { params: makeParams('m1') });
     const body = await res.json();
 
-    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('m1', {
+    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('m1', expect.objectContaining({
       evaluatedBy: 'manual',
       noteTitle: 'Goal criteria evaluated (on-demand)',
-    });
+      allowWorkerDispatch: true,
+    }));
     expect(body.goalCriteriaState.overall).toBe('UNVERIFIED');
     // The operator pressed the button; the answer has to say what is still wrong.
     expect(body.missionCompleted).toBe(false);

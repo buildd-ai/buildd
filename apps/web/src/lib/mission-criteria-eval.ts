@@ -6,6 +6,8 @@ import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEv
 import { resolveTierEntrySync } from '@buildd/core/model-tier-registry';
 import { resolveCommandCriterion } from './mission-criteria-verify';
 import { resolveProseCriteria } from './mission-criteria-prose';
+import { resolveEvaluationStrategy } from './mission-criteria-strategy';
+import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -200,6 +202,14 @@ export async function evaluateCriteriaNow(
      * `false` makes this a read-only evaluation that spends no agent runs.
      */
     dispatchCommands?: boolean;
+    /**
+     * Allow dispatching a worker evaluator task (the batched 'worker' strategy).
+     * Defaults to `false` to guard against dispatch from the routine heartbeat LLM
+     * path — the worker strategy is intentionally TRIGGER-GATED to mission-complete
+     * evaluation only. Pass `true` only from `ensureCriteriaVerdict` (which is called
+     * from the completion gate) and the on-demand evaluate route.
+     */
+    allowWorkerDispatch?: boolean;
   },
 ): Promise<GoalCriteriaState | null> {
   const mission = await db.query.missions.findFirst({
@@ -212,6 +222,8 @@ export async function evaluateCriteriaNow(
       goalCriteriaState: true,
       workingBranch: true,
       status: true,
+      workspaceId: true,
+      teamId: true,
     },
   });
   if (!mission) return null;
@@ -262,55 +274,95 @@ export async function evaluateCriteriaNow(
     }
   );
 
-  // ── Command criteria: run the command, don't ask a model ────────────────────
-  //
-  // Skipped entirely when a mechanical criterion has already failed: the fold is
-  // `fail` whatever the command returns, so dispatching a worker task per
-  // evaluation round would burn real agent runs to learn nothing. The command is
-  // re-run once the failing criterion clears.
+  // ── Resolve evaluation strategy ────────────────────────────────────────────
+  // workspace-override → team-default → 'inline'
+  const strategy = await resolveEvaluationStrategy(mission.teamId, mission.workspaceId);
+  const canDispatch = opts.dispatchCommands !== false && opts.allowWorkerDispatch === true;
   const alreadyFailing = state.criteria.some(c => c.verdict === 'fail');
-  if (opts.dispatchCommands !== false && !alreadyFailing) {
-    for (const cs of state.criteria) {
-      if (cs.type !== 'command') continue;
-      const criterion = criteria[cs.index];
-      if (!criterion || criterion.type !== 'command') continue;
 
-      const resolution = await resolveCommandCriterion({
-        missionId,
-        criterionIndex: cs.index,
-        command: criterion.command,
-        label: criterion.label,
+  // ── Worker strategy: one batched task evaluates all LLM-eligible + command criteria ─
+  //
+  // TRIGGER-GATED: allowWorkerDispatch is only set from ensureCriteriaVerdict (the
+  // completion gate) and the on-demand route. The routine heartbeat prepass calls
+  // evaluateCriteriaNow with allowWorkerDispatch=false (the default) so it never
+  // dispatches a worker evaluator task mid-planning-cycle.
+  //
+  // Command criteria ALSO route here regardless of configured strategy, since they
+  // are structurally unevaluable by an inline LLM call — the pure evaluator cannot
+  // know whether a command exits 0.
+  const commandCriteria = state.criteria.filter(
+    cs => cs.type === 'command' && (cs.verdict === 'UNVERIFIED' || cs.verdict === 'NOT_EVALUATED')
+  );
+  const llmEligible = state.criteria.filter(
+    c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
+  );
+
+  // Criteria destined for the worker evaluator: all LLM-eligible (when strategy='worker')
+  // and all command criteria (always). Under 'inline' strategy, command criteria are the
+  // only ones that cannot be graded inline.
+  const workerBound = strategy === 'worker'
+    ? [...llmEligible, ...commandCriteria].filter((cs, i, arr) => arr.findIndex(x => x.index === cs.index) === i)
+    : commandCriteria;
+
+  if (workerBound.length > 0 && !alreadyFailing) {
+    if (!canDispatch) {
+      // Read-only evaluation pass — don't spend an agent run. Leave these
+      // criteria at their current verdict rather than clearing them.
+      for (const cs of workerBound) {
+        if (cs.verdict === 'NOT_EVALUATED') {
+          cs.evidence = 'Command criterion requires worker task dispatch — this run does not dispatch evaluation tasks';
+        }
+      }
+    } else {
+      const workerInputs: WorkerEvalCriterionInput[] = workerBound.map(cs => {
+        const criterion = criteria[cs.index];
+        return {
+          index: cs.index,
+          type: cs.type,
+          text: criterionText(criterion ?? { type: cs.type as any, label: cs.label }),
+          ...(criterion?.type === 'command' ? { command: criterion.command } : {}),
+          fingerprint: cs.fingerprint,
+        };
       });
 
-      if (resolution.kind === 'verdict') {
-        cs.verdict = resolution.verdict;
-        cs.evidence = resolution.evidence;
-        cs.workerTaskId = resolution.taskId;
-      } else if (resolution.kind === 'pending') {
-        cs.verdict = 'PENDING';
-        cs.evidence = resolution.evidence;
-        cs.workerTaskId = resolution.taskId;
+      const resolution = await resolveCriteriaWorkerEval({ missionId, criteria: workerInputs });
+
+      if (resolution.kind === 'pending') {
+        for (const cs of workerBound) {
+          cs.verdict = 'PENDING';
+          cs.evidence = resolution.evidence;
+          cs.workerTaskId = resolution.taskId;
+        }
       } else {
-        cs.verdict = 'NOT_EVALUATED';
-        cs.evidence = resolution.evidence;
+        // Worker eval unavailable (no workspace, no runner, etc.) — mark
+        // all workerBound criteria as NOT_EVALUATED with the resolver reason.
+        for (const cs of workerBound) {
+          cs.verdict = 'NOT_EVALUATED';
+          cs.evidence = resolution.evidence;
+        }
       }
     }
   }
 
   if (alreadyFailing) {
     for (const cs of state.criteria) {
-      if (cs.type === 'command' && cs.verdict === 'NOT_EVALUATED') {
+      if ((cs.type === 'command' || (strategy === 'worker' && isLlmEligible(cs.type))) && cs.verdict === 'NOT_EVALUATED') {
         cs.evidence = 'Not run: another criterion has already failed, so the mission cannot pass this round';
       }
     }
   }
 
-  // ── LLM grading for prose criteria only ────────────────────────────────────
-  const llmEligible = state.criteria.filter(
-    c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
-  );
+  // ── LLM grading for prose criteria (inline strategy only) ──────────────────
+  //
+  // When strategy='worker', prose criteria were already routed to the worker
+  // evaluator above. This block only runs for strategy='inline'.
+  const inlineLlmEligible = strategy === 'worker'
+    ? []
+    : state.criteria.filter(
+        c => (c.verdict === 'UNVERIFIED' || c.verdict === 'NOT_EVALUATED') && isLlmEligible(c.type)
+      );
 
-  if (llmEligible.length > 0) {
+  if (inlineLlmEligible.length > 0) {
     // Carry forward a recent LLM verdict rather than paying for it again — but
     // ONLY onto the same criterion. Matching on array index alone would transplant
     // a verdict: delete criterion 0 and yesterday's `pass` becomes the cached
@@ -318,7 +370,7 @@ export async function evaluateCriteriaNow(
     // by the cache. Identity is the fingerprint.
     const carried = new Set<number>();
     if (priorAgeMs < LLM_REVERIFY_MS) {
-      for (const c of llmEligible) {
+      for (const c of inlineLlmEligible) {
         const prior = priorState?.criteria.find(p => p.index === c.index);
         if (!prior || prior.verdict === 'NOT_EVALUATED' || prior.verdict === 'PENDING') continue;
         if (!prior.fingerprint || !c.fingerprint || prior.fingerprint !== c.fingerprint) continue;
@@ -329,7 +381,7 @@ export async function evaluateCriteriaNow(
       }
     }
 
-    const toJudge = llmEligible.filter(c => !carried.has(c.index));
+    const toJudge = inlineLlmEligible.filter(c => !carried.has(c.index));
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
     const completedTasks: EvidenceTask[] = missionTasks
@@ -489,5 +541,10 @@ export async function ensureCriteriaVerdict(
   }
 
   console.log(`[criteria-eval] mission ${missionId}: evaluating ${criteria.length} criteria (trigger: ${opts.trigger ?? 'unknown'})`);
-  return evaluateCriteriaNow(missionId, { evaluatedBy: 'auto', noteTitle: ON_COMPLETION_NOTE_TITLE });
+  return evaluateCriteriaNow(missionId, {
+    evaluatedBy: 'auto',
+    noteTitle: ON_COMPLETION_NOTE_TITLE,
+    // This is the completion gate — worker dispatch is appropriate here.
+    allowWorkerDispatch: true,
+  });
 }
