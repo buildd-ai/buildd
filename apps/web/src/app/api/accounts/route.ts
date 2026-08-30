@@ -6,6 +6,7 @@ import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId } from '@/lib/team-access';
+import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -91,6 +92,23 @@ export async function POST(req: NextRequest) {
       .insert(accounts)
       .values(insertValues as typeof accounts.$inferInsert)
       .returning();
+
+    // For OAuth accounts, populate seatId from the team's Claude credential so
+    // groupOauthAccountsBySeatId works immediately without waiting for re-auth.
+    if (insertValues.authType === 'oauth' && account) {
+      try {
+        const cred = await resolveClaudeCredential({ teamId });
+        if (cred) {
+          const seatId = extractJwtSub(cred.accessToken);
+          if (seatId) {
+            await db.update(accounts).set({ seatId }).where(eq(accounts.id, account.id));
+            account.seatId = seatId;
+          }
+        }
+      } catch {
+        // Non-fatal: account is created successfully; seatId can be set on next credential store.
+      }
+    }
 
     // Auto-create workspace binding if workspaceId provided
     if (workspaceId) {

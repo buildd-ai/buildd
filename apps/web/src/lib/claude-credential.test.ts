@@ -37,6 +37,9 @@ mock.module('@buildd/core/db/schema', () => ({
     lastVerifiedAt: 'last_verified_at', lastVerificationError: 'last_verification_error',
     healthStatus: 'health_status', updatedAt: 'updated_at',
   },
+  accounts: {
+    id: 'id', teamId: 'team_id', authType: 'auth_type', seatId: 'seat_id',
+  },
 }));
 
 mock.module('@buildd/core/secrets', () => ({
@@ -67,9 +70,16 @@ import {
   refreshClaudeCredential,
   verifyClaudeCredential,
   resolveAnthropicAuth,
+  extractJwtSub,
 } from './claude-credential';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+function makeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.fakesig`;
+}
 
 function makeBlob(access_token = 'at', refresh_token = 'rt') {
   return `enc:${JSON.stringify({ access_token, refresh_token })}`;
@@ -87,6 +97,34 @@ function makeRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+// ── extractJwtSub ─────────────────────────────────────────────────────────────
+
+describe('extractJwtSub', () => {
+  it('returns the sub claim from a valid JWT', () => {
+    const token = makeJwt({ sub: 'user_abc123', iat: 1700000000 });
+    expect(extractJwtSub(token)).toBe('user_abc123');
+  });
+
+  it('returns null when no sub claim', () => {
+    const token = makeJwt({ iat: 1700000000 });
+    expect(extractJwtSub(token)).toBeNull();
+  });
+
+  it('returns null for an empty sub', () => {
+    const token = makeJwt({ sub: '' });
+    expect(extractJwtSub(token)).toBeNull();
+  });
+
+  it('returns null for non-JWT string', () => {
+    expect(extractJwtSub('not-a-jwt')).toBeNull();
+    expect(extractJwtSub('')).toBeNull();
+  });
+
+  it('returns null when payload is malformed base64', () => {
+    expect(extractJwtSub('header.!!!.sig')).toBeNull();
+  });
+});
 
 // ── normalizeClaudeCredentialsJson ────────────────────────────────────────────
 
@@ -195,6 +233,37 @@ describe('storeClaudeCredential', () => {
     expect(decoded.access_token).toBe('my-at');
     expect(decoded.refresh_token).toBe('my-rt');
     expect(decoded.account_id).toBeUndefined();
+  });
+
+  it('writes seatId to all OAuth accounts in team when access_token is a JWT with sub', async () => {
+    const insertValues = mock(() => Promise.resolve());
+    mockInsert.mockReturnValue({ values: insertValues });
+    const mockSetWhere = mock(() => Promise.resolve());
+    const mockSet = mock(() => ({ where: mockSetWhere }));
+    mockUpdate.mockReturnValue({ set: mockSet });
+
+    const jwtToken = makeJwt({ sub: 'anthropic_user_xyz' });
+    await storeClaudeCredential({ teamId: 'team-1' }, {
+      access_token: jwtToken, refresh_token: 'rt',
+    });
+
+    // db.update(accounts).set({ seatId }).where(...)
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    const setCall = mockSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setCall?.seatId).toBe('anthropic_user_xyz');
+  });
+
+  it('skips seatId update when access_token has no sub claim', async () => {
+    const insertValues = mock(() => Promise.resolve());
+    mockInsert.mockReturnValue({ values: insertValues });
+    mockUpdate.mockReset();
+
+    await storeClaudeCredential({ teamId: 'team-1' }, {
+      access_token: 'opaque-non-jwt-token', refresh_token: 'rt',
+    });
+
+    // No db.update call for accounts since token has no sub
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
 
