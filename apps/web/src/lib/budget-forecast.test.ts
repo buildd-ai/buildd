@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupOauthAccountsBySeatId, computeBurnRateConfidence, oauthEpisodeConfidence } from './budget-forecast';
+import { groupOauthAccountsBySeatId, computeBurnRateConfidence, oauthEpisodeConfidence, computeMissionBudgetForecast } from './budget-forecast';
 
 describe('groupOauthAccountsBySeatId', () => {
   const makeAccount = (id: string, seatId: string | null, name = id) => ({
@@ -102,5 +102,48 @@ describe('oauthEpisodeConfidence', () => {
 
   it('returns high for high — displayed as calibrated in UI', () => {
     expect(oauthEpisodeConfidence('high')).toBe('high');
+  });
+});
+
+describe('computeMissionBudgetForecast', () => {
+  const make = (id: string, spentUsd: number, budgetUsd: number, status = 'active') => ({
+    missionId: id,
+    missionTitle: `Mission ${id}`,
+    spentUsd,
+    budgetUsd,
+    status,
+  });
+
+  it('returns empty array for no missions', () => {
+    expect(computeMissionBudgetForecast([])).toEqual([]);
+  });
+
+  it('maps inputs to forecast with pctUsed', () => {
+    const result = computeMissionBudgetForecast([make('m1', 50, 100)]);
+    expect(result).toHaveLength(1);
+    expect(result[0].missionId).toBe('m1');
+    expect(result[0].spentUsd).toBe(50);
+    expect(result[0].budgetUsd).toBe(100);
+    expect(result[0].pctUsed).toBe(50);
+    expect(result[0].status).toBe('active');
+  });
+
+  it('rounds pctUsed', () => {
+    const result = computeMissionBudgetForecast([make('m1', 1, 3)]);
+    expect(result[0].pctUsed).toBe(33);
+  });
+
+  it('sorts by pctUsed descending', () => {
+    const result = computeMissionBudgetForecast([
+      make('low', 10, 100),   // 10%
+      make('high', 80, 100),  // 80%
+      make('mid', 50, 100),   // 50%
+    ]);
+    expect(result.map(r => r.missionId)).toEqual(['high', 'mid', 'low']);
+  });
+
+  it('preserves status field', () => {
+    const result = computeMissionBudgetForecast([make('m1', 0, 100, 'paused')]);
+    expect(result[0].status).toBe('paused');
   });
 });
