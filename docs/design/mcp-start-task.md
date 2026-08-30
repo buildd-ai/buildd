@@ -206,9 +206,16 @@ enforce. If the need arises, it belongs in a separate design.
 
 ---
 
-## Open thread: backend credential surfacing after capability gate removal
+## Resolved thread: backend credential surfacing after capability gate removal
 
-**Status: OPEN — not addressed by the claim-gate consolidation mission.**
+**Status: ADDRESSED (configuration-time surfacing, no gate).** See
+`docs/specs/mission-task-lifecycle.md` → Claim-gate legibility contract.
+`apps/web/src/lib/backend-strand.ts` counts pending tasks whose *effective*
+backend (`resolveEffectiveBackend`: stored backend + team provider mask) has no
+credential, and three read-only surfaces consume it: Settings → Agent backends
+(via `GET /api/teams/[id]/backend-readiness`), Health → Problems, and the
+`backend_credential_missing` stall reason in `/api/cron/queue-stall`. Still
+explicitly NOT a claim gate — nothing in that path withholds a task.
 
 The `capability_mismatch` gate that previously blocked Codex tasks when credentials
 were absent has been removed from both the claim route and `/start` (PRs #1864,
@@ -231,6 +238,12 @@ failure surfaces in worker telemetry but is not proactively shown to the task cr
 
 **Explicitly NOT a claim gate.** Per the mission design: do not build a generalized
 backend-credential gate in the claim path. Implement in onboarding/settings UI.
+
+**What shipped.** The workspace-level gap above is now covered team-wide rather
+than per-workspace: the count is the operator-facing consequence ("Codex has no
+credential — 7 pending tasks can never be claimed"), not another chip.
+`GET /api/workspaces/[id]/backends` (task-creation UI) is unchanged and remains
+the per-workspace availability check.
 
 ---
 
