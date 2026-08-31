@@ -6,8 +6,8 @@ import { randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
 import { buildArtifactKey } from '@/lib/storage-keys';
-import { shareBaseUrl } from '@/lib/artifact-helpers';
-import { ArtifactType } from '@buildd/shared';
+import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
+import { appBaseUrl } from '@/lib/app-url';
 
 /**
  * Ceiling for a single artifact upload, enforced in the signature.
@@ -62,6 +62,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (type !== undefined && type !== null && type !== '' && !isArtifactType(type)) {
+    return NextResponse.json(
+      { error: `Invalid type. Must be one of: ${ARTIFACT_TYPES.join(', ')}` },
+      { status: 400 }
+    );
+  }
+
   if (sizeBytes > MAX_ARTIFACT_UPLOAD_BYTES) {
     return NextResponse.json(
       { error: `File exceeds ${MAX_ARTIFACT_UPLOAD_BYTES / (1024 * 1024)}MB limit` },
@@ -112,7 +119,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unable to derive a storage key' }, { status: 400 });
   }
 
-  const artifactType = type || ArtifactType.FILE;
+  // This route used to accept `type` unvalidated (`type || FILE`), so it was the
+  // one writer that could persist a type no reader knows how to render. Absent
+  // still defaults to `file`; present must be in the shared vocabulary.
+  const artifactType = type === undefined || type === null || type === ''
+    ? ArtifactType.FILE
+    : type;
   const artifactTitle = title || filename;
 
   const [artifact] = await db
@@ -142,7 +154,7 @@ export async function POST(req: NextRequest) {
 
   // The credentialed download path (API key / session, scoped to the artifact's
   // tenant) is the only way to read this back until someone shares it.
-  const downloadUrl = `${shareBaseUrl()}/api/artifacts/${artifact.id}/download`;
+  const downloadUrl = `${appBaseUrl()}/api/artifacts/${artifact.id}/download`;
 
   return NextResponse.json({
     artifactId: artifact.id,

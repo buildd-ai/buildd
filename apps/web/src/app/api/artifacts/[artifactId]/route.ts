@@ -4,7 +4,7 @@ import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { shareBaseUrl } from '@/lib/artifact-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -45,7 +45,7 @@ export async function GET(
 
   // A token only addresses a live share while the artifact is public.
   const shareUrl = artifact.shareToken && artifact.visibility === 'public'
-    ? `${shareBaseUrl()}/share/${artifact.shareToken}`
+    ? `${appBaseUrl()}/share/${artifact.shareToken}`
     : null;
 
   // Return full artifact without the worker relation
@@ -111,7 +111,7 @@ export async function PATCH(
     .returning();
 
   const shareUrl = updated.shareToken && updated.visibility === 'public'
-    ? `${shareBaseUrl()}/share/${updated.shareToken}`
+    ? `${appBaseUrl()}/share/${updated.shareToken}`
     : null;
 
   return NextResponse.json({

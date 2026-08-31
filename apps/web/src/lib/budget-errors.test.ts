@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import {
   isBudgetExhaustionError,
   parseResetTime,
   extractResetTime,
+  effectiveBudgetResetAt,
+  isBudgetExhausted,
   SESSION_WINDOW_MS,
 } from './budget-errors';
 
@@ -209,5 +213,100 @@ describe('extractResetTime', () => {
     // now + 5h == 13:00Z exactly.
     expect(extractResetTime('session limit · resets 13:00 (UTC)', { now })?.toISOString())
       .toBe('2026-08-15T13:00:00.000Z');
+  });
+});
+
+
+/**
+ * C22: `budget_exhausted_at` set with `budget_resets_at` NULL meant permanently
+ * exhausted — the claim route's auto-clear required a non-null reset, and its
+ * exhaustion test read `!budgetResetsAt ||` as "still exhausted". The pairing is
+ * held only by convention in the single writer: the column has no notNull (it
+ * cannot have one — it is legitimately NULL for accounts that are not
+ * exhausted), while `tenantBudgets` does mark both notNull. So the invariant is
+ * enforced here, on the read path, plus a test over the writers.
+ */
+describe('effectiveBudgetResetAt', () => {
+  const exhausted = new Date('2026-08-01T10:00:00.000Z');
+
+  it('uses the recorded reset when there is one', () => {
+    const reset = new Date('2026-08-01T13:00:00.000Z');
+    expect(effectiveBudgetResetAt(exhausted, reset).toISOString()).toBe(reset.toISOString());
+  });
+
+  it('derives one session window from the exhaustion time when the reset is missing', () => {
+    for (const missing of [null, undefined]) {
+      expect(effectiveBudgetResetAt(exhausted, missing).getTime()).toBe(
+        exhausted.getTime() + SESSION_WINDOW_MS,
+      );
+    }
+  });
+
+  it('accepts ISO strings (what the driver hands back)', () => {
+    expect(effectiveBudgetResetAt(exhausted.toISOString(), null).getTime()).toBe(
+      exhausted.getTime() + SESSION_WINDOW_MS,
+    );
+  });
+
+  it('treats an unparseable reset as missing rather than as forever', () => {
+    expect(effectiveBudgetResetAt(exhausted, 'not-a-date' as unknown as string).getTime()).toBe(
+      exhausted.getTime() + SESSION_WINDOW_MS,
+    );
+  });
+});
+
+describe('isBudgetExhausted', () => {
+  const exhausted = new Date('2026-08-01T10:00:00.000Z');
+
+  it('is false when the account was never flagged', () => {
+    expect(isBudgetExhausted(null, null, exhausted)).toBe(false);
+    expect(isBudgetExhausted(undefined, new Date('2099-01-01'), exhausted)).toBe(false);
+  });
+
+  it('is true inside the window and false after it', () => {
+    const reset = new Date('2026-08-01T13:00:00.000Z');
+    expect(isBudgetExhausted(exhausted, reset, new Date('2026-08-01T12:59:00.000Z'))).toBe(true);
+    expect(isBudgetExhausted(exhausted, reset, reset)).toBe(false);
+  });
+
+  // The bug: a NULL reset used to read as permanently exhausted.
+  it('recovers a NULL reset one session window after exhaustion', () => {
+    const justBefore = new Date(exhausted.getTime() + SESSION_WINDOW_MS - 1000);
+    const justAfter = new Date(exhausted.getTime() + SESSION_WINDOW_MS + 1000);
+    expect(isBudgetExhausted(exhausted, null, justBefore)).toBe(true);
+    expect(isBudgetExhausted(exhausted, null, justAfter)).toBe(false);
+  });
+});
+
+describe('budget exhaustion writers keep the two fields paired', () => {
+  it('never sets budgetExhaustedAt without budgetResetsAt in the same object', () => {
+    const files = execSync(
+      "git grep -l 'budgetExhaustedAt' -- 'apps/web/src' 'packages/core' || true",
+      { encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean)
+      .filter(f => !f.includes('.test.'));
+
+    const offenders: Array<{ file: string; line: number }> = [];
+    let writes = 0;
+    for (const file of files) {
+      const lines = readFileSync(file, 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        // A write, not a read: `budgetExhaustedAt: <value>` where the value is
+        // not null (clearing both together is the reset path).
+        const m = /budgetExhaustedAt:\s*(.+?),?\s*$/.exec(line);
+        // Skip reads: `budgetExhaustedAt: Date }` is a cast, and `null` is the
+        // paired clear performed by the reset path.
+        if (!m || m[1].startsWith('null') || /^Date\b/.test(m[1])) return;
+        writes++;
+        const window = lines.slice(Math.max(0, i - 4), i + 5).join('\n');
+        if (!/budgetResetsAt/.test(window)) offenders.push({ file, line: i + 1 });
+      });
+    }
+    // Printed, not implied: a gate that measures nothing looks identical to a
+    // gate that passes. Both numbers must be non-trivial.
+    expect({ writes, offenders }).toEqual({ writes, offenders: [] });
+    expect(writes).toBeGreaterThan(0);
   });
 });

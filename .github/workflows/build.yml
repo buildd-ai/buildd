@@ -109,7 +109,13 @@ jobs:
         run: bun run migrations:lint
 
       - name: Lint hardcoded model IDs
-        run: bash scripts/lint-model-ids.sh
+        # The self-test runs first: it plants a known violation outside the
+        # allowlist and requires the scan to catch it, so a pattern or allowlist
+        # change that empties the check's input set fails here instead of going
+        # green over nothing (see C30 in scripts/lint-model-ids.sh).
+        run: |
+          bash scripts/lint-model-ids.sh --self-test
+          bash scripts/lint-model-ids.sh
 
       - name: Type check
         run: bun run type-check

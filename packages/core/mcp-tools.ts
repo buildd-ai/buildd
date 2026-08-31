@@ -9,7 +9,7 @@
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { parseMergePolicy } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import type {
   FailureAnalytics,
   FailureSignatureLookup,
@@ -227,7 +227,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind? (coordination|engineering|research|writing|design|analysis|observation — shape of the work), complexity? (simple|normal|complex), tier? (premium|standard|budget — hard override that skips the kind×complexity matrix), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
-    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
+    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
@@ -2480,9 +2480,12 @@ export async function handleBuilddAction(
     case 'create_artifact': {
       if (!params.type || !params.title) throw new Error('type and title are required');
 
-      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event', 'file'];
-      if (!validArtifactTypes.includes(params.type as string)) {
-        throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
+      // One vocabulary, shared with every route that persists an artifact
+      // (@buildd/shared ARTIFACT_TYPES). This list used to hold 12 of the 17
+      // types, so `screenshot` / `diff` / `walkthrough` / `impl_plan` were
+      // rejected here while the routes below accepted them.
+      if (!isArtifactType(params.type)) {
+        throw new Error(`Invalid type. Must be one of: ${ARTIFACT_TYPES.join(', ')}`);
       }
 
       const artifactBody: Record<string, unknown> = {
@@ -2859,8 +2862,19 @@ export async function handleBuilddAction(
         p?.tasks && nOf(metric) < p.tasks ? ` [n=${nOf(metric)}/${p.tasks}]` : '';
 
       const lines: string[] = [
-        `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
+        `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)`,
       ];
+      // A truncated scan keeps the NEWEST rows (the query is ordered), so the
+      // totals are a floor for the requested window and every median/p90 below
+      // describes [completeSince, now) instead. Saying only "row cap hit" left
+      // the distributions looking like they covered the whole window.
+      if (data.truncatedScan) {
+        const since = data.scan?.completeSince;
+        lines.push(
+          `Row cap hit (${data.scan?.rows ?? '?'}/${data.scan?.limit ?? '?'}): totals are a floor for ${data.window}` +
+          `${since ? `, and every median/p90 below covers only since ${since}` : ''}`,
+        );
+      }
 
       const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
       if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);

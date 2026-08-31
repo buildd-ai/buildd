@@ -87,8 +87,14 @@ when ALL of the following hold:
 2. That blocker is the **immediately preceding row** in the section's rendered order.
 3. That blocker is in the **same section** (intra-section).
 
-In this case `DependencyRail` is rendered with `blockerVisible=true` (renders
-nothing — the elbow is the signal).
+The elbow is applied by the row's container, not by the rail: `DependencyRail`
+accepts `blockedBy`, `totalBlocked` and `max`, and has no elbow-related prop. The
+indent comes from a local flag in the list that renders the row —
+`blockerVisible` in `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx`, true
+when every blocker of the task is itself rendered in the same group — which
+selects the wrapper class `ml-4 border-l border-status-warning/50`. The rail
+still emits its chips (§2.3) in the elbow case; indent and chip are independent
+signals, and neither suppresses the other.
 
 **Rule ELB-1**: Elbow MUST NOT be applied when the task has more than one direct
 blocker. Use compact chip instead.
@@ -104,10 +110,11 @@ not by nesting.
 
 ### 2.3 Compact chip — everything else
 
-When the elbow conditions in §2.2 are not met, `DependencyRail` emits a
-monospaced `← {blocker title}` chip per named blocker, suffixed with `#{prNumber}`
-when the blocker is the half state (completed, PR still open). Each chip links to
-the blocking task.
+`DependencyRail` emits a monospaced `← {blocker title}` chip per named blocker,
+suffixed with `#{prNumber}` when the blocker is the half state (completed, PR
+still open). Each chip links to the blocking task. This is unconditional: the
+chips are emitted whenever `blockedByFrontier` is non-empty, including in the
+elbow case of §2.2.
 
 **Rule CC-1**: Blockers are named, not hashed. The chip label is the blocker's
 title, truncated to `MAX_TITLE_CHARS`. `← ${id.slice(0,6)}` is banned — a 6-char

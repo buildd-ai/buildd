@@ -45,7 +45,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  // artifact-helpers (imported for shareBaseUrl) pulls in `and` at module load.
+  // artifact-helpers pulls in `and` at module load.
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
 }));
 
@@ -53,10 +53,6 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   artifacts: 'artifacts',
   workspaces: 'workspaces',
-}));
-
-mock.module('@buildd/shared', () => ({
-  ArtifactType: { FILE: 'file' },
 }));
 
 mock.module('crypto', () => ({
@@ -104,6 +100,26 @@ describe('POST /api/artifacts/upload-url', () => {
       workspaceId: 'ws-1',
     } as any);
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' } as any);
+  });
+
+  // C16: this route validated nothing (`type || ArtifactType.FILE`), so it was
+  // the one writer that could persist a type no reader can render.
+  it('rejects a type outside the shared vocabulary', async () => {
+    const res = await POST(req(validBody({ type: 'not_a_real_type' })));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('Invalid type');
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('accepts a shared-vocabulary type and defaults to file when absent', async () => {
+    const res = await POST(req(validBody({ type: 'screenshot' })));
+    expect(res.status).toBe(200);
+    expect(mockInsertValues.mock.calls[0][0].type).toBe('screenshot');
+
+    mockInsertValues.mockClear();
+    const res2 = await POST(req(validBody()));
+    expect(res2.status).toBe(200);
+    expect(mockInsertValues.mock.calls[0][0].type).toBe('file');
   });
 
   it('signs a key under the worker workspace prefix', async () => {

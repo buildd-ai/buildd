@@ -68,17 +68,6 @@ mock.module('@buildd/core/db/schema', () => ({
   artifacts: 'artifacts',
 }));
 
-mock.module('@buildd/shared', () => ({
-  ArtifactType: {
-    CONTENT: 'content',
-    REPORT: 'report',
-    DATA: 'data',
-    LINK: 'link',
-    SUMMARY: 'summary',
-    FILE: 'file',
-  },
-}));
-
 mock.module('crypto', () => ({
   randomBytes: () => ({ toString: () => 'random-share-token' }),
 }));
@@ -250,6 +239,27 @@ describe('POST /api/workers/[id]/artifacts', () => {
     const data = await res.json();
     expect(data.error).toContain('Invalid type');
   });
+
+  // C16: this route accepted 6 of the 17 shared types, so an agent that sent a
+  // type the mission route accepted (or one the MCP help text advertises) got a
+  // 400 from here and nowhere else.
+  it.each(['screenshot', 'diff', 'walkthrough', 'impl_plan', 'analysis', 'recommendation', 'alert'])(
+    'accepts shared-vocabulary type %s',
+    async (type) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        workspaceId: 'ws-1',
+        task: { id: 'task-1' },
+      });
+
+      const req = createMockPostRequest({ type, title: 'Deliverable' }, 'bld_test');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    },
+  );
 
   it('returns 400 when title is missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });

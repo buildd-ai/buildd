@@ -136,10 +136,20 @@ describe('get_usage_stats', () => {
     expect(res.content[0].text).toBe('No completed work in the last 24h.');
   });
 
-  it('flags a capped scan so totals are not read as complete', async () => {
-    mockApi.mockResolvedValueOnce({ ...statsPayload, truncatedScan: true });
+  // C23: "row cap hit — totals are a floor" was true of the totals and false of
+  // the medians, which were computed over an arbitrary (unordered) subset. The
+  // scan is now newest-first, so the cap notice must also say which window the
+  // distributions actually cover.
+  it('flags a capped scan and names the window the distributions cover', async () => {
+    mockApi.mockResolvedValueOnce({
+      ...statsPayload,
+      truncatedScan: true,
+      scan: { rows: 5000, limit: 5000, truncated: true, completeSince: '2026-08-20T00:00:00.000Z' },
+    });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx());
-    expect(res.content[0].text).toMatch(/row cap hit/);
+    expect(res.content[0].text).toMatch(/Row cap hit \(5000\/5000\)/);
+    expect(res.content[0].text).toMatch(/totals are a floor/);
+    expect(res.content[0].text).toMatch(/median\/p90 below covers only since 2026-08-20T00:00:00\.000Z/);
   });
 
   it('omits cost entirely and names the reason on a seat-auth window', async () => {

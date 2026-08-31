@@ -20,6 +20,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { parseLoopConfig } from '@buildd/core/loop-config';
+import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/tasks/[id] - Get a single task.
 // Query params:
@@ -120,8 +121,7 @@ export async function GET(
         where: inArray(artifacts.workerId, workerIds),
         orderBy: [desc(artifacts.updatedAt)],
       });
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL
-        || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://buildd.dev');
+      const baseUrl = appBaseUrl();
       taskArtifacts = rows.map(a => ({
         ...a,
         shareUrl: a.shareToken && a.visibility === 'public' ? `${baseUrl}/share/${a.shareToken}` : null,
