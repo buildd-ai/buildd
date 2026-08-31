@@ -91,19 +91,22 @@ export function resolveMaxTurns(
  * Before this existed the runner always ran `config.model`, so the router's
  * decision was computed, persisted, shipped to the runner and discarded.
  *
- * **Gated OFF by default.** The claim route writes `context.model` for EVERY
- * claimed task, so honouring it moves the whole fleet onto the tier registry's
- * models in a single deploy — tasks the router tiers to opus start running on
- * opus. That is the intended design, but it is a fleet-wide spend change, so it
- * ships as its own reviewed rollout rather than riding along with unrelated
- * fixes. Set `BUILDD_HONOR_TASK_MODEL=1` to enable it on a runner.
+ * **On by default; `BUILDD_HONOR_TASK_MODEL=0` is the kill switch.** The claim
+ * route writes `context.model` for EVERY claimed task, so this moves the fleet
+ * onto the tier registry's models — tasks the router tiers to opus run on opus,
+ * and ones it tiers to haiku run on haiku. That is the whole point of the tier
+ * system, which until now computed a decision and threw it away.
  *
- * While it is off, `sessionModel === configModel`, which keeps every downstream
- * report truthful: the SDK call, the `betas` check, the backend model, and the
- * `requestedModel` sent back to the server all describe what actually ran.
+ * Set the env var to `0` on a runner to fall back to `config.model` without a
+ * revert or a redeploy — a restart is enough. Use that if fleet spend moves in a
+ * direction you did not expect.
+ *
+ * Note the corollary: a runner pinned to a model via `--model`/config no longer
+ * overrides the server for claimed tasks. `config.model` remains the default for
+ * non-claim paths and the local UI.
  */
 export function honorTaskModelEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.BUILDD_HONOR_TASK_MODEL === '1';
+  return env.BUILDD_HONOR_TASK_MODEL !== '0';
 }
 
 export function resolveSessionModel(

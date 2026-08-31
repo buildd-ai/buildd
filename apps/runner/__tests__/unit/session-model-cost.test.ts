@@ -231,10 +231,12 @@ describe('resolveSessionModel (per-task model resolution)', () => {
     expect(resolveSessionModel({ model: 'claude-opus-4-8' }, RUNNER_MODEL, false)).toBe(RUNNER_MODEL);
   });
 
-  test('reads the gate from the environment', () => {
-    expect(honorTaskModelEnabled({} as NodeJS.ProcessEnv)).toBe(false);
-    expect(honorTaskModelEnabled({ BUILDD_HONOR_TASK_MODEL: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  // Kill switch: unset means on, and only an explicit '0' turns it off, so a
+  // runner with no config for this behaves as designed rather than as before.
+  test('honours the per-task model unless explicitly switched off', () => {
+    expect(honorTaskModelEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(honorTaskModelEnabled({ BUILDD_HONOR_TASK_MODEL: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    expect(honorTaskModelEnabled({ BUILDD_HONOR_TASK_MODEL: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
   });
 });
 
@@ -279,16 +281,14 @@ describe('per-task model reaches the SDK', () => {
     manager?.destroy();
   });
 
-  // End-to-end proof that this change is inert until the gate is set: the plumbing
-  // is in place, the claim route's model is present on the task, and the session
-  // still runs the runner default. Enabling BUILDD_HONOR_TASK_MODEL is a separate,
-  // separately-reviewed rollout because it moves the whole fleet at once.
-  test('startSession ignores the per-task model while the gate is off', async () => {
+  // The mechanism this whole chain exists for: the model the claim route resolved
+  // is the model the SDK is actually asked for.
+  test('startSession runs the model the claim route resolved onto task.context', async () => {
     manager = new WorkerManager(makeConfig());
     await runSession(manager, 'w-model-1', makeTask({ model: 'claude-opus-4-8' }));
 
     expect(capturedModels.length).toBeGreaterThan(0);
-    expect(capturedModels[0]).toBe(RUNNER_MODEL);
+    expect(capturedModels[0]).toBe('claude-opus-4-8');
   });
 
   test('startSession still uses the runner-global model when the task has none', async () => {
