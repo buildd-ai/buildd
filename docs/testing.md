@@ -115,13 +115,30 @@ expect(prompt).toContain('authentication method');
 
 ## Running Unit Tests — Always Isolated
 
-Run unit tests through the runner, never `bun test <many files>`:
+Run unit tests through the runner, never `bun test` directly:
 
 ```bash
-bun test                       # scripts/run-unit-tests.ts — every file in its own process
+bun run test                   # scripts/run-unit-tests.ts — every file in its own process
 bun run scripts/run-unit-tests.ts apps/web/src/lib/foo.test.ts   # one or more specific files
-BUILDD_TEST_CONCURRENCY=8 bun test                               # default 4, max 16
+BUILDD_TEST_CONCURRENCY=8 bun run test                           # default 4, max 16
 ```
+
+`bun test` (no `run`) is Bun's built-in runner and does NOT read the package
+script — it loads everything into one process, which is the failure mode this
+section exists to prevent. It was also silently useless for a while: an e2e file
+called `process.exit(0)` at module scope when `BUILDD_TEST_SERVER` was unset, so
+`bun test` at the repo root aborted mid-collection and exited 0 having run
+almost nothing.
+
+### What gets collected
+
+A file runs only if it matches a prefix in `UNIT_TEST_ROOTS`
+(`scripts/run-unit-tests.ts`) and ends in `.test.ts` or `.test.tsx`. That list
+has silently dropped whole directories more than once, and an uncollected file
+is indistinguishable from a passing one, so
+`scripts/collector-coverage.test.ts` asserts that every tracked test file is
+either collected or named in its exclusion table with the command that does run
+it. When you add a test directory, add it to the roots.
 
 ### Why isolation is mandatory
 

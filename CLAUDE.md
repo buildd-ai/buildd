@@ -151,20 +151,31 @@ See `docs/credentials-architecture.md` for the full spec, scoping precedence, an
 
 **Running tests:**
 ```bash
-bun test                                    # All unit tests (routes + runner + core)
+bun run test                                # All unit tests (routes + runner + core)
 bun run scripts/run-unit-tests.ts <file>    # Specific file(s)
 bun run test:integration                    # Integration tests (live server)
 bun run test:e2e                            # E2E tests (full stack)
 ```
 
-`bun test` runs `scripts/run-unit-tests.ts`, which spawns **one process per test
-file**. Do NOT run `bun test <dir>` or `bun test <many files>` directly:
-`mock.module` replaces a module globally for the process and is never undone, so
-in a shared process one file's stub deletes another file's imports and the
-failures you get depend on load order. See `docs/testing.md` → "Running Unit
-Tests — Always Isolated".
+**`bun run test`, not `bun test`.** `bun test` is Bun's own runner and ignores
+the package script entirely — it loads every matched file into ONE process,
+which is exactly what the suite is built to avoid: `mock.module` replaces a
+module globally for the process and is never undone, so one file's stub deletes
+another file's imports and the failures you get depend on load order. (Until
+recently `bun test` was also actively misleading: an e2e file called
+`process.exit(0)` at module scope when `BUILDD_TEST_SERVER` was unset, so the
+whole run aborted and reported success having run almost nothing.)
 
-**On failure:** `bun test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
+`bun run test` runs `scripts/run-unit-tests.ts`, which spawns **one process per
+test file**. See `docs/testing.md` → "Running Unit Tests — Always Isolated".
+
+A file is only collected if it matches `UNIT_TEST_ROOTS` in that script and ends
+in `.test.ts(x)`. `scripts/collector-coverage.test.ts` fails if any tracked test
+file is neither collected nor listed there as a deliberate exclusion — add new
+test directories to the roots, not to the exclusion list, unless something else
+genuinely runs them.
+
+**On failure:** `bun run test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
 ```bash
 grep -A30 -F 'apps/web/src/lib/foo.test.ts' .test-report.log
 ```
