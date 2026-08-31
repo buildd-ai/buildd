@@ -260,7 +260,7 @@ Step 1 — find near-duplicates:
 Call \`buildd\` action=consolidate_knowledge op=find_duplicates (default corpora memory+task, cosine > 0.92). Read each pair's previews and decide whether they truly describe the same fact. Similar-but-distinct entries (e.g. two different gotchas about the same file) are NOT duplicates — leave them.
 
 Step 2 — merge true duplicates:
-- memory corpus: the memory service is the source of truth. Pick the survivor (usually the newer or more complete entry), fold any unique detail from the loser into it via \`buildd_memory\` action=update, and pass supersedes=[<loser memory id>] so the loser drops out of default retrieval.
+- memory corpus: the \`memories\` table is the source of truth. Pick the survivor (usually the newer or more complete entry), then call \`learn\` with the survivor's merged content and supersedes=[<loser memory id>] so the loser drops out of default retrieval.
 - task corpus: task outcomes have no upstream service; archive the older chunk of the pair via \`buildd\` action=consolidate_knowledge op=archive.
 
 Step 3 — archive decayed noise:
@@ -297,7 +297,7 @@ export const WEEKLY_DIGEST_SCHEDULE = {
 Step 1 — gather the last 7 days:
 - Completed work: \`buildd\` action=list_tasks (filter to tasks completed in the last 7 days). Note titles, outcomes, and the PRs they merged.
 - Merged PRs: read the PR references on those completed tasks (and \`buildd\` action=query_events for merge events if available) — capture PR number, title, and the one-line "what changed".
-- New knowledge: \`buildd_memory\` action=search for memories saved in the last 7 days — capture the durable decisions/gotchas worth resurfacing.
+- New knowledge: \`recall\` for memories saved in the last 7 days — capture the durable decisions/gotchas worth resurfacing.
 
 Step 2 — synthesise:
 Write a tight digest (aim for under ~400 words) with these sections, omitting any that are empty:
