@@ -44,10 +44,10 @@ export async function GET(
   if (artifact.visibility === 'public') {
     // Published: no credential required, and no token needed either.
   } else if (token) {
-    // A valid token grants access only while the artifact is public.
-    if (token !== artifact.shareToken || artifact.visibility !== 'public') {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 });
-    }
+    // A token is only ever a grant for a published artifact, and that case is
+    // handled above — so a token presented here is for a private artifact and is
+    // always rejected, whether or not it matches the stored one.
+    return NextResponse.json({ error: 'Invalid token' }, { status: 403 });
   } else {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
