@@ -89,9 +89,10 @@ describe('per-worker daemon runtime dir', () => {
     const cacheDir = mkdtempSync(join(tmpdir(), 'cbm-rt-'));
     const runtimeDir = ensureCbmRuntimeDir(cacheDir);
     expect(runtimeDir).toBe(join(cacheDir, 'run'));
-    // A looser mode makes CBM fail with "secure CLI coordination could not be
-    // created (endpoint)" — verified against 0.10.8 in the worker image.
+    // 0.10.8 accepts 0755 and rejects 0777 ("not a usable private-directory
+    // parent"); 0700 is the tightest mode that qualifies.
     expect(statSync(runtimeDir).mode & 0o777).toBe(0o700);
+    expect(statSync(runtimeDir).mode & 0o002).toBe(0);
     rmSync(cacheDir, { recursive: true, force: true });
   });
 

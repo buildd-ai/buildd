@@ -2325,13 +2325,13 @@ export class WorkerManager {
         cbmBinaryPath = cbmActivation.cbmBinaryPath;
         cbmCacheDir = cbmActivation.cbmCacheDir;
         mkdirSync(cbmCacheDir!, { recursive: true });
-        // 0700 daemon coordination dir; must exist before the MCP server starts.
+        // Daemon coordination dir — CBM will not start without it.
         ensureCbmRuntimeDir(cbmCacheDir!);
         console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
 
         // Pre-index the worktree so the graph is warm on turn one.
-        // 30-second hard timeout; bootstrap failure is non-fatal — CBM is still
-        // mounted but without a warm cache; the agent can index on demand.
+        // CBM_INDEX_TIMEOUT_MS hard timeout; bootstrap failure is non-fatal — CBM
+        // is still mounted but without a warm cache; the agent can index on demand.
         worker.currentAction = 'Indexing codebase (CBM)...';
         this.emit({ type: 'worker_update', worker });
         console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
@@ -2352,6 +2352,10 @@ export class WorkerManager {
           worker.cbmBootstrapResult = 'failed';
           worker.cbmBootstrapFailReason = reason;
         }
+        // Re-assert before the bwrap argv is built below: an absent path is
+        // dropped from the mount list, which would hide the problem inside the
+        // sandbox rather than fail loudly.
+        ensureCbmRuntimeDir(cbmCacheDir!);
       }
 
       // CBM observability: record activation outcome and initialize per-task counters.
