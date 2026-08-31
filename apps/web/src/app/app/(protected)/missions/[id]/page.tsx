@@ -23,6 +23,7 @@ import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
 import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
+import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
@@ -642,6 +643,25 @@ export default async function MissionDetailPage({
     failed: rawGroups.failed.map(toChainUnit),
   };
 
+  // Structure view: flat chain list (same identifyChains result shared with Timeline)
+  const allChains: ChainUnit<CondensedTimelineTask>[] = [
+    ...timelineGroups.waitingOnYou,
+    ...timelineGroups.running,
+    ...timelineGroups.nextQueued,
+    ...timelineGroups.blocked,
+    ...timelineGroups.done,
+    ...timelineGroups.failed,
+  ];
+
+  // Retry lineage: childId → parentId for tasks both present in the timeline task set
+  const timelineTaskIdSet = new Set(timelineTasks.map(t => t.id));
+  const retryLinks = new Map<string, string>();
+  for (const t of timelineTasks) {
+    if (t.parentTaskId && timelineTaskIdSet.has(t.parentTaskId)) {
+      retryLinks.set(t.id, t.parentTaskId);
+    }
+  }
+
   // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
   // Use timelineTasks.length (exactly what renders in the timeline) instead of allTasksCount
   // (which inflates the count by including planning tasks that don't appear as rows).
@@ -1048,6 +1068,14 @@ export default async function MissionDetailPage({
           />
         )}
         feedContent={<MissionFeed missionId={id} />}
+        structureContent={allChains.length > 0 ? (
+          <StructureView
+            chains={allChains}
+            taskMap={condensedTaskMapForGrouping}
+            missionId={id}
+            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+          />
+        ) : undefined}
       />
 
 
