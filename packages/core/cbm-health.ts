@@ -41,6 +41,32 @@ function isBinaryAbsent(cbm: unknown): boolean {
  * not be committed to the DB yet when this function runs, so we combine it with
  * the DB query for the prior (N-1) workers.
  */
+/**
+ * Rows in the completion history that carry CBM metrics at all.
+ *
+ * Workers with no `cbm` key never had the capability mounted (Codex tasks, or
+ * coordination workers with no worktree). They are not evidence either way, but
+ * they used to break the streak and silence the alert — and in a mixed fleet that
+ * is most of the time. Filter them out, then take the window from what remains.
+ */
+function cbmWindow(
+  rows: Array<{ resultMeta: unknown }>,
+  size: number,
+): Array<Record<string, unknown>> {
+  const withCbm: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const cbm = (row.resultMeta as Record<string, unknown> | null)?.cbm;
+    if (cbm && typeof cbm === 'object') withCbm.push(cbm as Record<string, unknown>);
+    if (withCbm.length === size) break;
+  }
+  return withCbm;
+}
+
+/** How many rows to scan to find `size` CBM-carrying ones. */
+function scanLimit(size: number): number {
+  return size * 4;
+}
+
 export async function detectCbmFleetDisabled(
   workspaceId: string,
   currentCbm: unknown,
@@ -52,7 +78,7 @@ export async function detectCbmFleetDisabled(
     if (!isBinaryAbsent(currentCbm)) return;
 
     // Query the last (N-1) completed workers with CBM metrics.
-    const prior = await db.query.workers.findMany({
+    const rows = await db.query.workers.findMany({
       where: and(
         eq(workers.workspaceId, workspaceId),
         eq(workers.status, 'completed'),
@@ -60,15 +86,13 @@ export async function detectCbmFleetDisabled(
       ),
       columns: { resultMeta: true },
       orderBy: [desc(workers.completedAt)],
-      limit: CBM_FLEET_THRESHOLD - 1,
+      limit: scanLimit(CBM_FLEET_THRESHOLD),
     });
 
+    const prior = cbmWindow(rows, CBM_FLEET_THRESHOLD - 1);
     if (prior.length < CBM_FLEET_THRESHOLD - 1) return; // not enough history yet
 
-    const allPriorBinaryAbsent = prior.every(row => {
-      const cbm = (row.resultMeta as Record<string, unknown> | null)?.cbm;
-      return isBinaryAbsent(cbm);
-    });
+    const allPriorBinaryAbsent = prior.every(isBinaryAbsent);
     if (!allPriorBinaryAbsent) return;
 
     await reportOps({
@@ -120,7 +144,7 @@ export async function detectCbmEnforcedUnused(
     if (!opsEnabled()) return;
     if (!isEnforcedAndUnused(currentCbm)) return;
 
-    const prior = await db.query.workers.findMany({
+    const rows = await db.query.workers.findMany({
       where: and(
         eq(workers.workspaceId, workspaceId),
         eq(workers.status, 'completed'),
@@ -128,22 +152,29 @@ export async function detectCbmEnforcedUnused(
       ),
       columns: { resultMeta: true },
       orderBy: [desc(workers.completedAt)],
-      limit: CBM_UNUSED_THRESHOLD - 1,
+      limit: scanLimit(CBM_UNUSED_THRESHOLD),
     });
 
+    const prior = cbmWindow(rows, CBM_UNUSED_THRESHOLD - 1);
     if (prior.length < CBM_UNUSED_THRESHOLD - 1) return;
+    if (!prior.every(isEnforcedAndUnused)) return;
 
-    const allUnused = prior.every(row => {
-      const cbm = (row.resultMeta as Record<string, unknown> | null)?.cbm;
-      return isEnforcedAndUnused(cbm);
-    });
-    if (!allUnused) return;
+    // What the agent did instead is the actionable half of the alert: file
+    // navigation is exactly the cost the graph was mounted to avoid.
+    const current = (currentCbm ?? {}) as Record<string, number | undefined>;
+    const fallback = [
+      `read=${current.readCount ?? 0}`,
+      `grep=${current.grepCount ?? 0}`,
+      `glob=${current.globCount ?? 0}`,
+    ].join(' ');
 
     await reportOps({
       source: 'cbm-health',
-      severity: 'warning',
+      // Not 'warning': that is Pushover priority -2, badge-only, and this alert
+      // fired in production without anyone seeing it.
+      severity: 'error',
       message: `CBM mounted but never queried on last ${CBM_UNUSED_THRESHOLD} workers`,
-      detail: `workspace=${workspaceId} — codebase-memory is enforced and pre-indexed, but no agent called an mcp__codebase-memory__* tool across ${CBM_UNUSED_THRESHOLD} consecutive tasks. The graph is being built and paid for and not used; prompt steering is likely ineffective.`,
+      detail: `workspace=${workspaceId} — codebase-memory is enforced and pre-indexed, but no agent called an mcp__codebase-memory__* tool across ${CBM_UNUSED_THRESHOLD} consecutive CBM-enabled tasks. Latest task navigated by file access instead: ${fallback}. The graph is being built and paid for and not used; prompt steering is ineffective.`,
       dedupeKey: `cbm-enforced-unused:${workspaceId}`,
     });
   } catch {
